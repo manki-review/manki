@@ -27,9 +27,10 @@ import {
   listedFilesDiff,
   reviewableDiff,
   tagFindingOrigins,
+  hideSeenNotes,
 } from './diff';
 import { DEFAULT_CONFIG } from './config';
-import { DiffFile, Finding, ParsedDiff } from './types';
+import { DiffFile, Finding, ParsedDiff, ReviewResult } from './types';
 
 // -- Test fixtures --
 
@@ -784,6 +785,15 @@ describe('tagFindingOrigins', () => {
     const rebaseFindings = [finding('src/a.ts', 2)];
     tagFindingOrigins(rebaseFindings, parsePRDiff(change('src/a.ts', 10, ['guard', 'body', '}'])), parsePRDiff(change('src/a.ts', 10, ['guard', 'body', '}'])), parsePRDiff(rebaseInterRound));
     expect(rebaseFindings[0].origin).toBe('reviewed');
+  });
+
+  it('hides a note on reviewed code, but not one the PR fixes elsewhere, since that fix can be newer than the review', () => {
+    const current = parsePRDiff(change('src/a.ts', 10, ['x']));
+    const fixed = { fixedElsewhere: 'src/a.ts:11' };
+    const result = { findings: [finding('src/a.ts', 30), { ...finding('src/a.ts', 31), ...fixed }, { ...finding('src/a.ts', 32), ...fixed, raisedIn: 1 }] } as ReviewResult;
+    tagFindingOrigins(result.findings, current, current);
+    hideSeenNotes(result, current);
+    expect([result.findings.map(f => f.line), result.unposted?.map(f => [f.line, f.unpostedReason])]).toEqual([[31], [[30, 'reviewed_code'], [32, 'listed_earlier']]]);
   });
 });
 

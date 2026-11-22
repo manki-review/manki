@@ -7,7 +7,7 @@ import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDi
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, formatResetTime, InstructionFile, LinkedIssue, MANKI_VERSION, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, pushTouchesThread, replyClassOf, titleOverlapType, dropWaivedRestatements } from './recap';
-import { isGuardedFinding, canLeaveOut, CheckProgress, foundOnBase, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundAgentMetric, RoundComparison, RoundContext, RoundDedupDuplicateMatch, RoundFix, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundPrClaim, RoundRawFinding, RoundRelatedRepo, RoundReusedFrom, RoundStaticSignalMatch, RoundUnitLine, RoundUses, EarlierAttempt, DiffHunk, EffortLevel, Finder, FinderError, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType, secondReadName, RoundSecondReads } from './types';
+import { isGuardedFinding, canLeaveOut, CheckProgress, UnpostedReason, foundOnBase, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundAgentMetric, RoundComparison, RoundContext, RoundDedupDuplicateMatch, RoundFix, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundPrClaim, RoundRawFinding, RoundRelatedRepo, RoundReusedFrom, RoundStaticSignalMatch, RoundUnitLine, RoundUses, EarlierAttempt, DiffHunk, EffortLevel, Finder, FinderError, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType, secondReadName, RoundSecondReads } from './types';
 import { countChangedLines, diffSections, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE, repoPath } from './diff';
 import { guessClaimTerms, translateNames } from './name-translation';
 import { dependencyOutcomes } from './dependency-sources';
@@ -82,9 +82,11 @@ export function postedWhenPreExisting(f: Finding): boolean {
  * way before this PR, as pre-existing. Only the findings `postedWhenPreExisting` accepts are `posted`, the rest are
  * `unposted`, for the round record only. A posted blocker becomes a warning, so no check that reads the severity, in
  * this round or a later one, lets it block. A security blocker on code this PR did not change stays a blocker, whatever
- * the origin checks found.
+ * the origin checks found. With `incompleteFixes`, a finding `foundOnBase` would leave unposted is posted as a note
+ * instead when an origin answer names the line where this PR fixes the same failure (`fixedElsewhere`), since its author
+ * wants to know the fix is incomplete. It must pass the proof checks of `hideUnprovenWarnings` under the given `rules`.
  */
-function markPreExisting(findings: Finding[], checkOf: (finding: Finding) => PreExistingCheck | undefined): { posted: Finding[]; unposted: Finding[] } {
+function markPreExisting(findings: Finding[], checkOf: (finding: Finding) => PreExistingCheck | undefined, incompleteFixes?: { rules: RulesMode | undefined }): { posted: Finding[]; unposted: Finding[] } {
   const posted: Finding[] = [];
   const unposted: Finding[] = [];
   for (const f of findings) {
@@ -98,7 +100,11 @@ function markPreExisting(findings: Finding[], checkOf: (finding: Finding) => Pre
     const tagged: Finding = { ...f, tags: [...(f.tags ?? []), PRE_EXISTING_TAG], ...(check && { preExistingCheck: check }) };
     const unchanged = check === 'pre_existing';
     const lowers = f.severity === 'blocker' && (unchanged ? !isSecurityFinding(f.tags, f.reviewers) : !!base);
-    if (!postedWhenPreExisting(f)) {
+    const fixedElsewhere = base && incompleteFixes && f.originCheck?.answers.find(a => a.fixedElsewhere)?.fixedElsewhere;
+    if (!postedWhenPreExisting(f) && fixedElsewhere && !unprovenWarningReason(f, incompleteFixes.rules)) {
+      core.info(`Posting pre-existing ${f.severity} "${f.title}" on ${f.file}:${f.line} as a note: this PR fixes the same failure at ${fixedElsewhere}`);
+      posted.push({ ...tagged, ...gradeStep(f, 'note', 'pre_existing', `this PR fixes the same failure at ${fixedElsewhere}`), fixedElsewhere });
+    } else if (!postedWhenPreExisting(f)) {
       core.info(`Recording pre-existing ${f.severity} "${f.title}" on ${f.file}:${f.line} without posting it`);
       unposted.push(tagged);
     } else if (lowers) {
@@ -124,8 +130,8 @@ function hideUnprovenWarnings(findings: Finding[], rules: RulesMode | undefined,
   const posted: Finding[] = [];
   const unposted: Finding[] = [];
   for (const f of findings) {
-    const unpostedReason = !needsProof(f, rules) ? undefined : lacksTrigger(f) ? 'no_trigger' : unprovenReason(f);
-    if (!unpostedReason || f.threadId || f.answeredIn || f.raisedIn !== undefined || wouldBlock(f) || isRareClaim(f.cell) || staysWarningIfConfirmed(f)) {
+    const unpostedReason = unprovenWarningReason(f, rules, wouldBlock);
+    if (!unpostedReason) {
       posted.push(isBlockingSeverity(f.severity) && !f.toolSource ? { ...f, checkStatus: checkStatus(f) } : f);
     } else {
       core.info(`Recording warning "${f.title}" on ${f.file}:${f.line} without posting it: ${UNPOSTED_REASONS[unpostedReason]}`);
@@ -133,6 +139,13 @@ function hideUnprovenWarnings(findings: Finding[], rules: RulesMode | undefined,
     }
   }
   return { posted, unposted };
+}
+
+/** Returns why `hideUnprovenWarnings` leaves `f` out, or undefined when it posts `f`. */
+function unprovenWarningReason(f: Finding, rules: RulesMode | undefined, wouldBlock = wouldBlockIfTrue): UnpostedReason | undefined {
+  const reason = !needsProof(f, rules) ? undefined : lacksTrigger(f) ? 'no_trigger' : unprovenReason(f);
+  const kept = f.threadId || f.answeredIn || f.raisedIn !== undefined || wouldBlock(f) || isRareClaim(f.cell) || staysWarningIfConfirmed(f);
+  return kept ? undefined : reason;
 }
 
 const UNRELATED_RULE = 'never report a change only for being unrelated to the PR\'s purpose';
@@ -2116,7 +2129,7 @@ export async function runReview(
     if (stopped) return incompleteAfterJudge(stopped);
   }
   // After the suppressions, so a blocker the PR did not cause keeps their blocker guard.
-  const preExisting = markPreExisting(finalFindings, unchangedCheck);
+  const preExisting = markPreExisting(finalFindings, unchangedCheck, { rules: config.review?.rules });
   finalFindings = preExisting.posted;
   let unpostedPreExisting = preExisting.unposted;
 

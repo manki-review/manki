@@ -1161,7 +1161,7 @@ describe('fetchRecapState', () => {
       });
       // A round too large for its review posts the last of `smallerRecords`, which later rounds read like any other.
       const blocker = { fingerprint: { file: 'src/bar.ts', lineStart: 4, lineEnd: 4, slug: 'lost-update' }, severity: 'blocker' as const, title: 'Lost update', threadId: 'T_BLOCKER', judgeNotes: 'Long reasoning.', tags: ['disproved-blocker'],
-        originCheck: { lineChanged: true, answers: [{ verdict: 'introduced' as const, reason: 'The base reads under the lock.', model: 'm' }] } };
+        originCheck: { lineChanged: true, answers: [{ verdict: 'pre_existing' as const, reason: 'The base reads under the lock.', model: 'm', fixedElsewhere: 'src/bar.ts:9' }] } };
       const threadEvaluations: ThreadEvaluation[] = [{ threadId: 'T_OLD', status: 'partly_addressed', reason: 'Half done.', grade: 'warning' }];
       const [minimal] = [...smallerRecords(makeRoundContext(2, {
         findings: { count: 1, severityCounts: { blocker: 1, warning: 0, note: 0 }, entries: [blocker] },
@@ -1176,8 +1176,10 @@ describe('fetchRecapState', () => {
       expect(state.priorRounds).toHaveLength(2);
       expect(state.priorRounds[0].findings.entries).toEqual([entry]);
       const { judgeNotes: _notes, ...kept } = blocker;
-      expect(state.priorRounds[1].meta.omitted).toEqual(['usage.llmCalls', 'findings.entries.judgeNotes']);
-      expect(state.priorRounds[1].findings.entries).toEqual([kept]);
+      // No later round reads the line an origin answer says this PR fixes the same failure at.
+      const { fixedElsewhere: _fix, ...answer } = blocker.originCheck.answers[0];
+      expect(state.priorRounds[1].meta.omitted).toEqual(['usage.llmCalls', 'findings.entries.judgeNotes', 'findings.entries.originCheck.fixedElsewhere']);
+      expect(state.priorRounds[1].findings.entries).toEqual([{ ...kept, originCheck: { ...kept.originCheck, answers: [answer] } }]);
       expect(state.priorRounds[1].judge.threadEvaluations).toEqual(threadEvaluations);
     });
 

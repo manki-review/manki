@@ -36,21 +36,23 @@ describe('checkOrigins', () => {
       [],
     );
     const baseCommit = git(root, 'rev-parse', 'HEAD');
+    // Line 9 of `src/api.ts` is one the PR added, and line 3 one it left as it was.
+    const fixed = { ...same, fixed_elsewhere_in_pr: 'src/api.ts:9' };
     const replies: Record<string, unknown> = {
-      'Same before': same,
-      'Claimed older': same,
-      'No line at the base': { ...same, base: [] },
+      'Same before': fixed,
+      'Claimed older': { ...same, fixed_elsewhere_in_pr: 'src/api.ts:3' },
+      'No line at the base': { ...fixed, base: [] },
       'An unrelated file at the base': { ...same, base: ['README.md:1'] },
       // Line 9 of `src/api.ts` is there at the head only, so it is no line of the base, whatever the head holds.
       'A line of the head': { ...same, base: ['src/math.ts:2', 'src/api.ts:9'] },
       'No line at the head': { ...same, head: [] },
-      'Introduced': { origin: 'introduced', reason: 'This PR adds the caller.', head: ['src/api.ts:9'] },
+      'Introduced': { origin: 'introduced', reason: 'This PR adds the caller.', head: ['src/api.ts:9'], fixed_elsewhere_in_pr: 'src/api.ts:9' },
       'Note': same,
       'Tool alert': same,
       // A line the PR added has no place at the base, so the base must show the failure in the finding's own file. A file
       // the PR added has none there.
       'In a file the PR added': { ...same, head: ['src/new.ts:1'], base: ['src/math.ts:2'] },
-      'Added to a changed file': { ...same, head: ['src/api.ts:9'], base: ['src/api.ts:8'] },
+      'Added to a changed file': { ...fixed, head: ['src/api.ts:9'], base: ['src/api.ts:8'] },
       'Added, with the base cited elsewhere': { ...same, head: ['src/api.ts:9'], base: ['src/math.ts:2'] },
     };
     const client = originClient(replies, 'first-model');
@@ -85,7 +87,10 @@ describe('checkOrigins', () => {
     expect(added.map(f => [f.title, f.originCheck?.lineChanged, f.originCheck?.answers.map(a => a.verdict)])).toEqual([
       ['Added to a changed file', true, ['pre_existing', 'pre_existing']], ['Added, with the base cited elsewhere', true, ['unsure', 'unsure']],
     ]);
-    expect(checked[0].originCheck?.answers[0]).toEqual({ verdict: 'pre_existing', reason: same.reason, head: ['src/math.ts:2'], base: ['src/math.ts:2'], commit: baseCommit, model: 'first-model' });
+    expect(checked[0].originCheck?.answers[0]).toEqual({ verdict: 'pre_existing', reason: same.reason, head: ['src/math.ts:2'], base: ['src/math.ts:2'], commit: baseCommit, fixedElsewhere: 'src/api.ts:9', model: 'first-model' });
+    // A fix line counts only on a standing pre-existing answer, on a line the PR added or changed other than the flagged one.
+    const fixesOf = (f: Finding) => f.originCheck?.answers.map(a => a.fixedElsewhere);
+    expect([...checked.slice(1, 7), ...added].map(fixesOf)).toEqual([[undefined, undefined], [undefined, undefined], [undefined, undefined], [undefined, undefined], [undefined, undefined], [undefined], [undefined, undefined], [undefined, undefined]]);
     // A line the base does not hold is dropped, so no answer links a line of the head as one of the base.
     expect(checked[3].originCheck?.answers[0].base).toEqual(['src/math.ts:2']);
     expect([progress.started.mock.calls, progress.ended.mock.calls.length]).toEqual([[[8]], 8]);
@@ -96,6 +101,7 @@ describe('checkOrigins', () => {
     expect(message('Same before')).toContain('- **Other files this PR changes**: src/api.ts, src/new.ts, gen/client.ts');
     expect(message('In a file the PR added')).toContain("## The PR's Change to the Cited Files");
     expect(client.calls[0].system).toContain("A failure that comes from what this PR added to a line, such as a new argument, is the PR's own.");
+    expect(client.calls[0].system).toContain('`fixed_elsewhere_in_pr`');
     expect(client.calls[0].options?.repoTools).toMatchObject({ root, steps: 10 });
 
     // A large PR still gets the check, with every changed file named.

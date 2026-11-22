@@ -143,12 +143,24 @@ function omitBulkyDiagnostics(context: RoundContext, keepTraces: boolean): Round
 /** A part of a round record and the record without it, `undefined` when the record has no such part. */
 type RecordCut = [field: string, cut: (context: RoundContext) => RoundContext | undefined];
 
+/** Returns `context` with `strip` applied to each finding it records, or `undefined` when no finding `has` the part it strips. */
+function withEntriesCut(context: RoundContext, has: (e: FindingFingerprintEntry) => boolean, strip: (e: FindingFingerprintEntry) => FindingFingerprintEntry): RoundContext | undefined {
+  const { entries, unposted, carried } = context.findings;
+  if (![...entries, ...unposted ?? [], ...carried ?? []].some(has)) return undefined;
+  const cut = (list: FindingFingerprintEntry[]): FindingFingerprintEntry[] => list.map(strip);
+  return { ...context, findings: { ...context.findings, entries: cut(entries), ...(unposted && { unposted: cut(unposted) }), ...(carried && { carried: cut(carried) }) } };
+}
+
 /** Returns `context` with `field` left out of each finding it records, or `undefined` when no finding has it. */
 function withoutEntryField(context: RoundContext, field: 'judgeNotes' | 'refutation' | 'pairRefutation' | 'suggestedFix' | 'evidence'): RoundContext | undefined {
-  const { entries, unposted, carried } = context.findings;
-  if (![...entries, ...unposted ?? [], ...carried ?? []].some(e => e[field] !== undefined)) return undefined;
-  const cut = (list: FindingFingerprintEntry[]): FindingFingerprintEntry[] => list.map(e => ({ ...e, [field]: undefined }));
-  return { ...context, findings: { ...context.findings, entries: cut(entries), ...(unposted && { unposted: cut(unposted) }), ...(carried && { carried: cut(carried) }) } };
+  return withEntriesCut(context, e => e[field] !== undefined, e => ({ ...e, [field]: undefined }));
+}
+
+/** Returns `context` without the `fixedElsewhere` line of each origin answer, which no later round reads, or `undefined` when no answer has one. */
+function withoutFixedElsewhere(context: RoundContext): RoundContext | undefined {
+  return withEntriesCut(context, e => !!e.originCheck?.answers.some(a => a.fixedElsewhere), e => (e.originCheck
+    ? { ...e, originCheck: { ...e.originCheck, answers: e.originCheck.answers.map(a => ({ ...a, fixedElsewhere: undefined })) } }
+    : e));
 }
 
 function withoutSection(key: 'relatedWork' | 'sweeps' | 'staticAnalysis' | 'dependencySources' | 'instructions' | 'slicing' | 'tokenService'
@@ -174,6 +186,7 @@ const RECORD_CUTS: RecordCut[] = [
   ['findings.entries.pairRefutation', c => withoutEntryField(c, 'pairRefutation')],
   ['findings.entries.suggestedFix', c => withoutEntryField(c, 'suggestedFix')],
   ['findings.entries.evidence', c => withoutEntryField(c, 'evidence')],
+  ['findings.entries.originCheck.fixedElsewhere', withoutFixedElsewhere],
 ];
 
 /**
@@ -181,9 +194,10 @@ const RECORD_CUTS: RecordCut[] = [
  * with and without traces, and each later one also leaves out the next part of `RECORD_CUTS` the record has. The last
  * keeps what later rounds need to follow findings and threads: the meta, each finding with its fingerprint, grade,
  * thread and the description a finding without a thread is listed again with, and the judge's thread evaluations. It
- * also keeps each finding's `originCheck`, which stays small since a round makes at most `MAX_ORIGIN_CHECKS`. It loses
- * each finding's refuter checks, proposed fix and evidence, so a later round checks such a finding again and its
- * own-proposal check does not see the fix. `meta.omitted` names every part a form left out.
+ * also keeps each finding's `originCheck`, which stays small since a round makes at most `MAX_ORIGIN_CHECKS`, without
+ * the `fixedElsewhere` lines no later round reads. It loses each finding's refuter checks, proposed fix and evidence, so
+ * a later round checks such a finding again and its own-proposal check does not see the fix. `meta.omitted` names every
+ * part a form left out.
  */
 export function* smallerRecords(context: RoundContext): Generator<RoundContext> {
   yield omitBulkyDiagnostics(context, true);
