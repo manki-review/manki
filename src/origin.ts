@@ -135,7 +135,7 @@ function parseOrigin(text: string): Omit<RawOrigin, 'model'> {
  * head, and every `base` line it cites is at the base. On a flagged line the PR left unchanged, one of those must be that
  * line at its place in the base, with the same text. On any other line, one must be a line of the finding's own file at
  * the base, so a finding in a file the PR added never stands. Any doubt makes it `unsure`, as does a workspace without a
- * base.
+ * base and a message whose list of other changed files is cut, since a change it leaves out looks the same at the base.
  */
 async function checkLines(raw: RawOrigin, finding: Finding, workspace: string, diff: ParsedDiff | undefined, excludedPaths: readonly string[], related?: RelatedRepoTools): Promise<OriginAnswer> {
   const { verdict: claimed, reason, model } = raw;
@@ -159,7 +159,8 @@ async function checkLines(raw: RawOrigin, finding: Finding, workspace: string, d
       return locationFile(h.location) === at.file && start <= at.line && at.line <= end && h.lines[at.line - start] === flagged;
     });
   };
-  const proven = !!commit && head.some(location => locationFile(location) === finding.file) && base.length > 0 && base.length === cited.length && citesFlaggedLine();
+  const cut = otherChangedPaths(finding, diff, excludedPaths).length > MAX_CHANGED_PATHS;
+  const proven = !cut && !!commit && head.some(location => locationFile(location) === finding.file) && base.length > 0 && base.length === cited.length && citesFlaggedLine();
   const verdict = claimed === 'pre_existing' && !proven ? 'unsure' : claimed;
   return { verdict, reason, ...(head.length > 0 && { head }), ...(base.length > 0 && { base, commit }), ...(model && { model }) };
 }
