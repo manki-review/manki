@@ -3890,7 +3890,8 @@ function formatFindingComment(finding: Finding, links: CodeLinks, place: 'line' 
   // The line note takes no room, so a thread shows the same description with it as without it.
   const room = Math.max(MIN_VISIBLE_DESCRIPTION, MAX_VISIBLE_COMMENT - (comment.length - onLine.length) - label.length - visibleLength(open));
   const description = sanitizeMarkdown(finding.description);
-  const { lead, rest } = splitLead(description, 3, room);
+  // A scope warning's list is what it proposes, so no length budget folds it.
+  const { lead, rest } = splitLead(description, 3, finding.reviewers.includes(SCOPE_READER_NAME) ? Infinity : room);
   // A fold never holds a single sentence, so one sentence past the lead shows with it, unless the lead was cut short.
   const folds = rest.includes('\n') || rest.split(/(?<=[.!?])\s+/).length > 1 || !description.trim().startsWith(lead);
   const shown = folds ? lead : description.trim();

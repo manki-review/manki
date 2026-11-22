@@ -6403,6 +6403,12 @@ describe('postReview non-blocking findings', () => {
     expect(threads[1].body).toContain("separate PRs. This is a judgment of the PR as a whole, not a defect in its code.\n\n1. Date parsing: `src/a.ts`\n2. Flag [rename]: `src/b.ts`, `src/c'd.ts`");
     expect(threads[1].body).not.toContain('<details>');
     for (const { body } of threads) expect(body).not.toMatch(/Manki could not confirm|not checked against the code/i);
+    // A long list is shown whole too.
+    const files = (part: string) => [1, 2, 3, 4].map(n => `src/components/${part}/subsystem_${n}/implementation.ts`);
+    const [longSplit] = scopeWarnings({ split: [{ name: 'Date parsing', files: files('dates') }, { name: 'Flag rename', files: files('flags') }] });
+    const longBody = formatFindingComment(longSplit, TEST_LINKS, 'detached');
+    expect(longBody).toContain(`1. Date parsing: ${files('dates').map(f => `\`${f}\``).join(', ')}\n2. Flag rename:`);
+    expect(longBody).not.toContain('<details>');
   });
 
   it('formats the reply to an answered thread whose problem came back worse', () => {
