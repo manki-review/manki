@@ -319,6 +319,9 @@ describe('fetchBotReviewThreads', () => {
     expect(graded.map(t => [t.id, t.isBlocking, !!t.isWarning, !!t.addressed])).toEqual([['b', false, true, false], ['p', true, false, false], ['x', false, true, true], ['d', false, true, true], ['n', false, true, false]]);
     const held = await fetchHeldWarnings(threadsOctokit(graphqlMock.mockResolvedValueOnce(pendingThreads()), reviews), TEST_BOT, 'owner', 'repo', 1, 'author', undefined, pending);
     expect(held.map(t => t.id)).toEqual(['b', 'n']);
+    // With `blocking`, the open blocking thread holds too.
+    const withBlocking = await fetchHeldWarnings(threadsOctokit(graphqlMock.mockResolvedValueOnce(pendingThreads()), reviews), TEST_BOT, 'owner', 'repo', 1, 'author', undefined, pending, true);
+    expect(withBlocking.map(t => t.id)).toEqual(['p', 'b', 'n']);
     // Without every round record or without the threads, a warning thread could be missed, so the read fails rather than return none.
     const recordsUnread = threadsOctokit(graphqlMock.mockResolvedValueOnce(pendingThreads()), reviews);
     jest.mocked(recordsUnread.paginate).mockRejectedValueOnce(new Error('rate limited'));

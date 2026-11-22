@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { LLMClient, NotStartedError } from './providers';
-import { APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, BASE_NOTE_RE, TRACKED_NOTE_RE, TRUST_NOTE_RE, WHAT_GOES_WRONG_LABEL, WHY_LABEL, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, authorClearRole, paginateGraphql, plainCitedFiles, titleToSlug } from './github';
+import { BotIdentity, isAutoApproval, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, BASE_NOTE_RE, TRACKED_NOTE_RE, TRUST_NOTE_RE, WHAT_GOES_WRONG_LABEL, WHY_LABEL, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, authorClearRole, paginateGraphql, plainCitedFiles, titleToSlug } from './github';
 import { BOX_ANCHOR } from './issue-box';
 import { currentFindingLine, findPriorThreadId, stringifyFindingFingerprint } from './finding-fingerprint';
 import { extractJSON } from './json';
@@ -1062,10 +1062,7 @@ async function fetchPriorRoundContexts(
     });
     const botReviews = reviews.filter((r): r is typeof r & { body: string; id: number } => !!r.body && isBotLogin(bot, r.user?.login));
     const candidates = botReviews.filter(r => hasReviewRecord(r.body)).map(r => ({ body: r.body, id: r.id, node_id: r.node_id, submitted_at: r.submitted_at }));
-    // A round review quotes model text, which could echo the marker, so only a review without a round context counts.
-    const lastApprovalAt = botReviews
-      .filter(r => !hasReviewRecord(r.body) && r.body.startsWith(APPROVED_LINE) && hasOwnMarker(r.body, AUTO_APPROVE_MARKER))
-      .at(-1)?.submitted_at;
+    const lastApprovalAt = botReviews.filter(r => isAutoApproval(r.body)).at(-1)?.submitted_at;
     const { rounds, unread, postedAt, lastAttempt } = parseContextBlocks(candidates, owner, repo, prNumber);
     return {
       priorRounds: rounds, postedAt, ...(lastApprovalAt && { lastApprovalAt }), ...(unread.length > 0 && { priorRoundsIncomplete: true as const, unreadRecords: unread }),

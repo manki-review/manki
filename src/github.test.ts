@@ -5057,6 +5057,9 @@ describe('settings block placement', () => {
 
 describe('dismissPreviousReviews', () => {
   const MANKI = { login: TEST_BOT.logins[0] };
+  const autoApprovalOf = (head: string) => withMarkers('✅ **Approved.** All blocking threads are resolved.', '<!-- manki -->', '<!-- manki-auto-approve -->', formatApprovalRecord({
+    decision: 'approved', reason: 'all blocking threads are resolved', head, threads: { total: 1, resolved: 1 }, timestamp: '2026-11-23T00:00:00Z', mankiVersion: '7.7.2',
+  }));
 
   it('dismisses only Manki\'s own reviews with the marker and CHANGES_REQUESTED state', async () => {
     const dismissMock = jest.fn().mockResolvedValue({});
@@ -5096,6 +5099,9 @@ describe('dismissPreviousReviews', () => {
       { id: 4, body: roundReviewOf(SHA_A, 'Approved'), state: 'APPROVED', commit_id: SHA_B, user: MANKI },
       // An approval whose body names no commit is an approval of no commit, whatever commit GitHub reports it on.
       { id: 5, body: `${BOT_MARKER}\nApproved`, state: 'APPROVED', commit_id: SHA_B, user: MANKI },
+      // An auto-approval counts like a round approval, on the commit its approval record names.
+      { id: 6, body: autoApprovalOf(SHA_A), state: 'APPROVED', commit_id: SHA_B, user: MANKI },
+      { id: 7, body: autoApprovalOf(SHA_B), state: 'APPROVED', commit_id: SHA_B, user: MANKI },
     ];
     const mockOctokit = {
       paginate: jest.fn().mockResolvedValue(reviews),
@@ -5103,7 +5109,7 @@ describe('dismissPreviousReviews', () => {
     } as unknown as Parameters<typeof dismissPreviousReviews>[0];
 
     await dismissPreviousReviews(mockOctokit, TEST_BOT, 'owner', 'repo', 1, 3, 'APPROVED', SHA_B);
-    expect(dismissMock.mock.calls.map(([args]) => args.review_id)).toEqual([1, 4, 5]);
+    expect(dismissMock.mock.calls.map(([args]) => args.review_id)).toEqual([1, 4, 5, 6]);
   });
 
   it('dismisses reviews past the first page', async () => {
@@ -7117,6 +7123,16 @@ describe('fetchStandingVerdict', () => {
     ]);
     expect(await fetchStandingVerdict(again, TEST_BOT, 'owner', 'repo', 1)).toEqual({ verdict: 'APPROVE', commitSha: SHA_B });
     expect(await isApprovedOnCommit(again, TEST_BOT, 'owner', 'repo', 1, testSha('c'))).toBe(false);
+
+    // An auto-approval counts like a round approval, on the commit its approval record names.
+    const record = formatApprovalRecord({ decision: 'approved', reason: 'all blocking threads are resolved', head: SHA_A, threads: { total: 1, resolved: 1 }, timestamp: '2026-11-22T00:00:00Z', mankiVersion: '7.7.2' });
+    const auto = makeMockOctokit([
+      { id: 1, state: 'DISMISSED', commit_id: SHA_A, body: roundReviewOf(SHA_A) },
+      { id: 2, state: 'APPROVED', commit_id: testSha('c'), body: withMarkers('✅ **Approved.** All blocking threads are resolved.', '<!-- manki -->', '<!-- manki-auto-approve -->', record) },
+    ]);
+    expect(await fetchStandingVerdict(auto, TEST_BOT, 'owner', 'repo', 1)).toEqual({ verdict: 'APPROVE', commitSha: SHA_A });
+    expect(await isApprovedOnCommit(auto, TEST_BOT, 'owner', 'repo', 1, SHA_A)).toBe(true);
+    expect(await isApprovedOnCommit(auto, TEST_BOT, 'owner', 'repo', 1, testSha('c'))).toBe(false);
   });
 
   it('returns undefined for a review dismissed by hand or when the timeline cannot be read', async () => {
