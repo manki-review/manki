@@ -747,12 +747,13 @@ export function tagFindingOrigins(findings: Finding[], diff: ParsedDiff, prior: 
  * an earlier round listed, and a note on code an earlier round reviewed. `compared` is the PR's change when the round
  * read both the earlier round's change and the diff since. A note on reviewed code is left out only in one of its files,
  * since no other line was compared. A security finding, a tool alert and a note that goes into an earlier thread stay.
+ * So does a note on reviewed code that the PR fixes elsewhere (`fixedElsewhere`), since that fix can be newer than the review.
  */
 export function hideSeenNotes(result: ReviewResult, compared: ParsedDiff | undefined): void {
   const reasonFor = (f: Finding): UnpostedReason | undefined => {
     if (!canLeaveOut(f) || f.threadId || f.answeredIn) return undefined;
     if (f.origin === 'earlier') return 'listed_earlier';
-    return f.origin === 'reviewed' && compared?.files.some(file => file.path === f.file) ? 'reviewed_code' : undefined;
+    return f.origin === 'reviewed' && !f.fixedElsewhere && compared?.files.some(file => file.path === f.file) ? 'reviewed_code' : undefined;
   };
   const shown: Finding[] = [];
   const hidden: Finding[] = [];
