@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.7.2] - 2026-11-22
+
+Manki 7.7.2 fixes how reviews read. A finding whose defect Manki confirmed no longer says it could not confirm it, the review body is never cut inside a finding, split proposals show whole and come less often, and actionlint follows the repository's path rules. Nothing breaks on the upgrade and no setting changes.
+
+### Review loop and verdicts
+
+- A finding whose defect a check confirmed in the code no longer says "Manki could not confirm this" because an open question depends on something no code can show, such as how a model, a person or another project behaves. The refuter answers such a question as outside the code, and the finding reads as confirmed. For grading it still counts as unsettled, so no grade, hold or sweep changes. A finding that is still unconfirmed names what stayed open: "Manki confirmed the code path but could not check: ...", or that no line in the code was cited for it ([#1928](https://github.com/manki-review/manki/pull/1928)).
+- The scope reader counts the same kind of change made in several places for one purpose as one topic, such as removing unused code, one rename or one mechanical migration. A cleanup like that no longer gets a proposal to split it ([#1920](https://github.com/manki-review/manki/pull/1920)).
+
+### Review format
+
+- The visible review gets the room of the review body first, and the hidden round record shrinks to fit. When the review still does not fit, whole findings are left out, pre-existing ones first, then notes, with a line saying how many. Before, the body was cut at a word, in the middle of a finding, which lost its fold and its "Create an issue for this" box ([#1930](https://github.com/manki-review/manki/pull/1930)).
+- A pre-existing finding in the review body is short: its title, location, "Already broken before this PR" with one link, what goes wrong and how to fix it. Its thread keeps the full evidence ([#1930](https://github.com/manki-review/manki/pull/1930)).
+- A proposed split shows its whole numbered list, and split and usefulness warnings no longer say they could not be confirmed. Before, the list could break after "1." with the rest in the fold ([#1920](https://github.com/manki-review/manki/pull/1920)).
+
+### Earlier threads
+
+- When an author says another pull request fixes a finding and that PR changes the file, Manki says it is not certain the PR replaces the line, instead of saying it does not, since that PR's diff counts lines from its own base ([#1924](https://github.com/manki-review/manki/pull/1924)).
+- On a thread with 100 or more comments, an old dismissal no longer counts, since Manki may not see its own later reopen there ([#1922](https://github.com/manki-review/manki/pull/1922)).
+
+### Static analysis
+
+- actionlint gets the workflow paths without a leading `./`, so the `paths:` rules of the repository's actionlint config apply. An error the config ignores for a path is no longer raised as a blocker ([#1921](https://github.com/manki-review/manki/pull/1921)).
+
+### Reliability
+
+- A request for a version of a dependency the PR does not use no longer takes the package's record, so a later refusal of the same package is recorded ([#1925](https://github.com/manki-review/manki/pull/1925)).
+
 ## [7.7.1] - 2026-11-22
 
 Manki 7.7.1 is about noise. Each blocker and warning is checked for whether the PR caused it, so a problem the code already had stays out of the review, and a warning needs a trigger that happens in realistic use. Findings are matched by meaning instead of titles and lines, replies are decided by Manki's own checked answer, and a blocker every refuter disproved no longer blocks. Nothing breaks on the upgrade and no setting changes.
