@@ -1172,9 +1172,9 @@ export function oneCheckOnBase(finding: Pick<Finding, 'originCheck'>): OriginAns
   return answers.find(failsOnBase);
 }
 
-/** Whether one origin answer is enough to keep `f` out of the review: a warning or note that would never block and is no security finding. */
+/** Whether one origin answer is enough to keep `f` out of the review: a warning or note that would never block and is not guarded (`isGuardedFinding`). */
 export function oneAnswerSettles(f: Finding): boolean {
-  return f.severity !== 'blocker' && !wouldBlockIfTrue(f) && !staysWarningIfConfirmed(f) && !isSecurityFinding(f.tags, f.reviewers);
+  return f.severity !== 'blocker' && !wouldBlockIfTrue(f) && !staysWarningIfConfirmed(f) && !isGuardedFinding(f.tags, f.reviewers);
 }
 
 /**
