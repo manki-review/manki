@@ -1397,6 +1397,13 @@ describe('handleCommentTrigger', () => {
     expect(mockPullsGet).not.toHaveBeenCalled();
     expect(jest.mocked(ghUtils.hasBotReviewOnCommit)).not.toHaveBeenCalled();
     expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
+
+    // An answer that fails to post is logged, and still nothing is reviewed.
+    mockOctokitInstance.rest.issues.createComment.mockRejectedValueOnce(new Error('rate limited'));
+    await handleCommentTrigger();
+    expect(core.warning).toHaveBeenCalledWith('Failed to answer the review command: rate limited');
+    expect(mockPullsGet).not.toHaveBeenCalled();
+    expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
   });
 });
 
