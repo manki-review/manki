@@ -98,9 +98,10 @@ describe('checkOrigins', () => {
     expect(client.calls[0].system).toContain("A failure that comes from what this PR added to a line, such as a new argument, is the PR's own.");
     expect(client.calls[0].options?.repoTools).toMatchObject({ root, steps: 10 });
 
-    // A message that leaves some changed files unnamed leaves the answer unsure, since such a change looks the same at the base.
+    // A message would leave some changed files unnamed, and such a change looks the same at the base, so no check is made.
+    const before = client.calls.length;
     const [unnamed] = await checkOrigins(client, [finding('Same before')], { workspace: root, diff, excludedPaths: Array.from({ length: 51 }, (_, i) => `gen/${i}.ts`) });
-    expect(unnamed.originCheck?.answers.map(a => a.verdict)).toEqual(['unsure']);
+    expect([unnamed.originCheck, client.calls.length]).toEqual([undefined, before]);
     // A base that `exclude_paths` keeps from the tools leaves the answer unsure, and a workspace without a base asks nothing.
     writeFileSync(join(root, '.git', BASE_READS_FILE), JSON.stringify({ excludePaths: ['src/math.ts'] }));
     const [excluded] = await checkOrigins(client, [finding('Same before')], { workspace: root, diff });

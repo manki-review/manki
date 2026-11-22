@@ -135,7 +135,7 @@ function parseOrigin(text: string): Omit<RawOrigin, 'model'> {
  * head, and every `base` line it cites is at the base. On a flagged line the PR left unchanged, one of those must be that
  * line at its place in the base, with the same text. On any other line, one must be a line of the finding's own file at
  * the base, so a finding in a file the PR added never stands. Any doubt makes it `unsure`, as does a workspace without a
- * base and a message whose list of other changed files is cut, since a change it leaves out looks the same at the base.
+ * base.
  */
 async function checkLines(raw: RawOrigin, finding: Finding, workspace: string, diff: ParsedDiff | undefined, excludedPaths: readonly string[], related?: RelatedRepoTools): Promise<OriginAnswer> {
   const { verdict: claimed, reason, model } = raw;
@@ -159,8 +159,7 @@ async function checkLines(raw: RawOrigin, finding: Finding, workspace: string, d
       return locationFile(h.location) === at.file && start <= at.line && at.line <= end && h.lines[at.line - start] === flagged;
     });
   };
-  const cut = otherChangedPaths(finding, diff, excludedPaths).length > MAX_CHANGED_PATHS;
-  const proven = !cut && !!commit && head.some(location => locationFile(location) === finding.file) && base.length > 0 && base.length === cited.length && citesFlaggedLine();
+  const proven = !!commit && head.some(location => locationFile(location) === finding.file) && base.length > 0 && base.length === cited.length && citesFlaggedLine();
   const verdict = claimed === 'pre_existing' && !proven ? 'unsure' : claimed;
   return { verdict, reason, ...(head.length > 0 && { head }), ...(base.length > 0 && { base, commit }), ...(model && { model }) };
 }
@@ -169,13 +168,15 @@ async function checkLines(raw: RawOrigin, finding: Finding, workspace: string, d
  * Returns `findings` with the `originCheck` of each blocker and warning the round checks, at most what `budget` has left,
  * the largest grades first. Each check asks `client` whether the PR caused the failure. The `pair` asks too when the
  * rules need two answers: on a flagged line the PR changed, and on a finding `oneAnswerSettles` rejects. A tool alert, a
- * file the workspace cannot read, a workspace without the PR's base, and a finding `skip` accepts take no check. A
- * finding whose calls all never started keeps no `originCheck`.
+ * file the workspace cannot read, a workspace without the PR's base, and a finding `skip` accepts take no check. Neither
+ * does a finding whose message would cut the list of other changed files, since a change it leaves out looks the same
+ * at the base. A finding whose calls all never started keeps no `originCheck`.
  */
 export async function checkOrigins(client: LLMClient, findings: readonly Finding[], { workspace, diff, excludedPaths = [], related, effort, pair, skip, budget, progress }: OriginOptions): Promise<Finding[]> {
   if (!baseReadsOf(workspace)) return [...findings];
   const asked = findings
-    .filter(f => (f.severity === 'blocker' || f.severity === 'warning') && !f.toolSource && !skip?.(f) && !!codeDigest(workspace, [f.file]))
+    .filter(f => (f.severity === 'blocker' || f.severity === 'warning') && !f.toolSource && !skip?.(f) && !!codeDigest(workspace, [f.file])
+      && otherChangedPaths(f, diff, excludedPaths).length <= MAX_CHANGED_PATHS)
     .sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity));
   const limit = Math.max(0, budget?.left ?? MAX_ORIGIN_CHECKS);
   const checked = new Set(asked.slice(0, limit));
