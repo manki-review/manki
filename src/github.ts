@@ -1641,14 +1641,17 @@ const TRUST_NOTE_RE = /^(?:_Manki|`_Manki`) (?:could not confirm this|confirmed 
 
 /**
  * Returns the line under the title of a finding whose `checkStatus` is `unconfirmed`. It names the premise a check left
- * open after it confirmed the defect, or says that no line was cited. The premise is model text, so it shows as one line.
+ * open after it confirmed the defect, or says that no line was cited when the finding cites none and no check ran. The
+ * premise is model text, so it shows as one line.
  */
 function trustNote(finding: Finding): string | undefined {
   if (finding.checkStatus !== 'unconfirmed') return undefined;
   const premise = openCodePremise(finding);
   const text = premise && oneLine(premise).replace(/[\s.]+$/, '');
   if (text) return `${OPEN_PREMISE_NOTE} ${text}${text.endsWith('…') ? '' : '.'}_`;
-  return finding.evidence?.proof.length || finding.evidence?.relatedProof?.length ? UNCONFIRMED_NOTE : NO_PROOF_NOTE;
+  // A check can leave the finding no line, such as one that confirmed only the premises, and still have cited lines.
+  const cited = finding.evidence?.proof.length || finding.evidence?.relatedProof?.length || finding.refutation || finding.pairRefutation;
+  return cited ? UNCONFIRMED_NOTE : NO_PROOF_NOTE;
 }
 
 /** Security findings below a warning posted as line comments per review. The rest go in the body list. */
