@@ -3183,18 +3183,20 @@ describe('runJudgeAgent', () => {
     expect(notedMessage).toContain('### PRRT_d — src/dead.ts:5\n```\n(file content unavailable)');
     expect(notedMessage).toContain('### PRRT_x — src/z.ts:5\n- **The fix may not be shown**: The inter-round diff shows only the start of `src/b.ts`. Do not call this thread addressed from code you cannot see.');
 
-    // A push that renames and edits a thread's file moves it first by the thread's old path, and a cut through it gives the note.
+    // A push that renames and edits a blocker thread's file moves it first by the thread's old path, and a cut through it
+    // gives the note. The push changed the thread's file, so the thread is not held open.
     mockSendMessage.mockClear();
     const renamed = large('src/new.ts').replace('diff --git a/src/new.ts b/src/new.ts\n--- a/src/new.ts', 'diff --git a/src/old.ts b/src/new.ts\nrename from src/old.ts\nrename to src/new.ts\n--- a/src/old.ts');
     await runJudgeAgent(mockClient, makeConfig(), {
       findings: [], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 3,
-      openThreads: [{ threadId: 'PRRT_r', title: 'Null check', file: 'src/old.ts', line: 5, severity: 'warning' }],
+      openThreads: [{ threadId: 'PRRT_r', title: 'Null check', file: 'src/old.ts', line: 5, severity: 'blocker' }],
       priorRounds: priorRounds.map(roundContextFromLegacy),
       interRoundDiff: `${large('src/a.ts')}${renamed}${large('src/a2.ts')}`,
     });
     const renamedMessage: string = mockSendMessage.mock.calls[0][1];
     expect(renamedMessage).toContain('diff\ndiff --git a/src/old.ts b/src/new.ts\n');
     expect(renamedMessage).toContain('Cut short: `src/new.ts`.');
+    expect(renamedMessage).toContain('- **PRRT_r**: [blocker] "Null check" at src/old.ts:5\n');
     expect(renamedMessage).toContain('### PRRT_r — src/old.ts:5\n- **The fix may not be shown**: The inter-round diff shows only the start of `src/old.ts`. Do not call this thread addressed from code you cannot see.');
 
     // The file of an earlier warning goes first too.

@@ -3544,9 +3544,9 @@ function namedPriorThreadIds(findings: Finding[], priorBlockers: PriorFinding[])
   return new Set(ids.filter((id): id is string => !!id));
 }
 
-/** Returns the files the inter-round diff changes, or none when it is unknown. */
+/** Returns the files the inter-round diff changes, a renamed file under its old and its new path, or none when it is unknown. */
 export function filesChangedByPush(interRoundDiff: string | undefined): Set<string> {
-  return new Set(interRoundDiff ? parsePRDiff(interRoundDiff).files.map(f => f.path) : []);
+  return new Set(interRoundDiff ? parsePRDiff(interRoundDiff).files.flatMap(f => (f.oldPath ? [f.path, f.oldPath] : [f.path])) : []);
 }
 
 /**
