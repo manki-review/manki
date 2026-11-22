@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.7.3] - 2026-11-23
+
+Manki 7.7.3 cuts review loops. A maintainer's clear stays cleared, one blocker keeps one thread, a clean rebase keeps an auto-approval, and a fix in a renamed file is seen. Split proposals now name side changes by purpose and by hunk. Nothing breaks on the upgrade and no setting changes.
+
+### Review loop and verdicts
+
+- A push that leaves the PR's change unchanged, such as a clean rebase, keeps an auto-approval without a full review, under the same holds as a round approval. A later round dismisses an auto-approval like a round approval, and an unchanged push gets a full review when a blocking thread was reopened after the approval ([#1941](https://github.com/manki-review/manki/pull/1941)).
+- When Manki resolves a blocker or security thread for a maintainer, its own reply records who cleared it. A later reply, such as the PR author's "thanks", no longer makes the thread block again. Only Manki's own record counts, and the maintainer's write access is checked again each time it is read ([#1942](https://github.com/manki-review/manki/pull/1942)).
+- A blocker an earlier round could only list in its review body takes the thread of a later blocker that restates it, instead of getting a second thread for the same defect ([#1943](https://github.com/manki-review/manki/pull/1943)).
+- A push that renames and edits the file of an open thread puts that file first in the diff the judge reads, matched by its old or its new path, and no longer tells a blocker thread there that the push did not change its file ([#1936](https://github.com/manki-review/manki/pull/1936)).
+- A draft with an open blocking thread keeps its waiting check instead of a neutral one, which a required check counts as passing ([#1938](https://github.com/manki-review/manki/pull/1938)).
+
+### Scope reader
+
+- A split proposal also flags a side change by purpose: a fix mixed into a feature or refactoring PR, or a refactoring mixed into a fix or feature PR, when it would be easier to review on its own. A small fix that belongs with the change is not flagged. Each part names its hunks as `path:start-end`, and a ranged split is asked again after a rebase ([#1934](https://github.com/manki-review/manki/pull/1934)).
+
+### Review format
+
+- A finding a refuter checked but could not confirm says "Manki could not confirm this", instead of saying no line in the code was cited for it ([#1939](https://github.com/manki-review/manki/pull/1939)).
+
+### Commands
+
+- A review command on a merged or closed PR runs no review. Manki answers once that nothing was reviewed, with a "Review anyway" box that runs the review once when someone allowed to request reviews ticks it. This needs the token service from [token-service#137](https://github.com/manki-review/token-service/pull/137) ([#1940](https://github.com/manki-review/manki/pull/1940)).
+
+### Reliability
+
+- A refusal for a named version of a dependency is recorded under that version, so it no longer hides behind an earlier refusal of the whole package ([#1937](https://github.com/manki-review/manki/pull/1937)).
+
 ## [7.7.2] - 2026-11-22
 
 Manki 7.7.2 fixes how reviews read. A finding whose defect Manki confirmed no longer says it could not confirm it, the review body is never cut inside a finding, split proposals show whole and come less often, and actionlint follows the repository's path rules. Nothing breaks on the upgrade and no setting changes.
