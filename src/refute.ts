@@ -603,13 +603,22 @@ export function lacksTrigger(finding: Finding): boolean {
  * disproved, in its outcome or its `defect` answer, one that still carries a cap for want of proof, or a claimed build
  * failure no CI result reports. So a finding `unprovenReason` names is `unconfirmed` unless only such premises stay
  * open, and so is one a check ran on without confirming the defect, whatever lines that check added. The status only
- * labels the finding and never changes its grade.
+ * labels the finding. A step that starts work from it reads `strictCheckStatus`, where such a premise settles nothing.
  */
 export function checkStatus(finding: Finding): CheckStatus {
+  return statusBy(finding, confirmsCodePath);
+}
+
+/** Returns the `checkStatus` of `finding` with only a check that `confirmsDefect` making it `confirmed`. */
+export function strictCheckStatus(finding: Finding): CheckStatus {
+  return statusBy(finding, confirmsDefect);
+}
+
+function statusBy(finding: Finding, confirms: (check: Refutation, finding: Finding) => boolean): CheckStatus {
   const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r);
   const refused = !!finding.tags?.some(tag => CHECKED_TAGS.includes(tag)) || isUnconfirmedBuildClaim(finding)
     || checks.some(check => outcomeOf(check) === 'disproved');
-  const confirmed = !refused && checks.some(check => confirmsCodePath(check, finding));
+  const confirmed = !refused && checks.some(check => confirms(check, finding));
   const unfinished = checks.length > 0 || !!finding.lead || !!finding.notChecked || doubtsDefect(finding);
   const proven = !refused && !unfinished && !citesNoProof(finding);
   return confirmed ? 'confirmed' : proven ? 'proven' : 'unconfirmed';

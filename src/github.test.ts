@@ -117,6 +117,12 @@ describe('formatFindingComment', () => {
       ],
     };
     const open = render({ ...cited, refutation });
+    // A premise the check disproved, a check that disproved the finding, and lines of a related repo each leave the plain note.
+    const disprovedPremise = { ...refutation.premises![1], outcome: 'disproved' as const };
+    const plain = `**${baseFinding.title}**\n\n_Manki could not confirm this, so please check it._\n\n`;
+    expect(render({ ...cited, refutation: { ...refutation, premises: [disprovedPremise] } })).toContain(plain);
+    expect(render({ ...cited, refutation, pairRefutation: { ...refutation, outcome: 'disproved', defect: 'disproved', premises: [] } })).toContain(plain);
+    expect(render({ ...cited, evidence: { checks: [], proof: [], relatedProof: ['acme/lib:src/a.ts:3'] } })).toContain(plain);
     expect(open).toContain(`**${baseFinding.title}**\n\n_Manki confirmed the code path but could not check: The caller passes \`null\` here when the cache is cold._\n\n`);
     expect(parseFindingFromComment(open)?.description).toBe(baseFinding.description);
     // A shortened premise keeps its ellipsis and gets no full stop after it.

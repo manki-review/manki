@@ -1643,7 +1643,7 @@ function trustNote(finding: Finding): string | undefined {
   const premise = openCodePremise(finding);
   const text = premise && oneLine(premise).replace(/[\s.]+$/, '');
   if (text) return `${OPEN_PREMISE_NOTE} ${text}${text.endsWith('…') ? '' : '.'}_`;
-  return finding.evidence?.proof.length ? UNCONFIRMED_NOTE : NO_PROOF_NOTE;
+  return finding.evidence?.proof.length || finding.evidence?.relatedProof?.length ? UNCONFIRMED_NOTE : NO_PROOF_NOTE;
 }
 
 /** Security findings below a warning posted as line comments per review. The rest go in the body list. */
