@@ -30,6 +30,7 @@ import {
   PlannerOutcomeSink,
   FINDER_TOOLS_TIMEOUT_MS,
   WORKAROUND_REASON,
+  UNCONFIRMED_FIX_ENDING,
   formatFinderError,
 } from './review';
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
@@ -5688,6 +5689,66 @@ describe('runReview', () => {
     expect(await gradeAfter({ ...partly('note'), threadId: 'T9' }, touching)).toEqual([undefined, 'ADDRESS_FIRST']);
   });
 
+
+  it('keeps a blocker thread fixed in another changed file open, and names that file only when two refuters on different models confirm the fix', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'manki-fix-elsewhere-'));
+    try {
+      mkdirSync(join(workspace, 'src'));
+      writeFileSync(join(workspace, 'src', 'x.ts'), Array.from({ length: 12 }, (_, i) => `line${i + 1}();`).join('\n') + '\n');
+      writeFileSync(join(workspace, 'src', 'y.ts'), 'guard();\nif (bad) return;\n');
+      const push = 'diff --git a/src/y.ts b/src/y.ts\n--- a/src/y.ts\n+++ b/src/y.ts\n@@ -1 +1,2 @@\n guard();\n+if (bad) return;\n';
+      const answer = (outcome: string) => JSON.stringify({ outcome, reason: 'The caller returns before the bad value reaches it.', proof: ['src/y.ts:2'] });
+      const fixed: ThreadEvaluation = { threadId: 'T1', status: 'addressed', reason: 'The caller now returns early.', fixedIn: 'src/y.ts' };
+      const clientsWith = (pairOutcome?: string, pairModel = 'gpt-6.1-sol') => {
+        const clients = makeClients();
+        Object.assign(clients.judge, { repoTools: true });
+        jest.mocked(clients.judge.sendMessage).mockImplementation(async (_system, _message, options) => (options?.repoTools ? { content: answer('disproved'), model: 'claude-opus-5-5' } : { content: READY_VERDICT }));
+        const refuterPair = pairOutcome ? { repoTools: true, sendMessage: jest.fn().mockResolvedValue({ content: answer(pairOutcome), model: pairModel }) } as unknown as LLMClient : undefined;
+        return { ...clients, ...(refuterPair && { refuterPair }) };
+      };
+      const runWith = (clients: ReviewClients, evaluation: ThreadEvaluation = fixed, thread = makePriorOpenThread({ severity: 'blocker' }), interRoundDiff = push) => {
+        mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'Fixed.', threadEvaluations: [evaluation] });
+        return runReview(clients, {
+          config: makeConfig(), diff: diffChanging('src/y.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true, workspace,
+          openThreads: [thread], previousFindings: [], priorRounds: [buildPriorRound(1, [makePriorWarningFinding({ severity: 'blocker' })])], interRoundDiff, headSha: 'sha2',
+        });
+      };
+
+      // A fix outside the files the finding cited lifts nothing, so the thread keeps blocking and only its note names the file.
+      const confirmed = await runWith(clientsWith('disproved'));
+      expect([confirmed.outcome, confirmed.threadEvaluations]).toEqual(['ADDRESS_FIRST', [{
+        threadId: 'T1', status: 'uncertain', fixedIn: 'src/y.ts',
+        reason: `Two refuters on different models found the failure gone after the change to \`src/y.ts\`. The push did not change \`src/x.ts\`${UNCONFIRMED_FIX_ENDING}`,
+      }]]);
+
+      // One refuter alone, two answers from one model, an unsure or failed second check, no file named, a file the push
+      // did not change and a security thread name no file either.
+      const failing = clientsWith('disproved');
+      jest.mocked(failing.refuterPair!.sendMessage).mockRejectedValue(new Error('timeout'));
+      const { fixedIn: _, ...unnamed } = fixed;
+      for (const [clients, evaluation, thread, diff] of [
+        [clientsWith()], [clientsWith('disproved', 'claude-opus-5-5')], [clientsWith('unsettled')], [failing],
+        [clientsWith('disproved'), unnamed], [clientsWith('disproved'), { ...fixed, fixedIn: 'src/z.ts' }],
+        [clientsWith('disproved'), fixed, makePriorOpenThread({ severity: 'blocker', isSecurity: true })],
+        // A disproof that cites no line the push added there confirms nothing either.
+        [clientsWith('disproved'), fixed, undefined, 'diff --git a/src/y.ts b/src/y.ts\n--- a/src/y.ts\n+++ b/src/y.ts\n@@ -1,2 +1,3 @@\n guard();\n if (bad) return;\n+done();\n'],
+      ] as Array<[ReviewClients, ThreadEvaluation?, OpenThread?, string?]>) {
+        const open = await runWith(clients, evaluation, thread, diff);
+        expect([open.outcome, open.threadEvaluations?.[0].status, open.threadEvaluations?.[0].fixedIn]).toEqual(['ADDRESS_FIRST', 'uncertain', undefined]);
+      }
+
+      // A thread this round names again stays open whatever a check says, so no refuter is asked about it.
+      const named = clientsWith('disproved');
+      mockedRunJudgeAgent.mockResolvedValue({ findings: [{ severity: 'blocker', title: 'Same bug, new words', file: 'src/x.ts', line: 30, description: 'd', reviewers: ['r'], sameAs: 'src/x.ts:10:10:old-issue' }], summary: 'Still broken.', threadEvaluations: [fixed] });
+      const again = await runReview(named, {
+        config: makeConfig(), diff: diffChanging('src/y.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true, workspace,
+        openThreads: [makePriorOpenThread({ severity: 'blocker' })], previousFindings: [], priorRounds: [buildPriorRound(1, [makePriorWarningFinding({ severity: 'blocker' })])], interRoundDiff: push, headSha: 'sha2',
+      });
+      expect([again.threadEvaluations?.[0].status, jest.mocked(named.refuterPair!.sendMessage).mock.calls.filter(([system]) => system.startsWith('You check one finding')).some(([, message]) => message.includes('The push since the last review changed'))]).toEqual(['not_addressed', false]);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
   it('points a finding that restates an earlier finding still open at it, and a variant at its open thread', async () => {
     const prior = buildPriorRound(1, [
       makePriorWarningFinding({ title: 'Retry never ends', fingerprint: { file: 'src/x.ts', lineStart: 10, lineEnd: 10, slug: 'retry-never-ends' } }),
@@ -9483,7 +9544,7 @@ describe('carryBodyWarnings', () => {
     warning.mockRestore();
   });
 
-  it('lists a warning of the last review body again while the place it points at still reads the same', async () => {
+  it('lists a warning of the last review body again, with the line the place it points at is on now', async () => {
     const unchanged = await carry([first], then);
     expect(unchanged.titles).toEqual(all);
     expect([unchanged.result.findings, unchanged.ended, unchanged.read.mock.calls]).toEqual([[], undefined, [['src/x.ts'], ['src/y.ts']]]);
@@ -9501,18 +9562,13 @@ describe('carryBodyWarnings', () => {
     const shifted = await carry([first], withX(moved));
     expect([shifted.titles, shifted.lines]).toEqual([all, [4, 5, undefined]]);
 
-    // An edit to the line ends the warning, and the one on the line before it, whose next line changed.
+    // An edit to the line, or to the line next to it, ends nothing by itself: the judge decides whether the warning still
+    // holds. The warning then has no place reading like its line, so it names none.
     const edited = await carry([first], withX(x.map((line, i) => i === 2 ? '  return [];' : line)));
-    expect([edited.titles, edited.ended]).toEqual([['Check runs twice (round 1)'], ['line_changed', 'line_changed']]);
-    expect(edited.result.carriedEnded).toEqual([{ key: keyOf(retry), reason: 'line_changed' }, { key: keyOf(nothing), reason: 'line_changed' }]);
-    // So does a line added right above the line, which leaves the line itself as it was.
-    const guarded = await carry([first], withX([x[0], '  if (!ready) return;', ...x.slice(1)]));
-    expect([guarded.titles, guarded.ended]).toEqual([['Nothing is returned (round 1)', 'Check runs twice (round 1)'], ['line_changed']]);
-    // Of two places reading the same, one edited is enough, and a file that is gone ends its warnings.
-    const once = await carry([first], { ...then, 'src/y.ts': [...then['src/y.ts'].slice(0, 5), 'check(1);', 'b();'] });
-    expect([once.titles, once.ended]).toEqual([all.slice(0, 2), ['line_changed']]);
+    expect([edited.titles, edited.lines, edited.ended]).toEqual([all, [undefined, undefined, undefined], undefined]);
+    // A file that is gone ends its warnings, since no later diff shows that file to the judge.
     const gone = await carry([first], { 'src/y.ts': then['src/y.ts'] });
-    expect([gone.titles, gone.ended]).toEqual([['Check runs twice (round 1)'], ['line_changed', 'line_changed']]);
+    expect([gone.titles, gone.ended]).toEqual([['Check runs twice (round 1)'], ['file_gone', 'file_gone']]);
 
     // A file that cannot be read keeps its warnings.
     const unread = await carry([first], withX(new Error('Server Error') as unknown as string[]));
@@ -9544,12 +9600,12 @@ describe('carryBodyWarnings', () => {
     const unprovenAgain = finding('Retry never ends', 2, { unpostedReason: 'unsettled_check' });
     const unproven = await carry([first], then, { unposted: [unprovenAgain], allJudgedFindings: [finding('Retry never ends', 2)] });
     expect([unproven.titles, unproven.ended]).toEqual([all, undefined]);
-    // A warning the judge found fixed ends as `fixed`, and a finding that names it or an edit to its line keeps its own reason.
+    // A warning the judge found fixed ends as `fixed`, also after an edit to its line, and a finding that names it keeps its own reason.
     const fixed = await carry([first], then, { carriedFixed: [keyOf(retry), keyOf(nothing)], findings: [finding('Nothing is returned', 3)] });
     expect([fixed.titles, fixed.ended]).toEqual([['Check runs twice (round 1)'], ['fixed', 'restated']]);
     expect(fixed.result.carriedEnded?.[0]).toEqual({ key: keyOf(retry), reason: 'fixed' });
     const editedFixed = await carry([first], withX(then['src/x.ts'].map((line, i) => i === 1 ? '  retry(3);' : line)), { carriedFixed: [keyOf(retry)] });
-    expect([editedFixed.titles, editedFixed.ended]).toEqual([['Check runs twice (round 1)'], ['line_changed', 'line_changed']]);
+    expect([editedFixed.titles, editedFixed.ended]).toEqual([all.slice(1), ['fixed']]);
     // Neither does a warning on unchanged code that no check confirmed. A note there is a grade of the judge, so it ends the warning.
     const old = (severity: Finding['severity']) => finding('Retry never ends', 2, { severity, tags: ['pre-existing'], preExistingCheck: 'pre_existing' });
     const unconfirmed = await carry([first], then, { unpostedPreExisting: [old('warning')], allJudgedFindings: [finding('Retry never ends', 2)] });

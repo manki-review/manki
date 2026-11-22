@@ -17,7 +17,7 @@ import { FULL_GROUP, GroupChoice, chooseGroup, classifyPr, distinctModels, finde
 import { extractJSON } from './json';
 import { currentFindingLine, indexThreadEvaluations, isPriorAddressedByJudge, placesReading } from './finding-fingerprint';
 import { checkOrigins, MAX_ORIGIN_CHECKS } from './origin';
-import { checkStatus, lacksTrigger, MAX_DOUBT_CHECKS, needsProof, refuteBlockers, unprovenReason } from './refute';
+import { checkStatus, confirmFixesElsewhere, lacksTrigger, MAX_DOUBT_CHECKS, needsProof, refuteBlockers, unprovenReason } from './refute';
 import { combineVerdictReports, runVerdictReader } from './verdict';
 import { buildRepositoryRules, CLAIMS_MISSING_RULE, COST_SCALE_RULE, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, PRE_EXISTING_RULE, ROOT_CAUSE_FIX_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
@@ -2205,7 +2205,15 @@ export async function runReview(
   const priorThreads = new Map(priorFindingsFlat.flatMap(e => e.threadId ? [[stringifyFindingFingerprint(e.fingerprint), e.threadId] as const] : []));
   const guard = (f: Finding): Finding => withoutUnfitThreads(f, openThreadIndex, previousFindings, priorThreads);
   finalFindings = finalFindings.map(guard);
-  let threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles, standingWorkarounds);
+  const fixedElsewhere = refutation
+    ? await confirmFixesElsewhere(refutation.client, refutation.pair, fixesElsewhere(judgeThreadEvaluations, openThreadIndex, pushChangedFiles).filter(({ thread }) =>
+      // A thread this round names again, or one a standing workaround concerns, stays open whatever a check says.
+      !namedPriorThreadIds(finalFindings, priorBlockers).has(thread.threadId) && !standingWorkarounds.some(fix => concernsThread(fix, thread))), parsePRDiff(interRoundDiff ?? ''), {
+      workspace: refutation.workspace, related: refutation.related, diff: diffWithLockfiles, effort: judgeEffort,
+    })
+    : new Set<string>();
+  const gradeThreads = (findings: Finding[]) => confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(findings, priorBlockers), pushChangedFiles, standingWorkarounds, fixedElsewhere);
+  let threadEvaluations = gradeThreads(finalFindings);
   // Without the threads, every finding of a thread would look listed in a review body, so nothing is matched this round.
   if (openThreads === null && sortedPriorRounds.length > 0) core.info('The review threads could not be read, so no finding is matched to an earlier one this round');
   const earlier = openThreads === null ? [] : earlierFindings(sortedPriorRounds, openThreads ?? [], threadEvaluations);
@@ -2217,7 +2225,7 @@ export async function runReview(
   finalFindings = (await foldIntoEarlierFindings(finalFindings, earlier, earlierWrap?.client)).map(guard);
   if (stopped) return incompleteAfterJudge(stopped);
   // A blocker folded into a thread raises that thread again, so the threads are graded once more over the folded findings.
-  threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles, standingWorkarounds);
+  threadEvaluations = gradeThreads(finalFindings);
   // After the fold into earlier findings, so a warning an earlier round already shows stays where it is.
   const proven = hideUnprovenWarnings(finalFindings, config.review?.rules);
   finalFindings = proven.posted;
@@ -2295,7 +2303,7 @@ export async function runReview(
       // A reader blocker takes the thread of a finding it absorbs, so the guard checks that link before the threads are graded.
       const readerFindings = hideUnprovenWarnings(folded.blockers.map(guard).map(f => f.severity === 'warning' ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f), config.review?.rules, () => true).posted;
       finalFindings = [...folded.findings, ...readerFindings];
-      threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles, standingWorkarounds);
+      threadEvaluations = gradeThreads(finalFindings);
       // A reader whose every blocker was a claimed build failure CI does not report leaves the change ready.
       if (readerFindings.some(f => f.severity === 'blocker')) {
         outcome = 'ADDRESS_FIRST';
@@ -3521,6 +3529,18 @@ export function guardedThreadStaysOpen(thread: OpenThread, pushChangedFiles: Rea
 }
 
 /**
+ * Returns the guarded threads the judge found fixed by a change to `fixedIn`, another file the push changed, with that
+ * file. A security thread and a thread tied to no file are left out, so only a person can clear them.
+ */
+function fixesElsewhere(evaluations: ThreadEvaluation[] | undefined, openThreadIndex: Map<string, OpenThread>, pushChangedFiles: ReadonlySet<string>): Array<{ thread: OpenThread; fixedIn: string }> {
+  return (evaluations ?? []).flatMap(({ threadId, status, fixedIn }) => {
+    const thread = openThreadIndex.get(threadId);
+    const fits = status === 'addressed' && !!fixedIn && pushChangedFiles.has(fixedIn) && !!thread?.file && !thread.isSecurity && guardedThreadStaysOpen(thread, pushChangedFiles);
+    return fits ? [{ thread: thread!, fixedIn: fixedIn! }] : [];
+  });
+}
+
+/**
  * Returns the grade `evaluation` leaves its thread at when a partial fix sets or changes it, never above the highest
  * grade the thread had: its own, or a blocker an earlier round carried on it. A partly fixed thread takes the judge's
  * grade for what remains, but drops below the grade it carries only after a push to its file or a file its finding
@@ -3558,8 +3578,10 @@ export const UNCONFIRMED_FIX_ENDING = ', so the fix is not confirmed.';
  * Returns `evaluations` with `addressed` kept only where the round confirms the fix, and with the grade
  * `partialFixGrade` gives. A thread whose blocker this round names again is not fixed. A guarded thread counts as
  * fixed only when the push changed its file or a file its finding cited, so a judge reading unchanged code cannot clear
- * it. A thread one of `workarounds` concerns is only partly fixed, since a fix check found that the push hides the
- * symptom there. The judge's cell stays as `cell` only when it gives that grade, and as `judgeCell` otherwise.
+ * it. One in `fixedElsewhere`, whose fix two refuters confirmed in another changed file, stays open too and keeps
+ * `fixedIn` for the note that `replyFixedElsewhere` posts. No other evaluation keeps `fixedIn`. A thread one of
+ * `workarounds` concerns is only partly fixed, since a fix check found that the push hides the symptom there. The
+ * judge's cell stays as `cell` only when it gives that grade, and as `judgeCell` otherwise.
  */
 function confirmFixes(
   evaluations: ThreadEvaluation[] | undefined,
@@ -3567,13 +3589,15 @@ function confirmFixes(
   namedThreadIds: Set<string>,
   pushChangedFiles: ReadonlySet<string>,
   workarounds: readonly RoundFix[],
+  fixedElsewhere: ReadonlySet<string>,
 ): ThreadEvaluation[] | undefined {
-  const confirm = (e: ThreadEvaluation, thread: OpenThread | undefined): ThreadEvaluation => {
+  const confirm = ({ fixedIn, ...e }: ThreadEvaluation, thread: OpenThread | undefined): ThreadEvaluation => {
     if (e.status !== 'addressed') return e;
     if (namedThreadIds.has(e.threadId)) return { ...e, status: 'not_addressed', reason: NAMED_AGAIN_REASON };
     if (thread && guardedThreadStaysOpen(thread, pushChangedFiles)) {
       const why = thread.file ? `The push did not change ${[thread.file, ...(thread.evidenceFiles ?? [])].map(f => `\`${f}\``).join(' or ')}` : 'This thread is not tied to a file, which only a person can clear';
-      return { ...e, status: 'uncertain', reason: `${why}${UNCONFIRMED_FIX_ENDING}` };
+      const seen = fixedIn && fixedElsewhere.has(e.threadId) ? `Two refuters on different models found the failure gone after the change to \`${fixedIn}\`. ` : '';
+      return { ...e, status: 'uncertain', reason: `${seen}${why}${UNCONFIRMED_FIX_ENDING}`, ...(seen && { fixedIn }) };
     }
     const workaround = thread?.file ? workarounds.find(fix => concernsThread(fix, thread)) : undefined;
     if (workaround) {
@@ -3780,9 +3804,9 @@ export function bodyWarnings(priorRounds: RoundContext[]): FindingFingerprintEnt
 /**
  * Sets `result.carried` to the `bodyWarnings` of `priorRounds`, so a warning does not vanish because no finder raised
  * it again. A warning leaves the list only for certain, and `result.carriedEnded` says why: a finding the judge graded
- * this round names its problem, kept or not, or the file at the head has fewer places reading like its `citedLine` than
- * when it was listed, or is gone, or the judge found it fixed (`result.carriedFixed`). An `unread` warning has no line
- * to compare, so only the judge or a fix ends it, also when its file is gone.
+ * this round names its problem, kept or not, or its file is gone, or the judge found it fixed (`result.carriedFixed`).
+ * A changed `citedLine` ends nothing by itself, since an edit next to the line changes it too, so the judge decides. An
+ * `unread` warning has no line to compare, so only the judge or a fix ends it, also when its file is gone.
  * A finding left out because nothing proves it does not count, so it ends no carried warning. Neither does a
  * pre-existing warning the review leaves out.
  * A file `head` cannot read keeps its warnings. A carried entry gets `currentLine` when one place of the file reads like
@@ -3811,13 +3835,12 @@ export async function carryBodyWarnings(result: ReviewResult, priorRounds: Round
     const key = stringifyFindingFingerprint(entry.fingerprint);
     const { file } = entry.fingerprint;
     const lines = await linesOf(file);
-    // A warning whose file went unread when it was listed has no line to compare, so only the judge or a fix ends it.
     const places = entry.citedLine && lines ? placesReading(lines, entry.citedLine.hash) : undefined;
     // Only a single place says where the warning is now. Without one, the line of the round that listed it stays the one compared.
     const currentLine = places?.length === 1 ? places[0] : undefined;
     const located: Located = { title: entry.title ?? '', file, line: currentLine ?? entry.fingerprint.lineStart, evidence: entry.evidence };
     const names = (f: Finding) => f.sameAs === key || (!!f.sameAs && f.sameAs === entry.sameAs) || sameProblem(located, f);
-    const reason = judged.find(([, findings]) => findings.some(names))?.[0] ?? (places && places.length < entry.citedLine!.count ? 'line_changed' : fixed.has(key) ? 'fixed' : undefined);
+    const reason = judged.find(([, findings]) => findings.some(names))?.[0] ?? (entry.citedLine && lines?.length === 0 ? 'file_gone' : fixed.has(key) ? 'fixed' : undefined);
     if (reason) {
       core.info(`No longer carrying the warning "${entry.title}" on ${file}:${located.line}: ${reason}`);
       ended.push({ key, reason });

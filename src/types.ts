@@ -1952,6 +1952,12 @@ export interface ThreadEvaluation {
   /** For `partly_addressed`, what still goes wrong. */
   remaining?: string;
   /**
+   * For `addressed` from the judge, the file it says holds the fix when the push changed neither the thread's file nor a
+   * file its finding cited. Once the round grades the threads, only a thread kept open whose fix there two refuters
+   * confirmed keeps it.
+   */
+  fixedIn?: string;
+  /**
    * The grade the thread keeps after this round when a partial fix sets or changes it: on `partly_addressed` the grade
    * the remaining damage earns, and on a thread an earlier partial fix lowered, its own grade once it is open again.
    */
@@ -3062,12 +3068,12 @@ export interface CitedLine {
 }
 
 /**
- * Why a warning carried from an earlier review body is no longer listed: its line reads differently or its file is gone
- * (`line_changed`), or a finding the judge graded this round names it. That finding is listed (`restated`), a note the
+ * Why a warning carried from an earlier review body is no longer listed: its file is gone (`file_gone`), or a finding
+ * the judge graded this round names it. That finding is listed (`restated`), a note the
  * review leaves out (`hidden_note`), dropped by the judge (`judge_dropped`) or left out by a later step (`left_out`).
  * A warning left out because nothing proves it ends none. A warning the judge evaluated as addressed ends as `fixed`.
  */
-export type CarriedEndReason = 'line_changed' | 'restated' | 'hidden_note' | 'judge_dropped' | 'left_out' | 'fixed';
+export type CarriedEndReason = 'file_gone' | 'restated' | 'hidden_note' | 'judge_dropped' | 'left_out' | 'fixed';
 
 export interface CarriedEnd {
   /** The fingerprint key of the warning. */

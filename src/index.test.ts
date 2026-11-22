@@ -207,6 +207,7 @@ jest.mock('./github', () => ({
   brokenConfig: jest.requireActual('./github').brokenConfig,
   configFailed: jest.requireActual('./github').configFailed,
   capNotes: jest.requireActual('./github').capNotes,
+  inline: jest.requireActual('./github').inline,
   limitFallbackLines: jest.requireActual('./github').limitFallbackLines,
   cachedFileLines: jest.requireActual('./github').cachedFileLines,
   openRepoFiles: jest.requireActual('./github').openRepoFiles,
@@ -3026,11 +3027,12 @@ describe('runFullReview orchestration', () => {
       expect(jest.mocked(ghUtils.githubRepoFiles)).toHaveBeenCalledWith(mockOctokitInstance, 'test-owner', 'test-repo', 'abc123');
       expect(read.mock.calls).toEqual([['src/app.ts']]);
       const [, , , , , result, , record] = jest.mocked(ghUtils.postReview).mock.calls[0];
-      expect(result.carried?.map(e => [e.title, e.raisedIn])).toEqual([['Retry never ends', 1]]);
+      // The queue line changed, which ends nothing without the judge, so that warning names no line now.
+      expect(result.carried?.map(e => [e.title, e.raisedIn])).toEqual([['Queue has no limit', 2], ['Retry never ends', 1]]);
       expect(record?.findings.carried).toEqual(result.carried);
-      expect(record?.findings.carriedEnded).toEqual([{ key: 'src/app.ts:5:5:Queue-has-no-limit', reason: 'line_changed' }]);
+      expect(record?.findings.carriedEnded).toBeUndefined();
       expect([result.findings, record?.findings.count]).toEqual([[], 0]);
-      expect(result.carried?.map(e => e.currentLine)).toEqual([2]);
+      expect(result.carried?.map(e => e.currentLine)).toEqual([undefined, 2]);
 
       // A note that names a carried warning ends it as a hidden note when `review.notes` leaves the note out.
       const note = (title: string, line: number): Finding => ({ severity: 'note', title, file: 'src/app.ts', line, description: 'd', reviewers: ['general'] });
@@ -3039,8 +3041,8 @@ describe('runFullReview orchestration', () => {
       await runWith({ fullReview: true });
       const capped = jest.mocked(ghUtils.postReview).mock.calls[1][7];
       expect(capped?.findings.unposted?.map(e => [e.title, e.unpostedReason])).toEqual([['Retry never ends', 'note_cap']]);
-      expect(capped?.findings.carriedEnded).toEqual([{ key: 'src/app.ts:5:5:Queue-has-no-limit', reason: 'line_changed' }, { key: 'src/app.ts:2:2:Retry-never-ends', reason: 'hidden_note' }]);
-      expect(capped?.findings.carried).toBeUndefined();
+      expect(capped?.findings.carriedEnded).toEqual([{ key: 'src/app.ts:2:2:Retry-never-ends', reason: 'hidden_note' }]);
+      expect(capped?.findings.carried?.map(e => e.title)).toEqual(['Queue has no limit']);
 
       // While paths are closed, the file is read without following a symlink, and a closed file is never read. Its warnings
       // stay listed, since a file that cannot be read is not a file that is gone.
@@ -6904,6 +6906,38 @@ describe('runFullReview orchestration', () => {
     expect(holdOf()).toEqual(['https://github.com/o/r/pull/1#pullrequestreview-7']);
     await run('prior-sha', true, ['PRRT_abc', 'PRRT_def', 'PRRT_ghi', 'PRRT_jkl']);
     expect(holdOf()).toBeUndefined();
+  });
+
+  it('names the file of a fix two refuters saw outside the cited files in the thread, and keeps the thread open', async () => {
+    const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
+    jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
+      previousFindings: [
+        { title: 'Overflow', file: 'src/math.ts', line: 2, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_abc', evidenceFiles: ['src/limits.ts'] },
+        { title: 'Retry', file: 'src/app.ts', line: 3, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_def' },
+      ],
+      priorRounds: [roundContextFromLegacy({ round: 1, commitSha: 'abc123', timestamp: 't', findings: [] })],
+    });
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'Still open.', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
+      threadEvaluations: [
+        { threadId: 'PRRT_abc', status: 'uncertain', reason: 'Two refuters agree.', fixedIn: 'src/api.ts' },
+        { threadId: 'PRRT_def', status: 'uncertain', reason: 'The push did not change `src/app.ts`, so the fix is not confirmed.' },
+      ],
+    });
+    mockGraphql.mockClear();
+
+    await callRunFullReview();
+
+    expect(mockGraphql.mock.calls.filter(([query]) => String(query).includes('resolveReviewThread'))).toEqual([]);
+    expect(mockGraphql.mock.calls.filter(([query]) => String(query).includes('addPullRequestReviewThreadReply')).map(([, vars]) => vars)).toEqual([{
+      threadId: 'PRRT_abc',
+      body: '**Fix seen in `src/api.ts`.** Two refuters on different models found that this failure no longer happens after the change to `src/api.ts`. '
+        + 'Manki resolves no blocker on a fix outside the files its finding cited, so this thread stays open and keeps blocking. '
+        + 'A maintainer can resolve it. The PR author may not clear a blocking thread. '
+        + 'A push that changes `src/math.ts` or `src/limits.ts` lets the next review confirm the fix.\n\n<!-- manki -->',
+    }]);
   });
 
   it('skips resolving threads not in the openThreads allowlist', async () => {
