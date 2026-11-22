@@ -1041,6 +1041,11 @@ export interface PremiseCheck {
   /** What the doubt decided when the check ran. A record from before this was stored has none. */
   decides?: Doubt['decides'];
   outcome: RefutationOutcome;
+  /**
+   * Set when the refuter answered that the premise depends on something no code in reach can show, such as how a model
+   * or a peer behaves. Its `outcome` is then `unsettled` for every grade, doubt and hold. Only `confirmsCodePath` reads it.
+   */
+  outsideCode?: true;
   reason: string;
   proof?: string[];
   /** The lines of related repos that decide it, as `owner/name:path:line`. They can confirm, and never count toward a disproof. */
@@ -1152,6 +1157,20 @@ export function confirmsDefect(check: Refutation, finding: Pick<Finding, 'doubts
 function openPremises(check: Refutation, finding: Pick<Finding, 'doubts'>): PremiseCheck[] {
   const decides = (p: PremiseCheck): Doubt['decides'] | undefined => p.decides ?? finding.doubts?.find(d => d.premise === p.premise)?.decides;
   return check.premises?.filter(p => towardFinding(p) !== 'confirmed' && decides(p) !== 'grade') ?? [];
+}
+
+/**
+ * Whether `check` confirmed the defect of `finding` and left open only premises no code in reach can show
+ * (`outsideCode`). It decides how the finding reads and never its grade, which only `confirmsDefect` can raise.
+ */
+export function confirmsCodePath(check: Refutation, finding: Pick<Finding, 'doubts'>): boolean {
+  return check.defect === 'confirmed' && openPremises(check, finding).every(p => p.outsideCode);
+}
+
+/** Returns the first premise that keeps a check which confirmed the defect of `finding` from `confirmsCodePath`. */
+export function openCodePremise(finding: Pick<Finding, 'doubts' | 'refutation' | 'pairRefutation'>): string | undefined {
+  const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => r?.defect === 'confirmed');
+  return checks.flatMap(check => openPremises(check, finding)).find(p => !p.outsideCode)?.premise;
 }
 
 /** Whether `answer` shows the failure at the base, with lines the code found at the base `commit`. */

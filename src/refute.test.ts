@@ -711,6 +711,33 @@ describe('refuteBlockers', () => {
     const splitTitle = 'Split blocker, doubt confirmed';
     const [splitKept] = await refuteBlockers(fakeClient({ [splitTitle]: { reason: 'It holds.', premises: [confirmed('src/math.ts:2')] } }), [finding(splitTitle, { ...held, ...split })], { workspace, diff });
     expect([splitKept.severity, splitKept.gradeIfConfirmed, splitKept.refutation?.outcome, staysWarningIfConfirmed(splitKept)]).toEqual(['warning', 'warning', 'confirmed', true]);
+
+    // A premise no code in reach can show is stored as unsettled, so every finding grades exactly as with an unsettled
+    // answer. Only its status reads confirmed, once the check confirmed the defect and left no premise about code open.
+    const opened = [
+      finding('Defect premise outside code', withHarm),
+      finding('Defect premise outside code on a split blocker', { ...withHarm, ...split }),
+      finding('Defect premise outside code on a finder blocker', { ...withHarm, reviewerSeverity: 'blocker' }),
+      finding('Defect premise outside code on a blocker', { gradeIfConfirmed: 'blocker', doubts: [exists] }),
+      finding('Defect premise outside code where the judge keeps a warning', { severity: 'warning', gradeIfConfirmed: 'warning', cell: normal, doubts: [exists] }),
+    ];
+    const answered = (premise: object) => refuteBlockers(fakeClient(Object.fromEntries(opened.map(f => [f.title, {
+      ...confirmed('src/math.ts:2'), premises: [premise, ...(f.doubts!.length > 1 ? [confirmed('src/api.ts:4')] : [])],
+    }]))), opened, { workspace, diff });
+    const reason = 'How a refuter model answers is no code.';
+    const asOutside = await answered({ outcome: 'outside_code', reason });
+    const asUnsettled = await answered({ outcome: 'unsettled', reason });
+    const grade = (f: Finding) => [f.title, f.severity, f.gradeIfConfirmed, f.gradePath, f.refutation?.outcome, f.refutation?.premises?.map(p => p.outcome), staysWarningIfConfirmed(f), unprovenReason(f), lacksTrigger(f)];
+    expect(asOutside.map(grade)).toEqual(asUnsettled.map(grade));
+    expect(asOutside.map(f => [f.severity, f.gradeIfConfirmed, checkStatus(f)])).toEqual([
+      ['warning', 'blocker', 'confirmed'], ['warning', 'blocker', 'confirmed'], ['warning', 'blocker', 'confirmed'], ['blocker', 'blocker', 'confirmed'], ['warning', 'warning', 'confirmed'],
+    ]);
+    expect(asUnsettled.map(checkStatus)).toEqual(opened.map(() => 'unconfirmed'));
+    expect(asOutside[0].refutation?.premises?.[0]).toEqual({ premise: exists.premise, decides: 'defect', outcome: 'unsettled', outsideCode: true, reason });
+    expect(asUnsettled[0].refutation?.premises?.[0]).toEqual({ premise: exists.premise, decides: 'defect', outcome: 'unsettled', reason });
+    // A premise about code the check left open still leaves the finding unconfirmed beside one no code can show.
+    const [mixed] = await refuteBlockers(fakeClient({ [opened[0].title]: { ...confirmed('src/math.ts:2'), premises: [{ outcome: 'unsettled', reason }, { outcome: 'outside_code', reason }] } }), [finding(opened[0].title, { ...withHarm, doubts: [exists, { premise: 'A peer sends it', decides: 'defect' }] })], { workspace, diff });
+    expect([mixed.severity, checkStatus(mixed)]).toEqual(['warning', 'unconfirmed']);
   });
 
   it('checks the premise a blocker the judge dropped rests on, and grades it by the stated cell only when a check disproves that premise', async () => {
@@ -1267,7 +1294,9 @@ describe('refuteBlockers', () => {
     expect(system).toContain('disprove only when every path checks the value or cannot carry it');
     expect(system).toContain('Reading code cannot confirm that it fails to compile or that a test fails.');
     // A premise about run time behaviour is answered on its code part, so a defect the code confirms is not left unconfirmed.
-    expect(system).toContain("- No code read can settle how a person, a model, a peer or the network will behave at run time. When the message says no answer raises the finding's grade, answer any other premise that states such behaviour on its code part only: the input the code passes, the check it makes or leaves out, and the path it takes. Confirm it when the code shows that part holds, and never answer it unsettled only because the behaviour itself cannot be read. Without that line a confirmation can raise the grade, so answer such a premise unsettled unless the code alone settles it.");
+    expect(system).toContain("- No code read can settle how a person, a model, a peer or the network will behave at run time, or what code out of your reach does: code that is not in the checkout, the PR's base, a related repo or a dependency source you can read. When the message says no answer raises the finding's grade, answer any other premise that states such behaviour on its code part only: the input the code passes, the check it makes or leaves out, and the path it takes. Confirm it when the code shows that part holds, and never answer it unsettled or outside_code only because the behaviour itself cannot be read. Without that line a confirmation can raise the grade, so answer such a premise outside_code unless the code alone settles it.");
+    expect(system).toContain("- **outside_code**: for a premise only, when it depends on something no code in reach can show, as above. It needs no `proof`. It never decides the finding's grade, so answer the code part of the finding as before.");
+    expect(system).toContain('"premises": [{"outcome": "disproved" | "confirmed" | "unsettled" | "outside_code"');
     expect(system).not.toContain('an intent the code states');
     expect([result.severity, result.refutation?.outcome, result.refutation?.rule]).toEqual(['ignore', 'disproved', rule]);
     expect(result.judgeNotes).toBe(`Refutation disproved: src/account.ts:3 reads \`account.email\` after the same early return, and it builds. Rule checked: ${rule}`);

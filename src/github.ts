@@ -8,7 +8,7 @@ import * as github from '@actions/github';
 import { assertWritesAllowed } from './abort';
 import { isAllowedAccount } from './auth';
 import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig, readClosedPaths } from './config';
-import { AgentProgressEntry, ApprovalRecord, SideCheckKind, agreedOutcome, oneCheckOnBase, sameOnBase, confirmsAll, confirmsDefect, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, RoundDependencySource, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundScope, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, SCOPE_READER_NAME, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
+import { AgentProgressEntry, ApprovalRecord, SideCheckKind, agreedOutcome, oneCheckOnBase, sameOnBase, confirmsAll, confirmsCodePath, confirmsDefect, openCodePremise, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, RoundDependencySource, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundScope, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, SCOPE_READER_NAME, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { holdsLines } from './code-window';
 import { firstCommentableLine, isLineInDiff, listedFilesDiff, findClosedPattern } from './diff';
 import { issueBox, ISSUE_BOX_LABEL, messageBox, withMessageBoxes } from './issue-box';
@@ -1626,11 +1626,24 @@ const SEVERITY_EMOJI: Record<FindingSeverity, string> = {
   ignore: '⚪',
 };
 
-/** Shown under the title of a finding whose `checkStatus` is `unconfirmed`. */
+/** Shown under the title of a finding whose `checkStatus` is `unconfirmed`, when `trustNote` can name nothing more specific. */
 const UNCONFIRMED_NOTE = '_Manki could not confirm this, so please check it._';
+const NO_PROOF_NOTE = '_Manki could not confirm this, since no line in the code was cited for it._';
+const OPEN_PREMISE_NOTE = '_Manki confirmed the code path but could not check:';
 
+/** Matches each line `trustNote` writes. */
+const TRUST_NOTE_RE = /^_Manki (?:could not confirm this|confirmed the code path but could not check:)[^\n]*/;
+
+/**
+ * Returns the line under the title of a finding whose `checkStatus` is `unconfirmed`. It names the premise a check left
+ * open after it confirmed the defect, or says that no line was cited. The premise is model text, so it shows as one line.
+ */
 function trustNote(finding: Finding): string | undefined {
-  return finding.checkStatus === 'unconfirmed' ? UNCONFIRMED_NOTE : undefined;
+  if (finding.checkStatus !== 'unconfirmed') return undefined;
+  const premise = openCodePremise(finding);
+  const text = premise && oneLine(premise).replace(/[\s.]+$/, '');
+  if (text) return `${OPEN_PREMISE_NOTE} ${text}${text.endsWith('…') ? '' : '.'}_`;
+  return finding.evidence?.proof.length ? UNCONFIRMED_NOTE : NO_PROOF_NOTE;
 }
 
 /** Security findings below a warning posted as line comments per review. The rest go in the body list. */
@@ -3663,9 +3676,11 @@ function refutationPart(label: string, lead: string, check: Pick<Refutation, 'ou
 /** Returns a part for each refuter that checked `finding`. */
 function refutationParts(finding: Finding, links: CodeLinks, known: readonly string[]): FoldPart[] {
   const { refutation, pairRefutation } = finding;
-  // A check that confirmed premises only did not say the defect exists, so it reads as unsettled on a finding marked `unconfirmed`.
+  // A check that confirmed premises only did not say the defect exists, so it reads as unsettled on a finding marked
+  // `unconfirmed`. One that confirmed the code path reads as confirmed on a finding marked `confirmed`.
   const shown = (check: Refutation): RefutationOutcome =>
-    (finding.checkStatus === 'unconfirmed' && outcomeOf(check) === 'confirmed' && !confirmsDefect(check, finding) ? 'unsettled' : outcomeOf(check));
+    (finding.checkStatus === 'unconfirmed' && outcomeOf(check) === 'confirmed' && !confirmsDefect(check, finding) ? 'unsettled'
+      : finding.checkStatus === 'confirmed' && outcomeOf(check) === 'unsettled' && confirmsCodePath(check, finding) ? 'confirmed' : outcomeOf(check));
   const pairLead = pairRefutation && REFUTATION_SUMMARY[shown(pairRefutation)];
   // A blocker its disproofs lowered says so on its first check, and its rule only set how far it went down.
   const keptByRule = !isDisprovedBlocker(finding) && !!overruledDisproof(finding, links.rules);
@@ -4444,5 +4459,5 @@ async function fetchStandingVerdict(
 }
 
 export type { CodeLinks };
-export { APPROVED_LINE, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, BASE_NOTE_RE, TRACKED_NOTE_RE, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isBotUser, authorClearRole, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, givesVerdict, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, fetchStandingVerdict, REVIEW_STATE_VERDICTS, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, HELD_FOR_PERSON_MARKER };
+export { APPROVED_LINE, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, BASE_NOTE_RE, TRACKED_NOTE_RE, TRUST_NOTE_RE, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isBotUser, authorClearRole, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, givesVerdict, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, fetchStandingVerdict, REVIEW_STATE_VERDICTS, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, HELD_FOR_PERSON_MARKER };
 export type { StandingVerdict };
