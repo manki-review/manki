@@ -2,6 +2,11 @@ import { createHash } from 'crypto';
 
 import { CitedLine, FindingFingerprint, FindingFingerprintEntry, ThreadEvaluation } from './types';
 
+/** Stable composite-string identity matching the `dedupePriorFindings` key format. */
+export function stringifyFindingFingerprint(fp: FindingFingerprint): string {
+  return `${fp.file}:${fp.lineStart}:${fp.lineEnd}:${fp.slug}`;
+}
+
 /** Returns, per line of a file, a hash of the line with the line before and the line after it, each without the whitespace around it. */
 function placeHashes(lines: string[]): string[] {
   const trimmed = lines.map(line => line.trim());

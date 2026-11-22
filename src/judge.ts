@@ -19,9 +19,9 @@ import { formatLockfileChanges, isLockfileAlert, LockfileDiff } from './lockfile
 import { dynamicFence, fenceText, LinkedIssue, titleToSlug } from './github';
 import { jsonOnlyReply, safeTruncate, sendWithParseRetry } from './utils';
 import { sanitize, titleOverlapType } from './recap';
-import { FINDER_TOOLS_TIMEOUT_MS, guardedThreadStaysOpen, determineOutcome, earlierFindings, fencePrText, filesChangedByPush, parseProof, postedWhenPreExisting, restatesEarlier, sameProblem, stringifyFindingFingerprint, truncateDiff } from './review';
+import { FINDER_TOOLS_TIMEOUT_MS, guardedThreadStaysOpen, determineOutcome, earlierFindings, fencePrText, filesChangedByPush, parseProof, postedWhenPreExisting, restatesEarlier, sameProblem, truncateDiff } from './review';
 import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
-import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
+import { indexThreadEvaluations, isPriorAddressedByJudge, stringifyFindingFingerprint } from './finding-fingerprint';
 import { lacksTrigger, MAX_DOUBT_CHECKS, MAX_RELATED_PROOF, needsProof, refuteBlockers } from './refute';
 import { fetchedRelatedRepos, relatedNames, repoTools } from './related-repos';
 import { criticalAreaOf } from './routing';
