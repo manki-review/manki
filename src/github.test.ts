@@ -339,6 +339,13 @@ describe('formatFindingComment', () => {
     const listed = render({ ...baseFinding, description: 'It drops two rows. Both are lost.\n\n1. The first row.\n2. The second row.' });
     expect(listed).toContain('**What goes wrong:** It drops two rows. Both are lost.\n\n1. The first row.\n2. The second row.');
     expect(listed).not.toContain('Why it matters');
+    // So does a list with no blank line before it, or with blank lines between its items.
+    for (const list of ['1. The first row.\n2. The second row.\n3. The third row.', '- The first row.\n\n- The second row.\n\n- The third row.']) {
+      for (const gap of ['\n', '\n\n']) {
+        const description = `It drops three rows. All are lost.${gap}${list}`;
+        expect(render({ ...baseFinding, description })).toContain(`**What goes wrong:** ${description}\n\n<!-- manki-checks -->`);
+      }
+    }
     const paragraphs = render({ ...baseFinding, description: [`${sentence(1)} ${sentence(2)}`, `${sentence(3)} ${sentence(4)}`].join('\n\n') });
     expect(paragraphs).toContain(`**What goes wrong:** ${sentence(1)} ${sentence(2)}\n\n<!-- manki-checks -->`);
     expect(paragraphs).toContain(`**Why it matters**\n${sentence(3)} ${sentence(4)}`);

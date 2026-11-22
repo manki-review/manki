@@ -1735,12 +1735,13 @@ function formatBodyFix(fix: string, file: string): string {
 
 /**
  * Splits `text` after its first sentences: at most `maxSentences`, and fewer when they would pass `maxLength`.
- * The first sentence is always kept, truncated when it alone passes `maxLength`. A code fence or a blank line ends the
- * lead. A list right after the lead's blank line joins the lead whole when both fit in `maxLength`, and is never cut.
+ * The first sentence is always kept, truncated when it alone passes `maxLength`. A code fence, a blank line or a line
+ * that starts a list ends the lead. A list right after the lead joins it whole when both fit in `maxLength`, and is
+ * never cut, also across blank lines between its items.
  */
 function splitLead(text: string, maxSentences: number, maxLength: number): { lead: string; rest: string } {
   const trimmed = text.trim();
-  const stopAt = trimmed.search(/`{3}|~{3}|\n[ \t]*\n/);
+  const stopAt = trimmed.search(/`{3}|~{3}|\n[ \t]*\n|\n[ \t]*(?:[-*+]|\d+[.)])\s/);
   const prose = stopAt === -1 ? trimmed : trimmed.slice(0, stopAt);
   // Odd entries are the whitespace between sentences, so joining a slice keeps the original spacing. The number that
   // starts a list item ends no sentence.
@@ -1748,7 +1749,7 @@ function splitLead(text: string, maxSentences: number, maxLength: number): { lea
   let end = 1;
   while (end + 1 < parts.length && (end + 1) / 2 < maxSentences && parts.slice(0, end + 2).join('').length <= maxLength) end += 2;
   const sentences = parts.slice(0, end).join('');
-  const list = end >= parts.length ? trimmed.slice(sentences.length).match(/^[ \t]*\n\s*\n([ \t]*(?:[-*+]|\d+[.)])\s[\s\S]*?)(?=\n[ \t]*\n|$)/) : null;
+  const list = end >= parts.length ? trimmed.slice(sentences.length).match(/^\s*\n([ \t]*(?:[-*+]|\d+[.)])\s[\s\S]*?)(?=\n\s*\n[ \t]*(?!(?:[-*+]|\d+[.)])\s)\S|$)/) : null;
   const withList = list && !/`{3}|~{3}/.test(list[0]) && sentences.length + list[0].length <= maxLength;
   const lead = withList ? trimmed.slice(0, sentences.length + list[0].length) : sentences;
   const rest = trimmed.slice(lead.length).trim();
