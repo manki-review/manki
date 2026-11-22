@@ -6452,7 +6452,7 @@ describe('postReview non-blocking findings', () => {
     const scope = {
       doubt: 'Nothing calls the new `parseDate`, and `utils/dates.ts` already exports one.', proof: ['src/a.ts:3', 'src/a.ts:7-9'],
       topics: [{ name: 'Date parsing', files: ['src/a.ts'] }, { name: 'Flag rename', files: ['src/b.ts'] }],
-      split: [{ name: 'Date parsing', files: ['src/a.ts'] }, { name: 'Flag [rename]', files: ['src/b.ts', 'src/c`d.ts'] }],
+      split: [{ name: 'Date parsing', files: ['src/a.ts', 'src/b.ts:1-3'] }, { name: 'Flag [rename]', files: ['src/b.ts:20-24', 'src/c`d.ts'] }],
     };
 
     await postReview(octokit, 'owner', 'repo', 1, 'sha', { ...buildResult([]), scope }, diff);
@@ -6465,8 +6465,8 @@ describe('postReview non-blocking findings', () => {
       '',
       '**Split into 2 PRs?** The change covers topics that each make sense on their own:',
       '',
-      '1. Date parsing: `src/a.ts`',
-      "2. Flag [rename]: `src/b.ts`, `src/c'd.ts`",
+      '1. Date parsing: `src/a.ts`, `src/b.ts:1-3`',
+      "2. Flag [rename]: `src/b.ts:20-24`, `src/c'd.ts`",
     ].join('\n'));
 
     // A PR that is useful and covers one topic shows no section, and neither does a round that posted the answer as warnings.
@@ -6486,7 +6486,7 @@ describe('postReview non-blocking findings', () => {
     expect(threads[0].body).toContain('**Checked in the code**\nhttps://github.com/owner/repo/blob/sha/src/a.ts#L2-L9');
     expect(threads[1].body).toContain('**This PR mixes topics that belong in separate PRs**');
     // The split shows its whole list with no fold, and neither warning claims a check it never needed.
-    expect(threads[1].body).toContain("separate PRs. This is a judgment of the PR as a whole, not a defect in its code.\n\n1. Date parsing: `src/a.ts`\n2. Flag [rename]: `src/b.ts`, `src/c'd.ts`");
+    expect(threads[1].body).toContain("separate PRs. This is a judgment of the PR as a whole, not a defect in its code.\n\n1. Date parsing: `src/a.ts`, `src/b.ts:1-3`\n2. Flag [rename]: `src/b.ts:20-24`, `src/c'd.ts`");
     expect(threads[1].body).not.toContain('<details>');
     for (const { body } of threads) expect(body).not.toMatch(/Manki could not confirm|not checked against the code/i);
     // A long list is shown whole too.
