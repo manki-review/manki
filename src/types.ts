@@ -1041,6 +1041,11 @@ export interface PremiseCheck {
   /** What the doubt decided when the check ran. A record from before this was stored has none. */
   decides?: Doubt['decides'];
   outcome: RefutationOutcome;
+  /**
+   * Set when the refuter answered that the premise depends on something no code in reach can show, such as how a model
+   * or a peer behaves. Its `outcome` is then `unsettled` for every grade, doubt and hold. Only `confirmsCodePath` reads it.
+   */
+  outsideCode?: true;
   reason: string;
   proof?: string[];
   /** The lines of related repos that decide it, as `owner/name:path:line`. They can confirm, and never count toward a disproof. */
@@ -1145,8 +1150,33 @@ export function agreedOutcome(checks: readonly Refutation[]): RefutationOutcome 
  * `finding`, and one no doubt names counts as deciding the defect, since nothing shows it only decided the grade.
  */
 export function confirmsDefect(check: Refutation, finding: Pick<Finding, 'doubts'>): boolean {
+  return check.defect === 'confirmed' && openPremises(check, finding).length === 0;
+}
+
+/** Returns the premises of `check` that leave the defect of `finding` open, as `confirmsDefect` reads them. */
+function openPremises(check: Refutation, finding: Pick<Finding, 'doubts'>): PremiseCheck[] {
   const decides = (p: PremiseCheck): Doubt['decides'] | undefined => p.decides ?? finding.doubts?.find(d => d.premise === p.premise)?.decides;
-  return check.defect === 'confirmed' && !check.premises?.some(p => towardFinding(p) !== 'confirmed' && decides(p) !== 'grade');
+  return check.premises?.filter(p => towardFinding(p) !== 'confirmed' && decides(p) !== 'grade') ?? [];
+}
+
+/**
+ * Whether `check` confirmed the defect of `finding` and left open only premises no code in reach can show
+ * (`outsideCode`). It decides how the finding reads and never its grade, which only `confirmsDefect` can raise.
+ */
+export function confirmsCodePath(check: Refutation, finding: Pick<Finding, 'doubts'>): boolean {
+  return check.defect === 'confirmed' && openPremises(check, finding).every(p => p.outsideCode);
+}
+
+/**
+ * Returns the first premise about code that a check which confirmed the defect of `finding` left unsettled. Returns none
+ * when a check disproved the finding. A check that also disproved a premise the defect rests on contradicts itself, so
+ * it names none either.
+ */
+export function openCodePremise(finding: Pick<Finding, 'doubts' | 'refutation' | 'pairRefutation'>): string | undefined {
+  const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r);
+  if (checks.some(check => outcomeOf(check) === 'disproved')) return undefined;
+  const open = checks.filter(check => check.defect === 'confirmed').map(check => openPremises(check, finding));
+  return open.filter(premises => premises.every(p => p.outcome === 'unsettled')).flat().find(p => !p.outsideCode)?.premise;
 }
 
 /** Whether `answer` shows the failure at the base, with lines the code found at the base `commit`. */

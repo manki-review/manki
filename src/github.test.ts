@@ -4,7 +4,7 @@ import { gunzipSync } from 'zlib';
 
 import { relatedCommits, ApprovalHeld, plainCitedFiles, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, autoApproveHeadMarker, reviewedCommit, updateProgressDashboard, startLiveEdits, LIVE_EDIT_MS, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchChangesSince, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, fetchApprovalHold, SupersededError, isFailedProgress, markFailedProgressSuperseded, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError, githubRepoFiles, openRepoFiles, UnreadFileError } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
-import { DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases, RoundFix, SideCheckState, OriginAnswer } from './types';
+import { DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases, RoundFix, Refutation, SideCheckState, OriginAnswer } from './types';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { contentAnswer, makeFindingFingerprintEntry, namingCommit, paginateSinglePage, TEST_BOT, TEST_LINKS, testSha } from './test-utils';
 import { withMarkers } from './utils';
@@ -96,13 +96,48 @@ describe('formatFindingComment', () => {
     expect(render({ ...baseFinding, effort: 'quick' }).startsWith('\u{1F6AB} **Blocker** · Quick fix\n\n')).toBe(true);
   });
 
-  it('adds a note under the title only when the finding was not confirmed', () => {
-    const comment = render({ ...baseFinding, severity: 'warning', checkStatus: 'unconfirmed' });
+  it('adds a note under the title only when the finding was not confirmed, naming what stayed open', () => {
+    const cited: Finding = { ...baseFinding, severity: 'warning', checkStatus: 'unconfirmed', evidence: { checks: [], proof: ['src/main.ts:42'] } };
+    const comment = render(cited);
     expect(comment.startsWith(`\u26A0\uFE0F **Warning**\n\n**${baseFinding.title}**\n\n_Manki could not confirm this, so please check it._\n\n**What goes wrong:** ${baseFinding.description}`)).toBe(true);
     expect(comment).not.toMatch(/\u{1F534}|\u{1F7E0}|\u{1F7E1}/u);
     for (const checkStatus of ['proven', 'confirmed'] as const) {
       expect(render({ ...baseFinding, checkStatus })).not.toContain('Manki could not confirm');
     }
+    // A finding that cites no line says so.
+    expect(render({ ...cited, evidence: undefined })).toContain(`**${baseFinding.title}**\n\n_Manki could not confirm this, since no line in the code was cited for it._\n\n`);
+    // A check that confirmed the defect names the first premise about code it left open, as one sanitized line, and
+    // skips a premise no code in reach can show.
+    const premise = 'The caller passes\n`null` <b>here</b> when the cache is cold.';
+    const refutation: Refutation = {
+      outcome: 'unsettled', defect: 'confirmed', reason: 'The read throws on null.', proof: ['src/main.ts:42'], files: ['src/main.ts'], codeDigest: 'd',
+      premises: [
+        { premise: 'A refuter model gives such an answer', decides: 'defect', outcome: 'unsettled', outsideCode: true, reason: 'Model behaviour.' },
+        { premise, decides: 'defect', outcome: 'unsettled', reason: 'No caller found.' },
+      ],
+    };
+    const open = render({ ...cited, refutation });
+    // A premise the check disproved, a check that disproved the finding, and lines of a related repo each leave the plain note.
+    const disprovedPremise = { ...refutation.premises![1], outcome: 'disproved' as const };
+    const plain = `**${baseFinding.title}**\n\n_Manki could not confirm this, so please check it._\n\n`;
+    expect(render({ ...cited, refutation: { ...refutation, premises: [disprovedPremise] } })).toContain(plain);
+    expect(render({ ...cited, refutation: { ...refutation, premises: [disprovedPremise, refutation.premises![1]] } })).toContain(plain);
+    expect(render({ ...cited, refutation, pairRefutation: { ...refutation, outcome: 'disproved', defect: 'disproved', premises: [] } })).toContain(plain);
+    expect(render({ ...cited, evidence: { checks: [], proof: [], relatedProof: ['acme/lib:src/a.ts:3'] } })).toContain(plain);
+    expect(open).toContain(`**${baseFinding.title}**\n\n_Manki confirmed the code path but could not check: The caller passes \`null\` here when the cache is cold._\n\n`);
+    expect(parseFindingFromComment(open)?.description).toBe(baseFinding.description);
+    // A PR that adds the note's first word gets it highlighted, and the note is still skipped when read back.
+    const highlighted = highlightCode(open, new Set(['_Manki']));
+    expect(highlighted).toContain('`_Manki` confirmed the code path');
+    expect(parseFindingFromComment(highlighted)?.description).toBe(baseFinding.description);
+    // A shortened premise keeps its ellipsis and gets no full stop after it.
+    const long = render({ ...cited, refutation: { ...refutation, premises: [{ ...refutation.premises![1], premise: 'word '.repeat(60) }] } });
+    expect(long).toMatch(/_Manki confirmed the code path but could not check: (?:word ){20,}word…_\n/);
+    // On a finding marked confirmed, a check that left only such a premise open reads as double-checked.
+    const outside = { ...refutation, premises: [refutation.premises![0]] };
+    const confirmed = render({ ...cited, checkStatus: 'confirmed', refutation: outside });
+    expect(confirmed).not.toContain('_Manki');
+    expect(confirmed).toContain('**Double-checked**');
   });
 
   it('renders a short code fix as a suggestion block', () => {
@@ -6039,7 +6074,7 @@ describe('postReview non-blocking findings', () => {
       '<details>',
       '<summary>\u2728 <b>Missing file context</b><br><sub><b>Suggestion, not blocking</b></sub></summary>',
       '',
-      '_Manki could not confirm this, so please check it._',
+      '_Manki could not confirm this, since no line in the code was cited for it._',
       '',
       '**Why:** It goes wrong. Second sentence. Third sentence.',
       '',
@@ -6498,7 +6533,7 @@ describe('postReview non-blocking findings', () => {
   it('lists smaller findings by where they sit, found this round, missed earlier or pre-existing, and posts a warning or a blocker on reviewed code as a thread', async () => {
     const { octokit, createReview, createReviewComment } = makeOctokit();
     const missedNote = '_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still holds the approval._';
-    const unconfirmedNote = '_Manki could not confirm this, so please check it._';
+    const unconfirmedNote = '_Manki could not confirm this, since no line in the code was cited for it._';
     const guideNote = '_The review model wrote these steps. Check what a step runs before you follow it._';
     // The PR quotes Manki's own notes, as a PR on Manki does. The first and last word of each are then identifiers of
     // the diff with their underscore, which the posted text must not show as code.

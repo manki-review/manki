@@ -33,6 +33,11 @@ describe('startsSweep', () => {
     ['a warning a check confirmed', warning({ evidence: unproven, refutation: confirmed }), ['warnings', 'notes']],
     ['a warning that cites no proof', warning({ evidence: unproven }), []],
     ['a warning a check left unsettled', warning({ refutation: { ...confirmed, outcome: 'unsettled', defect: 'unsettled' } }), []],
+    // A premise no code in reach can show settles nothing for a sweep, though the finding reads as confirmed.
+    ['a warning a check confirmed but for a premise outside the code', warning({
+      doubts: [{ premise: 'A peer sends it', decides: 'defect' }],
+      refutation: { ...confirmed, outcome: 'unsettled', premises: [{ premise: 'A peer sends it', decides: 'defect', outcome: 'unsettled', outsideCode: true, reason: 'Peer behaviour.' }] },
+    }), []],
     ['a warning a tool reported', warning({ toolSource: 'eslint' }), []],
     ['a note', note(), ['notes']],
     ['a note without a cell', note({ cell: undefined }), ['notes']],

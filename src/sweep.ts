@@ -5,7 +5,7 @@ import { fenceText } from './github';
 import { extractJSON } from './json';
 import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient, NotStartedError, SendMessageOptions } from './providers';
-import { checkStatus } from './refute';
+import { strictCheckStatus } from './refute';
 import { repoTools } from './related-repos';
 import { parseFindings, parseLocation, parseProof, truncateDiff } from './review';
 import { CheckProgress, CheckStatus, disproof, EffortLevel, Finding, RelatedRepoTools, RoundSweep, SECURITY_TAG, SEVERITY_ORDER, SweepMode, sweepName } from './types';
@@ -85,14 +85,14 @@ export function startsSweep(finding: Finding, mode: SweepMode): boolean {
   if (mode === 'off' || disproof(finding)) return false;
   if (finding.severity === 'blocker') return true;
   if (finding.toolSource) return false;
-  if (finding.severity === 'warning') return mode !== 'blockers' && checkStatus(finding) !== 'unconfirmed';
+  if (finding.severity === 'warning') return mode !== 'blockers' && strictCheckStatus(finding) !== 'unconfirmed';
   return mode === 'notes' && finding.severity === 'note' && finding.cell?.row !== 'style';
 }
 
 /** Returns the findings to sweep from: the security ones first, then by grade, the notes in the judge's order and the best checked first. */
 function byPriority(sources: readonly Finding[]): Finding[] {
   const key = (f: Finding): number[] => [
-    f.tags?.includes(SECURITY_TAG) ? 0 : 1, SEVERITY_ORDER.indexOf(f.severity), f.severity === 'note' ? f.noteRank ?? Number.MAX_SAFE_INTEGER : 0, STATUS_ORDER.indexOf(checkStatus(f)),
+    f.tags?.includes(SECURITY_TAG) ? 0 : 1, SEVERITY_ORDER.indexOf(f.severity), f.severity === 'note' ? f.noteRank ?? Number.MAX_SAFE_INTEGER : 0, STATUS_ORDER.indexOf(strictCheckStatus(f)),
   ];
   return sources.map(f => ({ f, key: key(f) })).sort((a, b) => a.key.map((n, i) => n - b.key[i]).find(d => d !== 0) ?? 0).map(({ f }) => f);
 }
