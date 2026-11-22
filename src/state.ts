@@ -9,7 +9,7 @@ import { ISSUE_BOX_LABEL, withMessageBoxes } from './issue-box';
 import { MessageBox, SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
-import { dismissRecordLogins, dismissRecordMarker, FixClaim, fixClaimOf, fetchPriorRoundContexts, fetchRecapState, guardedKind, isDisprovedThread, isOverrideCandidate, judgeAddressedThreadIds, latestPersonReply, parseContextBlocks, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, RecordedGrade, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingPlace } from './recap';
+import { clearRecordLogin, dismissRecordLogins, dismissRecordMarker, FixClaim, fixClaimOf, fetchPriorRoundContexts, fetchRecapState, guardedKind, isDisprovedThread, isOverrideCandidate, judgeAddressedThreadIds, parseContextBlocks, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, RecordedGrade, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingPlace } from './recap';
 import { FIXED_MARKER_OPENER, fixedMarker, formatApprovalRecord, hasOwnMarker, hasReviewRecord, settlingDecision } from './review-record';
 import { findPriorThreadId } from './finding-fingerprint';
 import { ApprovalRecord, AuthorClearRole, FindingSeverity, gradedAbove, PRE_EXISTING_TAG, ReviewConfig, RoundContext, SecurityOverride, threadBlocks, threadWarns } from './types';
@@ -67,11 +67,11 @@ interface ReviewThread {
   resolvedByLogin?: string;
   /** The latest round that evaluated the thread marked it addressed. */
   addressed?: boolean;
-  /** Who wrote the latest reply by a person, when that person has write access. Read only for a thread Manki resolved, and only below the comment limit. */
-  writerReplyLogin?: string;
+  /** Who Manki's latest record says it resolved the thread for, when that person has write access. Read only for a thread Manki resolved, and only below the comment limit. */
+  writerClearLogin?: string;
   /** Who resolved the thread, when GitHub confirms a person with write access. */
   writerResolverLogin?: string;
-  /** Set on a thread Manki resolved that is at the comment limit, so its latest reply is unknown. */
+  /** Set on a thread Manki resolved that is at the comment limit, so its latest record is unknown. */
   repliesUnread?: boolean;
   isBlocking: boolean;
   /** Whether the thread may carry a blocker: it is or was graded one, or a record that may have raised it is unread. */
@@ -204,13 +204,13 @@ async function fetchBotReviewThreads(
   // The pending round is not posted yet, so no reply can come after it.
   const postedAt = new Map(records.postedAt);
   if (pending) postedAt.delete(pending.meta.round);
-  // Only Manki's own resolve needs a replier to back it. A thread at the comment limit may hide a later reply, so it names none.
+  // Only Manki's own resolve needs its record to back it. A thread at the comment limit may hide a later reopen, so it names none.
   const byManki = (thread: typeof botThreads[number]) => thread.isResolved && isBotLogin(bot, thread.resolvedBy?.login);
   const repliesUnread = (thread: typeof botThreads[number]) => byManki(thread) && thread.comments.nodes.length >= THREAD_COMMENTS_LIMIT;
   const backing = await resolveBacking(octokit, owner, repo, rounds, botThreads.map(thread => {
-    const replier = byManki(thread) && !repliesUnread(thread) ? latestPersonReply(bot, thread.comments.nodes)?.author?.login : undefined;
+    const cleared = byManki(thread) && !repliesUnread(thread) ? clearRecordLogin(bot, thread.comments.nodes) : undefined;
     const resolver = thread.isResolved && !byManki(thread) ? thread.resolvedBy?.login : undefined;
-    return { id: thread.id, ...(replier && { latestReplyLogin: replier }), ...(resolver && { resolverLogin: resolver }) };
+    return { id: thread.id, ...(cleared && { clearLogin: cleared }), ...(resolver && { resolverLogin: resolver }) };
   }));
   if ('priorRoundsIncomplete' in records) core.warning('Without every round record, every Manki thread counts as blocking');
   return botThreads
@@ -764,7 +764,7 @@ function authorClearLine(clearRole: AuthorClearRole | undefined): string {
  */
 function blockingThreadsLine(open: ReviewThread[], named: ReadonlySet<string>, bot: BotIdentity, clearRole: AuthorClearRole | undefined, instead?: string): string {
   const list = open.map(t => {
-    const unbacked = t.repliesUnread ? 'the thread has too many comments for Manki to read its latest reply, so someone other than the PR author with write access has to reopen it and resolve it' : 'the latest reply is not from a maintainer other than the PR author';
+    const unbacked = t.repliesUnread ? 'the thread has too many comments for Manki to read its record, so someone other than the PR author with write access has to reopen it and resolve it' : 'no record of Manki names a maintainer other than the PR author who cleared it';
     const note = isBotLogin(bot, t.resolvedByLogin) ? ` (Manki resolved it, but no review record confirms a fix, and ${unbacked})`
       : t.isResolved ? ` (resolved by ${inline(t.resolvedByLogin ?? 'someone')}, who may not clear it)`
       : !t.isBlocking && named.has(t.id) ? ' (Manki\'s latest review blocks on this thread)' : '';

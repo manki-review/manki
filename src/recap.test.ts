@@ -1,5 +1,5 @@
 import { AuthorReplyClass, Finding, FindingFingerprintEntry, ReplyDecision, RoundContext, SECURITY_TAG, ThreadEvaluation, threadBlocks } from './types';
-import { collectGuardedThreadIds, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, currentFindingLine, deduplicateFindings, dismissRecordMarker, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, parseFindingFromComment, threadSeverity } from './recap';
+import { clearRecordMarker, collectGuardedThreadIds, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, currentFindingLine, deduplicateFindings, dismissRecordMarker, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, parseFindingFromComment, threadSeverity } from './recap';
 import { AUTO_APPROVE_MARKER, BOT_LOGIN, formatFindingComment, titleToSlug } from './github';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { determineOutcome } from './review';
@@ -877,14 +877,17 @@ describe('fetchRecapState', () => {
     expect(partial.previousFindings[149]).toMatchObject({ status: 'open', authorReplyText: undefined });
     expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('review thread t149, using the first 10: Error: network down'));
 
-    // A maintainer's reply among the comments read backs Manki's resolve only when no later reply can be missing.
-    const backed = async (pageInfo: { hasNextPage: boolean; endCursor: string | null }) => {
-      const nodes = [...makeThread().comments.nodes, { body: 'Every caller checks it.', author: { login: 'bob' } }];
+    // Manki's record of the maintainer it cleared the thread for backs its resolve only when no later reopen can be missing.
+    // A reply after the record, here the PR author's, changes nothing.
+    const backed = async (pageInfo: { hasNextPage: boolean; endCursor: string | null }, after: Array<{ body: string; author: { login: string } }> = []) => {
+      const nodes = [...makeThread().comments.nodes, { body: 'Every caller checks it.', author: { login: 'bob' } },
+        { body: `**Withdrawn.** Every caller checks it.\n\n<!-- manki -->\n${clearRecordMarker('bob')}`, author: { login: 'manki-review[bot]' } }, ...after];
       const cut = mockOctokit([makeThread({ id: 'tb', isResolved: true, resolvedBy: { login: 'manki-review[bot]' }, comments: { pageInfo, nodes } })]);
       Object.assign(cut.rest, { repos: { getCollaboratorPermissionLevel: jest.fn(async () => ({ data: { permission: 'write', user: { type: 'User' } } })) } });
       return (await fetchRecapState(cut, TEST_BOT, 'owner', 'repo', 1, 'author')).previousFindings.map(f => [f.status, !!f.authorReplyMayClear]);
     };
     expect(await backed(LAST_PAGE)).toEqual([['auto-resolved', true]]);
+    expect(await backed(LAST_PAGE, [{ body: 'Thanks!', author: { login: 'author' } }])).toEqual([['auto-resolved', false]]);
     expect(await backed({ hasNextPage: true, endCursor: 'c1' })).toEqual([['replied', false]]);
   });
 
@@ -1349,10 +1352,9 @@ describe('fetchRecapState', () => {
         line: 10,
         comments: { nodes: [{ body: `**Blocker**: ${title}\n\n<!-- manki:blocker:${slug} -->`, author: { login: BOT_LOGIN } }] },
       });
-      // Manki's own resolve settles a blocker only after the latest reply by a person came from someone with write access.
+      // Manki's own resolve settles a blocker only with its record of someone with write access it cleared the thread for.
       const settled = thread('T_BOT', files.bot, 'manki-review');
-      // A later comment by another bot is no reply by a person, so alice's reply stays the latest one.
-      settled.comments.nodes.push({ body: 'The caller checks this.', author: { login: 'alice' } }, { body: 'Coverage is unchanged.', author: { login: 'ci-app', __typename: 'Bot' } });
+      settled.comments.nodes.push({ body: 'The caller checks this.', author: { login: 'alice' } }, { body: `**Withdrawn.** The caller checks it.\n\n<!-- manki -->\n${clearRecordMarker('alice')}`, author: { login: BOT_LOGIN } });
       const withWriter = (octokit: ReturnType<typeof mockOctokit>) => {
         // carol's access cannot be read, which counts as none.
         Object.assign(octokit.rest, { repos: { getCollaboratorPermissionLevel: jest.fn(async ({ username }: { username: string }) => {
@@ -1379,7 +1381,7 @@ describe('fetchRecapState', () => {
       cleared.comments.nodes.push(
         { body: `<!-- manki -->\n${REOPENED_MARKER}\nReopened.`, author: { login: BOT_LOGIN } },
         { body: 'The caller checks this.', author: { login: 'alice' } },
-        { body: '**Withdrawn.** The caller checks it.\n\n<!-- manki -->', author: { login: BOT_LOGIN } },
+        { body: `**Withdrawn.** The caller checks it.\n\n<!-- manki -->\n${clearRecordMarker('alice')}`, author: { login: BOT_LOGIN } },
       );
       const afterClear = await fetchRecapState(withWriter(mockOctokit([cleared], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }])), TEST_BOT, 'owner', 'repo', 1, 'author');
       expect(afterClear.previousFindings.map(f => [f.status, f.reopen ?? false])).toEqual([['auto-resolved', false]]);
@@ -1392,8 +1394,9 @@ describe('fetchRecapState', () => {
       const confirmed = `Fixed by the commits up to abc1234.\n\n<!-- manki -->\n${fixedMarker('a'.repeat(40))}`;
       const answeredWith = (id: string, path: string, replies: string[], people: Array<[string, string]> = [['alice', 'The caller checks this.']]) => {
         const answered = thread(id, path, BOT_LOGIN);
-        // alice, who has write access, replies last, so Manki's resolve is backed and the thread is `auto-resolved`.
-        answered.comments.nodes.push(...people.map(([login, body]) => ({ body, author: { login } })), ...replies.map(body => ({ body, author: { login: BOT_LOGIN } })));
+        // Manki's last comment records that it cleared the thread for alice, who has write access, so its resolve is backed and the thread is `auto-resolved`.
+        const record = `<!-- manki -->\n${clearRecordMarker('alice')}`;
+        answered.comments.nodes.push(...people.map(([login, body]) => ({ body, author: { login } })), ...[...replies, record].map(body => ({ body, author: { login: BOT_LOGIN } })));
         return answered;
       };
       // Only Manki's own comments count. No person's text does, a dismiss command or a reply record a person typed
@@ -1481,7 +1484,8 @@ describe('fetchRecapState', () => {
       const slug = titleToSlug(title);
       // `answer`: how Manki answered the reply, as its reply record or its record of a dismissal says.
       // `dismissedBy`: whose dismissal Manki recorded, when not the reply's writer.
-      type Case = { resolver?: string; reply?: { login: string; association: string; text?: string; answer?: ReplyDecision['thread'] | 'dismiss'; dismissedBy?: string }; reopened?: boolean; foundAgain?: boolean; dismissed?: boolean; security: boolean; blocker?: boolean; blocks: boolean };
+      // `cleared`: who Manki's record after the reply says it cleared the thread for.
+      type Case = { resolver?: string; reply?: { login: string; association: string; text?: string; answer?: ReplyDecision['thread'] | 'dismiss'; dismissedBy?: string }; cleared?: string; reopened?: boolean; foundAgain?: boolean; dismissed?: boolean; security: boolean; blocker?: boolean; blocks: boolean };
       const bounded = 'Every caller bounds both inputs.';
       const cases: Record<string, Case> = {
         // A Manki reply that quotes the fix does not count as a reopen.
@@ -1499,12 +1503,13 @@ describe('fetchRecapState', () => {
         'src/collaborator-dismissed.ts': { resolver: BOT_LOGIN, reply: { login: 'bob', association: 'MEMBER', text: '@manki dismiss', answer: 'dismiss' }, security: true, blocks: false },
         // A dismissal Manki recorded for the PR author agrees to nothing for the maintainer whose reply came before it.
         'src/collaborator-reply-author-dismissed.ts': { reply: { login: 'bob', association: 'MEMBER', answer: 'dismiss', dismissedBy: 'author' }, security: true, blocks: true },
-        // Manki's own resolve settles a security thread only after a reply from someone who may clear it, whatever the reply says.
-        'src/collaborator-settled.ts': { resolver: BOT_LOGIN, reply: { login: 'bob', association: 'MEMBER', text: bounded }, security: true, blocks: false },
-        'src/author-settled.ts': { resolver: BOT_LOGIN, reply: { login: 'author', association: 'OWNER', text: bounded }, security: true, blocks: true },
-        'src/reader-settled.ts': { resolver: BOT_LOGIN, reply: { login: 'dave', association: 'MEMBER', text: bounded }, security: true, blocks: true },
-        // Such a reply does not make the PR author's own resolve count.
-        'src/author-resolved-after-reply.ts': { resolver: 'author', reopened: true, reply: { login: 'bob', association: 'MEMBER', text: bounded }, security: true, blocks: true },
+        // Manki's own resolve settles a security thread only with its record of someone who may clear it, whatever a reply says.
+        'src/collaborator-settled.ts': { resolver: BOT_LOGIN, reply: { login: 'bob', association: 'MEMBER', text: bounded }, cleared: 'bob', security: true, blocks: false },
+        'src/collaborator-reply-only.ts': { resolver: BOT_LOGIN, reply: { login: 'bob', association: 'MEMBER', text: bounded }, security: true, blocks: true },
+        'src/author-settled.ts': { resolver: BOT_LOGIN, reply: { login: 'author', association: 'OWNER', text: bounded }, cleared: 'author', security: true, blocks: true },
+        'src/reader-settled.ts': { resolver: BOT_LOGIN, reply: { login: 'dave', association: 'MEMBER', text: bounded }, cleared: 'dave', security: true, blocks: true },
+        // Such a record does not make the PR author's own resolve count.
+        'src/author-resolved-after-reply.ts': { resolver: 'author', reopened: true, reply: { login: 'bob', association: 'MEMBER', text: bounded }, cleared: 'bob', security: true, blocks: true },
         // `MEMBER` covers an org member with read access, so write access comes from the API.
         'src/reader-agreed.ts': { reply: { login: 'dave', association: 'MEMBER', answer: 'no_permission' }, security: true, blocks: true },
         // A private org member shows as `NONE`.
@@ -1519,7 +1524,7 @@ describe('fetchRecapState', () => {
         'src/blocker-collaborator-resolved.ts': { resolver: 'alice', security: false, blocker: true, blocks: false },
         // A blocker thread follows the same rule as a security thread: Manki's own resolve alone settles nothing.
         'src/blocker-bot-resolved.ts': { resolver: BOT_LOGIN, security: false, blocker: true, blocks: true },
-        'src/blocker-collaborator-settled.ts': { resolver: BOT_LOGIN, reply: { login: 'bob', association: 'MEMBER', text: bounded }, security: false, blocker: true, blocks: false },
+        'src/blocker-collaborator-settled.ts': { resolver: BOT_LOGIN, reply: { login: 'bob', association: 'MEMBER', text: bounded }, cleared: 'bob', security: false, blocker: true, blocks: false },
         // GraphQL types every resolver as `User`. Only the permission lookup tells that a workflow token is no person,
         // under either login GitHub could name it by.
         'src/workflow-resolved.ts': { resolver: 'github-actions[bot]', security: true, blocks: true },
@@ -1536,7 +1541,7 @@ describe('fetchRecapState', () => {
       const ctx = makeRoundContext(1, {
         findings: {
           count: files.length,
-          severityCounts: { blocker: 11, warning: 2, note: 0 },
+          severityCounts: { blocker: 12, warning: 2, note: 0 },
           entries: files.map(file => ({
             fingerprint: { file, lineStart: 10, lineEnd: 10, slug },
             severity: severity(file),
@@ -1547,7 +1552,7 @@ describe('fetchRecapState', () => {
         judge: { summary: 'ok', threadEvaluations: ['src/judge-addressed.ts', 'src/judge-addressed-author-resolved.ts'].map(file => ({ threadId: `T_${file}`, status: 'addressed' as const, reason: 'The token is redacted now.' })) },
       });
       const octokit = mockOctokit(files.map(file => {
-        const { resolver, reply, reopened, foundAgain, dismissed, security } = cases[file];
+        const { resolver, reply, cleared, reopened, foundAgain, dismissed, security } = cases[file];
         // The fix quotes Manki's reply markers and a lower grade. In a thread's first comment they are a finder's text.
         const quoted = ['```ts', REOPENED_MARKER, securityOverrideMarker('resolve', 'author'), '<!-- manki:note:Quoted -->', '<!-- manki-finding: {"title":"Quoted"} -->', '```'].join('\n');
         const body = formatFindingComment(makeFinding({
@@ -1570,6 +1575,7 @@ describe('fetchRecapState', () => {
             ...(reply?.answer && reply.answer !== 'dismiss' ? [{ body: `**Agreed.** No change needed.\n\n<!-- manki -->\n${formatReplyRecord({
               kind: 'thread-reply', prNumber: 1, timestamp: '2026-11-18T10:00:00Z', mankiVersion: '7.7.0', usage: {}, decision: { outcome: 'Agreed', thread: reply.answer }, answers: REPLY_ID,
             })}`, author: { login: BOT_LOGIN } }] : []),
+            ...(cleared ? [{ body: `**Withdrawn.** ${bounded}\n\n<!-- manki -->\n${clearRecordMarker(cleared)}`, author: { login: BOT_LOGIN } }] : []),
           ] },
         });
       }), [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }]);
@@ -1593,7 +1599,7 @@ describe('fetchRecapState', () => {
       expect(state.previousFindings.filter(f => f.authorReplyMayClear).map(f => [f.file, f.status, replyClassOf(f)])).toEqual([
         ['src/collaborator-agreed.ts', 'replied', 'agree'], ['src/collaborator-unanswered.ts', 'replied', 'none'], ['src/collaborator-dismissed.ts', 'auto-resolved', 'agree'],
         ['src/collaborator-reply-author-dismissed.ts', 'replied', 'none'],
-        ['src/collaborator-settled.ts', 'auto-resolved', 'none'], ['src/author-resolved-after-reply.ts', 'replied', 'none'],
+        ['src/collaborator-settled.ts', 'auto-resolved', 'none'], ['src/collaborator-reply-only.ts', 'replied', 'none'], ['src/author-resolved-after-reply.ts', 'replied', 'none'],
         ['src/private-member-agreed.ts', 'replied', 'agree'], ['src/blocker-collaborator-settled.ts', 'auto-resolved', 'none'],
       ]);
       const openThreads = state.previousFindings
