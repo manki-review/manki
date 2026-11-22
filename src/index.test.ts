@@ -1392,7 +1392,8 @@ describe('handleCommentTrigger', () => {
     await handleCommentTrigger();
 
     expect(mockOctokitInstance.rest.issues.createComment.mock.calls).toEqual([[{
-      owner: 'test-owner', repo: 'test-repo', issue_number: 1, body: 'Nothing was reviewed, since this pull request is merged or closed.\n\n<!-- manki -->',
+      owner: 'test-owner', repo: 'test-repo', issue_number: 1,
+      body: 'Nothing was reviewed, since this pull request is merged or closed.\n\n<!-- manki-issue-box -->\n- [ ] Review anyway <!-- manki-box:again -->\n\n<!-- manki -->',
     }]]);
     expect(mockPullsGet).not.toHaveBeenCalled();
     expect(jest.mocked(ghUtils.hasBotReviewOnCommit)).not.toHaveBeenCalled();
@@ -8734,13 +8735,15 @@ describe('settings box tick', () => {
     jest.mocked(authModule.fetchPrState).mockResolvedValue(null);
   });
 
-  const againBox = (tick: string) => `<!-- manki-issue-box -->\n- ${tick} Review again <!-- manki-box:again -->`;
+  const againBox = (tick: string, label = 'Review again') => `<!-- manki-issue-box -->\n- ${tick} ${label} <!-- manki-box:again -->`;
 
   it.each([
-    ['a comment', 'issue_comment', { issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } } }, 'comment'],
-    ['a review', 'pull_request_review', { pull_request: { number: 1, base: { ref: 'main' } } }, 'review'],
-  ] as const)('reviews on a writer\'s tick of Review again in %s only with a mode the coordinator queued, and settles the box once', async (_where, eventName, target, kind) => {
-    const body = `\`def4567\` already has a review, so this command started no new round.\n\n${againBox('[x]')}\n\n<!-- manki -->`;
+    ['a comment', 'issue_comment', { issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } } }, 'comment', 'Review again'],
+    ['a review', 'pull_request_review', { pull_request: { number: 1, base: { ref: 'main' } } }, 'review', 'Review again'],
+    // The answer to a review command on a merged or closed PR offers the same box as Review anyway.
+    ['the answer on a merged PR', 'issue_comment', { issue: { number: 1, state: 'closed', pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } } }, 'comment', 'Review anyway'],
+  ] as const)('reviews on a writer\'s tick of Review again in %s only with a mode the coordinator queued, and settles the box once', async (_where, eventName, target, kind, label) => {
+    const body = `\`def4567\` already has a review, so this command started no new round.\n\n${againBox('[x]', label)}\n\n<!-- manki -->`;
     const object = { id: 42, body, user: { login: ghUtils.BOT_LOGIN, type: 'Bot' } };
     const tick = async (sender: string, modes: RunMode[], tickedBody = body) => {
       jest.clearAllMocks();
@@ -8766,7 +8769,7 @@ describe('settings box tick', () => {
     expect(await tick('reader', ['again'])).toEqual({ reviewed: false, settled: [] });
     expect(authModule.fetchPrState).not.toHaveBeenCalled();
     // Once settled the message has no ticked box, so a second run of the same edit does nothing.
-    expect(await tick('alice', ['again'], body.replace(againBox('[x]'), '<!-- manki-issue-box -->\nReview again requested by `@alice`'))).toEqual({ reviewed: false, settled: [] });
+    expect(await tick('alice', ['again'], body.replace(againBox('[x]', label), `<!-- manki-issue-box -->\n${label} requested by \`@alice\``))).toEqual({ reviewed: false, settled: [] });
     expect(authModule.fetchPrState).not.toHaveBeenCalled();
     jest.mocked(authModule.fetchPrState).mockResolvedValue(null);
     jest.mocked(core.getInput).mockReturnValue('');
