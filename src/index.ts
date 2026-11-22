@@ -716,10 +716,13 @@ async function handleMergedPullRequest(): Promise<void> {
   }, memory);
 }
 
+const REVIEW_PR_CLOSED = 'Nothing was reviewed, since this pull request is merged or closed.';
+
 /**
  * Reviews the PR a comment is on, for a review command or, with `settingsTick`, a box ticked in the settings block or
  * the Review again box ticked in another `message`. A tick reviews only with a mode the coordinator queued for the run.
  * The Review again box of `message` then names who asked for the review, and is unticked again when none was queued.
+ * A review command on a merged or closed PR reviews nothing and says so.
  */
 async function handleCommentTrigger(settingsTick = false, message?: TickedMessage): Promise<void> {
   const payload = github.context.payload;
@@ -734,6 +737,15 @@ async function handleCommentTrigger(settingsTick = false, message?: TickedMessag
   const repo = github.context.repo.repo;
 
   const { octokit, bot } = await getAuth();
+  if (!settingsTick && eventPrClosed()) {
+    core.info(`PR #${prNumber} is merged or closed, so the review command reviews nothing`);
+    try {
+      await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: withMarkers(REVIEW_PR_CLOSED, COMMENT_MARKER) });
+    } catch (error) {
+      core.warning(`Failed to answer the review command: ${error instanceof Error ? error.message : error}`);
+    }
+    return;
+  }
   const settings = await loadSettings(owner, repo, prNumber);
   const { forced, fullReview, deeper } = reviewModes(settings);
   if (message) await settleTickedBox(octokit, owner, repo, prNumber, message, 'again', undefined, forced ? payload.sender?.login : undefined);

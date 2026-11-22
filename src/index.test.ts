@@ -1377,6 +1377,27 @@ describe('handleCommentTrigger', () => {
     );
     expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
   });
+
+  it('answers a review command on a merged or closed PR once and reviews nothing', async () => {
+    setContext({
+      eventName: 'issue_comment',
+      payload: {
+        action: 'created',
+        issue: { number: 1, state: 'closed', pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } },
+        comment: { id: 42, body: '@manki review', author_association: 'COLLABORATOR' },
+      },
+    });
+    mockPullsGet.mockClear();
+
+    await handleCommentTrigger();
+
+    expect(mockOctokitInstance.rest.issues.createComment.mock.calls).toEqual([[{
+      owner: 'test-owner', repo: 'test-repo', issue_number: 1, body: 'Nothing was reviewed, since this pull request is merged or closed.\n\n<!-- manki -->',
+    }]]);
+    expect(mockPullsGet).not.toHaveBeenCalled();
+    expect(jest.mocked(ghUtils.hasBotReviewOnCommit)).not.toHaveBeenCalled();
+    expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
+  });
 });
 
 describe('isApprovedOnCommit guard', () => {
