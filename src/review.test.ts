@@ -32,6 +32,7 @@ import {
   WORKAROUND_REASON,
   UNCONFIRMED_FIX_ENDING,
   formatFinderError,
+  postedWhenPreExisting,
 } from './review';
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { DEFAULT_CONFIG, resolveFallbackModel, resolveModel } from './config';
@@ -3912,6 +3913,8 @@ describe('runReview', () => {
     expect(refuterMessages).toEqual([]);
     expect(result.findings).toEqual([]);
     expect(result.unpostedPreExisting?.map(f => [f.title, f.severity, f.tags])).toEqual(titles.map(title => [title, 'warning', ['pre-existing']]));
+    // The warning of a blocker every refuter disproved is still posted, as the blocker would have been.
+    expect(postedWhenPreExisting({ ...result.unpostedPreExisting![0], tags: ['pre-existing', 'disproved-blocker'] })).toBe(true);
   });
 
   it('records what the checks at the round\'s end found when the verdict reader then fails, and starts none without the time for it', async () => {

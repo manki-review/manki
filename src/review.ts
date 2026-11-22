@@ -69,9 +69,12 @@ function withOrigins(refuted: Finding[], origins: Finding[]): Finding[] {
   return refuted.map((f, i) => (origins[i]?.originCheck ? { ...f, originCheck: origins[i].originCheck } : f));
 }
 
-/** Whether a pre-existing finding is worth an author's time: a security finding, or one that would block had this PR caused it. */
+/**
+ * Whether a pre-existing finding is worth an author's time: a guarded finding (`isGuardedFinding`), or one that would
+ * block had this PR caused it.
+ */
 export function postedWhenPreExisting(f: Finding): boolean {
-  return isSecurityFinding(f.tags, f.reviewers) || f.severity === 'blocker';
+  return isGuardedFinding(f.tags, f.reviewers) || f.severity === 'blocker';
 }
 
 /**
