@@ -169,7 +169,7 @@ function staysOpenNote(thread: { isSecurity?: boolean; disprovedBlocker?: boolea
   const author = !fixed && clearRole ? ` A PR author can ${verb} it only with ${rolePhrase(clearRole, true)}.` : '';
   const kind = guardedKind(thread);
   return (resolved
-    ? `This is a ${kind}, so resolving the thread does not clear it. It keeps blocking until ${until}.`
+    ? `This is a ${kind}, so resolving the thread does not clear it. It keeps ${thread.disprovedBlocker ? 'holding the approval' : 'blocking'} until ${until}.`
     : `This is a ${kind}, so the thread stays open until ${until}.`) + author;
 }
 

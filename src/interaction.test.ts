@@ -2439,6 +2439,7 @@ describe('handleReviewCommentCommand', () => {
     // The PR author's own dismissal clears nothing, so it says that the finding keeps blocking.
     ['a blocker thread the PR author resolved, dismissed by the PR author', 'blocker', 'pr-author', false, 'refused', 'pr-author'],
     ['a security thread the PR author resolved, dismissed by the PR author', 'security', 'pr-author', false, 'refused', 'pr-author'],
+    ['a disproved blocker thread the PR author resolved, dismissed by the PR author', 'disproved', 'pr-author', false, 'refused', 'pr-author'],
     ['a security thread a PR author with a role that allows it resolved, dismissed by that author', 'security', 'pr-author', true, 'left', 'pr-author'],
     ['a blocker thread another maintainer resolved, dismissed by the PR author', 'blocker', 'other', false, 'left', 'pr-author'],
   ])('clears a resolved thread a maintainer dismisses only when its resolve does not count: %s', async (_label, kind, resolver, authorMayClear, result, sender = 'someone') => {
@@ -2451,7 +2452,7 @@ describe('handleReviewCommentCommand', () => {
     octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { original_commit_id: POSTED_ON, user: MANKI_USER, body: findingComment(kind), path: 'src/file.ts', line: 10 } });
     jest.mocked(ghUtils.authorClearRole).mockResolvedValue(authorMayClear ? 'maintain' : undefined);
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([
-      { id: 'PRRT_this', rootCommentId: 99, isResolved: true, resolvedByLogin: resolver, writerResolverLogin: resolver, isBlocking: kind !== 'warning', ...(kind === 'security' && { isSecurity: true }), findingTitle: 'Token' },
+      { id: 'PRRT_this', rootCommentId: 99, isResolved: true, resolvedByLogin: resolver, writerResolverLogin: resolver, isBlocking: kind !== 'warning' && kind !== 'disproved', ...(kind === 'security' && { isSecurity: true }), ...(kind === 'disproved' && { disprovedBlocker: true }), findingTitle: 'Token' },
     ]);
     jest.mocked(state.reopenThread).mockClear().mockResolvedValue(result !== 'failed');
 
@@ -2462,8 +2463,9 @@ describe('handleReviewCommentCommand', () => {
     // Manki records a maintainer's dismissal only on a thread it resolves itself.
     expect(state.announceSecurityOverrides).not.toHaveBeenCalled();
     expect(jest.mocked(state.recordDismissal).mock.calls).toEqual(result === 'cleared' || result === 'failed' ? [[octokit, 'PRRT_this', 'someone', false, undefined]] : []);
-    // A thread that stays resolved by the PR author still blocks, so the dismissal says it did not work.
-    const keepsBlocking = `This is a ${kind === 'security' ? 'security' : 'blocking'} finding, so resolving the thread does not clear it. It keeps blocking until someone other than the PR author with write access clears it. A PR author can clear it only with the \`maintain\` role or a higher one.`;
+    // A thread that stays resolved by the PR author still blocks, or holds the approval, so the dismissal says it did not work.
+    const what = { security: 'security finding', disproved: 'blocker that a check disproved' }[kind as string] ?? 'blocking finding';
+    const keepsBlocking = `This is a ${what}, so resolving the thread does not clear it. It keeps ${kind === 'disproved' ? 'holding the approval' : 'blocking'} until someone other than the PR author with write access clears it. A PR author can clear it only with the \`maintain\` role or a higher one.`;
     const note = { failed: 'Could not resolve this thread. The run log has the reason.', refused: keepsBlocking, cleared: undefined, left: undefined }[result];
     expect(jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls).toEqual(
       note ? [[expect.objectContaining({ comment_id: 64, body: `${note}\n\n<!-- manki -->` })]] : [],
