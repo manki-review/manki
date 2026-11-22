@@ -41,7 +41,7 @@ import { relatedReposCacheDir } from './related-repos';
 import * as core from '@actions/core';
 import * as napi from '@ast-grep/napi';
 import { formatFindingComment, holdsApproval, LinkedIssue, titleToSlug } from './github';
-import { CELL_GRADES, cellGrade, EarlierAttempt, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, OriginAnswer, OriginVerdict, Refutation, RefutationOutcome, ReviewResult, RoundContext, RoundLead, RoundNotStarted, RoundScope, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG, SweepMode } from './types';
+import { CELL_GRADES, cellGrade, EarlierAttempt, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, OriginAnswer, OriginVerdict, Refutation, RefutationOutcome, ReviewResult, RoundContext, RoundLead, RoundNotStarted, RoundScope, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG, SweepMode, triggerDoubt } from './types';
 import { citedLine, stringifyFindingFingerprint } from './finding-fingerprint';
 import { baseProofFixture, baseProofWorkspace, expectLinearTime, fingerprintEntriesFromLegacy, git, GIT_TEST_TIMEOUT_MS, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
 import { listUsesOutsideDiff } from './symbol-uses';
@@ -4573,6 +4573,14 @@ describe('runReview', () => {
     });
     const proof = { evidence: { checks: [], proof: ['src/a.ts:1'] } };
     const degraded = { row: 'degraded' as const, column: 'normal' as const };
+    /** A finder's blocker the judge kept as a warning without a trigger, whose trigger a check that confirmed the defect answered with `outcome`. */
+    const triggerChecked = (outcome: RefutationOutcome, more: Partial<Finding> = {}): Partial<Finding> => {
+      const doubt = triggerDoubt(undefined);
+      return {
+        ...proof, cell: degraded, reviewerSeverity: 'blocker', gradeIfConfirmed: 'warning', doubts: [doubt], ...more,
+        refutation: { ...checked('confirmed').refutation, premises: [{ premise: doubt.premise, decides: 'defect', outcome, reason: `It is ${outcome}.` }] },
+      };
+    };
     /** Runs a round whose judge returns one finding per entry of `judged`, by title, with or without repository tools. */
     const review = async (judged: Record<string, Partial<Finding>>, tools: boolean) => {
       const clients = makeClients();
@@ -4611,6 +4619,11 @@ describe('runReview', () => {
         'Rare wrong result without a trigger': { ...proof, cell: { row: 'wrong', column: 'rare' } },
         'Cost a finder filed as a blocker': { ...proof, cell: degraded, reviewerSeverity: 'blocker' },
         'Security cost without a trigger': { ...proof, cell: degraded, tags: ['security'] },
+        // A finder's blocker without a trigger is left out only once a check disproves the trigger, never on a security finding or a wrong result.
+        'Cost a finder filed as a blocker, trigger confirmed': triggerChecked('confirmed'),
+        'Cost a finder filed as a blocker, trigger disproved': triggerChecked('disproved'),
+        'Security cost, trigger disproved': triggerChecked('disproved', { tags: ['security'] }),
+        'Rare wrong result, trigger disproved': triggerChecked('disproved', { cell: { row: 'wrong', column: 'rare' } }),
       }, true);
 
       expect(shown(result)).toEqual([
@@ -4619,6 +4632,7 @@ describe('runReview', () => {
         // Only a blocker or a warning says how it was checked. A doubt no check could settle leaves a posted warning unconfirmed.
         ['Doubted and no check could run', 'unconfirmed'], ['A doubted note', undefined], ['A blocker', 'proven'],
         ['Proven cost with a trigger', 'proven'], ['Rare wrong result without a trigger', 'proven'], ['Cost a finder filed as a blocker', 'proven'], ['Security cost without a trigger', 'proven'],
+        ['Cost a finder filed as a blocker, trigger confirmed', 'confirmed'], ['Security cost, trigger disproved', 'unconfirmed'], ['Rare wrong result, trigger disproved', 'unconfirmed'],
       ]);
       expect(recordedOnly(result)).toEqual([
         ['The check left the premise that decides the defect open', 'warning', 'unsettled_check'],
@@ -4630,6 +4644,7 @@ describe('runReview', () => {
         // A missing trigger is the reason whatever proves the warning.
         ['Proven cost without a trigger', 'warning', 'no_trigger'],
         ['Unproven cost without a trigger', 'warning', 'no_trigger'],
+        ['Cost a finder filed as a blocker, trigger disproved', 'warning', 'no_trigger'],
       ]);
       // The judged list still holds each one, so the progress comment can name it.
       expect(result.allJudgedFindings?.map(f => f.title)).toEqual(expect.arrayContaining(['The check settled nothing', 'No cited lines and no check could run']));
