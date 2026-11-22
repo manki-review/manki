@@ -89,7 +89,7 @@ interface ReviewThread {
   disprovedBlocker?: boolean;
   /** The override recorded in one of Manki's comments on this blocking or security thread. Trusted only after `authorClearRole` confirms the role. */
   recordedOverride?: Omit<SecurityOverride, 'thread'>;
-  /** Who Manki recorded a dismissal for on this thread since its last reopen, by `dismissRecordLogins`. */
+  /** Who Manki recorded a dismissal for on this thread since its last reopen or found-again reply, by `dismissRecordLogins`. */
   dismissRecords?: string[];
   /** The fix in another pull request that a reply in the thread named, and whether Manki checked it, by `fixClaimOf`. */
   fixClaim?: FixClaim;

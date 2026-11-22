@@ -6,7 +6,7 @@ import * as core from '@actions/core';
 
 import { DEFAULT_CONFIG } from './config';
 import { BOT_MARKER, CANCELLED_MARKER, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER } from './github';
-import { REOPENED_MARKER, securityOverrideMarker } from './recap';
+import { clearRecordMarker, REOPENED_MARKER, securityOverrideMarker } from './recap';
 import { relatedReposCacheDir } from './related-repos';
 import { RETRY_HINT } from './review';
 import { parseSettingsBlock } from './settings';
@@ -1896,9 +1896,9 @@ describe('runFullReview end to end', () => {
 
       expect(core.setFailed).not.toHaveBeenCalled();
       const note = clears ? '' : `\n\n${REOPENED} ${PUSH_A_FIX}`;
-      // A dismissal that resolves the thread gets no answer, only Manki's record of it.
+      // A dismissal that resolves the thread gets no answer, only Manki's record of it. An answer that clears the thread records whom for.
       expect(thread.comments.slice(before + 1).map(c => c.body.replace(/\n<!-- manki-reply-record: .+ -->/, ''))).toEqual(
-        body.startsWith('@manki') ? ['Finding dismissed by `@bob`, who has write access to this repository.\n\n<!-- manki -->\n<!-- manki-dismiss-record:bob -->'] : [`${agreed}${note}\n\n<!-- manki -->${clears ? '' : `\n${REOPENED_MARKER}`}`],
+        body.startsWith('@manki') ? ['Finding dismissed by `@bob`, who has write access to this repository.\n\n<!-- manki -->\n<!-- manki-dismiss-record:bob -->'] : [`${agreed}${note}\n\n<!-- manki -->\n${clears ? clearRecordMarker(login) : REOPENED_MARKER}`],
       );
       // Manki resolves the thread itself, since alice's own resolve never counts for the approval.
       expect([thread.isResolved, thread.resolvedBy?.login]).toEqual(clears ? [true, APP_LOGIN] : [false, undefined]);

@@ -222,23 +222,30 @@ function clearRecordMarker(login: string): string {
 }
 
 /**
- * Returns who Manki's latest record says it resolved the thread for: a clear record of its answer to that person, or a
- * dismiss record. Only Manki's own comments count, read below its comment marker. A reopen or a found-again reply by
- * Manki ends every record before it, since the thread is open again.
+ * Returns the bodies of Manki's own comments that may hold a record of who it cleared the thread for. A reopen or a
+ * found-again reply by Manki ends every record before it, since the thread is open again.
  */
-function clearRecordLogin(bot: BotIdentity, comments: ReadonlyArray<{ body?: string | null; author?: { login: string } | null }>): string | undefined {
+function recordsSinceOpened(bot: BotIdentity, comments: ReadonlyArray<{ body?: string | null; author?: { login: string } | null }>): string[] {
   const own = sinceLastReopen(bot, comments).filter(c => isBotLogin(bot, c.author?.login)).map(c => c.body ?? '');
   const foundAgain = own.reduce((at, body, i) => hasOwnMarker(body, FOUND_AGAIN_MARKER, COMMENT_MARKER) ? i : at, -1);
-  return own.slice(foundAgain + 1).flatMap(body => {
+  return own.slice(foundAgain + 1);
+}
+
+/**
+ * Returns who Manki's latest record says it resolved the thread for: a clear record of its answer to that person, or a
+ * dismiss record. Only Manki's own comments since `recordsSinceOpened` count, read below its comment marker.
+ */
+function clearRecordLogin(bot: BotIdentity, comments: ReadonlyArray<{ body?: string | null; author?: { login: string } | null }>): string | undefined {
+  return recordsSinceOpened(bot, comments).flatMap(body => {
     const login = (ownMarker(body, CLEAR_RECORD_OPENER, COMMENT_MARKER) ?? ownMarker(body, DISMISS_RECORD_OPENER, COMMENT_MARKER))?.match(/^[\w-]+$/)?.[0];
     return login ? [login] : [];
   }).at(-1);
 }
 
-/** Returns who Manki recorded a dismissal for in a thread since its last reopen. */
+/** Returns who Manki recorded a dismissal for in a thread since `recordsSinceOpened`, so a dismissal after a found-again reply is recorded again. */
 function dismissRecordLogins(bot: BotIdentity, comments: ReadonlyArray<{ body?: string | null; author?: { login: string } | null }>): string[] {
-  return sinceLastReopen(bot, comments).flatMap(c => {
-    const login = isBotLogin(bot, c.author?.login) ? ownMarker(c.body ?? '', DISMISS_RECORD_OPENER, COMMENT_MARKER)?.match(/^[\w-]+$/)?.[0] : undefined;
+  return recordsSinceOpened(bot, comments).flatMap(body => {
+    const login = ownMarker(body, DISMISS_RECORD_OPENER, COMMENT_MARKER)?.match(/^[\w-]+$/)?.[0];
     return login ? [login] : [];
   });
 }

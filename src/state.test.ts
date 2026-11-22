@@ -448,15 +448,20 @@ describe('fetchBotReviewThreads', () => {
           { body: `${BOT_MARKER}\n${dismissRecordMarker('bob')}`, author: { login: 'manki-review[bot]' } },
           ...Array.from({ length: 98 }, () => ({ body: 'Still looking.', author: { login: 'reader' } })),
         ] }),
+        // A found-again reply ends the dismiss record before it, so a second dismissal by the same person is recorded again.
+        makeGraphqlFetchThreadNode({ id: 't7', body: security, replies: [
+          { body: `${BOT_MARKER}\n${dismissRecordMarker('bob')}`, author: { login: 'manki-review[bot]' } },
+          { body: `This came up again.\n\n${BOT_MARKER}\n${FOUND_AGAIN_MARKER}`, author: { login: 'manki-review[bot]' } },
+        ] }),
       ]),
     );
 
     const threads = await fetchBotReviewThreads(threadsOctokit(graphqlMock), TEST_BOT, 'owner', 'repo', 1);
 
     expect(quoting).toContain(`\`\`\`ts\n${quoted}\n\`\`\``);
-    expect(threads.map(t => t.recordedOverride)).toEqual([{ login: 'jdoe_acme', via: 'dismiss' }, undefined, undefined, { login: 'jdoe_acme', via: 'dismiss' }, undefined, undefined]);
-    expect(threads.map(t => [t.isBlocking, t.findingTitle])).toEqual(Array(6).fill([true, 'Token leaks into logs']));
-    expect(threads.map(t => t.dismissRecords)).toEqual([undefined, undefined, undefined, undefined, ['bob'], undefined]);
+    expect(threads.map(t => t.recordedOverride)).toEqual([{ login: 'jdoe_acme', via: 'dismiss' }, undefined, undefined, { login: 'jdoe_acme', via: 'dismiss' }, undefined, undefined, undefined]);
+    expect(threads.map(t => [t.isBlocking, t.findingTitle])).toEqual(Array(7).fill([true, 'Token leaks into logs']));
+    expect(threads.map(t => t.dismissRecords)).toEqual([undefined, undefined, undefined, undefined, ['bob'], undefined, undefined]);
   });
 
   it('identifies threads by BOT_MARKER alone', async () => {
