@@ -1027,9 +1027,12 @@ export function restsOnDrop(f: Pick<Finding, 'doubts'>): boolean {
  */
 export const REACH_DOUBT: Doubt = { premise: 'Normal use or outside input can produce the state this failure needs', decides: 'grade' };
 
-/** Returns the premise that the `trigger` of a finding happens in realistic use, which `doubtTrigger` asks the refuter to check. */
-export function triggerDoubt(trigger: string): Doubt {
-  return { premise: `This trigger happens in realistic use: ${trigger}`, decides: 'defect' };
+/**
+ * Returns the premise that the `trigger` of a finding happens in realistic use, which `doubtTrigger` asks the refuter to
+ * check. Without a `trigger` the premise names the sequence of events the finding's description gives.
+ */
+export function triggerDoubt(trigger: string | undefined): Doubt {
+  return { premise: `This trigger happens in realistic use: ${trigger || 'the sequence of events the description names'}`, decides: 'defect' };
 }
 
 /** Returns `doubts` with `REACH_DOUBT` in place of any doubt that words the same premise. */

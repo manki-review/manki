@@ -17,7 +17,7 @@ import { FULL_GROUP, GroupChoice, chooseGroup, classifyPr, distinctModels, finde
 import { extractJSON } from './json';
 import { currentFindingLine, indexThreadEvaluations, isPriorAddressedByJudge, placesReading, stringifyFindingFingerprint } from './finding-fingerprint';
 import { checkOrigins, MAX_ORIGIN_CHECKS } from './origin';
-import { checkStatus, confirmFixesElsewhere, lacksTrigger, MAX_DOUBT_CHECKS, needsProof, refuteBlockers, unprovenReason } from './refute';
+import { checkStatus, confirmFixesElsewhere, disprovedTrigger, lacksTrigger, MAX_DOUBT_CHECKS, needsProof, refuteBlockers, unprovenReason } from './refute';
 import { combineVerdictReports, runVerdictReader } from './verdict';
 import { buildRepositoryRules, CLAIMS_MISSING_RULE, COST_SCALE_RULE, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, PRE_EXISTING_RULE, ROOT_CAUSE_FIX_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
@@ -122,7 +122,8 @@ function markPreExisting(findings: Finding[], checkOf: (finding: Finding) => Pre
  * Splits off the warnings that `needsProof` and that nothing proves, by `unprovenReason`, as `unposted` with that
  * reason, for the round record only. A warning that `lacksTrigger` goes there too, with `no_trigger`. A warning is left
  * out only when it is certain that no rule keeps it, so these stay `posted` too: a finding `foldIntoEarlierFindings` or
- * the judge put under one an earlier round still shows, and a finding that `wouldBlock`. A finding that `isRareClaim`
+ * the judge put under one an earlier round still shows, and a finding that `wouldBlock` unless a check `disprovedTrigger`
+ * of a warning that `lacksTrigger`. A finding that `isRareClaim`
  * stays `posted` as well, whatever its check answered, and so does one that `staysWarningIfConfirmed`, since its cell
  * gives a blocker. Each posted blocker and warning that no tool reported gets its `checkStatus`, except a scope warning,
  * which judges the PR as a whole and cites no code to check.
@@ -145,7 +146,7 @@ function hideUnprovenWarnings(findings: Finding[], rules: RulesMode | undefined,
 /** Returns why `hideUnprovenWarnings` leaves `f` out, or undefined when it posts `f`. */
 function unprovenWarningReason(f: Finding, rules: RulesMode | undefined, wouldBlock = wouldBlockIfTrue): UnpostedReason | undefined {
   const reason = !needsProof(f, rules) ? undefined : lacksTrigger(f) ? 'no_trigger' : unprovenReason(f);
-  const kept = f.threadId || f.answeredIn || f.raisedIn !== undefined || wouldBlock(f) || isRareClaim(f.cell) || staysWarningIfConfirmed(f);
+  const kept = f.threadId || f.answeredIn || f.raisedIn !== undefined || (wouldBlock(f) && !(reason === 'no_trigger' && disprovedTrigger(f))) || isRareClaim(f.cell) || staysWarningIfConfirmed(f);
   return kept ? undefined : reason;
 }
 

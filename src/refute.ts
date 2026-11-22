@@ -585,12 +585,15 @@ export function unprovenReason(finding: Finding): UnprovenReason | undefined {
 
 /**
  * Whether the warning `finding` on the `degraded` row has no realistic trigger: the judge named none, or a check
- * disproved the trigger it named and no check confirmed the defect. A finding on any other row keeps its grade however
- * rare its trigger, since its consequence is serious.
+ * `disprovedTrigger`. A finding on any other row keeps its grade however rare its trigger, since its consequence is serious.
  */
 export function lacksTrigger(finding: Finding): boolean {
   if (finding.severity !== 'warning' || finding.cell?.row !== 'degraded') return false;
-  if (!finding.trigger) return true;
+  return !finding.trigger || disprovedTrigger(finding);
+}
+
+/** Whether a check disproved the `triggerDoubt` of `finding` and no check confirmed the defect. */
+export function disprovedTrigger(finding: Finding): boolean {
   const { premise } = triggerDoubt(finding.trigger);
   const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r);
   return !checks.some(check => confirmsDefect(check, finding)) && checks.some(check => !!check.premises?.some(p => p.premise === premise && p.outcome === 'disproved'));

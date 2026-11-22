@@ -6,7 +6,7 @@ import * as core from '@actions/core';
 
 import { parsePRDiff } from './diff';
 import { LLMClient, SendMessageOptions } from './providers';
-import { checkStatus, confirmFixesElsewhere, lacksTrigger, needsProof, RefuteOptions, refuteBlockers, unprovenReason } from './refute';
+import { checkStatus, confirmFixesElsewhere, disprovedTrigger, lacksTrigger, needsProof, RefuteOptions, refuteBlockers, unprovenReason } from './refute';
 import { repoToolsPrompt } from './providers/cli-utils';
 import { parseFindings } from './review';
 import { agreedOutcome, disproof, Finding, OpenThread, outcomeOf, ParsedDiff, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, RulesMode, staysWarningIfConfirmed, triggerDoubt, wouldBlockIfTrue } from './types';
@@ -1192,16 +1192,23 @@ describe('refuteBlockers', () => {
   it('posts a `degraded` warning only with a realistic trigger, and confirms its trigger, not only the defect, before it shows as confirmed', async () => {
     const degraded = { row: 'degraded' as const, column: 'normal' as const };
     const trigger = 'When a user saves a record';
-    const withTrigger = (title: string) => finding(title, { severity: 'warning', cell: degraded, trigger, gradeIfConfirmed: 'warning', doubts: [triggerDoubt(trigger)] });
+    const withTrigger = (title: string) => title.startsWith('No trigger')
+      // The judge named no trigger for a warning a finder filed as a blocker, so the premise names the trigger the description gives.
+      ? finding(title, { severity: 'warning', cell: degraded, reviewerSeverity: 'blocker', gradeIfConfirmed: 'warning', doubts: [triggerDoubt(undefined)] })
+      : finding(title, { severity: 'warning', cell: degraded, trigger, gradeIfConfirmed: 'warning', doubts: [triggerDoubt(trigger)] });
     const answer = (outcome: RefutationOutcome) => ({ outcome, reason: 'r', proof: ['src/math.ts:2'] });
     // Every check confirms the defect itself. Only the answer about the trigger differs.
-    const outcomes: Record<string, RefutationOutcome> = { 'Trigger confirmed': 'confirmed', 'Trigger disproved': 'disproved', 'Trigger open': 'unsettled' };
+    const outcomes: Record<string, RefutationOutcome> = {
+      'Trigger confirmed': 'confirmed', 'Trigger disproved': 'disproved', 'Trigger open': 'unsettled', 'No trigger, confirmed': 'confirmed', 'No trigger, disproved': 'disproved',
+    };
     const client = fakeClient(Object.fromEntries(Object.entries(outcomes).map(([title, outcome]) => [title, { ...answer('confirmed'), premises: [answer(outcome)] }])));
     const checked = await refuteRound(client, Object.keys(outcomes).map(withTrigger), { workspace, diff });
-    expect(checked.map(f => [f.title, f.severity, lacksTrigger(f), unprovenReason(f), checkStatus(f)])).toEqual([
-      ['Trigger confirmed', 'warning', false, undefined, 'confirmed'],
-      ['Trigger disproved', 'warning', true, 'unsettled_check', 'unconfirmed'],
-      ['Trigger open', 'warning', false, 'unsettled_check', 'unconfirmed'],
+    expect(checked.map(f => [f.title, f.severity, lacksTrigger(f), disprovedTrigger(f), unprovenReason(f), checkStatus(f)])).toEqual([
+      ['Trigger confirmed', 'warning', false, false, undefined, 'confirmed'],
+      ['Trigger disproved', 'warning', true, true, 'unsettled_check', 'unconfirmed'],
+      ['Trigger open', 'warning', false, false, 'unsettled_check', 'unconfirmed'],
+      ['No trigger, confirmed', 'warning', true, false, undefined, 'confirmed'],
+      ['No trigger, disproved', 'warning', true, true, 'unsettled_check', 'unconfirmed'],
     ]);
     // Without a check, a `degraded` warning lacks a trigger only when the judge named none. No other row and no other grade needs one.
     expect([

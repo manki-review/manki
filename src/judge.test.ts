@@ -1909,7 +1909,7 @@ describe('runJudgeAgent', () => {
     expect(second.startsWith(`${first}\n\nYour previous reply could not be used: `)).toBe(true);
   });
 
-  it('has the trigger of a `degraded` warning checked when two finders ran and only one reported it', async () => {
+  it('has the trigger of a `degraded` warning checked when two finders ran and only one reported it, or when a finder filed it as a blocker and the judge named no trigger', async () => {
     const trigger = 'When a page loads';
     const findings = [
       makeFinding({ title: 'One finder', severity: 'warning', line: 3, reviewers: ['First'] }),
@@ -1921,6 +1921,8 @@ describe('runJudgeAgent', () => {
       makeFinding({ title: 'Same title', severity: 'warning', line: 13, reviewers: ['First'] }),
       makeFinding({ title: 'Same title', severity: 'warning', line: 14, reviewers: ['Second'] }),
       makeFinding({ title: 'Sweep only', severity: 'warning', line: 15, reviewers: ['Sweep 1'] }),
+      makeFinding({ title: 'Blocker with no trigger', severity: 'blocker', line: 17, reviewers: ['First'] }),
+      makeFinding({ title: 'Wrong result with no trigger', severity: 'blocker', line: 19, reviewers: ['First'] }),
     ];
     const entries = [
       { id: 1, title: 'One finder', row: 'degraded', reasoning: 'r', trigger },
@@ -1933,6 +1935,8 @@ describe('runJudgeAgent', () => {
       { id: 7, title: 'Same title', row: 'degraded', reasoning: 'r', trigger },
       { id: 8, title: 'Same title', row: 'degraded', reasoning: 'r', trigger },
       { id: 9, title: 'Sweep only', row: 'degraded', reasoning: 'r', trigger },
+      { id: 10, title: 'Blocker with no trigger', row: 'degraded', reasoning: 'warning cell, but no realistic trigger' },
+      { id: 11, title: 'Wrong result with no trigger', row: 'wrong', column: 'rare', reasoning: 'r' },
     ];
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'manki-judge-trigger-'));
     const refuter = { repoTools: true, sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify({ outcome: 'unsettled', reason: 'r' }) }) } as unknown as LLMClient;
@@ -1952,13 +1956,19 @@ describe('runJudgeAgent', () => {
       ['Same title', trigger, undefined, undefined],
       // A sweep is no finder, so a warning only it found has fewer than two finders behind it too.
       ['Sweep only', trigger, 'warning', [triggerDoubt(trigger).premise]],
+      // A finder's blocker stays posted without a trigger until a check disproves the one its description names.
+      ['Blocker with no trigger', undefined, 'warning', [triggerDoubt(undefined).premise]],
+      // A wrong result keeps its grade however rare its trigger, so its trigger is never checked.
+      ['Wrong result with no trigger', undefined, 'blocker', [REACH_DOUBT.premise]],
     ]);
-    // With one finder there is no second one to agree, so no warning gets the check.
+    // With one finder there is no second one to agree, so only the finder's blocker with no trigger gets the check.
     expect((await graded(['First'])).map(([title, , , doubts]) => [title, doubts])).toEqual([
       ['One finder', undefined], ['Both finders', undefined], ['No trigger', undefined], ['Security', undefined], ['Rare wrong result', [REACH_DOUBT.premise]], ['Same title', undefined], ['Sweep only', undefined],
+      ['Blocker with no trigger', [triggerDoubt(undefined).premise]], ['Wrong result with no trigger', [REACH_DOUBT.premise]],
     ]);
     // Without a refuter no check could confirm the trigger, so a warning that cites its lines stays proven.
-    expect((await graded(['First', 'Second'], false)).find(([title]) => title === 'One finder')).toEqual(['One finder', trigger, undefined, undefined]);
+    const unchecked = await graded(['First', 'Second'], false);
+    expect(unchecked.filter(([title]) => title === 'One finder' || title === 'Blocker with no trigger')).toEqual([['One finder', trigger, undefined, undefined], ['Blocker with no trigger', undefined, undefined, undefined]]);
     fs.rmSync(workspace, { recursive: true, force: true });
   });
 
@@ -2173,7 +2183,7 @@ describe('runJudgeAgent', () => {
       findings: [
         { id: 1, title: 'Deadlock on stop', row: 'wrong', column: 'normal', doubts: [{ premise: 'The stop path takes the same lock', decides: 'defect' }, { premise: 'Stopping hangs the service', decides: 'consequence' }], reasoning: 'warning. The second lock path sits outside the code shown.' },
         { id: 2, title: 'Missing bound', row: 'wrong', column: 'rare', doubts: [{ premise: 'A public caller passes an unbounded length', decides: 'grade' }], reasoning: 'r' },
-        { id: 3, title: 'Slow path', row: 'degraded', reasoning: 'Performance never blocks.' },
+        { id: 3, title: 'Slow path', row: 'degraded', trigger: 'When a request lists the entries', reasoning: 'Performance never blocks.' },
         { id: 4, title: 'Unseen kept', row: 'wrong', column: 'rare', reasoning: 'r' },
         { id: 5, title: 'Unseen dropped', row: 'none', doubts: [{ premise: 'The handler is registered', decides: 'defect' }], reasoning: 'r' },
         { id: 7, title: 'Second cache left stale', row: 'wrong', column: 'rare', doubts: [{ premise: 'A request reads the second cache after the write', decides: 'grade' }], reasoning: 'warning. Not sure a request reads it, since only the sweeper seems to.' },

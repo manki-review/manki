@@ -22,7 +22,7 @@ import { sanitize, titleOverlapType } from './recap';
 import { FINDER_TOOLS_TIMEOUT_MS, guardedThreadStaysOpen, determineOutcome, earlierFindings, fencePrText, filesChangedByPush, parseProof, postedWhenPreExisting, restatesEarlier, sameProblem, truncateDiff } from './review';
 import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge, stringifyFindingFingerprint } from './finding-fingerprint';
-import { lacksTrigger, MAX_DOUBT_CHECKS, MAX_RELATED_PROOF, needsProof, refuteBlockers } from './refute';
+import { disprovedTrigger, lacksTrigger, MAX_DOUBT_CHECKS, MAX_RELATED_PROOF, needsProof, refuteBlockers } from './refute';
 import { fetchedRelatedRepos, relatedNames, repoTools } from './related-repos';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim, relatedCitations } from './static-signals';
@@ -1729,15 +1729,16 @@ export async function runJudgeAgent(
   const mapped = mapJudgedToFindings(findings, judgeResult.findings, linkablePriorFindings(priorRounds, openThreads ?? input.evaluatedThreads?.openThreads), staysPreExisting, !!refutation)
     .map(f => (hiddenClaims.has(findingKey(f)) ? { ...f, preExisting: hiddenClaims.get(findingKey(f)) } : f))
     // The duplicates are folded and the rule has graded by here, so the drop sees the grade the finding ends with.
+    .map(f => doubtUnprovenRule(applyOwnProposal(gradeConfirmedRule(f, config.review?.rules), provenanceMap), config.review?.rules))
     // Without a refuter no check could confirm a trigger, so no finding gets the doubt.
-    .map(f => doubtTrigger(doubtUnprovenRule(applyOwnProposal(gradeConfirmedRule(f, config.review?.rules), provenanceMap), config.review?.rules), refutation ? input.finderNames ?? [] : []));
+    .map(f => (refutation ? doubtTrigger(f, input.finderNames ?? []) : f));
   const suppress = (list: Finding[], quiet = false) => {
     const crossRound = applyCrossRoundSuppression(list, priorRounds, crossRoundOptions);
     return { ...crossRound, ...applyInPrSuppression(crossRound.findings, inPrSuppressions, quiet) };
   };
   const earlier = earlierFindings(priorRounds ?? [], openThreads ?? input.evaluatedThreads?.openThreads ?? [], crossRoundOptions.threadEvaluations);
-  // `hideUnprovenWarnings` leaves out a warning with no trigger whatever a check says, unless an earlier finding may carry it or it would block if true.
-  const noTrigger = (finding: Finding): boolean => lacksTrigger(finding) && needsProof(finding, config.review?.rules) && !wouldBlockIfTrue(finding)
+  // `hideUnprovenWarnings` leaves out a warning with no trigger whatever a check says, unless an earlier finding may carry it or it would block if true and no check disproved its trigger.
+  const noTrigger = (finding: Finding): boolean => lacksTrigger(finding) && needsProof(finding, config.review?.rules) && (!wouldBlockIfTrue(finding) || disprovedTrigger(finding))
     && !finding.threadId && !finding.answeredIn && finding.raisedIn === undefined && !restatesEarlier(earlier, finding);
   // Each step after the refuter that keeps a warning out of the review whatever a check says belongs here: the
   // suppressions above, which drop it or make it a note, the memory suppressions, `markPreExisting` and `noTrigger`.
@@ -1974,13 +1975,16 @@ function doubtUnprovenRule(finding: Finding, rules?: RulesMode): Finding {
 }
 
 /**
- * Adds `triggerDoubt` to a warning on the `degraded` row when two or more of `finderNames` ran and fewer than two of
- * them reported it. The refuter then checks that normal use produces the trigger the judge named, and the warning is
- * posted only once a check confirms it. A tool alert and a security finding are posted without proof, so they get none.
+ * Adds `triggerDoubt` to a warning on the `degraded` row in two cases. The judge named a trigger, and two or more of
+ * `finderNames` ran and fewer than two of them reported it. Or the judge named no trigger and the warning
+ * `wouldBlockIfTrue`, which keeps it posted until a check disproves the trigger. The refuter then checks that normal
+ * use produces the trigger, and the warning shows as confirmed only once a check confirms it. A tool alert and a
+ * security finding are posted without proof, so they get none.
  */
 function doubtTrigger(finding: Finding, finderNames: readonly string[]): Finding {
-  if (finding.severity !== 'warning' || finding.cell?.row !== 'degraded' || !finding.trigger || finding.toolSource || isSecurityFinding(finding.tags, finding.reviewers)) return finding;
-  if (finderNames.length < 2 || finderNames.filter(name => finding.reviewers.includes(name)).length >= 2) return finding;
+  if (finding.severity !== 'warning' || finding.cell?.row !== 'degraded' || finding.toolSource || isSecurityFinding(finding.tags, finding.reviewers)) return finding;
+  const unshared = finderNames.length >= 2 && finderNames.filter(name => finding.reviewers.includes(name)).length < 2;
+  if (finding.trigger ? !unshared : !wouldBlockIfTrue(finding)) return finding;
   const doubt = triggerDoubt(finding.trigger);
   // The judge's own doubt on a warning gets the grade of its cell as `gradeIfConfirmed` too, so both are checked alike.
   return finding.doubts?.some(d => d.premise === doubt.premise) ? finding : { ...finding, gradeIfConfirmed: finding.gradeIfConfirmed ?? 'warning', doubts: [...(finding.doubts ?? []), doubt] };
