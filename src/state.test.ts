@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 import { approveOrSayWhy, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, checkAndAutoApprove, holdApproval, pauseState, reopenAuthorResolvedThreads, retireStaleNotices, BOT_MARKER, ReviewThread, TRACKED_MARKER, unclearedThreads, warningHoldNote } from './state';
-import { PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './recap';
+import { dismissRecordMarker, PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './recap';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, namingCommit, paginateSinglePage, reviewedLine, TEST_BOT, TEST_LINKS, testSha } from './test-utils';
 import { APPROVED_LINE, autoApproveHeadMarker, formatFindingComment, postReview, reviewedCommit, titleToSlug } from './github';
 import { extractApprovalRecords, formatReplyRecord, formatReviewRecord } from './review-record';
@@ -434,14 +434,21 @@ describe('fetchBotReviewThreads', () => {
         // A fix can quote the marker and a lower grade. In the thread's first comment they are a finder's text.
         makeGraphqlFetchThreadNode({ id: 't3', body: quoting }),
         makeGraphqlFetchThreadNode({ id: 't4', body: quoting, replies: [{ body: `${BOT_MARKER}\n\`\`\`\n${securityOverrideMarker('resolve', 'mallory')}\n\`\`\`\n${securityOverrideMarker('dismiss', 'jdoe_acme')}`, author: { login: 'manki-review[bot]' } }] }),
+        makeGraphqlFetchThreadNode({ id: 't5', body: security, replies: [{ body: `${BOT_MARKER}\n${dismissRecordMarker('bob')}`, author: { login: 'manki-review[bot]' } }] }),
+        // A thread at the comment limit may hide a later reopen, so its dismiss record does not count.
+        makeGraphqlFetchThreadNode({ id: 't6', body: security, replies: [
+          { body: `${BOT_MARKER}\n${dismissRecordMarker('bob')}`, author: { login: 'manki-review[bot]' } },
+          ...Array.from({ length: 98 }, () => ({ body: 'Still looking.', author: { login: 'reader' } })),
+        ] }),
       ]),
     );
 
     const threads = await fetchBotReviewThreads(threadsOctokit(graphqlMock), TEST_BOT, 'owner', 'repo', 1);
 
     expect(quoting).toContain(`\`\`\`ts\n${quoted}\n\`\`\``);
-    expect(threads.map(t => t.recordedOverride)).toEqual([{ login: 'jdoe_acme', via: 'dismiss' }, undefined, undefined, { login: 'jdoe_acme', via: 'dismiss' }]);
-    expect(threads.map(t => [t.isBlocking, t.findingTitle])).toEqual(Array(4).fill([true, 'Token leaks into logs']));
+    expect(threads.map(t => t.recordedOverride)).toEqual([{ login: 'jdoe_acme', via: 'dismiss' }, undefined, undefined, { login: 'jdoe_acme', via: 'dismiss' }, undefined, undefined]);
+    expect(threads.map(t => [t.isBlocking, t.findingTitle])).toEqual(Array(6).fill([true, 'Token leaks into logs']));
+    expect(threads.map(t => t.dismissRecords)).toEqual([undefined, undefined, undefined, undefined, ['bob'], undefined]);
   });
 
   it('identifies threads by BOT_MARKER alone', async () => {

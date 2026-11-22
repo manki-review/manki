@@ -245,9 +245,10 @@ async function fetchBotReviewThreads(
       const resolvedByLogin = thread.resolvedBy?.login;
       const threadUrl = thread.comments.nodes[0]?.url;
       const recordedOverride = isSecurity || disprovedBlocker || isBlocking ? recordedSecurityOverride(bot, thread.comments.nodes) : undefined;
-      const dismissRecords = dismissRecordLogins(bot, thread.comments.nodes);
-      // A thread at the comment limit may hide a later answer, so it names no claim.
-      const fixClaim = (isSecurity || disprovedBlocker || isBlocking) && thread.comments.nodes.length < THREAD_COMMENTS_LIMIT ? fixClaimOf(bot, thread.comments.nodes, `${owner}/${repo}`, prNumber) : undefined;
+      // A thread at the comment limit may hide a later answer or reopen, so it names no claim and no dismiss record.
+      const complete = thread.comments.nodes.length < THREAD_COMMENTS_LIMIT;
+      const dismissRecords = complete ? dismissRecordLogins(bot, thread.comments.nodes) : [];
+      const fixClaim = (isSecurity || disprovedBlocker || isBlocking) && complete ? fixClaimOf(bot, thread.comments.nodes, `${owner}/${repo}`, prNumber) : undefined;
       const fixedOn = thread.comments.nodes.slice(1).flatMap(c => {
         const sha = isBotLogin(bot, c.author?.login) ? ownMarker(c.body ?? '', FIXED_MARKER_OPENER, BOT_MARKER)?.match(/^[0-9a-f]{40}$/)?.[0] : undefined;
         return sha ? [sha] : [];
