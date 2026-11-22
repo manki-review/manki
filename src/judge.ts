@@ -14,7 +14,7 @@ import {
   Suppression,
   RepoMemory,
 } from './memory';
-import { addedLines, isLineInDiff, newLineNumbers, orderDiffSections, parsePRDiff, rebuildRawDiff, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
+import { addedLines, DiffSection, isLineInDiff, isSectionOf, newLineNumbers, orderDiffSections, parsePRDiff, rebuildRawDiff, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
 import { formatLockfileChanges, isLockfileAlert, LockfileDiff } from './lockfile';
 import { dynamicFence, fenceText, LinkedIssue, titleToSlug } from './github';
 import { jsonOnlyReply, safeTruncate, sendWithParseRetry } from './utils';
@@ -152,6 +152,9 @@ export function computeProvenanceMap(
 /** Line drift tolerance when matching a current finding against an in-PR thread fingerprint. */
 const IN_PR_SUPPRESSION_LINE_TOLERANCE = 5;
 
+/** The new path of a file in the inter-round diff and the path it had before a rename. */
+type SectionPaths = Omit<DiffSection, 'text'>;
+
 /** Cap on inter-round diff size embedded in the judge user message, to keep prompts bounded on large rebases. */
 export const MAX_INTER_ROUND_DIFF_CHARS = 20000;
 
@@ -159,15 +162,15 @@ export const MAX_INTER_ROUND_DIFF_CHARS = 20000;
  * Returns `diff` cut at `MAX_INTER_ROUND_DIFF_CHARS`, with the files in `first` moved ahead of the rest when it is longer.
  * Also names the file the cut runs through and the files wholly past it.
  */
-export function cutInterRoundDiff(diff: string, first: readonly string[]): { text: string; cut?: string; omitted: string[] } {
+export function cutInterRoundDiff(diff: string, first: readonly string[]): { text: string; cut?: SectionPaths; omitted: SectionPaths[] } {
   if (diff.length <= MAX_INTER_ROUND_DIFF_CHARS) return { text: diff, omitted: [] };
   const sections = orderDiffSections(diff, first);
-  let cut: string | undefined;
-  const omitted: string[] = [];
+  let cut: SectionPaths | undefined;
+  const omitted: SectionPaths[] = [];
   let start = 0;
-  for (const { path, text } of sections) {
-    if (start >= MAX_INTER_ROUND_DIFF_CHARS) omitted.push(path);
-    else if (start + text.length > MAX_INTER_ROUND_DIFF_CHARS) cut = path;
+  for (const { text, ...paths } of sections) {
+    if (start >= MAX_INTER_ROUND_DIFF_CHARS) omitted.push(paths);
+    else if (start + text.length > MAX_INTER_ROUND_DIFF_CHARS) cut = paths;
     start += text.length;
   }
   return { text: safeTruncate(sections.map(s => s.text).join(''), MAX_INTER_ROUND_DIFF_CHARS), cut, omitted };
@@ -182,8 +185,8 @@ export function interRoundDiffFirst(threads: readonly OpenThread[], carriedWarni
 }
 
 /** Names the file the cut of `cutInterRoundDiff` runs through and at most `MAX_UNSHOWN_FILES` of the files wholly past it, one line each. */
-export function cutFilesNote({ cut, omitted }: { cut?: string; omitted: readonly string[] }): string[] {
-  const named = (paths: readonly string[]): string => paths.map(p => `\`${sanitize(p)}\``).join(', ');
+export function cutFilesNote({ cut, omitted }: { cut?: SectionPaths; omitted: readonly SectionPaths[] }): string[] {
+  const named = (sections: readonly SectionPaths[]): string => sections.map(s => `\`${sanitize(s.path)}\``).join(', ');
   // A push can change thousands of files, so the list names at most `MAX_UNSHOWN_FILES` of them.
   const more = omitted.length > MAX_UNSHOWN_FILES ? `, and ${omitted.length - MAX_UNSHOWN_FILES} more files` : '';
   return [
@@ -865,8 +868,8 @@ export function buildJudgeUserMessage(
     const named = (paths: string[]): string => paths.map(p => `\`${sanitize(p)}\``).join(', ');
     // Says why the fix of a thread or warning on `files` may not be shown, so the judge does not call it addressed unseen.
     const unseenNote = (files: string[], codeUnread: boolean, what: string): string[] => {
-      const leftOut = files.filter(p => shownDiff?.omitted.includes(p));
-      const cutShort = files.filter(p => p === shownDiff?.cut);
+      const leftOut = files.filter(p => shownDiff?.omitted.some(s => isSectionOf(s, p)));
+      const cutShort = files.filter(p => shownDiff?.cut && isSectionOf(shownDiff.cut, p));
       const reasons = [
         ...(leftOut.length > 0 ? [`The inter-round diff leaves out ${named(leftOut)}.`] : []),
         ...(cutShort.length > 0 ? [`The inter-round diff shows only the start of ${named(cutShort)}.`] : []),
