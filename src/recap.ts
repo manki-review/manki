@@ -7,7 +7,7 @@ import { currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import { extractJSON } from './json';
 import { isLockfileAlert } from './lockfile';
 import { extractReviewRecords, FIXED_MARKER_OPENER, hasOwnMarker, hasReviewRecord, settledReplyId, settlingDecision } from './review-record';
-import { AuthorClearRole, DISPROVED_TAG, AuthorReplyClass, EarlierAttempt, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, migrateStoredSeverities, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_ORDER, SEVERITY_TOKEN_PATTERN, threadBlocks, gradedAbove, isSecurityFinding } from './types';
+import { AuthorClearRole, DISPROVED_TAG, AuthorReplyClass, EarlierAttempt, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, migrateStoredSeverities, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_ORDER, SEVERITY_TOKEN_PATTERN, threadBlocks, gradedAbove, isGuardedFinding, isSecurityFinding } from './types';
 import { COMMENT_MARKER, escapeRegExp, ownMarker } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -1363,11 +1363,12 @@ function firstMatch<P extends PreviousFinding>(finding: Finding, previous: P[]):
 }
 
 /**
- * Whether the resolved `prev` lets dedup drop `finding` as already waived. A blocker or a security finding is dropped
- * only for a guarded thread, since the PR author alone can resolve any other thread. A finding graded above `prev` is never dropped.
+ * Whether the resolved `prev` lets dedup drop `finding` as already waived. A blocker or a guarded finding
+ * (`isGuardedFinding`) is dropped only for a guarded thread, since the PR author alone can resolve any other thread. A
+ * finding graded above `prev` is never dropped.
  */
 function mayWaive(prev: PreviousFinding, finding: Finding): boolean {
-  return !prev.fixed && !gradedAbove(finding.severity, prev) && ((finding.severity !== 'blocker' && !isSecurityFinding(finding.tags)) || isGuarded(prev));
+  return !prev.fixed && !gradedAbove(finding.severity, prev) && ((finding.severity !== 'blocker' && !isGuardedFinding(finding.tags)) || isGuarded(prev));
 }
 
 /**

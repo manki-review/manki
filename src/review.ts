@@ -3685,8 +3685,8 @@ interface EarlierFinding {
   keys: Set<string>;
   /** The open thread that carries it. Without one, an earlier round listed it in its review body. */
   threadId?: string;
-  /** Whether its open thread is a security thread. */
-  isSecurity?: boolean;
+  /** Whether its open thread is guarded: a security thread or the thread of a disproved blocker. */
+  guarded?: boolean;
   /** Its grades: its open thread's, or the grade a review body listed it at. It carries no finding graded above it. */
   grade: ThreadGrade;
   /** Whether it is one of the findings an earlier round recorded under its thread, such as a variant the thread took. */
@@ -3709,7 +3709,7 @@ export function earlierFindings(priorRounds: RoundContext[], openThreads: OpenTh
     finding: { title: t.title, file: t.file, line: t.line, description: t.description },
     keys: new Set(entries.filter(e => e.entry.threadId === t.threadId).map(e => e.key)),
     threadId: t.threadId,
-    ...(t.isSecurity && { isSecurity: true }),
+    ...((t.isSecurity || t.disprovedBlocker) && { guarded: true }),
     grade: t,
   }));
   const byKey = new Map<string, EarlierFinding>();
@@ -3723,7 +3723,7 @@ export function earlierFindings(priorRounds: RoundContext[], openThreads: OpenTh
     const finding = { title: entry.title, file: entry.fingerprint.file, line: entry.fingerprint.lineStart, evidence: entry.evidence };
     const thread = threads.find(t => t.threadId === entry.threadId);
     byKey.set(key, thread
-      ? { finding, keys: new Set([key]), threadId: thread.threadId, recorded: true, ...(thread.isSecurity && { isSecurity: true }), grade: thread.grade }
+      ? { finding, keys: new Set([key]), threadId: thread.threadId, recorded: true, ...(thread.guarded && { guarded: true }), grade: thread.grade }
       : { finding, keys: new Set([key]), raisedIn: round, firstKey: entry.sameAs ?? key, grade: { severity: entry.severity } });
   }
   return [...threads, ...byKey.values()];
@@ -3750,13 +3750,13 @@ export function restatesEarlier(earlier: EarlierFinding[], f: Finding): boolean 
  * an earlier review body takes `raisedIn`. The judge's `sameAs` counts first. A finding the judge left unlinked is
  * matched by `sameProblem`, then by the `dedup` model for the pairs `mayRestate` makes, asked in one call for the whole round. A finding
  * the judge calls a variant of an open thread's finding goes to that thread too, and keeps `variantOf` so it is posted
- * there as a reply, unless the same checks find it restates a finding recorded under that thread. A security finding
- * joins only a security thread, and one no thread carries is marked `ownThread`.
+ * there as a reply, unless the same checks find it restates a finding recorded under that thread. A guarded finding
+ * (`isGuardedFinding`) joins only a guarded thread, and one no thread carries is marked `ownThread`.
  */
 async function foldIntoEarlierFindings(findings: Finding[], earlier: EarlierFinding[], dedup: LLMClient | undefined): Promise<Finding[]> {
   if (earlier.length === 0) return findings;
-  // A security finding joins only a security thread, so it never loses its guard, and finds the one it opened before.
-  const fits = (f: Finding) => (e: EarlierFinding) => (!e.threadId || !!e.isSecurity || !isSecurityFinding(f.tags, f.reviewers)) && carries(e, f);
+  // A guarded finding joins only a guarded thread, so it never loses its guard, and finds the one it opened before.
+  const fits = (f: Finding) => (e: EarlierFinding) => (!e.threadId || !!e.guarded || !isGuardedFinding(f.tags, f.reviewers)) && carries(e, f);
   const named = (f: Finding, key: string | undefined) => key ? earlier.filter(fits(f)).find(e => e.keys.has(key)) : undefined;
   // A lockfile alert names its package and change, so only the open thread with its exact title carries it.
   const unlinked = (f: Finding) => !f.threadId && !f.answeredIn && !f.sameAs && !f.variantOf && !isLockfileAlert(f.title);

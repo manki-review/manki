@@ -2377,8 +2377,8 @@ describe('llmDeduplicateFindings', () => {
     const both = await llmDeduplicateFindings(findings, [fixed, previous[0]], mockClient);
     expect(both.duplicates.map(d => d.finding.title)).toEqual(['Missing null check']);
 
-    // A blocker or a security finding is dropped only for a resolved blocking or security thread, since the PR author can resolve any other.
-    for (const raised of [{ ...findings[0], severity: 'blocker' as const }, { ...findings[0], severity: 'warning' as const, tags: [SECURITY_TAG] }]) {
+    // A blocker or a guarded finding is dropped only for a resolved guarded thread, since the PR author can resolve any other.
+    for (const raised of [{ ...findings[0], severity: 'blocker' as const }, ...[SECURITY_TAG, 'disproved-blocker'].map(tag => ({ ...findings[0], severity: 'warning' as const, tags: [tag] }))]) {
       const notWaived = await llmDeduplicateFindings([raised], previous, mockClient);
       expect(notWaived).toEqual({ unique: [raised], duplicates: [] });
       expect(deduplicateFindings([raised], [makePrevious({ ...previous[0], title: raised.title })])).toEqual({ unique: [raised], duplicates: [] });

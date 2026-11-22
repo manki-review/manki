@@ -3864,7 +3864,7 @@ function formatFindingComment(finding: Finding, links: CodeLinks, place: 'line' 
   for (const note of [trustNote(finding), trackedNote(finding), baseNote(finding, links)]) {
     if (note) comment += `${note}\n\n`;
   }
-  if (finding.origin === 'reviewed' && holdsApproval(finding)) comment += `${isSecurityFinding(finding.tags, finding.reviewers) ? MISSED_EARLIER_SECURITY_NOTE : MISSED_EARLIER_NOTE}\n\n`;
+  if (finding.origin === 'reviewed' && holdsApproval(finding)) comment += `${isGuardedFinding(finding.tags, finding.reviewers) ? MISSED_EARLIER_SECURITY_NOTE : MISSED_EARLIER_NOTE}\n\n`;
   // A committable suggestion stays open, so GitHub offers to commit it. Any other code fix goes in the fold. Committing
   // writes the block over the commented line, so only a thread on the finding's line gets one.
   const fixParts = finding.suggestedFix?.trim() ? splitFix(finding.suggestedFix, finding.file) : [];

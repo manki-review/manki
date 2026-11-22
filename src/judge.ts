@@ -26,7 +26,7 @@ import { lacksTrigger, MAX_DOUBT_CHECKS, MAX_RELATED_PROOF, needsProof, refuteBl
 import { fetchedRelatedRepos, relatedNames, repoTools } from './related-repos';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim, relatedCitations } from './static-signals';
-import { bySecondReadsOnly, canLeaveOut, CELL_GRADES, CheckProgress, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, RefutationOutcome, restsOnDrop, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, fixThreadFiles, GradedCounts, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RelatedRepoTools, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, wouldBlockIfTrue, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, triggerDoubt, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, ruleGrade, RulesMode, RuleVerdict } from './types';
+import { bySecondReadsOnly, canLeaveOut, CELL_GRADES, CheckProgress, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, RefutationOutcome, restsOnDrop, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, fixThreadFiles, GradedCounts, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isGuardedFinding, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RelatedRepoTools, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, wouldBlockIfTrue, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, triggerDoubt, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, ruleGrade, RulesMode, RuleVerdict } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -1792,8 +1792,8 @@ export function applyInPrSuppression(
   const result = findings.map(finding => {
     if (finding.tags?.includes(IN_PR_SUPPRESSED_TAG)) return finding;
     if (finding.severity === 'blocker') return finding;
-    const security = isSecurityFinding(finding.tags);
-    const match = suppressions.find(s => (s.guarded || !security) && !gradedAbove(finding.severity, s) && matchesInPrSuppression(finding, s));
+    const guarded = isGuardedFinding(finding.tags);
+    const match = suppressions.find(s => (s.guarded || !guarded) && !gradedAbove(finding.severity, s) && matchesInPrSuppression(finding, s));
     if (!match) return finding;
     const next: Finding = { ...finding };
     if (finding.severity !== 'ignore') {
@@ -2317,11 +2317,11 @@ export function applyCrossRoundSuppression(
 
     const slug = titleToSlug(current.title);
 
-    const security = isSecurityFinding(current.tags);
+    const guarded = isGuardedFinding(current.tags);
     const ratchetMatch = acceptedPriors.find(({ finding: prior, source }) => {
       if (prior.fingerprint.file !== current.file || gradedAbove(current.severity, prior)) return false;
-      // The judge's `addressed` is no person's decision, so it hides no security finding either.
-      if (security && (source === 'judge-addressed' || !(prior.threadId && guardedThreadIds?.has(prior.threadId)))) return false;
+      // The judge's `addressed` is no person's decision, so it hides no guarded finding either.
+      if (guarded && (source === 'judge-addressed' || !(prior.threadId && guardedThreadIds?.has(prior.threadId)))) return false;
       // LLM-derived signals must never suppress blocker or warning findings:
       // only GitHub thread resolution carries enough trust for that.
       if (source === 'judge-addressed' && (current.severity === 'blocker' || current.severity === 'warning')) return false;
