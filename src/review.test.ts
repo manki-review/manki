@@ -30,6 +30,7 @@ import {
   PlannerOutcomeSink,
   FINDER_TOOLS_TIMEOUT_MS,
   WORKAROUND_REASON,
+  UNCONFIRMED_FIX_ENDING,
   formatFinderError,
 } from './review';
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
@@ -5689,7 +5690,7 @@ describe('runReview', () => {
   });
 
 
-  it('clears a blocker thread on a fix in another changed file only when two refuters on different models confirm it', async () => {
+  it('keeps a blocker thread fixed in another changed file open, and names that file only when two refuters on different models confirm the fix', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'manki-fix-elsewhere-'));
     try {
       mkdirSync(join(workspace, 'src'));
@@ -5713,11 +5714,15 @@ describe('runReview', () => {
         });
       };
 
+      // A fix outside the files the finding cited lifts nothing, so the thread keeps blocking and only its note names the file.
       const confirmed = await runWith(clientsWith('disproved'));
-      expect([confirmed.outcome, confirmed.threadEvaluations]).toEqual(['READY', [fixed]]);
+      expect([confirmed.outcome, confirmed.threadEvaluations]).toEqual(['ADDRESS_FIRST', [{
+        threadId: 'T1', status: 'uncertain', fixedIn: 'src/y.ts',
+        reason: `Two refuters on different models found the failure gone after the change to \`src/y.ts\`. The push did not change \`src/x.ts\`${UNCONFIRMED_FIX_ENDING}`,
+      }]]);
 
       // One refuter alone, two answers from one model, an unsure or failed second check, no file named, a file the push
-      // did not change and a security thread all keep the thread open.
+      // did not change and a security thread name no file either.
       const failing = clientsWith('disproved');
       jest.mocked(failing.refuterPair!.sendMessage).mockRejectedValue(new Error('timeout'));
       const { fixedIn: _, ...unnamed } = fixed;
@@ -5729,7 +5734,7 @@ describe('runReview', () => {
         [clientsWith('disproved'), fixed, undefined, 'diff --git a/src/y.ts b/src/y.ts\n--- a/src/y.ts\n+++ b/src/y.ts\n@@ -1,2 +1,3 @@\n guard();\n if (bad) return;\n+done();\n'],
       ] as Array<[ReviewClients, ThreadEvaluation?, OpenThread?, string?]>) {
         const open = await runWith(clients, evaluation, thread, diff);
-        expect([open.outcome, open.threadEvaluations?.[0].status]).toEqual(['ADDRESS_FIRST', 'uncertain']);
+        expect([open.outcome, open.threadEvaluations?.[0].status, open.threadEvaluations?.[0].fixedIn]).toEqual(['ADDRESS_FIRST', 'uncertain', undefined]);
       }
 
       // A thread this round names again stays open whatever a check says, so no refuter is asked about it.

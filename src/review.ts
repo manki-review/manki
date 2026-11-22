@@ -3578,8 +3578,10 @@ export const UNCONFIRMED_FIX_ENDING = ', so the fix is not confirmed.';
  * Returns `evaluations` with `addressed` kept only where the round confirms the fix, and with the grade
  * `partialFixGrade` gives. A thread whose blocker this round names again is not fixed. A guarded thread counts as
  * fixed only when the push changed its file or a file its finding cited, so a judge reading unchanged code cannot clear
- * it, or when it is in `fixedElsewhere`, whose fix two refuters confirmed in another changed file. A thread one of `workarounds` concerns is only partly fixed, since a fix check found that the push hides the
- * symptom there. The judge's cell stays as `cell` only when it gives that grade, and as `judgeCell` otherwise.
+ * it. One in `fixedElsewhere`, whose fix two refuters confirmed in another changed file, stays open too and keeps
+ * `fixedIn` for the note that `replyFixedElsewhere` posts. No other evaluation keeps `fixedIn`. A thread one of
+ * `workarounds` concerns is only partly fixed, since a fix check found that the push hides the symptom there. The
+ * judge's cell stays as `cell` only when it gives that grade, and as `judgeCell` otherwise.
  */
 function confirmFixes(
   evaluations: ThreadEvaluation[] | undefined,
@@ -3589,12 +3591,13 @@ function confirmFixes(
   workarounds: readonly RoundFix[],
   fixedElsewhere: ReadonlySet<string>,
 ): ThreadEvaluation[] | undefined {
-  const confirm = (e: ThreadEvaluation, thread: OpenThread | undefined): ThreadEvaluation => {
+  const confirm = ({ fixedIn, ...e }: ThreadEvaluation, thread: OpenThread | undefined): ThreadEvaluation => {
     if (e.status !== 'addressed') return e;
     if (namedThreadIds.has(e.threadId)) return { ...e, status: 'not_addressed', reason: NAMED_AGAIN_REASON };
-    if (thread && guardedThreadStaysOpen(thread, pushChangedFiles) && !fixedElsewhere.has(e.threadId)) {
+    if (thread && guardedThreadStaysOpen(thread, pushChangedFiles)) {
       const why = thread.file ? `The push did not change ${[thread.file, ...(thread.evidenceFiles ?? [])].map(f => `\`${f}\``).join(' or ')}` : 'This thread is not tied to a file, which only a person can clear';
-      return { ...e, status: 'uncertain', reason: `${why}${UNCONFIRMED_FIX_ENDING}` };
+      const seen = fixedIn && fixedElsewhere.has(e.threadId) ? `Two refuters on different models found the failure gone after the change to \`${fixedIn}\`. ` : '';
+      return { ...e, status: 'uncertain', reason: `${seen}${why}${UNCONFIRMED_FIX_ENDING}`, ...(seen && { fixedIn }) };
     }
     const workaround = thread?.file ? workarounds.find(fix => concernsThread(fix, thread)) : undefined;
     if (workaround) {

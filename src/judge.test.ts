@@ -849,11 +849,11 @@ describe('buildJudgeUserMessage', () => {
     expect(unpushed).toContain('"Token logged" at src/log.ts:7 (stays open: the push did not change this file)\n');
     const staysOpenRule = 'A thread marked "stays open" is not resolved this round whatever you decide. In the summary, say that it is still open, and never write that its problem is fixed.';
     expect(unpushed).toContain(staysOpenRule);
-    // Only with a second refuter can a fix in another file resolve such a thread, so only then is the judge told so.
+    // Only with a second refuter is a fix in another file checked, so only then is the judge asked for its file. It still resolves nothing.
     const paired = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, [...openThreads, agreed, security], rounds, '', undefined, undefined, '', '', '', undefined, [], [], true);
-    expect(paired).toContain('A thread marked "stays open" is not resolved this round unless it is tied to a file, is not a security thread, and you name the file of its fix in `fixedIn` and later checks confirm it. In the summary, say that it is still open, or, where you named the file of its fix in `fixedIn`, that this fix still awaits a check.');
+    expect(paired).toContain(`${staysOpenRule} Where you name the file of its fix in \`fixedIn\`, say that a maintainer still has to resolve it.`);
     const systemWith = (fixElsewhere: boolean) => buildJudgeSystemPrompt(makeConfig(), 1, true, 2, undefined, 1, true, 0, false, false, fixElsewhere);
-    expect([systemWith(true), systemWith(false)].map(prompt => [prompt.includes('"fixedIn"'), prompt.includes('set `fixedIn` to the path'), prompt.includes('blocks merge whatever you decide'), prompt.includes('still awaits a check, since the check runs after your summary')])).toEqual([[true, true, false, true], [false, false, true, false]]);
+    expect([systemWith(true), systemWith(false)].map(prompt => [prompt.includes('"fixedIn"'), prompt.includes('set `fixedIn` to the path'), prompt.includes('blocks merge whatever you decide'), prompt.includes('stays open until a maintainer resolves it')])).toEqual([[true, true, true, true], [false, false, true, false]]);
     // A thread on another file than its finding's can name no file, and GitHub reports it on line 1.
     const nowhere = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, [{ ...openThreads[0], file: '', line: 1 }], rounds, '');
     expect(nowhere).toContain('"Null check missing" not tied to a file (earlier blocker, stays open: only a person can clear a thread that is not tied to a file)\n');

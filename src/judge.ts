@@ -418,7 +418,7 @@ export function buildJudgeSystemPrompt(
     ? 'One of the Open Review Threads in the user message is an earlier blocker'
     : `${openBlockerCount} of the Open Review Threads in the user message are earlier blockers`;
   const openBlockerInstruction = openBlockerCount > 0
-    ? `\n\n${openBlockers}, marked "earlier blocker". Each one you do not mark \`addressed\` still blocks merge, and one marked "stays open" blocks merge${fixElsewhere ? ' unless you name the file of its fix in `fixedIn` and later checks confirm that fix' : ' whatever you decide'}. While one is still open, never write that nothing blocks merge or that the earlier problems are fixed.${fixElsewhere ? ' For one whose fix you name in `fixedIn`, say that its fix in that file still awaits a check, since the check runs after your summary.' : ''} Say in plain words which earlier problem is still open and what still goes wrong because of it, for example: "The new comment matches \`memory.repo\`, but the earlier blocker is still open: the memory repo still sits in another account, so the App cannot write to it."`
+    ? `\n\n${openBlockers}, marked "earlier blocker". Each one you do not mark \`addressed\` still blocks merge, and one marked "stays open" blocks merge whatever you decide. While one is still open, never write that nothing blocks merge or that the earlier problems are fixed.${fixElsewhere ? ' For one whose fix you name in `fixedIn`, say that it stays open until a maintainer resolves it or a push changes its own file.' : ''} Say in plain words which earlier problem is still open and what still goes wrong because of it, for example: "The new comment matches \`memory.repo\`, but the earlier blocker is still open: the memory repo still sits in another account, so the App cannot write to it."`
     : '';
   const summaryInstruction = isFollowUp
     ? `Write one or two sentences on where the change stands now: whether the earlier problems are fixed, and what still goes wrong in practice. The review already shows each finding's title, so do not repeat a title word for word. Do not re-describe the PR and do not praise the change. Never start with "The author" or "Since last review". If you can swap the project name and the summary still works, it is too generic. Good examples:
@@ -725,7 +725,7 @@ An outdated thread shows the code it named when it was posted and where that cod
 
 When the push changes code to fix a thread, ask: does it fix the root cause the concern named, or is it a hacky workaround for the reported case? A workaround acts where the wrong result shows up, such as a guard, a special case, a retry or a default, while the code that causes the problem stays as it was. Mark a workaround \`partly_addressed\`, never \`addressed\`, and in \`remaining\` cite the \`file:line\` of the code that causes the problem or name the input or path that still fails. When you can do neither, decide by the rules above.
 
-${fixElsewhere ? `A thread marked "stays open" can be fixed by a change to another file the push changed, such as the caller that passed the bad value. When the inter-round diff shows such a fix, mark the thread \`addressed\` and set \`fixedIn\` to the path of that file. Manki then checks the fix with tools on two models and resolves the thread only when both find the failure gone. Leave \`fixedIn\` empty on every other thread.
+${fixElsewhere ? `A thread marked "stays open" can be fixed by a change to another file the push changed, such as the caller that passed the bad value. When the inter-round diff shows such a fix, mark the thread \`addressed\` and set \`fixedIn\` to the path of that file. Manki then checks the fix with tools on two models, and when both find the failure gone, it tells the thread where the fix is. The thread still stays open and blocks until a maintainer resolves it or a push changes its own file. Leave \`fixedIn\` empty on every other thread.
 
 ` : ''}The flagged thread \`line\` is GitHub-anchored from when the thread was created and may have drifted relative to the current head. Treat it as a hint, not a strict boundary: scan the full provided code window for the fix. Resolution requires concrete evidence: cite the changed lines or current-code excerpt that supports your call in \`reason\`. Use the thread IDs provided in the open threads section below.
 ` : ''}${carriedWarnings ? `
@@ -882,9 +882,7 @@ export function buildJudgeUserMessage(
     }
     if (threads.length > 0) parts.push('');
     if (heldOpen.length > 0) {
-      parts.push(fixElsewhere
-        ? 'A thread marked "stays open" is not resolved this round unless it is tied to a file, is not a security thread, and you name the file of its fix in `fixedIn` and later checks confirm it. In the summary, say that it is still open, or, where you named the file of its fix in `fixedIn`, that this fix still awaits a check. Never write that its problem is fixed.\n'
-        : 'A thread marked "stays open" is not resolved this round whatever you decide. In the summary, say that it is still open, and never write that its problem is fixed.\n');
+      parts.push(`A thread marked "stays open" is not resolved this round whatever you decide. In the summary, say that it is still open, and never write that its problem is fixed.${fixElsewhere ? ' Where you name the file of its fix in `fixedIn`, say that a maintainer still has to resolve it.' : ''}\n`);
     }
     if (carriedWarnings.length > 0) {
       parts.push(`## Earlier Warnings in the Review Body\n`);

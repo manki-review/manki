@@ -85,6 +85,7 @@ import {
   REVIEW_STATE_VERDICTS,
   fetchPRComments,
   fetchReviewThreadNodes,
+  inline,
   isFailedProgress,
   markOwnProgressCommentCancelled,
   markProgressCommentFailed,
@@ -1750,6 +1751,28 @@ async function replyPartlyFixedThreads(run: ReviewRun, result: ReviewResult): Pr
 }
 
 /**
+ * Tells each thread whose fix two refuters confirmed in another changed file (`fixedIn`) where Manki sees that fix. A
+ * fix outside the files its finding cited lifts nothing, so the thread stays open and blocks until a maintainer resolves
+ * it or a push changes one of those files. The round record keeps the evaluation, so a reply that fails loses only the note.
+ */
+async function replyFixedElsewhere(run: ReviewRun, result: ReviewResult): Promise<void> {
+  const threads = new Map(run.openThreads.map(t => [t.threadId, t]));
+  for (const { threadId, fixedIn } of result.threadEvaluations ?? []) {
+    const thread = threads.get(threadId);
+    if (!thread?.file || !fixedIn) continue;
+    const files = [thread.file, ...(thread.evidenceFiles ?? [])].map(inline).join(' or ');
+    const body = `**Fix seen in ${inline(fixedIn)}.** Two refuters on different models found that this failure no longer happens after the change to ${inline(fixedIn)}. `
+      + `Manki resolves no blocker on a fix outside the files its finding cited, so this thread stays open and keeps blocking. `
+      + `A maintainer can resolve it. ${authorClearLine(run.config.author_clear_role)} A push that changes ${files} lets the next review confirm the fix.`;
+    try {
+      await replyToReviewThread(run.octokit, threadId, body);
+    } catch (error) {
+      core.warning(`Failed to reply on thread ${threadId} with the fix seen in ${fixedIn}: ${error}`);
+    }
+  }
+}
+
+/**
  * Returns a lookup of the commit since the last reviewed head that fixed a thread, named only when it is certain: the
  * only commit that changed the thread's file, editing it in place. It finds none in every other case, and none after a
  * rebase or a merge, or past `MAX_FIXING_COMMITS` commits.
@@ -2315,6 +2338,7 @@ async function runFullReview(
     });
     await replyFixedThreads(run, resolved);
     await replyPartlyFixedThreads(run, result);
+    await replyFixedElsewhere(run, result);
     await replyAnsweredThreads(run, result);
     await completeProgressComment(run, stage, reviewTimeMs, context);
     await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha, { pauseLifted: !pauseAfter.paused });
