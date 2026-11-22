@@ -421,6 +421,15 @@ describe('settleTickedBox', () => {
     await settleTickedBox(octokit as never, 'o', 'r', 5, { kind: 'review_comment', id: 6 }, 'forget', 'learn-1', 'bob');
     expect(octokit.rest.pulls.updateReviewComment).toHaveBeenLastCalledWith({ owner: 'o', repo: 'r', comment_id: 6, body: body.replace(tickedBox('forget', 'learn-1'), '<!-- manki-issue-box -->\nForget this learning requested by `@bob`') });
 
+    // A box with a label of its own keeps it, whether it names who asked or is put back.
+    const anyway = `Text.\n\n<!-- manki-issue-box -->\n- [x] Review anyway <!-- manki-box:again -->`;
+    octokit.seed(anyway);
+    await settleTickedBox(octokit as never, 'o', 'r', 5, { kind: 'review', id: 4 }, 'again', undefined, 'bob');
+    expect(octokit.rest.pulls.updateReview).toHaveBeenLastCalledWith(expect.objectContaining({ body: 'Text.\n\n<!-- manki-issue-box -->\nReview anyway requested by `@bob`' }));
+    octokit.seed(anyway);
+    await settleTickedBox(octokit as never, 'o', 'r', 5, { kind: 'review', id: 4 }, 'again', undefined, undefined);
+    expect(octokit.rest.pulls.updateReview).toHaveBeenLastCalledWith(expect.objectContaining({ body: `Text.\n\n${messageBox('again', undefined, 'Review anyway')}` }));
+
     // A box no longer ticked, as once another run settled it, leaves the message as it is.
     octokit.rest.pulls.updateReviewComment.mockClear();
     octokit.seed(withMessageBoxes('Text.', ['dismiss']));

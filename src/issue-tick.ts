@@ -240,12 +240,13 @@ export interface TickedMessage {
 
 /**
  * Saves `message` as it is now, so a tick made meanwhile stays, with the ticked `box` of `id` replaced: by a line that
- * names who asked for it once `editor` started its action, or else by the unticked box again. A failure is logged.
+ * names who asked for it once `editor` started its action, or else by the unticked box again. Both keep the box's own
+ * label. A failure is logged.
  */
 export async function settleTickedBox(
   octokit: Octokit, owner: string, repo: string, prNumber: number, message: TickedMessage, box: MessageBox, id: string | undefined, editor: string | undefined,
 ): Promise<void> {
-  const text = editor ? `${boxLabel(box)} requested by \`@${editor}\`` : messageBoxLine(box, id);
+  const text = (label: string): string => (editor ? `${label} requested by \`@${editor}\`` : messageBoxLine(box, id, label));
   try {
     if (message.kind === 'comment') {
       const { data } = await octokit.rest.issues.getComment({ owner, repo, comment_id: message.id });

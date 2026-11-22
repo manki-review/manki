@@ -6,7 +6,7 @@ export const BOX_ANCHOR = '<!-- manki-issue-box -->';
 export const ISSUE_BOX_LABEL = 'Create an issue for this';
 
 // A box is a task list line that ends with its kind and, for some kinds, an id. GitHub turns `[ ]` into `[x]` on a tick.
-const BOX_LINE = /^[ \t]*[-*] \[([ xX])\] .*<!-- manki-box:([a-z]+)(?::(.+?))? -->[ \t]*\r?$/;
+const BOX_LINE = /^[ \t]*[-*] \[([ xX])\] (.*)<!-- manki-box:([a-z]+)(?::(.+?))? -->[ \t]*\r?$/;
 
 const FENCE_RE = /^[ \t]*(`{3,}|~{3,})/;
 
@@ -24,11 +24,13 @@ export function issueBox(id: string): string {
  * Returns the boxes Manki posted in `body`, with their line numbers. A box counts only right under its anchor and
  * outside a code fence, so a box line a model wrote into a fix, which Manki posts fenced and uncleaned, is never one.
  */
-function anchoredBoxes(lines: string[]): Array<{ line: number; kind: string; id?: string; ticked: boolean }> {
+function anchoredBoxes(lines: string[]): Array<{ line: number; kind: string; id?: string; ticked: boolean; label: string }> {
   const fenced = fencedLines(lines);
   return lines.flatMap((text, i) => {
     const match = fenced[i] ? null : text.match(BOX_LINE);
-    return match && lines[i - 1]?.trim() === BOX_ANCHOR ? [{ line: i, kind: match[2], ...(match[3] !== undefined && { id: match[3] }), ticked: match[1] !== ' ' }] : [];
+    return match && lines[i - 1]?.trim() === BOX_ANCHOR
+      ? [{ line: i, kind: match[3], ...(match[4] !== undefined && { id: match[4] }), ticked: match[1] !== ' ', label: match[2].trim() }]
+      : [];
   });
 }
 
@@ -82,13 +84,13 @@ export function replaceIssueBox(body: string, id: string, text: string): string 
 const MESSAGE_BOXES: readonly string[] = ['again', 'check', 'forget', 'dismiss'] satisfies MessageBox[];
 
 /** Returns the unticked line of `box`. `id` names what the box acts on, such as a learning. */
-export function messageBoxLine(box: MessageBox, id?: string): string {
-  return `- [ ] ${boxLabel(box)} <!-- manki-box:${box}${id ? `:${id}` : ''} -->`;
+export function messageBoxLine(box: MessageBox, id?: string, label = boxLabel(box)): string {
+  return `- [ ] ${label} <!-- manki-box:${box}${id ? `:${id}` : ''} -->`;
 }
 
 /** Returns the unticked `box` for a message, after its anchor. */
-export function messageBox(box: MessageBox, id?: string): string {
-  return `${BOX_ANCHOR}\n${messageBoxLine(box, id)}`;
+export function messageBox(box: MessageBox, id?: string, label?: string): string {
+  return `${BOX_ANCHOR}\n${messageBoxLine(box, id, label)}`;
 }
 
 /** Returns `text` followed by each distinct box of `boxes`, in their order. */
@@ -103,11 +105,11 @@ export function tickedMessageBoxes(body: string): Array<{ box: MessageBox; id?: 
     (ticked && MESSAGE_BOXES.includes(kind) ? [{ box: kind as MessageBox, ...(id !== undefined && { id }) }] : []));
 }
 
-/** Returns `body` with the ticked line of `box` with `id` replaced by `text`, and every other line as it was. */
-export function replaceMessageBox(body: string, box: MessageBox, id: string | undefined, text: string): string {
+/** Returns `body` with the ticked line of `box` with `id` replaced by `text` of its label, and every other line as it was. */
+export function replaceMessageBox(body: string, box: MessageBox, id: string | undefined, text: (label: string) => string): string {
   const lines = body.split('\n');
   for (const found of anchoredBoxes(lines)) {
-    if (found.kind === box && found.id === id && found.ticked) lines[found.line] = `${text}${lines[found.line].endsWith('\r') ? '\r' : ''}`;
+    if (found.kind === box && found.id === id && found.ticked) lines[found.line] = `${text(found.label)}${lines[found.line].endsWith('\r') ? '\r' : ''}`;
   }
   return lines.join('\n');
 }
