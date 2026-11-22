@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [7.7.3] - 2026-11-23
 
-Manki 7.7.3 cuts review loops. A maintainer's clear stays cleared, one blocker keeps one thread, a clean rebase keeps an auto-approval, and a fix in a renamed file is seen. Split proposals now name side changes by purpose and by hunk. Nothing breaks on the upgrade and no setting changes.
+Manki 7.7.3 cuts review loops and unrelated findings. A maintainer's clear stays cleared, one blocker keeps one thread, a clean rebase keeps an auto-approval, and a fix in a renamed file is seen. A cost the PR only shares with existing code is no longer posted as its own. Split proposals now name side changes by purpose and by hunk. Nothing breaks on the upgrade and no setting changes.
 
 ### Review loop and verdicts
 
@@ -17,6 +17,7 @@ Manki 7.7.3 cuts review loops. A maintainer's clear stays cleared, one blocker k
 - When Manki resolves a blocker or security thread for a maintainer, its own reply records who cleared it. A later reply, such as the PR author's "thanks", no longer makes the thread block again. Only Manki's own record counts, and the maintainer's write access is checked again each time it is read ([#1942](https://github.com/manki-review/manki/pull/1942)).
 - A blocker an earlier round could only list in its review body takes the thread of a later blocker that restates it, instead of getting a second thread for the same defect ([#1943](https://github.com/manki-review/manki/pull/1943)).
 - A push that renames and edits the file of an open thread puts that file first in the diff the judge reads, matched by its old or its new path, and no longer tells a blocker thread there that the push did not change its file ([#1936](https://github.com/manki-review/manki/pull/1936)).
+- A cost finding is no longer posted as the PR's own when the PR's new path runs existing work no more often and on no larger input than existing code already does, such as a second delivery of the same data. The origin check answers pre-existing and cites the existing path, so the warning stays in the round record. A cost the PR makes grow faster, makes more expensive per run, or lets outside input newly trigger stays the PR's own, and so does a failure a new caller reaches ([#1948](https://github.com/manki-review/manki/pull/1948)).
 - A draft with an open blocking thread keeps its waiting check instead of a neutral one, which a required check counts as passing ([#1938](https://github.com/manki-review/manki/pull/1938)).
 
 ### Scope reader
