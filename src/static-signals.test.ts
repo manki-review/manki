@@ -675,7 +675,8 @@ describe('collectStaticSignals with analyzers and waits', () => {
       expect(scanned.actionlint).toEqual({ '.github/workflows/ci.yml': WORKFLOW });
       expect(scanned.zizmor).toEqual({ '.github/workflows/ci.yml': WORKFLOW });
       expect(scanned.shellcheck).toEqual({ 'scripts/deploy': FILES['head-sha:scripts/deploy'], 'scripts/clean.sh': FILES['head-sha:scripts/clean.sh'] });
-      expect(toolArgs('actionlint')).toEqual(expect.arrayContaining(['-shellcheck=', '-pyflakes=', './.github/workflows/ci.yml']));
+      expect(toolArgs('actionlint')).toEqual(expect.arrayContaining(['-shellcheck=', '-pyflakes=']));
+      expect(toolArgs('actionlint').slice(-2)).toEqual(['--', '.github/workflows/ci.yml']);
       expect(toolArgs('zizmor')).toEqual(expect.arrayContaining(['--offline', '--no-config', '--no-ignores', './.github/workflows/ci.yml']));
       expect(toolArgs('shellcheck')).toEqual(expect.arrayContaining(['--norc', './scripts/deploy', './scripts/clean.sh']));
       expect(octokit.rest.repos.getContent.mock.calls.filter(([{ path }]) => path === '.github/workflows/ci.yml')).toHaveLength(1);
