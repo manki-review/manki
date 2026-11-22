@@ -115,6 +115,7 @@ describe('checkOrigins', () => {
     expect(client.calls[0].system).toContain('a new caller of old code that reaches a crash, a wrong result or a security hole.');
     expect(client.calls[0].system).toContain('When the PR\'s new path runs existing work no more often and on no larger input than a path at the base already runs it for the same input, the cost is pre_existing');
     expect(client.calls[0].system).toContain('A cost that outside input can now trigger through the new caller, and could not trigger at the base, is a security hole such as resource exhaustion, and stays introduced.');
+    expect(client.calls[0].system).toContain('Running the work again for an input the base already runs it for, such as a second delivery of the same data, is pre_existing even though the total work grows. A cost is worsened only when the PR makes each run of the work more expensive.');
     expect(client.calls[0].system).toContain('A cost the PR makes grow faster, such as a new loop around the work, a larger or unbounded input or a repeat that grows with the input, is introduced.');
     expect(client.calls[0].options?.repoTools).toMatchObject({ root, steps: 10 });
 
