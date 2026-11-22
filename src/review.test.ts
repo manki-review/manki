@@ -5178,6 +5178,10 @@ describe('runReview', () => {
     const incomplete = await run(makeClients());
     expect([incomplete.outcome, incomplete.findings.map(f => [f.severity, f.tags, f.fixedElsewhere, f.gradePath?.at(-1)?.by]), incomplete.unpostedPreExisting ?? []]).toEqual(['READY', [['note', ['pre-existing'], 'src/a.ts:20', 'pre_existing']], []]);
     expect(holdsApproval(incomplete.findings[0])).toBe(false);
+    // A warning the proof checks would leave out stays in the round record only, whatever line the answer names.
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [{ ...warningOn(false), evidence: { checks: [], proof: [] }, originCheck: { lineChanged: false, answers: [fixedAt] } }], summary: 'One defect.' });
+    const unprovenFix = await run(makeClients());
+    expect([unprovenFix.findings, unprovenFix.unpostedPreExisting?.map(f => [f.title, f.severity])]).toEqual([[], [['Queue may stall', 'warning']]]);
     // A blocker keeps its own rules: it is posted as a pre-existing warning, with no note.
     mockedRunJudgeAgent.mockResolvedValue({ findings: [onLine('Queue holds unverified entries', checked(fixedAt, { ...fixedAt, model: 'pair-model' }))], summary: 'One defect.' });
     const fixedBlocker = await run(makeClients());
