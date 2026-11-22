@@ -1583,6 +1583,7 @@ describe('checkAndAutoApprove', () => {
       expect(await note({ isResolved: true, resolvedByLogin: 'maria' })).toBeUndefined();
       expect(await note({ isWarning: undefined })).toBeUndefined();
       expect(await note({ isSecurity: true })).toBeUndefined();
+      expect(await note({ disprovedBlocker: true })).toBeUndefined();
     });
 
     it('holds the approval when the round records cannot be read, since the thread then counts as blocking', async () => {
