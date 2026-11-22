@@ -254,7 +254,7 @@ describe('reviewLocal', () => {
     expect(await heldBy([thread({ thread: undefined })])).toBe(false);
     // A pre-existing defect never holds, as its thread does not in a pull request round.
     expect(await heldBy([thread({ preExisting: true })])).toBe(false);
-  }, 30_000);
+  }, 2 * GIT_TEST_TIMEOUT_MS);
 
   it('counts a push to a file an earlier finding cited as a push to its thread, as a pull request round does', async () => {
     git(repo, 'checkout', '-q', 'feature');
