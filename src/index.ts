@@ -33,7 +33,7 @@ import { fetchWorkspace } from './workspace';
 import { messageBox, tickedIssueBoxes, tickedMessageBoxes, withMessageBoxes } from './issue-box';
 import { handleIssueBoxTick, handleReviewBoxTick, settleTickedBox, TickedMessage } from './issue-tick';
 import { parseSettingsBlock, SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
-import { ConfigSource, DashboardData, disproof, DisprovedFinding, EarlierAttempt, Finding, findingKey, fixThreadFiles, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, UnpostedReason, roundContextToFlatAliases, SCOPE_READER_NAME, SEVERITY_NAME, threadBlocks, SkippedFile } from './types';
+import { ConfigSource, DashboardData, disproof, DisprovedFinding, EarlierAttempt, Finding, findingKey, fixThreadFiles, FullReviewOptions, LaterDrop, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RecordOnlyReason, RoundTrigger, StateReport, StaticSignal, UnpostedReason, roundContextToFlatAliases, SCOPE_READER_NAME, SEVERITY_NAME, threadBlocks, SkippedFile } from './types';
 import {
   fetchPRDiff,
   brokenConfig,
@@ -1963,6 +1963,14 @@ function metadataConfig(config: ReviewConfig, models: ReviewModels, triage: stri
   };
 }
 
+const LATER_DROPS: readonly LaterDrop[] = ['refutation', 'in_pr_suppression', 'resolved_thread', 'ratchet'];
+
+/** The step after the judge's grading that graded `finding` `ignore`, or none when the judge dropped it or nothing did. */
+function laterDrop(finding: Finding): LaterDrop | undefined {
+  const step = finding.severity === 'ignore' ? finding.gradePath?.filter(s => s.to === 'ignore').at(-1) : undefined;
+  return LATER_DROPS.find(by => by === step?.by);
+}
+
 /** Marks the progress comment complete with the judge's decisions and the round's timing. */
 async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult, totalDurationMs: number, context: RoundContext): Promise<void> {
   const { octokit, owner, repo, commentId, dashboard, config, models, startTime, parseEndTime } = run;
@@ -2003,7 +2011,7 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
       title: f.title,
       severity: f.severity,
       reasoning: f.judgeNotes || '',
-      // A finding a later step took out counts as dropped below, so it is not listed as kept here.
+      // A finding a later step took out is not among the round's findings, so it is not listed as kept here.
       kept: judgeKept && keptKeys.has(findingKey(f)),
       ...(listed.has(f) && { listed: true as const }),
       ...(judgeKept && unpostedReason && { unpostedReason }),
@@ -2011,19 +2019,38 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
     };
   });
 
-  const keptSeverities: Record<string, number> = {};
-  const droppedSeverities: Record<string, number> = {};
+  const postedSeverities: Record<string, number> = {};
   for (const f of result.findings) {
-    keptSeverities[f.severity] = (keptSeverities[f.severity] ?? 0) + 1;
+    postedSeverities[f.severity] = (postedSeverities[f.severity] ?? 0) + 1;
   }
-  // judgeDecisions is built in lock-step with allJudgedForDashboard, so the
-  // index aligns and d.originalSeverity carries the pre-judge severity even
-  // when the judge merged or renamed the finding before dropping it.
-  const dropped = judgeDecisions.filter((_, i) => !keptKeys.has(findingKey(allJudgedForDashboard[i])) && !listed.has(allJudgedForDashboard[i]));
-  for (const { originalSeverity } of dropped) {
-    droppedSeverities[originalSeverity] = (droppedSeverities[originalSeverity] ?? 0) + 1;
-  }
+  const droppedSeverities: Record<string, number> = {};
+  const recordOnly: Partial<Record<RecordOnlyReason, number>> = {};
+  let kept = 0;
+  let unsettledLeads = 0;
+  // Kept findings the review neither posted nor recorded with a reason: the test-only throttle drops some, the rest are repeats.
+  let leftOut = 0;
+  allJudgedForDashboard.forEach((f, i) => {
+    const key = findingKey(f);
+    const reason = unpostedReasons.get(key) ?? laterDrop(f);
+    if (f.severity === 'ignore' && !reason) {
+      // judgeDecisions is built in lock-step with allJudgedForDashboard, so the index aligns and originalSeverity carries
+      // the pre-judge severity even when the judge merged or renamed the finding before dropping it.
+      const { originalSeverity } = judgeDecisions[i];
+      droppedSeverities[originalSeverity] = (droppedSeverities[originalSeverity] ?? 0) + 1;
+      return;
+    }
+    kept++;
+    if (listed.has(f)) unsettledLeads++;
+    else if (keptKeys.has(key)) return;
+    else if (reason) recordOnly[reason] = (recordOnly[reason] ?? 0) + 1;
+    else leftOut++;
+  });
   const judgedKeys = new Set(allJudgedForDashboard.map(findingKey));
+  const addedUnposted = [...unpostedReasons].filter(([key]) => !judgedKeys.has(key));
+  for (const [, reason] of addedUnposted) {
+    if (reason) recordOnly[reason] = (recordOnly[reason] ?? 0) + 1;
+  }
+  const testNitSuppressedCount = result.testNitSuppressedCount ?? 0;
   const completeDashboard: DashboardData = {
     ...dashboard,
     phase: 'complete',
@@ -2034,15 +2061,17 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
     llmDedupCount: result.llmDedupCount ?? dashboard.llmDedupCount,
     sweepRepeatCount: result.sweepRepeatCount,
     sweepDedupCount: result.sweepDedupCount,
-    openLeadCount: result.openLeads?.length ?? 0,
-    keptCount: result.findings.length,
-    droppedCount: dropped.length,
-    mergedCount: Math.max(0, mergedDuplicateCount(result)),
-    addedAfterJudgeCount: result.findings.filter(f => !judgedKeys.has(findingKey(f))).length,
-    keptSeverities,
+    openLeadCount: (result.openLeads?.length ?? 0) - unsettledLeads,
+    unsettledLeadCount: unsettledLeads,
+    ...(!dashboard.judgeSkipped && {
+      graded: { kept, dropped: allJudgedForDashboard.length - kept, merged: Math.max(0, mergedDuplicateCount(result)), durationMs: dashboard.graded?.durationMs ?? 0 },
+    }),
+    addedAfterJudgeCount: result.findings.filter(f => !judgedKeys.has(findingKey(f))).length + addedUnposted.length,
+    repeatCount: Math.max(0, leftOut - testNitSuppressedCount),
+    recordOnly,
+    postedSeverities,
     droppedSeverities,
-    ...(result.suppressionCount && { suppressionCount: result.suppressionCount }),
-    ...(result.testNitSuppressedCount != null && result.testNitSuppressedCount > 0 && { testNitSuppressedCount: result.testNitSuppressedCount }),
+    ...(testNitSuppressedCount > 0 && { testNitSuppressedCount }),
     ...(!dashboard.judgeSkipped && { judgeDurationMs: judgeEndTime - reviewEndTime }),
   };
 
