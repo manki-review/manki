@@ -7711,7 +7711,8 @@ describe('runReview', () => {
     const readerMessages = jest.mocked(clients.judge.sendMessage).mock.calls.map(([, user]) => user as string);
     expect(readerMessages.length).toBeGreaterThan(2);
     for (const message of readerMessages) expect(message).not.toContain('more lines in this file truncated');
-    for (const line of lines) expect(readerMessages.some(m => m.includes(`+${line}`))).toBe(true);
+    const shown = new Set(readerMessages.flatMap(m => m.split('\n')));
+    expect(lines.filter(line => !shown.has(`+${line}`))).toEqual([]);
     expect(result.outcome).toBe('ADDRESS_FIRST');
     expect(result.findings).toEqual([expect.objectContaining({ severity: 'blocker', file: 'src/big.ts', line: 12_000 })]);
 
