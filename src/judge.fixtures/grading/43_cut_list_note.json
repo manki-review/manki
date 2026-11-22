@@ -1,0 +1,20 @@
+{
+  "name": "cut-list-note",
+  "case": "cut-list-note",
+  "allowed": [
+    "warning"
+  ],
+  "proven": true,
+  "finding": {
+    "title": "`description_prompt` no longer says the file list is cut",
+    "file": "release/describe.py",
+    "line": 8,
+    "description": "The PR removes the line that tells the model the list leaves files out. `description_prompt` still sends only the first `MAX_FILES` paths, so for a pull request with more changed files the model gets a partial list as if it were the whole one, and the drafted description leaves the other files out without saying so.",
+    "severity": "warning",
+    "reviewers": [
+      "Correctness"
+    ],
+    "suggestedFix": "Restore the note when `len(paths)` exceeds `MAX_FILES`."
+  },
+  "prDiff": "diff --git a/release/describe.py b/release/describe.py\nindex 1111111..2222222 100644\n--- a/release/describe.py\n+++ b/release/describe.py\n@@ -4,7 +4,5 @@\n def description_prompt(paths: list[str]) -> str:\n     shown = paths[:MAX_FILES]\n     lines = [\"Draft a short description of this pull request.\", \"Changed files:\"]\n     lines += [f\"- {p}\" for p in shown]\n-    if len(paths) > MAX_FILES:\n-        lines.append(f\"The list leaves out {len(paths) - MAX_FILES} more changed files. Say so in the description.\")\n     return \"\\n\".join(lines)\n"
+}

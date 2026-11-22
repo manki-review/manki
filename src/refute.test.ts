@@ -1075,6 +1075,10 @@ describe('refuteBlockers', () => {
       ['Warning no cited line proves, which the judge doubts', {
         severity: 'warning', gradeIfConfirmed: 'warning', doubts: exists, ...noProof,
       }, ['warning', 'confirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed']],
+      // A security finding the judge doubts stays a blocker, which no answer raises further.
+      ['Security blocker the judge doubts', {
+        tags: ['security'], doubts: exists,
+      }, ['blocker', 'confirmed'], ['blocker', 'unconfirmed'], ['blocker', 'unconfirmed'], ['blocker', 'unconfirmed']],
       ['Security warning the judge doubts', {
         severity: 'warning', tags: ['security'], doubts: exists,
       }, ['warning', 'confirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed']],
@@ -1088,6 +1092,11 @@ describe('refuteBlockers', () => {
       expect(client.calls.map(([title]) => title).sort()).toEqual(kinds.map(([title]) => title).sort());
       // Every check asks about the premises the judge doubts and about the defect, whatever kind of finding it is.
       expect(client.messages.filter(([, user]) => user.includes('Premises the judge doubts')).length).toBe(findings.filter(f => f.doubts).length);
+      // Only a finding no confirmation raises is marked, so the refuter answers its run time premises on their code part alone.
+      expect(client.messages.filter(([, user]) => user.includes('- **No answer raises its grade**: a confirmation leaves its grade as it is')).map(([, user]) => user.split('\n')[0].replace(/^## [^:]+: /, '')).sort()).toEqual([
+        'Blocker cell a doubt holds at a warning, which no finder filed as a blocker', 'Blocker cell the judge keeps at a warning', 'Build claim graded a warning',
+        'Open lead in the rare column', 'Security blocker the judge doubts', 'Security warning the judge doubts', 'Warning in the rare column', 'Warning no cited line proves, which the judge doubts', 'Warning the judge doubts',
+      ]);
       return { statuses: result.map(f => [f.title, [f.severity, checkStatus(f)]]), result };
     };
 
@@ -1214,6 +1223,8 @@ describe('refuteBlockers', () => {
     expect(client.messages[0][1]).not.toContain('Outside input');
     expect(system).toContain('disprove only when every path checks the value or cannot carry it');
     expect(system).toContain('Reading code cannot confirm that it fails to compile or that a test fails.');
+    // A premise about run time behaviour is answered on its code part, so a defect the code confirms is not left unconfirmed.
+    expect(system).toContain("- No code read can settle how a person, a model, a peer or the network will behave at run time. When the message says no answer raises the finding's grade, answer any other premise that states such behaviour on its code part only: the input the code passes, the check it makes or leaves out, and the path it takes. Confirm it when the code shows that part holds, and never answer it unsettled only because the behaviour itself cannot be read. Without that line a confirmation can raise the grade, so answer such a premise unsettled unless the code alone settles it.");
     expect(system).not.toContain('an intent the code states');
     expect([result.severity, result.refutation?.outcome, result.refutation?.rule]).toEqual(['ignore', 'disproved', rule]);
     expect(result.judgeNotes).toBe(`Refutation disproved: src/account.ts:3 reads \`account.email\` after the same early return, and it builds. Rule checked: ${rule}`);
