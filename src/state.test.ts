@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 import { approveOrSayWhy, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, checkAndAutoApprove, holdApproval, pauseState, reopenAuthorResolvedThreads, retireStaleNotices, BOT_MARKER, ReviewThread, TRACKED_MARKER, unclearedThreads, warningHoldNote } from './state';
-import { dismissRecordMarker, PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './recap';
+import { clearRecordMarker, dismissRecordMarker, FOUND_AGAIN_MARKER, PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './recap';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, namingCommit, paginateSinglePage, reviewedLine, TEST_BOT, TEST_LINKS, testSha } from './test-utils';
 import { APPROVED_LINE, autoApproveHeadMarker, formatFindingComment, postReview, reviewedCommit, titleToSlug } from './github';
 import { extractApprovalRecords, formatReplyRecord, formatReviewRecord } from './review-record';
@@ -123,13 +123,13 @@ describe('unclearedThreads', () => {
     expect(unclearedThreads(confirmed('dependabot[bot]'), TEST_BOT, 'author')).not.toEqual([]);
     expect(unclearedThreads(confirmed('author'), TEST_BOT, 'author')).not.toEqual([]);
     expect(unclearedThreads(confirmed('alice'), TEST_BOT, 'author')).toEqual([]);
-    // Manki's own resolve counts only with a record that says addressed, or after a latest reply from a maintainer other than the PR author.
+    // Manki's own resolve counts only with a round record that says addressed, or its own record that it cleared the thread for a maintainer other than the PR author.
     expect(unclearedThreads(resolvedBy('manki-review[bot]'), TEST_BOT, 'author')).not.toEqual([]);
     expect(unclearedThreads(resolvedBy('manki-review[bot]', { addressed: true }), TEST_BOT, 'author')).toEqual([]);
-    expect(unclearedThreads(resolvedBy('manki-review[bot]', { writerReplyLogin: 'alice' }), TEST_BOT, 'author')).toEqual([]);
-    expect(unclearedThreads(resolvedBy('manki-review[bot]', { writerReplyLogin: 'author' }), TEST_BOT, 'author')).not.toEqual([]);
+    expect(unclearedThreads(resolvedBy('manki-review[bot]', { writerClearLogin: 'alice' }), TEST_BOT, 'author')).toEqual([]);
+    expect(unclearedThreads(resolvedBy('manki-review[bot]', { writerClearLogin: 'author' }), TEST_BOT, 'author')).not.toEqual([]);
     // Neither makes the PR author's own resolve count, also not after a thread was reopened.
-    expect(unclearedThreads(resolvedBy('author', { addressed: true, writerReplyLogin: 'alice' }), TEST_BOT, 'author')).not.toEqual([]);
+    expect(unclearedThreads(resolvedBy('author', { addressed: true, writerClearLogin: 'alice' }), TEST_BOT, 'author')).not.toEqual([]);
     // With the PR author unknown, a confirmed resolver still clears and an unconfirmed one does not.
     expect(unclearedThreads(confirmed('alice'), TEST_BOT)).toEqual([]);
     expect(unclearedThreads(resolvedBy('alice'), TEST_BOT)).not.toEqual([]);
@@ -352,21 +352,29 @@ describe('fetchBotReviewThreads', () => {
     expect(await heldWith(raises('note'))).toEqual([]);
   });
 
-  it('reads what backs a resolved thread: a record that says addressed, a latest reply from a person with write access, or such a person as the resolver', async () => {
+  it('reads what backs a resolved thread: a record that says addressed, a Manki record of a person with write access it cleared the thread for, or such a person as the resolver', async () => {
     const manki = 'manki-review[bot]';
-    const reply = (login: string, __typename?: string) => ({ body: 'Every caller bounds it.', author: { login, ...(__typename && { __typename }) } });
-    const resolved = (id: string, replies: ReturnType<typeof reply>[], resolvedBy = manki) => makeGraphqlFetchThreadNode({ id, isResolved: true, resolvedBy, replies });
+    const reply = (login: string) => ({ body: 'Every caller bounds it.', author: { login } });
+    const own = (marker: string, login = manki) => ({ body: `Withdrawn. Every caller bounds it.\n\n${BOT_MARKER}\n${marker}`, author: { login } });
+    const resolved = (id: string, replies: Array<{ body: string; author: { login: string } }>, resolvedBy = manki) => makeGraphqlFetchThreadNode({ id, isResolved: true, resolvedBy, replies });
     const graphql = jest.fn().mockResolvedValueOnce(makeGraphqlFetchResponse([
       resolved('addressed', []),
       resolved('alone', []),
-      resolved('writer', [reply('author'), reply('bob'), reply(manki)]),
-      resolved('reader', [reply('dave')]),
-      resolved('author-last', [reply('bob'), reply('author')]),
-      resolved('by-author', [reply('bob')], 'author'),
-      // A thread at the comment limit may hide a later reply.
-      resolved('cut-off', Array.from({ length: 99 }, () => reply('bob'))),
-      // A comment by another bot is no reply by a person, so the maintainer's reply before it still counts.
-      resolved('bot-after-writer', [reply('bob'), reply('ci-app', 'Bot')]),
+      // A reply after the record changes nothing, whoever writes it.
+      resolved('writer', [reply('bob'), own(clearRecordMarker('bob')), reply('author')]),
+      resolved('dismissed', [own(dismissRecordMarker('bob'))]),
+      // A maintainer's reply alone is no record.
+      resolved('reply-only', [reply('bob')]),
+      resolved('reader', [reply('dave'), own(clearRecordMarker('dave'))]),
+      resolved('author-record', [own(dismissRecordMarker('author'))]),
+      // Text a person writes is never Manki's record.
+      resolved('forged', [own(clearRecordMarker('bob'), 'author')]),
+      // A reopen or a found-again reply by Manki ends the records before it.
+      resolved('reopened', [own(clearRecordMarker('bob')), own(REOPENED_MARKER)]),
+      resolved('found-again', [own(clearRecordMarker('bob')), own(FOUND_AGAIN_MARKER)]),
+      resolved('by-author', [own(clearRecordMarker('bob'))], 'author'),
+      // A thread at the comment limit may hide a later reopen.
+      resolved('cut-off', [own(clearRecordMarker('bob')), ...Array.from({ length: 98 }, () => reply('bob'))]),
       resolved('by-writer', [], 'bob'),
       resolved('by-reader', [], 'dave'),
       // A person clears by resolving only with write access.
@@ -390,9 +398,9 @@ describe('fetchBotReviewThreads', () => {
     const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(threads.flatMap(t => t.addressed ? [t.id] : [])).toEqual(['addressed']);
-    expect(threads.flatMap(t => t.writerReplyLogin ? [[t.id, t.writerReplyLogin]] : [])).toEqual([['writer', 'bob'], ['author-last', 'author'], ['bot-after-writer', 'bob']]);
+    expect(threads.flatMap(t => t.writerClearLogin ? [[t.id, t.writerClearLogin]] : [])).toEqual([['writer', 'bob'], ['dismissed', 'bob'], ['author-record', 'author']]);
     expect(threads.flatMap(t => t.writerResolverLogin ? [[t.id, t.writerResolverLogin]] : [])).toEqual([['by-author', 'author'], ['by-writer', 'bob']]);
-    expect(unclearedThreads(threads, TEST_BOT, 'author').map(t => t.id)).toEqual(['alone', 'reader', 'author-last', 'by-author', 'cut-off', 'by-reader', 'by-triage', 'by-workflow-token', 'by-bare-workflow-token', 'by-app']);
+    expect(unclearedThreads(threads, TEST_BOT, 'author').map(t => t.id)).toEqual(['alone', 'reply-only', 'reader', 'author-record', 'forged', 'reopened', 'found-again', 'by-author', 'cut-off', 'by-reader', 'by-triage', 'by-workflow-token', 'by-bare-workflow-token', 'by-app']);
     // A security thread below a blocker holds an approval only when the covering review names it, and a workflow token's resolve does not clear it then.
     expect(unclearedThreads(threads, TEST_BOT, 'author', undefined, new Set(['security-by-workflow-token'])).map(t => t.id)).toContain('security-by-workflow-token');
     expect(threads.flatMap(t => t.repliesUnread ? [t.id] : [])).toEqual(['cut-off']);
@@ -440,15 +448,20 @@ describe('fetchBotReviewThreads', () => {
           { body: `${BOT_MARKER}\n${dismissRecordMarker('bob')}`, author: { login: 'manki-review[bot]' } },
           ...Array.from({ length: 98 }, () => ({ body: 'Still looking.', author: { login: 'reader' } })),
         ] }),
+        // A found-again reply ends the dismiss record before it, so a second dismissal by the same person is recorded again.
+        makeGraphqlFetchThreadNode({ id: 't7', body: security, replies: [
+          { body: `${BOT_MARKER}\n${dismissRecordMarker('bob')}`, author: { login: 'manki-review[bot]' } },
+          { body: `This came up again.\n\n${BOT_MARKER}\n${FOUND_AGAIN_MARKER}`, author: { login: 'manki-review[bot]' } },
+        ] }),
       ]),
     );
 
     const threads = await fetchBotReviewThreads(threadsOctokit(graphqlMock), TEST_BOT, 'owner', 'repo', 1);
 
     expect(quoting).toContain(`\`\`\`ts\n${quoted}\n\`\`\``);
-    expect(threads.map(t => t.recordedOverride)).toEqual([{ login: 'jdoe_acme', via: 'dismiss' }, undefined, undefined, { login: 'jdoe_acme', via: 'dismiss' }, undefined, undefined]);
-    expect(threads.map(t => [t.isBlocking, t.findingTitle])).toEqual(Array(6).fill([true, 'Token leaks into logs']));
-    expect(threads.map(t => t.dismissRecords)).toEqual([undefined, undefined, undefined, undefined, ['bob'], undefined]);
+    expect(threads.map(t => t.recordedOverride)).toEqual([{ login: 'jdoe_acme', via: 'dismiss' }, undefined, undefined, { login: 'jdoe_acme', via: 'dismiss' }, undefined, undefined, undefined]);
+    expect(threads.map(t => [t.isBlocking, t.findingTitle])).toEqual(Array(7).fill([true, 'Token leaks into logs']));
+    expect(threads.map(t => t.dismissRecords)).toEqual([undefined, undefined, undefined, undefined, ['bob'], undefined, undefined]);
   });
 
   it('identifies threads by BOT_MARKER alone', async () => {
@@ -1008,10 +1021,10 @@ describe('checkAndAutoApprove', () => {
         `1 thread blocks the approval:\n- [Null deref in \`parse\`](https://github.com/o/r/pull/1#r1)\n\n${FOLLOWS}`],
       ['a blocking thread the PR author resolved', { threads: [makeGraphqlFetchThreadNode({ isResolved: true, resolvedBy: 'author' })] },
         `1 thread blocks the approval:\n- test finding (resolved by \`author\`, who may not clear it)\n\n${FOLLOWS}`],
-      ['a blocking thread Manki resolved with no addressed record and no reply from a maintainer', { threads: [makeGraphqlFetchThreadNode({ isResolved: true, resolvedBy: 'manki-review[bot]' })] },
-        `1 thread blocks the approval:\n- test finding (Manki resolved it, but no review record confirms a fix, and the latest reply is not from a maintainer other than the PR author)\n\n${FOLLOWS}`],
+      ['a blocking thread Manki resolved with no addressed record and no record of a maintainer', { threads: [makeGraphqlFetchThreadNode({ isResolved: true, resolvedBy: 'manki-review[bot]' })] },
+        `1 thread blocks the approval:\n- test finding (Manki resolved it, but no review record confirms a fix, and no record of Manki names a maintainer other than the PR author who cleared it)\n\n${FOLLOWS}`],
       ['a blocking thread Manki resolved that is at the comment limit', { threads: [makeGraphqlFetchThreadNode({ isResolved: true, resolvedBy: 'manki-review[bot]', replies: Array.from({ length: 99 }, () => ({ body: 'Every caller bounds it.', author: { login: 'bob' } })) })] },
-        `1 thread blocks the approval:\n- test finding (Manki resolved it, but no review record confirms a fix, and the thread has too many comments for Manki to read its latest reply, so someone other than the PR author with write access has to reopen it and resolve it)\n\n${FOLLOWS}`],
+        `1 thread blocks the approval:\n- test finding (Manki resolved it, but no review record confirms a fix, and the thread has too many comments for Manki to read its record, so someone other than the PR author with write access has to reopen it and resolve it)\n\n${FOLLOWS}`],
       ['an open thread the review blocks on though its marker says note',
         { threads: [thread('t1', 'note')], existingReviews: [{ id: 7, body: blocked([], [prior('t1')]), state: 'CHANGES_REQUESTED', commit_id: HEAD, user }] },
         `1 thread blocks the approval:\n- Lock is never released (Manki's latest review blocks on this thread)\n\n${FOLLOWS}`],

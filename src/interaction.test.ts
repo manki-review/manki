@@ -16,7 +16,7 @@ import * as ghUtils from './github';
 import * as state from './state';
 import { RunCancelledError, stopWritesOn } from './abort';
 import * as auth from './auth';
-import { REOPENED_MARKER } from './recap';
+import { clearRecordMarker, REOPENED_MARKER } from './recap';
 import { makeRoundContext, TEST_BOT, TEST_LINKS } from './test-utils';
 import { scopeWarnings } from './scope';
 
@@ -1464,8 +1464,10 @@ describe('handleReviewCommentReply', () => {
     ['a "Fixed." on a warning thread', 'Fixed. The guard now runs first.', '14:32:05', 'head', 'not_addressed', false, undefined],
     ['a deferral written during the round', 'Agreed. Deferring it to the follow-up is fine.', '14:32:05', 'head', 'not_addressed', true, undefined],
     ['a withdrawal written during the round', 'Withdrawn. The caller already checks for null.', '14:32:05', 'head', 'not_addressed', true, undefined],
-    // A Manki reply already confirmed the fix on this head, so a maintainer's "Fixed." posts no second one but still resolves the thread.
+    // A Manki reply already confirmed the fix on this head, so a maintainer's "Fixed." posts no second one on a thread that
+    // holds nothing, but still resolves the thread. On a blocker thread it is posted again, since it records who Manki clears the thread for.
     ['a "Fixed." already confirmed on this head', 'Fixed. The guard now runs first.', '14:36:00', 'head', 'addressed', true, null],
+    ['a "Fixed." already confirmed on this head, in a warning thread that holds nothing', 'Fixed. The guard now runs first.', '14:36:00', 'head', 'addressed', false, null],
     // In a thread the PR author resolved, that "Fixed." clears it: Manki opens the thread and resolves it itself.
     ['a "Fixed." already confirmed on this head, in a thread the PR author resolved', 'Fixed. The guard now runs first.', '14:36:00', 'head', 'addressed', true, null, true],
     // On a warning thread that still holds, the earlier confirmation lifted nothing, so this one is posted with its record.
@@ -1498,7 +1500,7 @@ describe('handleReviewCommentReply', () => {
 
     expect(client.sendMessage).toHaveBeenCalledTimes(1);
     if (pointer === null) {
-      expect(octokit.rest.pulls.createReplyForReviewComment).not.toHaveBeenCalled();
+      expect(jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.map(([c]: [{ body: string }]) => c.body.includes(clearRecordMarker('someone')))).toEqual(blocking ? [true] : []);
       expect(jest.mocked(state.reopenThread).mock.calls).toEqual(authorResolved ? [[octokit, 'PRRT_this']] : []);
       expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual([[octokit, 'PRRT_this', 'ADDRESSED']]);
       return;
@@ -1853,6 +1855,8 @@ describe('handleReviewCommentReply', () => {
     const opens = ['open', 'resolve-fails', 'save-fails', 'note-fails'].includes(threadCase);
     const resolves = opens && (sender === 'owner' || (sender === 'pr-author' && kind === 'warning'));
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toHaveLength(resolves ? 1 : 0);
+    // Only an answer that settles the thread for someone other than the PR author with write access records who Manki clears it for.
+    expect(body.includes('<!-- manki-cleared-for:')).toBe(sender === 'owner' && !['missing', 'unreadable'].includes(threadCase));
     if (!saves) {
       expect(memory.writeLearning).toHaveBeenCalledTimes(threadCase === 'save-fails' ? 1 : 0);
       if (threadCase === 'save-fails') expect(core.warning).toHaveBeenCalledWith('Failed to save the learning of a withdrawn finding: Error: memory repo is down');

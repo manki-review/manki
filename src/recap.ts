@@ -201,7 +201,7 @@ const DISMISS_RECORD_OPENER = '<!-- manki-dismiss-record:';
 
 /**
  * Marks Manki's reply that records a dismissal it accepted from `login` and resolved the thread on. On a guarded thread
- * `login` is someone other than the PR author. Only `settlement` and `dismissRecordLogins` read it, never as a security override.
+ * `login` is someone other than the PR author. Only `settlement`, `dismissRecordLogins` and `clearRecordLogin` read it, never as a security override.
  */
 function dismissRecordMarker(login: string): string {
   return `${DISMISS_RECORD_OPENER}${login} -->`;
@@ -214,10 +214,38 @@ function sinceLastReopen<T extends { body?: string | null; author?: { login: str
   return replies.slice(reopened + 1);
 }
 
-/** Returns who Manki recorded a dismissal for in a thread since its last reopen. */
+const CLEAR_RECORD_OPENER = '<!-- manki-cleared-for:';
+
+/** Marks Manki's answer that settles a thread for `login`, someone other than the PR author with write access, before Manki resolves it. */
+function clearRecordMarker(login: string): string {
+  return `${CLEAR_RECORD_OPENER}${login} -->`;
+}
+
+/**
+ * Returns the bodies of Manki's own comments that may hold a record of who it cleared the thread for. A reopen or a
+ * found-again reply by Manki ends every record before it, since the thread is open again.
+ */
+function recordsSinceOpened(bot: BotIdentity, comments: ReadonlyArray<{ body?: string | null; author?: { login: string } | null }>): string[] {
+  const own = sinceLastReopen(bot, comments).filter(c => isBotLogin(bot, c.author?.login)).map(c => c.body ?? '');
+  const foundAgain = own.reduce((at, body, i) => hasOwnMarker(body, FOUND_AGAIN_MARKER, COMMENT_MARKER) ? i : at, -1);
+  return own.slice(foundAgain + 1);
+}
+
+/**
+ * Returns who Manki's latest record says it resolved the thread for: a clear record of its answer to that person, or a
+ * dismiss record. Only Manki's own comments since `recordsSinceOpened` count, read below its comment marker.
+ */
+function clearRecordLogin(bot: BotIdentity, comments: ReadonlyArray<{ body?: string | null; author?: { login: string } | null }>): string | undefined {
+  return recordsSinceOpened(bot, comments).flatMap(body => {
+    const login = (ownMarker(body, CLEAR_RECORD_OPENER, COMMENT_MARKER) ?? ownMarker(body, DISMISS_RECORD_OPENER, COMMENT_MARKER))?.match(/^[\w-]+$/)?.[0];
+    return login ? [login] : [];
+  }).at(-1);
+}
+
+/** Returns who Manki recorded a dismissal for in a thread since `recordsSinceOpened`, so a dismissal after a found-again reply is recorded again. */
 function dismissRecordLogins(bot: BotIdentity, comments: ReadonlyArray<{ body?: string | null; author?: { login: string } | null }>): string[] {
-  return sinceLastReopen(bot, comments).flatMap(c => {
-    const login = isBotLogin(bot, c.author?.login) ? ownMarker(c.body ?? '', DISMISS_RECORD_OPENER, COMMENT_MARKER)?.match(/^[\w-]+$/)?.[0] : undefined;
+  return recordsSinceOpened(bot, comments).flatMap(body => {
+    const login = ownMarker(body, DISMISS_RECORD_OPENER, COMMENT_MARKER)?.match(/^[\w-]+$/)?.[0];
     return login ? [login] : [];
   });
 }
@@ -682,6 +710,7 @@ async function fetchRecapState(
     id: t.threadId,
     ...(authorCannotClear(t) && !t.commentsIncomplete && t.authorReplyLogin && { latestReplyLogin: t.authorReplyLogin }),
     ...(authorCannotClear(t) && t.resolvedByHuman && t.resolvedByLogin && { resolverLogin: t.resolvedByLogin }),
+    ...(authorCannotClear(t) && t.clearLogin && { clearLogin: t.clearLogin }),
   })));
 
   const everAddressed = judgeAddressedThreadIds(priorRounds);
@@ -792,6 +821,8 @@ interface ThreadFacts extends OverrideCandidate {
   writerReplyLogin?: string;
   /** Who resolved the thread, when `hasWriteAccess` confirms a person with write access. GraphQL types every resolver as `User`, a bot included. */
   writerResolverLogin?: string;
+  /** Who Manki's latest record says it resolved the thread for, by `clearRecordLogin`, when that person has write access and every comment of the thread was read. */
+  writerClearLogin?: string;
 }
 
 /** How Manki's own comments in a thread settled it, which `decidedWithoutFix` of `PreviousFinding` is made of. */
@@ -850,33 +881,34 @@ function latestPersonReply<T extends { author?: { login: string; __typename?: st
 }
 
 /**
- * Returns `addressed`, `writerReplyLogin` and `writerResolverLogin` of `ThreadFacts` for each thread.
- * A caller leaves out `latestReplyLogin` when it did not read every comment of the thread, since a later reply may be
- * hidden. A login whose access cannot be read counts as without write access.
+ * Returns `addressed`, `writerReplyLogin`, `writerResolverLogin` and `writerClearLogin` of `ThreadFacts` for each thread.
+ * A caller leaves out `latestReplyLogin` and `clearLogin` when it did not read every comment of the thread, since a later
+ * reply or reopen may be hidden. A login whose access cannot be read counts as without write access.
  */
 async function resolveBacking(
   octokit: Octokit, owner: string, repo: string, priorRounds: RoundContext[],
-  threads: Array<{ id: string; latestReplyLogin?: string; resolverLogin?: string }>,
-): Promise<Map<string, Pick<ThreadFacts, 'addressed' | 'writerReplyLogin' | 'writerResolverLogin'>>> {
+  threads: Array<{ id: string; latestReplyLogin?: string; resolverLogin?: string; clearLogin?: string }>,
+): Promise<Map<string, Pick<ThreadFacts, 'addressed' | 'writerReplyLogin' | 'writerResolverLogin' | 'writerClearLogin'>>> {
   const addressed = judgeAddressedThreadIds(priorRounds, true);
-  const logins = [...new Set(threads.flatMap(t => [t.latestReplyLogin ?? [], t.resolverLogin ?? []].flat()))];
+  const logins = [...new Set(threads.flatMap(t => [t.latestReplyLogin ?? [], t.resolverLogin ?? [], t.clearLogin ?? []].flat()))];
   const writers = new Set((await Promise.all(logins.map(async login => await hasWriteAccess(octokit, owner, repo, login) ? [login] : []))).flat());
   return new Map(threads.map(t => [t.id, {
     ...(addressed.has(t.id) && { addressed: true }),
     ...(t.latestReplyLogin && writers.has(t.latestReplyLogin) && { writerReplyLogin: t.latestReplyLogin }),
     ...(t.resolverLogin && writers.has(t.resolverLogin) && { writerResolverLogin: t.resolverLogin }),
+    ...(t.clearLogin && writers.has(t.clearLogin) && { writerClearLogin: t.clearLogin }),
   }]));
 }
 
 /** Why a resolved thread no longer blocks. */
-type Settled = 'addressed' | 'override' | 'resolver' | 'reply';
+type Settled = 'addressed' | 'override' | 'resolver' | 'record';
 
 /**
  * Returns why the resolved thread `t` is settled, or `undefined` while it still blocks. The review round and the approval
  * check both ask this for a thread the PR author cannot clear. `override`: the PR author cleared it with `prAuthorRole`.
  * `resolver`: `writerResolverLogin` is someone other than the PR author. Manki's own resolve settles the thread only with backing:
- * `addressed` when the latest round that evaluated the thread says so, `reply` when `writerReplyLogin` is someone
- * other than the PR author.
+ * `addressed` when the latest round that evaluated the thread says so, `record` when `writerClearLogin` is someone
+ * other than the PR author. A reply after that record changes nothing, since only Manki's own record names who cleared the thread.
  */
 function settledBy(t: ThreadFacts, bot: BotIdentity, prAuthorLogin: string | undefined, prAuthorRole: AuthorClearRole | undefined): Settled | undefined {
   if (!t.isResolved) return undefined;
@@ -884,18 +916,18 @@ function settledBy(t: ThreadFacts, bot: BotIdentity, prAuthorLogin: string | und
   if (byManki && t.addressed) return 'addressed';
   if (securityOverrideOf(t, prAuthorLogin, prAuthorRole)) return 'override';
   if (mayClearSecurityThread(t.writerResolverLogin, bot, prAuthorLogin)) return 'resolver';
-  return byManki && mayClearSecurityThread(t.writerReplyLogin, bot, prAuthorLogin) ? 'reply' : undefined;
+  return byManki && mayClearSecurityThread(t.writerClearLogin, bot, prAuthorLogin) ? 'record' : undefined;
 }
 
 /**
  * Returns the thread's status for the next round. A resolved thread the PR author cannot clear stays `open` or `replied`
- * until `settled` says why it is settled. Manki's resolve after a maintainer's reply counts as `auto-resolved`. So does
+ * until `settled` says why it is settled. Manki's resolve that its record backs counts as `auto-resolved`. So does
  * any other thread without a human resolver, unless `settled` is `addressed`.
  */
 function threadStatus(t: ReviewThread, settled: Settled | undefined): PreviousFinding['status'] {
   const unresolved = t.hasHumanReply ? 'replied' : 'open';
   if (!t.isResolved) return unresolved;
-  if (authorCannotClear(t)) return !settled ? unresolved : settled === 'reply' ? 'auto-resolved' : 'resolved';
+  if (authorCannotClear(t)) return !settled ? unresolved : settled === 'record' ? 'auto-resolved' : 'resolved';
   return t.resolvedByHuman || settled === 'addressed' ? 'resolved' : 'auto-resolved';
 }
 
@@ -1053,6 +1085,8 @@ interface ReviewThread extends FindingMetadata {
   settlement?: Settlement;
   /** Manki settled the latest reply by a person, by `replyAgreed`. Unset when not every comment was read. */
   replyAgreed?: boolean;
+  /** Who Manki's latest record says it resolved the thread for, by `clearRecordLogin`. Unset when not every comment was read. */
+  clearLogin?: string;
 }
 
 /** Earlier wordings of `MISSED_EARLIER_NOTE` that threads posted before still carry. */
@@ -1239,6 +1273,7 @@ async function fetchReviewThreads(
       const answer = isBotThread ? latestAnswer(bot, thread.comments.nodes) : undefined;
       const settled = isBotThread && !incomplete.has(thread.id) ? settlement(bot, thread.comments.nodes) : undefined;
       const agreed = isBotThread && !incomplete.has(thread.id) && replyAgreed(bot, thread.comments.nodes);
+      const clearLogin = isBotThread && !incomplete.has(thread.id) ? clearRecordLogin(bot, thread.comments.nodes) : undefined;
 
       return {
         threadId: thread.id,
@@ -1274,6 +1309,7 @@ async function fetchReviewThreads(
         ...(answer && { answer }),
         ...(settled && { settlement: settled }),
         ...(agreed && { replyAgreed: true }),
+        ...(clearLogin && { clearLogin }),
       };
     });
     return { threads, state: threads.length === 0 ? 'empty' : 'fetched' };
@@ -1592,4 +1628,4 @@ function dropWaivedRestatements(
   return { unique, duplicates };
 }
 
-export { BOT_PREFIX_PATTERN, guardedKind, isDisprovedThread, dismissRecordLogins, dismissRecordMarker, dropWaivedRestatements, withoutCode, blockersToRecheck, currentFindingLine, DuplicateMatch, FixClaim, fixClaimMarker, fixClaimOf, namedPullRequests, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, pushTouchesThread, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, latestPersonReply, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };
+export { BOT_PREFIX_PATTERN, guardedKind, isDisprovedThread, clearRecordLogin, clearRecordMarker, dismissRecordLogins, dismissRecordMarker, dropWaivedRestatements, withoutCode, blockersToRecheck, currentFindingLine, DuplicateMatch, FixClaim, fixClaimMarker, fixClaimOf, namedPullRequests, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, pushTouchesThread, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };

@@ -11,7 +11,7 @@ import { fencePrText, truncateDiff } from './review';
 import { closeRawDiff, diffSections, parsePRDiff } from './diff';
 import { eventPrClosed } from './dispatch';
 import { codeTokensFromDiff, highlightCode } from './highlight';
-import { fetchPriorRoundContexts, RecapState, fixClaimMarker, guardedKind, isDisprovedThread, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, currentFindingLine, findingPlace, withoutCode, BOT_PREFIX_PATTERN } from './recap';
+import { clearRecordMarker, fetchPriorRoundContexts, RecapState, fixClaimMarker, guardedKind, isDisprovedThread, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, currentFindingLine, findingPlace, withoutCode, BOT_PREFIX_PATTERN } from './recap';
 import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, recordDismissal, authorResolvedNote, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, rolePhrase, unclearedThreads, warningHoldNote } from './state';
 import { AuthorClearRole, ParsedDiff, PrContext, RelatedRepoTools, ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation, RoundContext } from './types';
 import { relatedRepoOutcomes, relatedRepoTools, repoTools } from './related-repos';
@@ -626,8 +626,9 @@ export async function handleReviewCommentReply(
     }
     const reopenNote = config && live?.isResolved ? await authorResolvedNote(octokit, bot, owner, repo, prNumber, prAuthorLogin, config, live.id) : undefined;
     const repeats = outcome === 'Fixed' && head && thread?.fixedOn?.includes(head) ? thread : undefined;
-    // A second "Fixed." on a head is posted only when its record lifts a warning's hold that the first one left.
-    const posts = !repeats || (mayResolve && !closed && !!await warningHoldNote(octokit, bot, owner, repo, repeats, config?.author_clear_role));
+    // A second "Fixed." on a head is posted only when its record lifts a warning's hold that the first one left, or
+    // records who a guarded thread is cleared for, which is what later rounds read the clear from.
+    const posts = !repeats || (mayClear && isGuarded(repeats)) || (mayResolve && !closed && !!await warningHoldNote(octokit, bot, owner, repo, repeats, config?.author_clear_role));
     // A guarded thread the PR author resolved keeps blocking, also once Manki has reopened it and has no reopen note left to give.
     const held = !!live && (!!reopenNote || await resolveIsHeld(octokit, bot, owner, repo, live, prAuthorLogin, config?.author_clear_role));
     // An answer that settles such a thread for someone who may clear it clears it, as on an open thread.
@@ -664,6 +665,7 @@ export async function handleReviewCommentReply(
         ...(settled === 'Fixed' && head && !closed ? [fixedMarker(head)] : []),
         ...(fixClaim ? [fixClaimMarker(fixClaim)] : []),
         ...(noted ? [REOPENED_MARKER] : []),
+        ...(settled && thread && mayClear && senderLogin ? [clearRecordMarker(senderLogin)] : []),
       ];
       const { data: posted } = await octokit.rest.pulls.createReplyForReviewComment({
         owner,
