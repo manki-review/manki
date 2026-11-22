@@ -564,7 +564,13 @@ async function reportReviewedCheck(target: RunTarget, prAuthorLogin: string | un
       } else {
         // The strict lookup throws on a PR whose draft or conflict state is unknown, so an unknown state is never taken for no hold.
         const hold = await fetchApprovalHold(octokit, owner, repo, prNumber, false, true);
-        held = hold ? hold.reason : (await fetchHeldWarnings(octokit, bot, owner, repo, prNumber, prAuthorLogin, base.config.author_clear_role)).length > 0 && 'warnings';
+        const open = hold ? [] : await fetchHeldWarnings(octokit, bot, owner, repo, prNumber, prAuthorLogin, base.config.author_clear_role, undefined, true);
+        // A blocking thread reopened after the approval leaves its check to the next round.
+        if (open.some(t => !t.isWarning)) {
+          core.info(`A blocking thread is open, so the approval of ${shortSha} may not stand, leaving its check as it is`);
+          return;
+        }
+        held = hold ? hold.reason : open.length > 0 && 'warnings';
       }
     } catch (error) {
       const failed = heldReview ? 'The approval check failed on' : 'Could not read what holds the approval of';
@@ -1045,8 +1051,9 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
         const hold = approved && await holdApproval(octokit, bot, owner, repo, prNumber, commitSha, draft, config.auto_approve);
         const held = hold && hold.reason;
         // A warning thread can hold an approval given before warnings held one, or one given before the thread was reopened.
-        if (approved && !held && (await fetchHeldWarnings(octokit, bot, owner, repo, prNumber, prAuthorLogin, config.author_clear_role)).length > 0) {
-          core.info(`A warning thread holds the approval of ${shortSha}, reviewing in full`);
+        // So can a blocking thread a person reopened after the approval.
+        if (approved && !held && (await fetchHeldWarnings(octokit, bot, owner, repo, prNumber, prAuthorLogin, config.author_clear_role, undefined, true)).length > 0) {
+          core.info(`An open thread holds the approval of ${shortSha}, reviewing in full`);
           return false;
         }
         const summary = `No change to this PR since the reviewed commit \`${shortSha}\`. The previous verdict stands.`;

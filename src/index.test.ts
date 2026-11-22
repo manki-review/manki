@@ -1681,6 +1681,7 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
       ['the config the command read did not load', 'a review command', 'APPROVED', true, () => jest.mocked(ghUtils.readConfigFile).mockRejectedValue(new Error('rate limited'))],
       ['the draft or conflict state of the PR is unknown', 'Already approved on this commit', 'APPROVED', true, () => jest.mocked(ghUtils.fetchApprovalHold).mockRejectedValue(new Error('GitHub has not computed whether PR #1 conflicts with its base'))],
       ['the warning threads cannot be read', 'Already approved on this commit', 'APPROVED', true, () => jest.mocked(stateModule.fetchHeldWarnings).mockRejectedValue(new Error('rate limited'))],
+      ['a person reopened a blocking thread after the approval', 'Already approved on this commit', 'APPROVED', true, () => jest.mocked(stateModule.fetchHeldWarnings).mockResolvedValue([{ id: 'T2', isResolved: false, isBlocking: true, findingTitle: 'Lost update' }])],
     ] as const)('leaves the check as it is when %s', async (_label, exit, state, newest, fail) => {
       seed(exit, state, newest);
       fail();
@@ -7731,16 +7732,17 @@ describe('runFullReview orchestration', () => {
     });
 
     it.each([
-      ['holds the approval', () => jest.mocked(stateModule.fetchHeldWarnings).mockResolvedValueOnce([{ id: 'T1', isResolved: false, isBlocking: false, isWarning: true, findingTitle: 'Retry never stops' }])],
-      ['cannot be read', () => jest.mocked(stateModule.fetchHeldWarnings).mockRejectedValueOnce(new Error('rate limited'))],
-    ])('reviews in full rather than post the previous APPROVE again when a warning thread %s', async (_label, seed) => {
+      ['a warning thread holds the approval', () => jest.mocked(stateModule.fetchHeldWarnings).mockResolvedValueOnce([{ id: 'T1', isResolved: false, isBlocking: false, isWarning: true, findingTitle: 'Retry never stops' }])],
+      ['a blocking thread reopened after the approval holds it', () => jest.mocked(stateModule.fetchHeldWarnings).mockResolvedValueOnce([{ id: 'T2', isResolved: false, isBlocking: true, findingTitle: 'Lost update' }])],
+      ['the threads cannot be read', () => jest.mocked(stateModule.fetchHeldWarnings).mockRejectedValueOnce(new Error('rate limited'))],
+    ])('reviews in full rather than post the previous APPROVE again when %s', async (_label, seed) => {
       seedPush('APPROVE', REVIEWED_DIFF);
       seed();
 
       await callRunFullReview();
 
-      // The first read is the restatement's, with no round to grade the threads.
-      expect(jest.mocked(stateModule.fetchHeldWarnings).mock.calls[0].slice(2)).toEqual(['test-owner', 'test-repo', 42, undefined, undefined]);
+      // The first read is the restatement's, with no round to grade the threads, and it asks for open blocking threads too.
+      expect(jest.mocked(stateModule.fetchHeldWarnings).mock.calls[0].slice(2)).toEqual(['test-owner', 'test-repo', 42, undefined, undefined, undefined, true]);
       expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
       expect(mockCreateReview).not.toHaveBeenCalled();
     });

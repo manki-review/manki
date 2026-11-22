@@ -484,14 +484,16 @@ async function overrideRole(
 /**
  * Reads the PR's threads with the grades of `pending`, a round not posted yet, and returns the warning threads that hold an
  * approval. Throws when the threads or the round records cannot all be read, since a warning thread could then be missed.
+ * With `blocking`, it also returns the blocking threads that are not cleared, such as one a person reopened after an approval.
  */
 async function fetchHeldWarnings(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number,
-  prAuthorLogin: string | undefined, clearRole: AuthorClearRole | undefined, pending?: RoundContext,
+  prAuthorLogin: string | undefined, clearRole: AuthorClearRole | undefined, pending?: RoundContext, blocking = false,
 ): Promise<ReviewThread[]> {
   const threads = await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber, pending, true);
   const prAuthorRole = await overrideRole(octokit, owner, repo, threads, prAuthorLogin, clearRole);
-  return heldWarnings(octokit, owner, repo, threads, bot, prAuthorLogin, prAuthorRole, clearRole);
+  const warnings = await heldWarnings(octokit, owner, repo, threads, bot, prAuthorLogin, prAuthorRole, clearRole);
+  return blocking ? [...new Set([...unclearedThreads(threads, bot, prAuthorLogin, prAuthorRole), ...warnings])] : warnings;
 }
 
 /** The change a round reviews: its commit, and the `changeDigest` of its diff when known. */
