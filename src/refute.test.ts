@@ -1075,6 +1075,10 @@ describe('refuteBlockers', () => {
       ['Warning no cited line proves, which the judge doubts', {
         severity: 'warning', gradeIfConfirmed: 'warning', doubts: exists, ...noProof,
       }, ['warning', 'confirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed']],
+      // A security finding the judge doubts stays a blocker, which no answer raises further.
+      ['Security blocker the judge doubts', {
+        tags: ['security'], doubts: exists,
+      }, ['blocker', 'confirmed'], ['blocker', 'unconfirmed'], ['blocker', 'unconfirmed'], ['blocker', 'unconfirmed']],
       ['Security warning the judge doubts', {
         severity: 'warning', tags: ['security'], doubts: exists,
       }, ['warning', 'confirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed']],
@@ -1088,10 +1092,10 @@ describe('refuteBlockers', () => {
       expect(client.calls.map(([title]) => title).sort()).toEqual(kinds.map(([title]) => title).sort());
       // Every check asks about the premises the judge doubts and about the defect, whatever kind of finding it is.
       expect(client.messages.filter(([, user]) => user.includes('Premises the judge doubts')).length).toBe(findings.filter(f => f.doubts).length);
-      // Only a warning no confirmation raises is marked, so the refuter answers its run time premises on their code part alone.
-      expect(client.messages.filter(([, user]) => user.includes('- **No answer raises its grade**: a confirmation only posts this warning')).map(([, user]) => user.split('\n')[0].replace(/^## [^:]+: /, '')).sort()).toEqual([
+      // Only a finding no confirmation raises is marked, so the refuter answers its run time premises on their code part alone.
+      expect(client.messages.filter(([, user]) => user.includes('- **No answer raises its grade**: a confirmation leaves its grade as it is')).map(([, user]) => user.split('\n')[0].replace(/^## [^:]+: /, '')).sort()).toEqual([
         'Blocker cell a doubt holds at a warning, which no finder filed as a blocker', 'Blocker cell the judge keeps at a warning', 'Build claim graded a warning',
-        'Open lead in the rare column', 'Security warning the judge doubts', 'Warning in the rare column', 'Warning no cited line proves, which the judge doubts', 'Warning the judge doubts',
+        'Open lead in the rare column', 'Security blocker the judge doubts', 'Security warning the judge doubts', 'Warning in the rare column', 'Warning no cited line proves, which the judge doubts', 'Warning the judge doubts',
       ]);
       return { statuses: result.map(f => [f.title, [f.severity, checkStatus(f)]]), result };
     };

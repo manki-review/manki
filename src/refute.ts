@@ -226,8 +226,6 @@ export function changeSection(files: readonly DiffFile[], diff: ParsedDiff | und
     : '';
 }
 
-/** Whether a check of `finding` can only post it: a warning that no confirmation raises, by `confirmedGrade`. */
-const onlyPosts = (finding: Finding): boolean => finding.severity === 'warning' && !confirmedGrade(finding);
 
 function findingKind(finding: Finding): string {
   if (finding.lead) return 'Open lead';
@@ -251,7 +249,7 @@ function buildRefuteMessage(finding: Finding, usesOutsideDiff = '', outsideInput
     ...(finding.lead ? [`- **Checked so far**: ${sanitizeForPromptEmbed(leadText(finding.lead).checked)}`, `- **Left to check**: ${sanitizeForPromptEmbed(leadText(finding.lead).left)}`] : []),
     ...(finding.gradeIfConfirmed && finding.judgeNotes ? [`- **Judge's reasoning**: ${sanitizeForPromptEmbed(finding.judgeNotes.slice(0, MAX_JUDGE_NOTES_CHARS))}`] : []),
     ...(finding.doubts ? ['- **Premises the judge doubts**, to answer in order:', ...finding.doubts.map((d, i) => `  ${i + 1}. ${d.decides === 'drop' ? '(the premise the drop rests on) ' : ''}${sanitizeForPromptEmbed(d.premise)}`)] : []),
-    ...(finding.doubts && onlyPosts(finding) ? ['- **No answer raises its grade**: a confirmation only posts this warning'] : []),
+    ...(finding.doubts && !confirmedGrade(finding) ? ['- **No answer raises its grade**: a confirmation leaves its grade as it is'] : []),
     ...(outsideInput ? [`- **Outside input in this repository, as its maintainers define it**: ${sanitizeForPromptEmbed(outsideInput.trim())}`] : []),
   ];
   // Whether the PR causes the failure is settled only by the PR's change, so the change shows for a doubt the judge names.
