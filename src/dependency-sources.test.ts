@@ -310,8 +310,10 @@ describe('dependencyLoader', () => {
       ['.npmrc', `"registry${'='.repeat(100_000)}\nregistry${' '.repeat(100_000)}=${' \\'.repeat(100_000)}a"b"c\n`],
       ['.yarnrc', `registry${' '.repeat(100_000)}a"b"c\n"registry${'='.repeat(100_000)}"\n`],
     ]) {
+      // The clock starts after `round` sets up the repository, so only reading the settings is timed, not the `git` calls.
+      const { load } = round({ ...required, [file]: text });
       const started = Date.now();
-      await expect(round({ ...required, [file]: text }).load('npm/left-pad')).rejects.toThrow(file === '.npmrc' ? `${another} ${file} sets the registry` : `${file} sets \`registry\``);
+      await expect(load('npm/left-pad')).rejects.toThrow(file === '.npmrc' ? `${another} ${file} sets the registry` : `${file} sets \`registry\``);
       expect(Date.now() - started).toBeLessThan(1_000);
     }
     expect(server.requests).toEqual([]);
