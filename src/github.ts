@@ -1543,7 +1543,7 @@ export async function dismissPreviousReviews(
 
   for (const review of reviews) {
     const onKeptCommit = keepCommit !== undefined && reviewedCommit(review) === keepCommit;
-    if (review.id !== keepReviewId && !onKeptCommit && isBotUser(bot, review.user) && review.body?.includes(BOT_MARKER) && review.state === state) {
+    if (review.id !== keepReviewId && !onKeptCommit && isBotUser(bot, review.user) && !!review.body && (review.body.includes(BOT_MARKER) || isAutoApproval(review.body)) && review.state === state) {
       assertWritesAllowed();
       try {
         await octokit.rest.pulls.dismissReview({
