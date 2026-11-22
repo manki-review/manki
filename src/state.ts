@@ -222,12 +222,12 @@ async function fetchBotReviewThreads(
       const recorded = grades.get(thread.id)?.grade;
       const peak = grades.get(thread.id)?.peak;
       // An unreadable record could hide a raise, so the thread blocks rather than let auto-approve pass it.
-      const isBlocking = 'priorRoundsIncomplete' in records || threadBlocks({ severity, ...(recorded && { recordedGrade: recorded }), isSecurity });
+      const isBlocking = 'priorRoundsIncomplete' in records || threadBlocks({ severity, ...(recorded && { recordedGrade: recorded }), isSecurity, disprovedBlocker });
       const mayCarryBlocker = !gradedAbove('blocker', { severity, ...(peak && { peakGrade: peak }), ...('priorRoundsIncomplete' in records && { gradeUnknown: true }) });
       // The marker's slug turned every other character into a hyphen, so the finding data keeps the real title.
       const markerSlug = threadMarkerSlug(body);
       const data = parseFindingData(body);
-      const isWarning = !isBlocking && threadWarns({ severity, ...(recorded && { recordedGrade: recorded }), isSecurity }) && !data?.tags?.includes(PRE_EXISTING_TAG);
+      const isWarning = !isBlocking && threadWarns({ severity, ...(recorded && { recordedGrade: recorded }), isSecurity, disprovedBlocker }) && !data?.tags?.includes(PRE_EXISTING_TAG);
       const raisedIn = raised.get(thread.id);
       const since = isWarning ? warningSince(severity, grades.get(thread.id)?.history ?? [], raisedIn, postedAt) : undefined;
       const after = (c: { createdAt?: string }) => since === 'posted' || (!!since && !!c.createdAt && Date.parse(c.createdAt) > Date.parse(since));

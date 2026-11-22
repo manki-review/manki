@@ -3544,7 +3544,8 @@ function fixesElsewhere(evaluations: ThreadEvaluation[] | undefined, openThreadI
  * Returns the grade `evaluation` leaves its thread at when a partial fix sets or changes it, never above the highest
  * grade the thread had: its own, or a blocker an earlier round carried on it. A partly fixed thread takes the judge's
  * grade for what remains, but drops below the grade it carries only after a push to its file or a file its finding
- * cited, and never on a security thread or one whose blocker this round names again. A thread an earlier partial fix
+ * cited, and never on a guarded thread (a security thread or the thread of a disproved blocker) or one whose blocker this
+ * round names again. A thread an earlier partial fix
  * lowered gets its highest grade back when this round names its blocker again, or finds it not fixed after such a push.
  */
 function partialFixGrade(evaluation: ThreadEvaluation, thread: OpenThread | undefined, namedThreadIds: Set<string>, pushChangedFiles: ReadonlySet<string>): FindingSeverity | undefined {
@@ -3554,13 +3555,14 @@ function partialFixGrade(evaluation: ThreadEvaluation, thread: OpenThread | unde
   const earlier = thread.recordedGrade;
   const peak = thread.peakGrade ?? earlier;
   const top = peak && rank(peak) < rank(own) ? peak : own;
-  // A recorded grade below its own never lowers a security thread.
-  const carried = earlier && !(thread.isSecurity && rank(earlier) > rank(own)) ? earlier : own;
+  const guarded = !!thread.isSecurity || !!thread.disprovedBlocker;
+  // A recorded grade below its own never lowers a guarded thread.
+  const carried = earlier && !(guarded && rank(earlier) > rank(own)) ? earlier : own;
   const named = namedThreadIds.has(evaluation.threadId);
   const touched = pushTouchesThread(thread, pushChangedFiles);
   if (evaluation.status !== 'partly_addressed') return rank(carried) > rank(top) && (named || touched) ? top : undefined;
   if (named) return top;
-  if (thread.isSecurity || !evaluation.grade) return carried;
+  if (guarded || !evaluation.grade) return carried;
   const judged = rank(evaluation.grade) > rank(top) ? evaluation.grade : top;
   return rank(judged) > rank(carried) && !touched ? carried : judged;
 }

@@ -302,9 +302,10 @@ describe('fetchBotReviewThreads', () => {
     expect(unclearedThreads(unreadThreads, TEST_BOT).map(t => t.id)).toEqual(['l']);
 
     // A round not posted yet grades the threads too: here it lowers a blocker to a warning and raises a warning to a blocker.
-    // It also backs Manki's resolve of the security warning and of the disproved blocker it found fixed, so neither thread holds anything.
+    // It also backs Manki's resolve of the security warning and of the disproved blocker it found fixed, so neither thread
+    // holds anything. A lower grade it records never lowers the thread of a disproved blocker, which still holds.
     const pending = makeRoundContext(4, {
-      judge: { summary: '', threadEvaluations: [partly('b', 'warning'), { threadId: 'x', status: 'addressed', reason: 'r' }, { threadId: 'd', status: 'addressed', reason: 'r' }] },
+      judge: { summary: '', threadEvaluations: [partly('b', 'warning'), { threadId: 'x', status: 'addressed', reason: 'r' }, { threadId: 'd', status: 'addressed', reason: 'r' }, partly('n', 'note')] },
       findings: { count: 1, severityCounts: {}, entries: [{ fingerprint: { file: 'src/a.ts', lineStart: 3, lineEnd: 3, slug: 'x' }, severity: 'blocker', threadId: 'p' }] },
     });
     const pendingThreads = () => makeGraphqlFetchResponse([
@@ -312,11 +313,12 @@ describe('fetchBotReviewThreads', () => {
       makeGraphqlFetchThreadNode({ id: 'p', body: formatFindingComment(finding('warning', 'Plain warning'), TEST_LINKS) }),
       makeGraphqlFetchThreadNode({ id: 'x', body: formatFindingComment(finding('warning', 'Token in log', ['security']), TEST_LINKS), isResolved: true, resolvedBy: 'manki-review[bot]' }),
       makeGraphqlFetchThreadNode({ id: 'd', body: formatFindingComment(finding('warning', 'Lost update', ['disproved-blocker']), TEST_LINKS), isResolved: true, resolvedBy: 'manki-review[bot]' }),
+      makeGraphqlFetchThreadNode({ id: 'n', body: formatFindingComment(finding('warning', 'Retry race', ['disproved-blocker']), TEST_LINKS) }),
     ]);
     const graded = await fetchBotReviewThreads(threadsOctokit(graphqlMock.mockResolvedValueOnce(pendingThreads()), reviews), TEST_BOT, 'owner', 'repo', 1, pending);
-    expect(graded.map(t => [t.id, t.isBlocking, !!t.isWarning, !!t.addressed])).toEqual([['b', false, true, false], ['p', true, false, false], ['x', false, true, true], ['d', false, true, true]]);
+    expect(graded.map(t => [t.id, t.isBlocking, !!t.isWarning, !!t.addressed])).toEqual([['b', false, true, false], ['p', true, false, false], ['x', false, true, true], ['d', false, true, true], ['n', false, true, false]]);
     const held = await fetchHeldWarnings(threadsOctokit(graphqlMock.mockResolvedValueOnce(pendingThreads()), reviews), TEST_BOT, 'owner', 'repo', 1, 'author', undefined, pending);
-    expect(held.map(t => t.id)).toEqual(['b']);
+    expect(held.map(t => t.id)).toEqual(['b', 'n']);
     // Without every round record or without the threads, a warning thread could be missed, so the read fails rather than return none.
     const recordsUnread = threadsOctokit(graphqlMock.mockResolvedValueOnce(pendingThreads()), reviews);
     jest.mocked(recordsUnread.paginate).mockRejectedValueOnce(new Error('rate limited'));

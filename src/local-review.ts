@@ -413,13 +413,13 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
     }, result, { plannerDurationMs, judgeDurationMs: Date.now() - reviewEndTime, wallClockMs: Date.now() - startTime });
     // An earlier warning thread holds as in a pull request round, unless this round found it fixed or graded it lower.
     // No reply is known here, so an open one holds. A resolve counts as one by a person with `author_clear_role`, so of
-    // the resolved ones only a security one that no round found fixed holds.
+    // the resolved ones only a guarded one that no round found fixed holds.
     const evaluationOf = (threadId?: string) => result.threadEvaluations?.find(e => e.threadId === threadId);
     const preExisting = new Set(input.earlier?.findings.filter(f => f.preExisting).map(f => f.id));
     const threadHolds = (followUp?.previousFindings ?? []).filter(p => !preExisting.has(p.threadId ?? '')).some(p => {
       const evaluation = evaluationOf(p.threadId);
-      const warns = threadWarns({ severity: p.severity, ...(evaluation?.grade && { recordedGrade: evaluation.grade }), isSecurity: p.isSecurity });
-      return warns && evaluation?.status !== 'addressed' && (p.status === 'open' || (!!p.isSecurity && !p.fixed));
+      const warns = threadWarns({ severity: p.severity, ...(evaluation?.grade && { recordedGrade: evaluation.grade }), isSecurity: p.isSecurity, disprovedBlocker: p.disprovedBlocker });
+      return warns && evaluation?.status !== 'addressed' && (p.status === 'open' || ((!!p.isSecurity || !!p.disprovedBlocker) && !p.fixed));
     });
     const unread = skippedFiles(excludedFiles, lockfiles, diff);
     // As in a pull request round, only a round that would approve has its approval held.

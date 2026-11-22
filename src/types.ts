@@ -1982,18 +1982,18 @@ export interface ThreadEvaluation {
 
 /**
  * Whether an open thread blocks: by the grade the round records last gave it, or else by its own severity. A recorded
- * blocker always blocks, and a lower recorded grade never lowers a security thread. A thread without a severity marker
- * predates them and blocks.
+ * blocker always blocks, and a lower recorded grade never lowers a guarded thread: a security thread or the thread of a
+ * disproved blocker. A thread without a severity marker predates them and blocks.
  */
-export function threadBlocks(t: { severity: FindingSeverity | 'unknown'; recordedGrade?: FindingSeverity; isSecurity?: boolean }): boolean {
+export function threadBlocks(t: { severity: FindingSeverity | 'unknown'; recordedGrade?: FindingSeverity; isSecurity?: boolean; disprovedBlocker?: boolean }): boolean {
   if (t.recordedGrade === 'blocker') return true;
-  return t.recordedGrade && !t.isSecurity ? false : t.severity === 'blocker' || t.severity === 'unknown';
+  return t.recordedGrade && !t.isSecurity && !t.disprovedBlocker ? false : t.severity === 'blocker' || t.severity === 'unknown';
 }
 
 /** Whether an open thread that does not block is a warning, read the way `threadBlocks` reads its grade. */
 export function threadWarns(t: Parameters<typeof threadBlocks>[0]): boolean {
   if (threadBlocks(t)) return false;
-  return t.recordedGrade === 'warning' || (t.severity === 'warning' && (!t.recordedGrade || !!t.isSecurity));
+  return t.recordedGrade === 'warning' || (t.severity === 'warning' && (!t.recordedGrade || !!t.isSecurity || !!t.disprovedBlocker));
 }
 
 /**

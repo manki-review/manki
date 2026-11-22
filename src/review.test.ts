@@ -5624,10 +5624,13 @@ describe('runReview', () => {
     openThread.severity = 'warning';
     expect(await gradeAfter(partly('blocker'), touching)).toEqual(['warning', 'READY']);
     openThread.severity = 'blocker';
-    // A partial fix never lowers a security thread, which only a confirmed refutation or a person may clear.
+    // A partial fix never lowers a guarded thread, which only a confirmed refutation or a person may clear.
     openThread.isSecurity = true;
     expect(await gradeAfter(partly('warning'), touching)).toEqual(['blocker', 'ADDRESS_FIRST']);
     delete openThread.isSecurity;
+    openThread.disprovedBlocker = true;
+    expect(await gradeAfter(partly('warning'), touching)).toEqual(['blocker', 'ADDRESS_FIRST']);
+    delete openThread.disprovedBlocker;
 
     // The record keeps the judge's cell as `cell` only when it gives the thread's grade, so no later prompt shows a cell next to another grade.
     const cellsAfter = async (cell: GradeCell, diff: string, threadId = 'T1') => {
