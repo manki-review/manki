@@ -529,7 +529,14 @@ describe('dependencyLoader', () => {
     await expect(round({ 'Cargo.toml': '[dependencies]\ndemo = "1.*.2"\n', 'Cargo.lock': cargoLock([{ version: '1.2.0' }]) }).load('crates.io/demo')).rejects.toThrow('requires it as `1.*.2`, a form Manki does not read with certainty');
     // The version a call names must meet every requirement too, also when another locked version does.
     const both = { 'Cargo.toml': '[dependencies]\ndemo = "2"\n', 'Cargo.lock': cargoLock([{ version: '1.2.0' }, { version: '2.0.0' }]) };
-    await expect(round(both).load('crates.io/demo@1.2.0')).rejects.toThrow('requires it as `2`, which the locked version 1.2.0 does not meet');
+    const named = round(both);
+    await expect(named.load('crates.io/demo')).rejects.toThrow('its lockfiles lock several versions');
+    await expect(named.load('crates.io/demo@1.2.0')).rejects.toThrow('requires it as `2`, which the locked version 1.2.0 does not meet');
+    // The refusal of the named version keeps its own record next to the refusal of the package as a whole.
+    expect(dependencyOutcomes(named.stateDir)).toEqual([
+      expect.objectContaining({ package: 'crates.io/demo@1.2.0', version: '1.2.0', source: 'requirement', status: 'refused', reason: expect.stringContaining('does not meet') }),
+      expect.objectContaining({ package: 'crates.io/demo', status: 'refused', reason: expect.stringContaining('several versions') }),
+    ]);
     expect((await round(both).load('crates.io/demo@2.0.0')).key).toBe('crates.io/demo@2.0.0');
     // One that does not lock the package leaves its requirement to decide.
     expect((await round({ 'Cargo.toml': '[dependencies]\ndemo = "1.2"\n', 'Cargo.lock': '[[package]]\nname = "other"\nversion = "1.0.0"\n' }).load('crates.io/demo')).key).toBe('crates.io/demo@1.2.5');

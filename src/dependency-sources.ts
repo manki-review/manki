@@ -173,8 +173,8 @@ async function resolveDependency(
 ): Promise<Resolved> {
   const label = `${registry.id}/${name}`;
   // Each reason passes the PR's own text, such as a path or a source, through `shown`, as the registries' reasons do.
-  const refuse = (reason: string, origin: Partial<PackageOrigin> = {}): never => {
-    throw new UnreadPackage(`Manki does not read ${label}: ${reason}.`, label, { registry: registry.id, name, ...origin }, true);
+  const refuse = (reason: string, origin: Partial<PackageOrigin> = {}, key = label): never => {
+    throw new UnreadPackage(`Manki does not read ${label}: ${reason}.`, key, { registry: registry.id, name, ...origin }, true);
   };
   const certain = <T>(file: string, parse: () => T): T => {
     try {
@@ -233,11 +233,13 @@ async function resolveDependency(
       refuse(`its lockfiles lock several versions: ${where}${hint}`, { source: 'lockfile', file: chosen.file });
     }
     // An install drops a locked version that a manifest's requirement no longer allows, so the lockfile is stale for it.
+    // A refusal of a named version is recorded under its own key, so a refusal of the package as a whole keeps its record.
+    const key = version === undefined ? label : `${label}@${version}`;
     for (const { file, requirement } of requirements) {
       const range = registry.range(requirement);
       const origin = { version: chosen.version, source: 'requirement' as const, file, requirement };
-      if (range === undefined) refuse(`${shown(file)} requires it as \`${shown(requirement)}\`, a form Manki does not read with certainty`, origin);
-      if (!satisfies(chosen.version, range!)) refuse(`${shown(file)} requires it as \`${shown(requirement)}\`, which the locked version ${chosen.version} does not meet`, origin);
+      if (range === undefined) refuse(`${shown(file)} requires it as \`${shown(requirement)}\`, a form Manki does not read with certainty`, origin, key);
+      if (!satisfies(chosen.version, range!)) refuse(`${shown(file)} requires it as \`${shown(requirement)}\`, which the locked version ${chosen.version} does not meet`, origin, key);
     }
     return {
       registry, name: chosen.name, version: chosen.version, key: `${registry.id}/${chosen.name}@${chosen.version}`, source: 'lockfile', file: chosen.file,
