@@ -125,6 +125,10 @@ describe('formatFindingComment', () => {
     expect(render({ ...cited, evidence: { checks: [], proof: [], relatedProof: ['acme/lib:src/a.ts:3'] } })).toContain(plain);
     expect(open).toContain(`**${baseFinding.title}**\n\n_Manki confirmed the code path but could not check: The caller passes \`null\` here when the cache is cold._\n\n`);
     expect(parseFindingFromComment(open)?.description).toBe(baseFinding.description);
+    // A PR that adds the note's first word gets it highlighted, and the note is still skipped when read back.
+    const highlighted = highlightCode(open, new Set(['_Manki']));
+    expect(highlighted).toContain('`_Manki` confirmed the code path');
+    expect(parseFindingFromComment(highlighted)?.description).toBe(baseFinding.description);
     // A shortened premise keeps its ellipsis and gets no full stop after it.
     const long = render({ ...cited, refutation: { ...refutation, premises: [{ ...refutation.premises![1], premise: 'word '.repeat(60) }] } });
     expect(long).toMatch(/_Manki confirmed the code path but could not check: (?:word ){20,}word…_\n/);

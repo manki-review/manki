@@ -1631,8 +1631,11 @@ const UNCONFIRMED_NOTE = '_Manki could not confirm this, so please check it._';
 const NO_PROOF_NOTE = '_Manki could not confirm this, since no line in the code was cited for it._';
 const OPEN_PREMISE_NOTE = '_Manki confirmed the code path but could not check:';
 
-/** Matches each line `trustNote` writes. */
-const TRUST_NOTE_RE = /^_Manki (?:could not confirm this|confirmed the code path but could not check:)[^\n]*/;
+/**
+ * Matches each line `trustNote` writes. A premise is not plain prose, so `highlightCode` can wrap the first word of its
+ * line in backticks when a PR adds that word.
+ */
+const TRUST_NOTE_RE = /^(?:_Manki|`_Manki`) (?:could not confirm this|confirmed the code path but could not check:)[^\n]*/;
 
 /**
  * Returns the line under the title of a finding whose `checkStatus` is `unconfirmed`. It names the premise a check left
