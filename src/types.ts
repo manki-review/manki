@@ -1145,8 +1145,13 @@ export function agreedOutcome(checks: readonly Refutation[]): RefutationOutcome 
  * `finding`, and one no doubt names counts as deciding the defect, since nothing shows it only decided the grade.
  */
 export function confirmsDefect(check: Refutation, finding: Pick<Finding, 'doubts'>): boolean {
+  return check.defect === 'confirmed' && openPremises(check, finding).length === 0;
+}
+
+/** Returns the premises of `check` that leave the defect of `finding` open, as `confirmsDefect` reads them. */
+function openPremises(check: Refutation, finding: Pick<Finding, 'doubts'>): PremiseCheck[] {
   const decides = (p: PremiseCheck): Doubt['decides'] | undefined => p.decides ?? finding.doubts?.find(d => d.premise === p.premise)?.decides;
-  return check.defect === 'confirmed' && !check.premises?.some(p => towardFinding(p) !== 'confirmed' && decides(p) !== 'grade');
+  return check.premises?.filter(p => towardFinding(p) !== 'confirmed' && decides(p) !== 'grade') ?? [];
 }
 
 /** Whether `answer` shows the failure at the base, with lines the code found at the base `commit`. */
