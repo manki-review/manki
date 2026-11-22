@@ -713,7 +713,7 @@ describe('runFullReview end to end', () => {
     expect(postedReviews().map(r => r.state)).toEqual(['APPROVED', 'APPROVED']);
   });
 
-  it('has the judge try to refute a blocker with tools, keeps a disproved blocker with the reason, and reuses that on unchanged code', async () => {
+  it('has the judge try to refute a blocker with tools, posts a disproved blocker as a warning that holds the approval until someone other than the PR author answers, and reuses that on unchanged code', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'manki-e2e-head-'));
     mkdirSync(join(workspace, 'src'));
     writeFileSync(join(workspace, 'src', 'math.ts'), 'export const add = (a: number, b: number) => a + b;\n');
@@ -726,10 +726,11 @@ describe('runFullReview end to end', () => {
       await reviewRound();
 
       expect(mockLLM.tools).toContainEqual(['refute', { root: workspace, steps: 15, checking: true, related: dependenciesOnly }]);
-      expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED']);
+      // A disproof makes the blocker a warning, posted with the refuter's reason, which holds the approval although
+      // `auto_approve` is on.
+      expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED']);
       expect(postedReviews()[0].body).not.toContain('Checked and left out');
-      // A disproof never clears a blocker, so it is posted with the refuter's reason.
-      expect(mockGitHub.threads.map(t => t.comments[0].body)).toEqual([expect.stringContaining('a disproof alone never clears a blocker or a security finding, so please check it yourself. Both inputs are bounded at src/api.ts:3.')]);
+      expect(mockGitHub.threads.map(t => t.comments[0].body)).toEqual([expect.stringMatching(/^⚠️ \*\*Warning, needs a fix\*\*[\s\S]*Manki found a reason this may not happen, so this does not block\. Please check it yourself\. Both inputs are bounded at src\/api\.ts:3\./)]);
       // The refutation call is recorded under its own label, so it is no judge retry.
       const record = mockGitHub.roundContext(postedReviews()[0]);
       expect([record.judge.retryCount, record.usage.llmCalls?.filter(c => c.agent === 'refute').length]).toEqual([0, 1]);
@@ -739,7 +740,19 @@ describe('runFullReview end to end', () => {
 
       expect(mockLLM.calls).toContain('judge');
       expect(mockLLM.calls).not.toContain('refute');
-      expect(postedReviews().map(r => r.state)).toEqual(['DISMISSED', 'CHANGES_REQUESTED']);
+      expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED', 'COMMENTED']);
+
+      // A thread event runs the approval check, which still finds the warning open, and so does the PR author's resolve.
+      // The text of the PR could have steered the refuter, so the PR author's answer that Manki accepts lifts nothing
+      // either. The same answer from someone else with write access does.
+      const [thread] = mockGitHub.threads;
+      await dispatch({ event: 'pull_request_review_thread', action: 'unresolved', pr: String(PR_NUMBER) });
+      await resolveThread(thread, 'alice');
+      expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED', 'COMMENTED']);
+      await replyInThread(thread, 'The caller bounds both inputs.', 'Agreed. The caller bounds both inputs, so the sum cannot overflow.');
+      expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED', 'COMMENTED']);
+      await replyInThread(thread, 'The caller bounds both inputs.', 'Agreed. The caller bounds both inputs, so the sum cannot overflow.', 'bob');
+      expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED', 'COMMENTED', 'APPROVED']);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }

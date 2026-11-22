@@ -233,6 +233,16 @@ export const PRE_EXISTING_TAG = 'pre-existing' as const;
 export const UNPROVEN_TAG = 'unproven-blocker' as const;
 /** Marks a blocker posted as a warning because it claims a build, type or test failure that no CI result on the commit reports. */
 export const UNBUILT_TAG = 'unconfirmed-build-claim' as const;
+/**
+ * Marks a blocker posted as a warning because every refuter disproved it. Its thread is guarded as a security finding's
+ * is: only a fix or someone allowed to clear it lifts it, never the PR author's answer alone.
+ */
+export const DISPROVED_TAG = 'disproved-blocker' as const;
+
+/** Whether the thread of a finding is guarded as a security finding's is: a security finding, or one `DISPROVED_TAG` marks. */
+export function isGuardedFinding(tags: string[] | undefined, priorReviewers: ReadonlyArray<string | undefined> = []): boolean {
+  return isSecurityFinding(tags, priorReviewers) || !!tags?.includes(DISPROVED_TAG);
+}
 
 export interface InterRoundDiffEmptyOverride {
   applied: boolean;
@@ -982,8 +992,8 @@ export function wouldBlockIfTrue(f: Pick<Finding, 'gradeIfConfirmed' | 'cell' | 
   return pendingGrade(f) === 'blocker' || f.reviewerSeverity === 'blocker' || !!f.gradePath?.some(step => step.from === 'blocker' || step.to === 'blocker');
 }
 
-/** Whether `applyRefutation` put the blocker the judge alone made of `finding` back at its finders' grade. Nothing else lowers a blocker by a refutation. */
-export function isDisprovedRaise(finding: Pick<Finding, 'gradePath'>): boolean {
+/** Whether `applyRefutation` lowered the blocker `finding` because every refuter that ran disproved it. */
+export function isDisprovedBlocker(finding: Pick<Finding, 'gradePath'>): boolean {
   return !!finding.gradePath?.some(step => step.by === 'refutation' && step.from === 'blocker');
 }
 
@@ -1162,9 +1172,9 @@ export function oneCheckOnBase(finding: Pick<Finding, 'originCheck'>): OriginAns
   return answers.find(failsOnBase);
 }
 
-/** Whether one origin answer is enough to keep `f` out of the review: a warning or note that would never block and is no security finding. */
+/** Whether one origin answer is enough to keep `f` out of the review: a warning or note that would never block and is not guarded (`isGuardedFinding`). */
 export function oneAnswerSettles(f: Finding): boolean {
-  return f.severity !== 'blocker' && !wouldBlockIfTrue(f) && !staysWarningIfConfirmed(f) && !isSecurityFinding(f.tags, f.reviewers);
+  return f.severity !== 'blocker' && !wouldBlockIfTrue(f) && !staysWarningIfConfirmed(f) && !isGuardedFinding(f.tags, f.reviewers);
 }
 
 /**
@@ -1911,6 +1921,8 @@ export interface OpenThread extends FindingMetadata, ThreadGrade {
   /** The other files the finding cited as evidence. A push to one counts as a push to the thread, as one to `file` does. */
   evidenceFiles?: string[];
   isSecurity?: boolean;
+  /** Whether the thread holds a blocker posted as a warning because every refuter disproved it, which is guarded as a security thread is. */
+  disprovedBlocker?: boolean;
   /**
    * Snippet of the current source around `line` (line ± a small window). Lets
    * the judge ground its addressed/not-addressed decision in the actual code,
@@ -1970,18 +1982,18 @@ export interface ThreadEvaluation {
 
 /**
  * Whether an open thread blocks: by the grade the round records last gave it, or else by its own severity. A recorded
- * blocker always blocks, and a lower recorded grade never lowers a security thread. A thread without a severity marker
- * predates them and blocks.
+ * blocker always blocks, and a lower recorded grade never lowers a guarded thread: a security thread or the thread of a
+ * disproved blocker. A thread without a severity marker predates them and blocks.
  */
-export function threadBlocks(t: { severity: FindingSeverity | 'unknown'; recordedGrade?: FindingSeverity; isSecurity?: boolean }): boolean {
+export function threadBlocks(t: { severity: FindingSeverity | 'unknown'; recordedGrade?: FindingSeverity; isSecurity?: boolean; disprovedBlocker?: boolean }): boolean {
   if (t.recordedGrade === 'blocker') return true;
-  return t.recordedGrade && !t.isSecurity ? false : t.severity === 'blocker' || t.severity === 'unknown';
+  return t.recordedGrade && !t.isSecurity && !t.disprovedBlocker ? false : t.severity === 'blocker' || t.severity === 'unknown';
 }
 
 /** Whether an open thread that does not block is a warning, read the way `threadBlocks` reads its grade. */
 export function threadWarns(t: Parameters<typeof threadBlocks>[0]): boolean {
   if (threadBlocks(t)) return false;
-  return t.recordedGrade === 'warning' || (t.severity === 'warning' && (!t.recordedGrade || !!t.isSecurity));
+  return t.recordedGrade === 'warning' || (t.severity === 'warning' && (!t.recordedGrade || !!t.isSecurity || !!t.disprovedBlocker));
 }
 
 /**

@@ -19,7 +19,7 @@ import { stringify as stringifyYaml } from 'yaml';
 import { fetchReviewThreadNodes } from '../src/github';
 import { replyOutcome } from '../src/interaction';
 import type { EarlierFinding } from '../src/local-review';
-import { FOUND_AGAIN_MARKER, isSecurityThread, parseFindingData, parseFindingFromComment, recordedThreadGrades, titlesOverlap } from '../src/recap';
+import { FOUND_AGAIN_MARKER, isDisprovedThread, isSecurityThread, parseFindingData, parseFindingFromComment, recordedThreadGrades, titlesOverlap } from '../src/recap';
 import { hasOwnMarker } from '../src/review-record';
 import { fixedMarker } from '../src/state';
 import { FindingFingerprintEntry, FindingSeverity, isGradeCell, PRE_EXISTING_TAG, RoundContext } from '../src/types';
@@ -155,7 +155,7 @@ export function collectFollowUps(
         ...(entry.gradeIfConfirmed && { gradeIfConfirmed: entry.gradeIfConfirmed }), ...(isGradeCell(entry.cell) && { cell: entry.cell }), ...(entry.doubts && { doubts: entry.doubts }),
         ...(meta.description && { description: meta.description }), ...(meta.howToFix && { howToFix: meta.howToFix }),
         ...((meta.suggestedFix ?? entry.suggestedFix) && { suggestedFix: meta.suggestedFix ?? entry.suggestedFix }),
-        ...(thread && isSecurityThread(thread.root.body!) && { security: true }), ...(thread && { thread: open ? 'open' : fixed ? 'fixed' : 'resolved' }),
+        ...(thread && isSecurityThread(thread.root.body!) && { security: true }), ...(thread && isDisprovedThread(thread.root.body!) && { disproved: true }), ...(thread && { thread: open ? 'open' : fixed ? 'fixed' : 'resolved' }),
         ...(thread?.evidenceFiles && { evidenceFiles: thread.evidenceFiles }),
       });
       if (open) {
@@ -260,7 +260,7 @@ export function draftCase(repo: string, pr: DraftPr, miss: Miss, base: string, f
           ...(f.cell && { cell: { row: f.cell.row, column: f.cell.column } }), ...(f.doubts && { doubts: f.doubts.map(d => ({ premise: plain(d.premise), decides: d.decides, ...(d.consequence && { consequence: true }) })) }),
           posted: f.thread ? 'thread' : 'body', ...(f.thread && { state: f.thread }),
           ...(f.description && { description: plain(f.description) }), ...(f.howToFix && { how_to_fix: plain(f.howToFix) }),
-          ...(f.suggestedFix && { suggested_fix: f.suggestedFix }), ...(f.security && { security: true }), ...(f.evidenceFiles && { evidence_files: f.evidenceFiles }),
+          ...(f.suggestedFix && { suggested_fix: f.suggestedFix }), ...(f.security && { security: true }), ...(f.disproved && { disproved: true }), ...(f.evidenceFiles && { evidence_files: f.evidenceFiles }),
         })),
       },
       must_resolve: followUp.mustResolve,

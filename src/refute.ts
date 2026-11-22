@@ -14,7 +14,7 @@ import { fetchedRelatedRepos, relatedNames, repoTools } from './related-repos';
 import { parseProof, sameProblem, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation, MAX_QUOTED_RANGE } from './static-signals';
 import { wrapUpNoted } from './tool-steps';
-import { agreedOutcome, cellGrade, DiffFile, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, CheckProgress, CheckStatus, confirmsAll, confirmsDefect, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, isSweepName, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, restsOnDrop, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, towardFinding, triggerDoubt, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof } from './types';
+import { DISPROVED_TAG, agreedOutcome, cellGrade, DiffFile, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, CheckProgress, CheckStatus, confirmsAll, confirmsDefect, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, isSweepName, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, restsOnDrop, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, towardFinding, triggerDoubt, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -413,23 +413,31 @@ function restatesBlocker(finding: Finding, priorRounds: readonly RoundContext[],
 }
 
 /**
- * Returns the grade the finders gave a blocker that only the judge raised to blocker and that two refuters on
- * different models both disproved, or undefined when the blocker stays. A finding that `breaksRule` goes no lower than
- * the grade `rules` gives. A blocker any finder filed stays, since PR
- * content the refuters read could steer them all. So does a tool alert, a security finding, an open lead, which is
- * no finished finding to grade, and a finding whose refuters' models are unknown or the same.
+ * Returns the grade and the reason for a blocker that every refuter that ran disproved, or undefined when it stays a
+ * blocker. It becomes a `guarded` warning, whose thread only a fix or someone allowed to clear it clears, never the PR
+ * author's answer alone. A blocker only the judge raised, which two refuters on different models disproved, goes back
+ * to the grade its finders gave without that guard. A finding that `breaksRule` goes no lower than the grade `rules`
+ * gives. A tool alert, a security finding, an open lead, which is no finished finding to grade, and a blocker that
+ * `restates` an earlier one keep blocking.
  */
-function gradeBeforeJudgeRaise(finding: Finding, refutation: Refutation | undefined, pairRefutation: Refutation | undefined, rules?: RulesMode): FindingSeverity | undefined {
+function disprovedGrade(
+  finding: Finding, refutation: Refutation | undefined, pairRefutation: Refutation | undefined, restates: boolean, rules?: RulesMode,
+): { grade: FindingSeverity; reason: string; guarded: boolean } | undefined {
+  if (finding.severity !== 'blocker' || restates || finding.toolSource || finding.lead || isSecurityFinding(finding.tags, finding.reviewers)) return undefined;
+  const checks = [refutation, pairRefutation].filter((r): r is Refutation => !!r);
+  if (checks.length === 0 || !checks.every(r => r.outcome === 'disproved' && r.defect !== 'confirmed')) return undefined;
   const [raise, ...later] = finding.gradePath ?? [];
-  if (finding.severity !== 'blocker' || raise?.by !== 'judge' || later.length > 0) return undefined;
-  if (finding.toolSource || finding.lead || isSecurityFinding(finding.tags, finding.reviewers)) return undefined;
-  if (refutation?.outcome !== 'disproved' || pairRefutation?.outcome !== 'disproved') return undefined;
-  if (!refutation.model || !pairRefutation.model || refutation.model === pairRefutation.model) return undefined;
   const filed = finderGrade(finding);
+  const twoModels = !!refutation?.model && !!pairRefutation?.model && refutation.model !== pairRefutation.model;
+  const judgeRaised = twoModels && raise?.by === 'judge' && later.length === 0 && filed !== 'blocker';
+  const target = judgeRaised ? filed : 'warning';
   // The rule alone gives a finding that `breaksRule` its grade, whatever the refuters say about the damage.
   const ruled = breaksRule(finding) ? ruleGrade(rules) : undefined;
-  const lowest = ruled && rank(ruled) < rank(filed) ? ruled : filed;
-  return lowest === 'blocker' ? undefined : lowest;
+  const grade = ruled && rank(ruled) < rank(target) ? ruled : target;
+  if (grade === 'blocker') return undefined;
+  const reason = judgeRaised ? `${refutation!.model} and ${pairRefutation!.model} both disproved it, and no finder graded it a blocker`
+    : `${checks.length > 1 ? 'both refuters' : 'the refuter'} disproved it`;
+  return { grade, reason, guarded: !judgeRaised };
 }
 
 /**
@@ -437,9 +445,8 @@ function gradeBeforeJudgeRaise(finding: Finding, refutation: Refutation | undefi
  * premise about its fact alone. A `disproof` drops a finding graded below blocker, such as an
  * open lead or a capped blocker, and no check raises a finding beside one that disproves it. A finding with an
  * `overruledDisproof` stays at its grade, without its `cell`, `doubts`, `gradeIfConfirmed` and `lead`, so only a
- * confirmation gives a capped blocker back. A disproof lowers a
- * blocker only to the grade `gradeBeforeJudgeRaise` gives, never one that `restates` an earlier blocker, and such a
- * finding loses its `cell`, so a later round does not restate the blocker from it. An unsettled outcome keeps the
+ * confirmation gives a capped blocker back. A disproof lowers a blocker to the grade `disprovedGrade` gives and never
+ * drops it. Such a finding loses its `cell`, so a later round does not restate the blocker from it. An unsettled outcome keeps the
  * grade, and a security finding changes only when confirmed. A confirmation raises a finding only to the grade
  * `confirmedGrade` gives, so a finding that `isRareClaim` keeps its grade and its cell. One that `needsConsequence`
  * rises only when every check `confirmsAll`.
@@ -463,12 +470,15 @@ function applyRefutation(given: Finding, refutation: Refutation | undefined, pai
   const dropped = finding.severity === 'blocker' ? undefined : disproof(graded);
   if (dropped) return { ...graded, ...gradeStep(finding, 'ignore', 'refutation', dropped.reason) };
   if (outcome === 'disproved') {
-    const filed = restates ? undefined : gradeBeforeJudgeRaise(finding, refutation, pairRefutation, rules);
-    if (!filed) return graded;
-    const reason = `${refutation!.model} and ${pairRefutation!.model} both disproved it, and no finder graded it a blocker`;
-    core.info(`Posting blocker "${finding.title}" as a ${filed}: ${reason}`);
-    const { cell, ...lowered } = graded;
-    return { ...lowered, ...gradeStep(finding, filed, 'refutation', reason), ...(cell && { judgeCell: cell }), judgeNotes: `${graded.judgeNotes}\nPosted as a ${filed}, since ${reason}.` };
+    const lowered = disprovedGrade(finding, refutation, pairRefutation, restates, rules);
+    if (!lowered) return graded;
+    const { grade, reason, guarded } = lowered;
+    core.info(`Posting blocker "${finding.title}" as a ${grade}: ${reason}`);
+    const { cell, ...rest } = graded;
+    return {
+      ...rest, ...gradeStep(finding, grade, 'refutation', reason), ...(cell && { judgeCell: cell }), judgeNotes: `${graded.judgeNotes}\nPosted as a ${grade}, since ${reason}.`,
+      ...(guarded && { tags: [...(finding.tags ?? []), DISPROVED_TAG] }),
+    };
   }
   if (outcome === 'confirmed') {
     const { lead: _lead, notChecked: _notChecked, doubts, ...confirmed } = graded;

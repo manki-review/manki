@@ -32,6 +32,7 @@ import {
   WORKAROUND_REASON,
   UNCONFIRMED_FIX_ENDING,
   formatFinderError,
+  postedWhenPreExisting,
 } from './review';
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { DEFAULT_CONFIG, resolveFallbackModel, resolveModel } from './config';
@@ -40,7 +41,7 @@ import * as relatedRepos from './related-repos';
 import { relatedReposCacheDir } from './related-repos';
 import * as core from '@actions/core';
 import * as napi from '@ast-grep/napi';
-import { formatFindingComment, LinkedIssue, titleToSlug } from './github';
+import { formatFindingComment, holdsApproval, LinkedIssue, titleToSlug } from './github';
 import { CELL_GRADES, cellGrade, EarlierAttempt, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, OriginAnswer, OriginVerdict, Refutation, RefutationOutcome, ReviewResult, RoundContext, RoundLead, RoundNotStarted, RoundScope, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG, SweepMode } from './types';
 import { citedLine } from './finding-fingerprint';
 import { baseProofFixture, baseProofWorkspace, expectLinearTime, fingerprintEntriesFromLegacy, git, GIT_TEST_TIMEOUT_MS, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
@@ -3912,6 +3913,8 @@ describe('runReview', () => {
     expect(refuterMessages).toEqual([]);
     expect(result.findings).toEqual([]);
     expect(result.unpostedPreExisting?.map(f => [f.title, f.severity, f.tags])).toEqual(titles.map(title => [title, 'warning', ['pre-existing']]));
+    // The warning of a blocker every refuter disproved is still posted, as the blocker would have been.
+    expect(postedWhenPreExisting({ ...result.unpostedPreExisting![0], tags: ['pre-existing', 'disproved-blocker'] })).toBe(true);
   });
 
   it('records what the checks at the round\'s end found when the verdict reader then fails, and starts none without the time for it', async () => {
@@ -4904,8 +4907,9 @@ describe('runReview', () => {
     ]);
     expect(wholeFile.result.findings.map(f => f.description)).toEqual(['The handle stays open.\n\nAlso reported as: Caller never closes the handle (src/b.ts)']);
 
-    // With the PR head checked out, the judge's client tries to refute each reader blocker. A disproof keeps it a
-    // blocker, and its reason closes the fold under the finding, after the fix and the checks.
+    // With the PR head checked out, the judge's client tries to refute each reader blocker. A disproof makes it a
+    // warning that holds the approval, never drops it, and its reason closes the fold under the finding, after the fix
+    // and the checks.
     const workspace = mkdtempSync(join(tmpdir(), 'manki-reader-refute-'));
     try {
       writeFileSync(join(workspace, 'a.ts'), 'const cache = new Map();\nexport function put(k, v) { cache.clear(); cache.set(k, v); }\n');
@@ -4924,22 +4928,22 @@ describe('runReview', () => {
       };
       const refuting = refutingClients();
       const refuted = await runReview(refuting, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context', workspace });
-      expect(refuted.outcome).toBe('ADDRESS_FIRST');
-      expect(refuted.verdictReason).toBe('verdict_reader');
+      expect([refuted.outcome, refuted.verdictTrace?.survivingBlockers]).toEqual(['READY', []]);
       expect(jest.mocked(refuting.judge.sendMessage).mock.calls.map(call => call[2]?.repoTools?.root)).toEqual([undefined, workspace]);
       expect(refuted.findings).toEqual([expect.objectContaining({
-        severity: 'blocker', file: 'a.ts', line: 1, howToFix: 'Clear the cache on every write.', refutation: expect.objectContaining({ outcome: 'disproved', reason: 'Every write clears the cache first.' }),
+        severity: 'warning', file: 'a.ts', line: 1, howToFix: 'Clear the cache on every write.', refutation: expect.objectContaining({ outcome: 'disproved', reason: 'Every write clears the cache first.' }),
+        gradePath: [{ from: 'blocker', to: 'warning', by: 'refutation', reason: 'the refuter disproved it' }], checkStatus: 'unconfirmed',
       })]);
-      expect(refuted.verdictTrace?.survivingBlockers).toEqual([expect.objectContaining({ file: 'a.ts', title: 'The cache is never invalidated.' })]);
+      expect(holdsApproval(refuted.findings[0])).toBe(true);
       const comment = formatFindingComment(refuted.findings[0], TEST_LINKS);
-      expect(comment).toMatch(/<summary>How to fix it and 1 place read · not confirmed<\/summary>\n\n\*\*How to fix it\*\*\nClear the cache on every write\.\n\n\*\*Checked in the code\*\*\nOn the commented line: Builds the cache\n\n\*\*Doubt found\*\*\n[^\n]*Every write clears the cache first\./);
+      expect(comment).toMatch(/<summary>How to fix it and 1 place read · not confirmed<\/summary>\n\n\*\*How to fix it\*\*\nClear the cache on every write\.\n\n\*\*Checked in the code\*\*\nOn the commented line: Builds the cache\n\n\*\*Doubt found\*\*\nManki found a reason this may not happen, so this does not block\. Please check it yourself\. Every write clears the cache first\./);
 
-      // A second refuter on another model checks it too. Two disproofs still leave it blocking, posted with both reasons.
+      // A second refuter on another model checks it too. Two disproofs make it a warning as well, posted with both reasons.
       const refuterPair = { repoTools: true, sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify({ outcome: 'disproved', reason: 'Only tests read the cache.', proof: ['a.ts:2'] }) }) };
       const twice = await runReview({ ...refutingClients(), refuterPair }, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context', workspace });
-      expect(twice.outcome).toBe('ADDRESS_FIRST');
+      expect(twice.outcome).toBe('READY');
       expect(twice.findings).toEqual([expect.objectContaining({
-        severity: 'blocker', file: 'a.ts', pairRefutation: expect.objectContaining({ outcome: 'disproved', reason: 'Only tests read the cache.' }),
+        severity: 'warning', file: 'a.ts', pairRefutation: expect.objectContaining({ outcome: 'disproved', reason: 'Only tests read the cache.' }),
       })]);
       expect(refuterPair.sendMessage.mock.calls.map(call => call[2]?.repoTools?.root)).toEqual([workspace]);
       expect(formatFindingComment(twice.findings[0], TEST_LINKS)).toMatch(/\*\*Doubt found\*\*\n[^\n]*Every write clears the cache first\.[^\n]*\n\n\*\*Second check, on another model\*\*\nDoubt found\. Only tests read the cache\./);
@@ -4988,7 +4992,8 @@ describe('runReview', () => {
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('No second refuter runs'));
       warnSpy.mockRestore();
 
-      // A refuter that reaches a limit moves only to a fallback model with tools. Without them its check fails and the blocker keeps its grade.
+      // A refuter that reaches a limit moves only to a fallback model with tools, whose disproof lowers the blocker. Without
+      // them its check fails and the blocker keeps its grade.
       const limit = new QuotaError('529 overloaded', 'Anthropic API is overloaded');
       for (const fallbackTools of [false, true]) {
         const limited = refutingClients();
@@ -5000,7 +5005,7 @@ describe('runReview', () => {
         const fallback = { repoTools: fallbackTools, sendMessage: jest.fn(reader) };
         limited.fallbacks = { judge: { model: 'gpt-5.5', client: fallback as unknown as LLMClient } };
         const result = await runReview(limited, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context', workspace });
-        expect([fallbackTools, result.outcome, result.findings.map(f => [f.severity, f.refutation?.outcome])]).toEqual([fallbackTools, 'ADDRESS_FIRST', [['blocker', fallbackTools ? 'disproved' : undefined]]]);
+        expect([fallbackTools, result.outcome, result.findings.map(f => [f.severity, f.refutation?.outcome])]).toEqual([fallbackTools, fallbackTools ? 'READY' : 'ADDRESS_FIRST', [[fallbackTools ? 'warning' : 'blocker', fallbackTools ? 'disproved' : undefined]]]);
         expect(fallback.sendMessage.mock.calls.map(call => call[2]?.repoTools?.root)).toEqual(fallbackTools ? [workspace] : []);
         expect(result.modelFallbacks).toEqual(fallbackTools ? [{ stage: 'judge', agent: 'refute', fallbackModel: 'gpt-5.5', reason: 'Anthropic API is overloaded', limit: true }] : undefined);
       }
@@ -5622,10 +5627,13 @@ describe('runReview', () => {
     openThread.severity = 'warning';
     expect(await gradeAfter(partly('blocker'), touching)).toEqual(['warning', 'READY']);
     openThread.severity = 'blocker';
-    // A partial fix never lowers a security thread, which only a confirmed refutation or a person may clear.
+    // A partial fix never lowers a guarded thread, which only a confirmed refutation or a person may clear.
     openThread.isSecurity = true;
     expect(await gradeAfter(partly('warning'), touching)).toEqual(['blocker', 'ADDRESS_FIRST']);
     delete openThread.isSecurity;
+    openThread.disprovedBlocker = true;
+    expect(await gradeAfter(partly('warning'), touching)).toEqual(['blocker', 'ADDRESS_FIRST']);
+    delete openThread.disprovedBlocker;
 
     // The record keeps the judge's cell as `cell` only when it gives the thread's grade, so no later prompt shows a cell next to another grade.
     const cellsAfter = async (cell: GradeCell, diff: string, threadId = 'T1') => {
@@ -5968,6 +5976,19 @@ describe('runReview', () => {
     });
     expect(blockerThread.findings[0]).toEqual(expect.objectContaining({ ownThread: true }));
     expect(blockerThread.verdictTrace?.unresolvedPriors).toEqual([expect.objectContaining({ threadId: 'T1' })]);
+    // The warning of a blocker a check disproved is guarded the same way, so it rides only a thread that is guarded too.
+    mockedRunJudgeAgent.mockResolvedValue({ summary: 'Findings.', findings: [finding('warning', 'Retry never ends', 'src/x.ts', 10, {
+      tags: ['disproved-blocker'], gradePath: [{ from: 'blocker', to: 'warning', by: 'refutation', reason: 'the refuter disproved it' }],
+    })] });
+    const disproved = (disprovedBlocker: boolean) => runReview(makeClients(), {
+      config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true,
+      openThreads: [makePriorOpenThread({ title: 'Retry never ends', severity: 'warning', disprovedBlocker })], previousFindings: [], priorRounds: [prior], headSha: 'sha3',
+    });
+    expect((await disproved(false)).findings).toEqual([expect.objectContaining({ title: 'Retry never ends', ownThread: true })]);
+    expect((await disproved(true)).findings).toEqual([expect.objectContaining({ title: 'Retry never ends', threadId: 'T1' })]);
+    // A security finding needs a security thread, so the thread of a disproved blocker does not take it.
+    mockedRunJudgeAgent.mockResolvedValue({ summary: 'Findings.', findings: [finding('warning', 'Retry never ends', 'src/x.ts', 10, { tags: ['security'] })] });
+    expect((await disproved(true)).findings).toEqual([expect.objectContaining({ title: 'Retry never ends', ownThread: true })]);
     // So it does when the judge's `sameAs` names that thread's blocker from far away, and the link is dropped.
     mockedRunJudgeAgent.mockResolvedValue({ summary: 'Findings.', findings: [finding('blocker', 'Token logged on retry', 'src/x.ts', 80, { tags: ['security'], sameAs: 'src/x.ts:10:10:retry-never-ends' })] });
     const named = await runReview(makeClients(), {

@@ -429,8 +429,11 @@ describe('isBotMentionNonReview', () => {
 // --- Handler tests ---
 
 /** The first comment of a Manki thread, holding a security finding when `isSecurity`. */
-/** `reraised` is a warning thread that a found-again reply made block, which only the live thread shows. */
-type FindingKind = 'security' | 'blocker' | 'warning' | 'reraised';
+/**
+ * `reraised` is a warning thread that a found-again reply made block, which only the live thread shows. `disproved` is
+ * the warning thread of a blocker every refuter disproved.
+ */
+type FindingKind = 'security' | 'blocker' | 'warning' | 'reraised' | 'disproved';
 
 /** The REST author of a comment Manki wrote. */
 const MANKI_USER = { login: TEST_BOT.logins[0] };
@@ -441,8 +444,9 @@ const POSTED_ON = 'f'.repeat(40);
 /** `file` empty gives a finding tied to no file, which is posted detached. */
 function findingComment(kind: FindingKind, detached = false, evidence?: Finding['evidence'], file = 'src/file.ts'): string {
   return jest.requireActual('./github').formatFindingComment({
-    severity: kind === 'warning' || kind === 'reraised' ? 'warning' : 'blocker', title: 'Token leaks into logs', file, line: file ? 10 : 0, description: 'd', reviewers: [],
+    severity: kind === 'warning' || kind === 'reraised' || kind === 'disproved' ? 'warning' : 'blocker', title: 'Token leaks into logs', file, line: file ? 10 : 0, description: 'd', reviewers: [],
     ...(kind === 'security' && { tags: ['security'] }),
+    ...(kind === 'disproved' && { tags: ['disproved-blocker'] }),
     ...(evidence && { evidence }),
   }, TEST_LINKS, detached ? 'detached' : 'line');
 }
@@ -1208,6 +1212,11 @@ describe('handleReviewCommentReply', () => {
       `Fixed. The guard now runs first. A review confirms the fix only after a push changes the thread's file \`src/file.ts\`.\n\n${LISTED}\n\n${MAINTAINER}\n\n${STAYS_OPEN}`, undefined],
     ['the PR author hears it once after "Withdrawn."', 'Withdrawn. The caller already checks for null.', CONFIRMED, 'pr-author', 'security',
       `Withdrawn. The caller already checks for null.\n\n${LISTED}\n\n${MAINTAINER}\n\nThis is a security finding, so the thread stays open until someone other than the PR author with write access closes it. A PR author can close it only with the \`maintain\` role or a higher one.`, undefined],
+    // The thread of a disproved blocker is guarded as a security thread is, so only someone who may clear it clears it.
+    ['the PR author hears that a disproved blocker stays open after "Withdrawn."', 'Withdrawn. The caller already checks for null.', CONFIRMED, 'pr-author', 'disproved',
+      `Withdrawn. The caller already checks for null.\n\n${LISTED}\n\n${MAINTAINER}\n\nThis is a blocker that a check disproved, so the thread stays open until someone other than the PR author with write access closes it. A PR author can close it only with the \`maintain\` role or a higher one.`, undefined],
+    ['a maintainer clears a disproved blocker with "Withdrawn."', 'Withdrawn. The caller already checks for null.', CONFIRMED, 'someone', 'disproved',
+      `Withdrawn. The caller already checks for null.\n\n${LISTED}\n\n${CHECKED}`, 'INVALID'],
     ['a maintainer hears it after "Unverified." too', 'Unverified. A maintainer should confirm it.', CONFIRMED, 'someone', 'blocker',
       `Unverified. A maintainer should confirm it.\n\n${LISTED}\n\n${MAINTAINER}\n\n${STAYS_OPEN}`, undefined],
     // A maintainer's settling answer clears the thread as before, so the list says nothing about a decision left.
@@ -1238,7 +1247,7 @@ describe('handleReviewCommentReply', () => {
     const client = createMockClient();
     jest.mocked(client.sendMessage).mockResolvedValue({ content: structured(reply, more) });
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([
-      { id: 'PRRT_this', rootCommentId: 99, isResolved: authorResolved, isBlocking: kind !== 'warning', isSecurity: kind === 'security', findingTitle: 'This' },
+      { id: 'PRRT_this', rootCommentId: 99, isResolved: authorResolved, isBlocking: kind !== 'warning' && kind !== 'disproved', isSecurity: kind === 'security', disprovedBlocker: kind === 'disproved', findingTitle: 'This' },
     ]);
     jest.mocked(state.authorResolvedNote).mockResolvedValue(authorResolved ? 'Reopened. The PR author cannot resolve it.' : undefined);
     jest.mocked(state.resolveReviewThread).mockClear();
@@ -1250,8 +1259,8 @@ describe('handleReviewCommentReply', () => {
     const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.at(-1)![0].body as string;
     expect(body.split('\n\n<!-- manki -->')[0]).toBe(posted);
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(reason ? [[octokit, 'PRRT_this', reason]] : []);
-    // Only an answer that is still "Withdrawn." after the checks teaches the reviewers anything.
-    expect(jest.mocked(memory.writeLearning).mock.calls).toHaveLength(posted.startsWith('Withdrawn.') && kind !== 'security' ? 1 : 0);
+    // Only an answer that is still "Withdrawn." after the checks and clears the thread teaches the reviewers anything.
+    expect(jest.mocked(memory.writeLearning).mock.calls).toHaveLength(posted.startsWith('Withdrawn.') && reason && kind !== 'security' ? 1 : 0);
     expect(body.includes('<!-- manki-fixed:')).toBe(posted.startsWith('Fixed.'));
     const [record] = extractReplyRecords(body).map(r => JSON.parse(r) as ReplyRecord);
     expect(record.statements).toEqual('statements' in more ? [{ status: 'confirmed', places: ['src/file.ts:10'] }] : undefined);
@@ -2430,6 +2439,7 @@ describe('handleReviewCommentCommand', () => {
     // The PR author's own dismissal clears nothing, so it says that the finding keeps blocking.
     ['a blocker thread the PR author resolved, dismissed by the PR author', 'blocker', 'pr-author', false, 'refused', 'pr-author'],
     ['a security thread the PR author resolved, dismissed by the PR author', 'security', 'pr-author', false, 'refused', 'pr-author'],
+    ['a disproved blocker thread the PR author resolved, dismissed by the PR author', 'disproved', 'pr-author', false, 'refused', 'pr-author'],
     ['a security thread a PR author with a role that allows it resolved, dismissed by that author', 'security', 'pr-author', true, 'left', 'pr-author'],
     ['a blocker thread another maintainer resolved, dismissed by the PR author', 'blocker', 'other', false, 'left', 'pr-author'],
   ])('clears a resolved thread a maintainer dismisses only when its resolve does not count: %s', async (_label, kind, resolver, authorMayClear, result, sender = 'someone') => {
@@ -2442,7 +2452,7 @@ describe('handleReviewCommentCommand', () => {
     octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { original_commit_id: POSTED_ON, user: MANKI_USER, body: findingComment(kind), path: 'src/file.ts', line: 10 } });
     jest.mocked(ghUtils.authorClearRole).mockResolvedValue(authorMayClear ? 'maintain' : undefined);
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([
-      { id: 'PRRT_this', rootCommentId: 99, isResolved: true, resolvedByLogin: resolver, writerResolverLogin: resolver, isBlocking: kind !== 'warning', ...(kind === 'security' && { isSecurity: true }), findingTitle: 'Token' },
+      { id: 'PRRT_this', rootCommentId: 99, isResolved: true, resolvedByLogin: resolver, writerResolverLogin: resolver, isBlocking: kind !== 'warning' && kind !== 'disproved', ...(kind === 'security' && { isSecurity: true }), ...(kind === 'disproved' && { disprovedBlocker: true }), findingTitle: 'Token' },
     ]);
     jest.mocked(state.reopenThread).mockClear().mockResolvedValue(result !== 'failed');
 
@@ -2453,8 +2463,9 @@ describe('handleReviewCommentCommand', () => {
     // Manki records a maintainer's dismissal only on a thread it resolves itself.
     expect(state.announceSecurityOverrides).not.toHaveBeenCalled();
     expect(jest.mocked(state.recordDismissal).mock.calls).toEqual(result === 'cleared' || result === 'failed' ? [[octokit, 'PRRT_this', 'someone', false, undefined]] : []);
-    // A thread that stays resolved by the PR author still blocks, so the dismissal says it did not work.
-    const keepsBlocking = `This is a ${kind === 'security' ? 'security' : 'blocking'} finding, so resolving the thread does not clear it. It keeps blocking until someone other than the PR author with write access clears it. A PR author can clear it only with the \`maintain\` role or a higher one.`;
+    // A thread that stays resolved by the PR author still blocks, or holds the approval, so the dismissal says it did not work.
+    const what = { security: 'security finding', disproved: 'blocker that a check disproved' }[kind as string] ?? 'blocking finding';
+    const keepsBlocking = `This is a ${what}, so resolving the thread does not clear it. It keeps ${kind === 'disproved' ? 'holding the approval' : 'blocking'} until someone other than the PR author with write access clears it. A PR author can clear it only with the \`maintain\` role or a higher one.`;
     const note = { failed: 'Could not resolve this thread. The run log has the reason.', refused: keepsBlocking, cleared: undefined, left: undefined }[result];
     expect(jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls).toEqual(
       note ? [[expect.objectContaining({ comment_id: 64, body: `${note}\n\n<!-- manki -->` })]] : [],

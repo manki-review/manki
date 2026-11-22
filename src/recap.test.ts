@@ -1160,7 +1160,7 @@ describe('fetchRecapState', () => {
         findings: { count: 1, severityCounts: { blocker: 0, warning: 1, note: 0 }, entries: [entry] },
       });
       // A round too large for its review posts the last of `smallerRecords`, which later rounds read like any other.
-      const blocker = { fingerprint: { file: 'src/bar.ts', lineStart: 4, lineEnd: 4, slug: 'lost-update' }, severity: 'blocker' as const, title: 'Lost update', threadId: 'T_BLOCKER', judgeNotes: 'Long reasoning.',
+      const blocker = { fingerprint: { file: 'src/bar.ts', lineStart: 4, lineEnd: 4, slug: 'lost-update' }, severity: 'blocker' as const, title: 'Lost update', threadId: 'T_BLOCKER', judgeNotes: 'Long reasoning.', tags: ['disproved-blocker'],
         originCheck: { lineChanged: true, answers: [{ verdict: 'introduced' as const, reason: 'The base reads under the lock.', model: 'm' }] } };
       const threadEvaluations: ThreadEvaluation[] = [{ threadId: 'T_OLD', status: 'partly_addressed', reason: 'Half done.', grade: 'warning' }];
       const [minimal] = [...smallerRecords(makeRoundContext(2, {
@@ -2210,10 +2210,10 @@ describe('collectInPrSuppressions', () => {
     const resolved = (threadId: string, overrides: Partial<PreviousFinding>) => makePrevious({ title: 'Missing null check', file: 'src/a.ts', line: 10, status: 'resolved', severity: 'warning', threadId, ...overrides });
     const threads = [
       resolved('plain', {}), resolved('blocker', { severity: 'blocker' }), resolved('security', { isSecurity: true }),
-      resolved('raised', { recordedGrade: 'blocker' }), resolved('unknown', { gradeUnknown: true }),
+      resolved('raised', { recordedGrade: 'blocker' }), resolved('unknown', { gradeUnknown: true }), resolved('disproved', { disprovedBlocker: true }),
     ];
-    expect(collectInPrSuppressions(threads).map(s => s.guarded ?? false)).toEqual([false, true, true, true, false]);
-    expect([...collectGuardedThreadIds(threads)]).toEqual(['blocker', 'security', 'raised']);
+    expect(collectInPrSuppressions(threads).map(s => s.guarded ?? false)).toEqual([false, true, true, true, false, true]);
+    expect([...collectGuardedThreadIds(threads)]).toEqual(['blocker', 'security', 'raised', 'disproved']);
     expect(collectGuardedThreadIds(undefined).size).toBe(0);
   });
 
@@ -2377,8 +2377,8 @@ describe('llmDeduplicateFindings', () => {
     const both = await llmDeduplicateFindings(findings, [fixed, previous[0]], mockClient);
     expect(both.duplicates.map(d => d.finding.title)).toEqual(['Missing null check']);
 
-    // A blocker or a security finding is dropped only for a resolved blocking or security thread, since the PR author can resolve any other.
-    for (const raised of [{ ...findings[0], severity: 'blocker' as const }, { ...findings[0], severity: 'warning' as const, tags: [SECURITY_TAG] }]) {
+    // A blocker or a guarded finding is dropped only for a resolved guarded thread, since the PR author can resolve any other.
+    for (const raised of [{ ...findings[0], severity: 'blocker' as const }, ...[SECURITY_TAG, 'disproved-blocker'].map(tag => ({ ...findings[0], severity: 'warning' as const, tags: [tag] }))]) {
       const notWaived = await llmDeduplicateFindings([raised], previous, mockClient);
       expect(notWaived).toEqual({ unique: [raised], duplicates: [] });
       expect(deduplicateFindings([raised], [makePrevious({ ...previous[0], title: raised.title })])).toEqual({ unique: [raised], duplicates: [] });

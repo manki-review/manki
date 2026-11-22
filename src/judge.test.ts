@@ -4621,21 +4621,21 @@ describe('applyInPrSuppression', () => {
     expect(result.findings[0].tags ?? []).not.toContain(IN_PR_SUPPRESSED_TAG);
   });
 
-  it('hides a security finding below blocker only for a thread the PR author alone could not clear', () => {
-    const security = (severity: Finding['severity']) => makeFinding({ severity, tags: [SECURITY_TAG] });
+  it.each([SECURITY_TAG, 'disproved-blocker'])('hides a %s finding below blocker only for a thread the PR author alone could not clear', tag => {
+    const security = (severity: Finding['severity']) => makeFinding({ severity, tags: [tag] });
     const guarded = { ...makeSuppression(), guarded: true };
     for (const severity of ['warning', 'note'] as const) {
       for (const reason of ['resolved-thread', 'agree-reply'] as const) {
         const plain = applyInPrSuppression([security(severity)], [makeSuppression({}, reason)]);
         expect(plain.count).toBe(0);
         expect(plain.findings[0].severity).toBe(severity);
-        expect(plain.findings[0].tags).toEqual([SECURITY_TAG]);
+        expect(plain.findings[0].tags).toEqual([tag]);
         expect(applyInPrSuppression([security(severity)], [{ ...guarded, reason }]).findings[0].severity).toBe('ignore');
       }
       // The guarded entry is found behind a plain one for the same place.
       expect(applyInPrSuppression([security(severity)], [makeSuppression(), guarded]).findings[0].severity).toBe('ignore');
     }
-    // A finding that is no security finding is hidden by either, and a blocker by none.
+    // A finding that is not guarded is hidden by either, and a blocker by none.
     expect(applyInPrSuppression([makeFinding({ severity: 'warning' })], [guarded]).findings[0].severity).toBe('ignore');
     expect(applyInPrSuppression([security('blocker')], [guarded]).findings[0].severity).toBe('blocker');
   });
@@ -5868,8 +5868,8 @@ describe('applyCrossRoundSuppression', () => {
     expect(result.findings[0].tags).toContain('suppressed-by-ratchet');
   });
 
-  it('hides a security finding below blocker only for a prior whose thread the PR author alone could not clear', () => {
-    const security = (severity: Finding['severity']) => [makeFinding({ title: 'Old issue', file: 'src/a.ts', line: 10, severity, tags: [SECURITY_TAG] })];
+  it.each([SECURITY_TAG, 'disproved-blocker'])('hides a %s finding below blocker only for a prior whose thread the PR author alone could not clear', tag => {
+    const security = (severity: Finding['severity']) => [makeFinding({ title: 'Old issue', file: 'src/a.ts', line: 10, severity, tags: [tag] })];
     const priorWith = (entry: Partial<LegacyHandoverFindingFixture>) => [makePriorRound([{
       fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Old issue') }, severity: 'warning', title: 'Old issue', authorReply: 'none', ...entry,
     }])];

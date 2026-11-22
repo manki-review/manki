@@ -193,6 +193,7 @@ prior_round:
       how_to_fix: The fix in words.      # optional
       suggested_fix: replacement code    # optional
       security: true                     # optional, a security thread
+      disproved: true                    # optional, the thread of a blocker every refuter disproved
       evidence_files: [path/to/caller.rs] # optional, the other files the finding cited, as its thread's hidden data records them
 must_resolve: [P1]                       # open threads the push fixes, which the round should resolve
 must_keep_open:                          # open threads the push fixes only in part

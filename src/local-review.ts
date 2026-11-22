@@ -16,7 +16,7 @@ import { carryBodyWarnings, ReviewProgress, runReview } from './review';
 import { buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext } from './round-context';
 import { makeScratchDir } from './tool-install';
-import { SECURITY_TAG, threadWarns } from './types';
+import { DISPROVED_TAG, SECURITY_TAG, threadWarns } from './types';
 import type { ConfigSource, Doubt, Finding, FindingSeverity, GradeCell, OpenThread, ParsedDiff, ReviewConfig, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RulesMode } from './types';
 import { closePaths, fetchWorkspace, gitEnv, runGit } from './workspace';
 
@@ -77,6 +77,8 @@ export interface EarlierFinding {
   howToFix?: string;
   suggestedFix?: string;
   security?: boolean;
+  /** The warning of a blocker every refuter disproved, whose thread only a fix or a maintainer clears. */
+  disproved?: boolean;
   /** A pre-existing defect, whose thread never holds an approval. */
   preExisting?: boolean;
   /** The other files the finding cited, as a posted finding records them. A push to one counts as a push to its thread. */
@@ -277,9 +279,10 @@ async function followUpInputs(
     const evidenceFiles = plainCitedFiles(f.evidenceFiles ?? [], f.file);
     return evidenceFiles.length > 0 ? { evidenceFiles } : {};
   };
+  const guard = (f: EarlierFinding) => ({ ...(f.security && { isSecurity: true }), ...(f.disproved && { disprovedBlocker: true }) });
   const previousFindings: PreviousFinding[] = threads.map(f => ({
     title: f.title, file: f.file, line: f.line, severity: f.severity, status: f.thread === 'open' ? 'open' : 'resolved', ...(f.thread === 'fixed' && { fixed: true }), threadId: f.id,
-    markerSlug: titleToSlug(f.title), description: f.description, suggestedFix: f.suggestedFix, howToFix: f.howToFix, ...(f.security && { isSecurity: true }),
+    markerSlug: titleToSlug(f.title), description: f.description, suggestedFix: f.suggestedFix, howToFix: f.howToFix, ...guard(f),
     ...cited(f),
   }));
   const open = threads.filter(f => f.thread === 'open');
@@ -294,13 +297,13 @@ async function followUpInputs(
   const atHead = new Set(await headFiles.list());
   const openThreads: OpenThread[] = open.map(f => ({
     threadId: f.id, title: f.title, file: f.file, line: f.line, severity: f.severity, description: f.description, suggestedFix: f.suggestedFix, howToFix: f.howToFix,
-    ...cited(f), currentCode: extractCurrentCodeWindow(contents, f.file, f.line), ...(atHead.has(f.file) && !contents.has(f.file) && { codeUnread: true }),
+    ...cited(f), ...guard(f), currentCode: extractCurrentCodeWindow(contents, f.file, f.line), ...(atHead.has(f.file) && !contents.has(f.file) && { codeUnread: true }),
   }));
 
   const posted: Finding[] = earlier.findings.map(f => ({
     severity: f.severity, title: f.title, file: f.file, line: f.line, description: f.description ?? '', reviewers: [],
     ...(f.howToFix && { howToFix: f.howToFix }), ...(f.suggestedFix && { suggestedFix: f.suggestedFix }), ...(f.gradeIfConfirmed && { gradeIfConfirmed: f.gradeIfConfirmed }),
-    ...(f.cell && { cell: f.cell }), ...(f.doubts && { doubts: f.doubts }), ...(f.security && { tags: [SECURITY_TAG] }), ...(f.thread && { threadId: f.id }),
+    ...(f.cell && { cell: f.cell }), ...(f.doubts && { doubts: f.doubts }), ...((f.security || f.disproved) && { tags: [...(f.security ? [SECURITY_TAG] : []), ...(f.disproved ? [DISPROVED_TAG] : [])] }), ...(f.thread && { threadId: f.id }),
   }));
   const blocks = posted.some(f => f.severity === 'blocker');
   // A pull request round reads a thread as fixed from the earlier judge's `addressed` evaluation.
@@ -413,13 +416,13 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
     }, result, { plannerDurationMs, judgeDurationMs: Date.now() - reviewEndTime, wallClockMs: Date.now() - startTime });
     // An earlier warning thread holds as in a pull request round, unless this round found it fixed or graded it lower.
     // No reply is known here, so an open one holds. A resolve counts as one by a person with `author_clear_role`, so of
-    // the resolved ones only a security one that no round found fixed holds.
+    // the resolved ones only a guarded one that no round found fixed holds.
     const evaluationOf = (threadId?: string) => result.threadEvaluations?.find(e => e.threadId === threadId);
     const preExisting = new Set(input.earlier?.findings.filter(f => f.preExisting).map(f => f.id));
     const threadHolds = (followUp?.previousFindings ?? []).filter(p => !preExisting.has(p.threadId ?? '')).some(p => {
       const evaluation = evaluationOf(p.threadId);
-      const warns = threadWarns({ severity: p.severity, ...(evaluation?.grade && { recordedGrade: evaluation.grade }), isSecurity: p.isSecurity });
-      return warns && evaluation?.status !== 'addressed' && (p.status === 'open' || (!!p.isSecurity && !p.fixed));
+      const warns = threadWarns({ severity: p.severity, ...(evaluation?.grade && { recordedGrade: evaluation.grade }), isSecurity: p.isSecurity, disprovedBlocker: p.disprovedBlocker });
+      return warns && evaluation?.status !== 'addressed' && (p.status === 'open' || ((!!p.isSecurity || !!p.disprovedBlocker) && !p.fixed));
     });
     const unread = skippedFiles(excludedFiles, lockfiles, diff);
     // As in a pull request round, only a round that would approve has its approval held.

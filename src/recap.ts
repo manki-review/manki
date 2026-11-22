@@ -7,7 +7,7 @@ import { currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import { extractJSON } from './json';
 import { isLockfileAlert } from './lockfile';
 import { extractReviewRecords, FIXED_MARKER_OPENER, hasOwnMarker, hasReviewRecord, settledReplyId, settlingDecision } from './review-record';
-import { AuthorClearRole, AuthorReplyClass, EarlierAttempt, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, migrateStoredSeverities, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_ORDER, SEVERITY_TOKEN_PATTERN, threadBlocks, gradedAbove, isSecurityFinding } from './types';
+import { AuthorClearRole, DISPROVED_TAG, AuthorReplyClass, EarlierAttempt, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, migrateStoredSeverities, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_ORDER, SEVERITY_TOKEN_PATTERN, threadBlocks, gradedAbove, isGuardedFinding, isSecurityFinding } from './types';
 import { COMMENT_MARKER, escapeRegExp, ownMarker } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -94,6 +94,16 @@ function isStringArray(value: unknown): value is string[] {
 function isSecurityThread(body: string): boolean {
   const data = parseFindingData(body);
   return isSecurityFinding(data?.tags, data?.flaggedBy ?? []);
+}
+
+/** Whether a Manki thread's first comment holds a blocker posted as a warning because every refuter disproved it, by `DISPROVED_TAG`. */
+function isDisprovedThread(body: string): boolean {
+  return !!parseFindingData(body)?.tags?.includes(DISPROVED_TAG);
+}
+
+/** Names the kind of a guarded thread, without an article, for the notes that say who clears it. */
+function guardedKind(t: { isSecurity?: boolean; disprovedBlocker?: boolean }): string {
+  return t.isSecurity ? 'security finding' : t.disprovedBlocker ? 'blocker that a check disproved' : 'blocking finding';
 }
 
 /** The severity in the marker of a Manki thread's first comment, or `unknown` for a thread from before the markers. */
@@ -258,11 +268,12 @@ function fixClaimOf(
 }
 
 /**
- * Whether only someone other than the PR author can clear the finding: a blocker, or a security finding of any severity.
- * A live thread says so with `isBlocking`, a parsed one by `threadBlocks` on its severity and partly-fixed grade.
+ * Whether only someone other than the PR author can clear the finding: a blocker, a security finding of any severity,
+ * or a blocker posted as a warning because every refuter disproved it. A live thread says so with `isBlocking`, a parsed
+ * one by `threadBlocks` on its severity and partly-fixed grade.
  */
-function isGuarded(t: { isSecurity?: boolean; isBlocking?: boolean; severity?: FindingSeverity | 'unknown'; recordedGrade?: FindingSeverity }): boolean {
-  return !!t.isSecurity || !!t.isBlocking || (!!t.severity && threadBlocks({ severity: t.severity, ...(t.recordedGrade && { recordedGrade: t.recordedGrade }) }));
+function isGuarded(t: { isSecurity?: boolean; disprovedBlocker?: boolean; isBlocking?: boolean; severity?: FindingSeverity | 'unknown'; recordedGrade?: FindingSeverity }): boolean {
+  return !!t.isSecurity || !!t.disprovedBlocker || !!t.isBlocking || (!!t.severity && threadBlocks({ severity: t.severity, ...(t.recordedGrade && { recordedGrade: t.recordedGrade }) }));
 }
 
 /**
@@ -283,6 +294,7 @@ function authorCannotClear(t: Parameters<typeof isGuarded>[0] & { gradeUnknown?:
 
 interface OverrideCandidate {
   isSecurity?: boolean;
+  disprovedBlocker?: boolean;
   isBlocking?: boolean;
   severity?: FindingSeverity | 'unknown';
   recordedGrade?: FindingSeverity;
@@ -433,6 +445,7 @@ interface PreviousFinding extends FindingMetadata {
   /** `author_association` of the latest non-bot replier. */
   authorReplyAssociation?: string;
   isSecurity?: boolean;
+  disprovedBlocker?: boolean;
   /** On a guarded thread, whether the latest replier may agree it away: `mayClearSecurityThread` with write access. */
   authorReplyMayClear?: boolean;
   /** A guarded thread the PR author resolved, which Manki has not reopened before. */
@@ -703,6 +716,7 @@ async function fetchRecapState(
       ...(t.replyAgreed && { replyAgreed: true }),
       ...(t.authorReplyAssociation && { authorReplyAssociation: t.authorReplyAssociation }),
       ...(t.isSecurity && { isSecurity: true }),
+      ...(t.disprovedBlocker && { disprovedBlocker: true }),
       ...(replierMayClear && { authorReplyMayClear: true }),
       ...(!settled && shouldReopen(t, prAuthorLogin) && { reopen: true }),
       ...(securityOverride && { securityOverride }),
@@ -1015,6 +1029,7 @@ interface ReviewThread extends FindingMetadata {
   resolvedByHuman: boolean;
   resolvedByLogin?: string;
   isSecurity: boolean;
+  disprovedBlocker?: boolean;
   reopenedByManki: boolean;
   recordedOverride?: Omit<SecurityOverride, 'thread'>;
   fixClaim?: FixClaim;
@@ -1233,6 +1248,7 @@ async function fetchReviewThreads(
         resolvedByHuman: !!thread.resolvedBy?.login && !isBotLogin(bot, thread.resolvedBy.login),
         ...(thread.resolvedBy?.login && { resolvedByLogin: thread.resolvedBy.login }),
         isSecurity: isBotThread && isSecurityThread(body),
+        ...(isBotThread && isDisprovedThread(body) && { disprovedBlocker: true }),
         reopenedByManki: thread.comments.nodes.slice(1).some(c => isBotLogin(bot, c.author?.login) && hasOwnMarker(c.body ?? '', REOPENED_MARKER, COMMENT_MARKER)),
         ...(recordedOverride && { recordedOverride }),
         ...(fixClaim && { fixClaim }),
@@ -1347,11 +1363,12 @@ function firstMatch<P extends PreviousFinding>(finding: Finding, previous: P[]):
 }
 
 /**
- * Whether the resolved `prev` lets dedup drop `finding` as already waived. A blocker or a security finding is dropped
- * only for a guarded thread, since the PR author alone can resolve any other thread. A finding graded above `prev` is never dropped.
+ * Whether the resolved `prev` lets dedup drop `finding` as already waived. A blocker or a guarded finding
+ * (`isGuardedFinding`) is dropped only for a guarded thread, since the PR author alone can resolve any other thread. A
+ * finding graded above `prev` is never dropped.
  */
 function mayWaive(prev: PreviousFinding, finding: Finding): boolean {
-  return !prev.fixed && !gradedAbove(finding.severity, prev) && ((finding.severity !== 'blocker' && !isSecurityFinding(finding.tags)) || isGuarded(prev));
+  return !prev.fixed && !gradedAbove(finding.severity, prev) && ((finding.severity !== 'blocker' && !isGuardedFinding(finding.tags)) || isGuarded(prev));
 }
 
 /**
@@ -1575,4 +1592,4 @@ function dropWaivedRestatements(
   return { unique, duplicates };
 }
 
-export { BOT_PREFIX_PATTERN, dismissRecordLogins, dismissRecordMarker, dropWaivedRestatements, withoutCode, blockersToRecheck, currentFindingLine, DuplicateMatch, FixClaim, fixClaimMarker, fixClaimOf, namedPullRequests, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, pushTouchesThread, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, latestPersonReply, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };
+export { BOT_PREFIX_PATTERN, guardedKind, isDisprovedThread, dismissRecordLogins, dismissRecordMarker, dropWaivedRestatements, withoutCode, blockersToRecheck, currentFindingLine, DuplicateMatch, FixClaim, fixClaimMarker, fixClaimOf, namedPullRequests, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, pushTouchesThread, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, latestPersonReply, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };

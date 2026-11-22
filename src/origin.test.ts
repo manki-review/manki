@@ -197,13 +197,15 @@ describe('checkOrigins', () => {
     expect([
       foundOnBase(withAnswers(one)),
       foundOnBase(withAnswers(one, { severity: 'note' })),
-      // A changed line, a blocker, a would-block warning, a blocker-cell warning and a security finding need two models.
+      // A changed line, a blocker, a would-block warning, a blocker-cell warning, a security finding and the warning of a
+      // disproved blocker need two models.
       foundOnBase(withAnswers(one, {}, true)),
       foundOnBase(withAnswers(one, { severity: 'blocker' })),
       foundOnBase(withAnswers(one, { reviewerSeverity: 'blocker' })),
       foundOnBase(withAnswers(one, { cell: { row: 'severe', column: 'normal' }, gradeIfConfirmed: 'warning' })),
       foundOnBase(withAnswers(one, { tags: ['security'] })),
-    ].map(Boolean)).toEqual([true, true, false, false, false, false, false]);
+      foundOnBase(withAnswers(one, { tags: ['disproved-blocker'] })),
+    ].map(Boolean)).toEqual([true, true, false, false, false, false, false, false]);
     for (const overrides of [{}, { severity: 'blocker' as const }, { tags: ['security'] }]) {
       expect(foundOnBase(withAnswers(two, overrides, true))).toEqual(proven('a'));
     }
