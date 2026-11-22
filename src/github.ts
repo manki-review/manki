@@ -1578,23 +1578,25 @@ function formatStatsOneLiner(context: RoundContext, reviewTimeMs: number): strin
 
 const REVIEW_BODY_BUDGET = 60000;
 
-/** The most of the review body the round record may take, so the verdict and findings still show. */
+/** The most of the review body the round record may take, so the verdict and findings still show when the body is cut. */
 const MAX_RECORD_CHARS = REVIEW_BODY_BUDGET - 10000;
 
 /** Characters per line of the full record in the log, since the runner's log can lose a very long line and every line after it. */
 const RECORD_LOG_LINE_CHARS = 1000;
 
 /**
- * Returns the hidden stats line and round record that end a review. The record is plain JSON when it fits in `room`
- * characters, and compressed otherwise. A record over `MAX_RECORD_CHARS` even compressed takes the first of
- * `smallerRecords` that fits. Unless `cutLog` says it already did, the log then names what was left out and holds the
- * full record compressed. Only a record whose last form is still over the budget throws, which takes hundreds of findings.
+ * Returns the hidden stats line and round record that end a review. `room` is what the visible body leaves, and the
+ * record gets at most `MAX_RECORD_CHARS` of it. The record is plain JSON when it fits, and compressed otherwise. A
+ * record over its room even compressed takes the first of `smallerRecords` that fits, or the last one when none does,
+ * so the caller cuts the body. Unless `cutLog` says it already did, the log then names what was left out and holds the
+ * full record compressed. Only a record whose last form is still over `MAX_RECORD_CHARS` throws, which takes hundreds of findings.
  */
 function formatRecordTrailer(context: RoundContext, reviewTimeMs: number, room: number, cutLog: { logged: boolean }): string {
   const stats = `\n\n${formatStatsOneLiner(context, reviewTimeMs)}\n`;
-  const fits = (record: string): boolean => stats.length + record.length <= MAX_RECORD_CHARS;
-  // A plain record over the budget is compressed before any part of it is cut.
-  const plainRoom = Math.min(room, MAX_RECORD_CHARS) - stats.length;
+  const recordRoom = Math.min(room, MAX_RECORD_CHARS);
+  const fits = (record: string, limit = recordRoom): boolean => stats.length + record.length <= limit;
+  // A plain record over its room is compressed before any part of it is cut.
+  const plainRoom = recordRoom - stats.length;
   const record = formatReviewRecord(context, plainRoom);
   if (fits(record)) return `${stats}${record}`;
 
@@ -1608,13 +1610,13 @@ function formatRecordTrailer(context: RoundContext, reviewTimeMs: number, room: 
   }
   if (!cutLog.logged) {
     cutLog.logged = true;
-    core.warning(`The round record takes ${record.length} characters even compressed, ${cut ? `so the review carries it ${cut}` : 'and has no part the review can leave out'}. The full record follows in the log.`);
+    core.warning(`The round record takes ${record.length} characters even compressed, more than the ${Math.max(0, recordRoom - stats.length)} the review leaves it, ${cut ? `so the review carries it ${cut}` : 'and has no part the review can leave out'}. The full record follows in the log.`);
     const full = compressReviewRecord(context);
     core.startGroup(`Full round record, gzip compressed and base64 encoded in ${Math.ceil(full.length / RECORD_LOG_LINE_CHARS)} lines`);
     for (let i = 0; i < full.length; i += RECORD_LOG_LINE_CHARS) core.info(full.slice(i, i + RECORD_LOG_LINE_CHARS));
     core.endGroup();
   }
-  if (!fits(slim)) throw new Error(`The round record takes ${slim.length} characters even in its minimal form, too many for a review body`);
+  if (!fits(slim, MAX_RECORD_CHARS)) throw new Error(`The round record takes ${slim.length} characters even in its minimal form, too many for a review body`);
   return `${stats}${slim}`;
 }
 
@@ -1788,9 +1790,9 @@ const BASE_NOTE_RE = /^\*\*(?:Possibly older than this PR|Already broken before 
  * cited, linked at the base commit when `links` can. Two checks on different models (`sameOnBase`) say the failure was already
  * there: on a pre-existing finding that no longer blocks, and on a security finding that still blocks, which a
  * maintainer decides. One check only says the finding may be older. A pre-existing finding that stopped blocking for
- * another reason needs neither.
+ * another reason needs neither. `oneLine` keeps only the first base line.
  */
-function baseNote(finding: Finding, links?: CodeLinks): string | undefined {
+function baseNote(finding: Finding, links?: CodeLinks, oneLine = false): string | undefined {
   const stopped = isPreExisting(finding) && finding.severity !== 'blocker';
   const both = sameOnBase(finding);
   const security = !stopped && !!both && isSecurityFinding(finding.tags, finding.reviewers);
@@ -1801,7 +1803,7 @@ function baseNote(finding: Finding, links?: CodeLinks): string | undefined {
     const [, file, range] = location.match(/^(.+):(\d+(?:-\d+)?)$/) ?? [];
     const at = file ? lineRange(file, range) : undefined;
     return at ? [linkedRange(at, linkTo)] : [];
-  }).join(', ');
+  }).slice(0, oneLine ? 1 : undefined).join(', ');
   const branch = links?.baseBranch ? inlineCode(links.baseBranch) : 'the base branch';
   if (security) return `**Already broken before this PR.** Two checks found the same problem on ${branch} at ${lines}. It still blocks because it is a security finding, so a maintainer decides.`;
   return stopped
@@ -1816,9 +1818,12 @@ function fixedElsewhereNote(finding: Finding, links?: CodeLinks): string | undef
   return at && `**The same problem remains here.** This PR fixes it at ${linkedRange(at, links?.linkTo ?? (() => undefined))} but not on this path.`;
 }
 
-/** Returns the `trustNote`, the `trackedNote`, the `fixedElsewhereNote`, the `baseNote` and what goes wrong, as listed under a finding in the review body. */
-function formatFindingDescription(finding: Finding, links?: CodeLinks): string[] {
-  const lines = [trustNote(finding), trackedNote(finding), fixedElsewhereNote(finding, links), baseNote(finding, links)].filter((line): line is string => !!line);
+/**
+ * Returns the `trustNote`, the `trackedNote`, the `fixedElsewhereNote`, the `baseNote` and what goes wrong, as listed
+ * under a finding in the review body. `oneBaseLine` keeps one base line in the `baseNote`.
+ */
+function formatFindingDescription(finding: Finding, links?: CodeLinks, oneBaseLine = false): string[] {
+  const lines = [trustNote(finding), trackedNote(finding), fixedElsewhereNote(finding, links), baseNote(finding, links, oneBaseLine)].filter((line): line is string => !!line);
   const description = sanitizeMarkdown(finding.description).trim();
   if (description) lines.push(labelDescription(finding, description));
   return lines;
@@ -1896,7 +1901,8 @@ const PREVIEW_CONTEXT = 2;
  * Renders a finding listed in the review body as a closed fold. Its summary holds the title, the header line and
  * the location. Inside are what goes wrong, a permalink to the flagged lines, which GitHub shows as code, then the
  * parts of `formatFold` under their labels, with the finding's `checkStatus` in a line of its own after the fix. The file's lines keep the permalink inside it, since GitHub shows a range
- * past the end as a bare link.
+ * past the end as a bare link. A pre-existing finding keeps only what goes wrong, with one base line, and its fix. Its
+ * evidence stays in the round record and its thread.
  */
 function formatFindingFold(finding: Finding, links: CodeLinks, offerIssue = false): string {
   const { linkTo, files } = links;
@@ -1905,14 +1911,15 @@ function formatFindingFold(finding: Finding, links: CodeLinks, offerIssue = fals
   const location = finding.file ? ` · ${link ? `<a href="${link}">${code}</a>` : code}` : '';
   const summary = `<summary>${SEVERITY_EMOJI[finding.severity]} <b>${inlineHtml(sanitizeMarkdown(finding.title))}</b><br><sub>${inlineHtml(formatFindingHeader(finding))}${location}</sub></summary>`;
   const last = files.get(finding.file)?.length;
+  const compact = isPreExisting(finding);
   // A diff already shows the flagged line, so the fold previews it only without one.
-  const preview = !formatFixDiff(finding, files) && finding.file && finding.line > 0 && (last === undefined || finding.line <= last)
+  const preview = !compact && !formatFixDiff(finding, files) && finding.file && finding.line > 0 && (last === undefined || finding.line <= last)
     ? [linkTo(finding.file, Math.max(1, finding.line - PREVIEW_CONTEXT), Math.min(last ?? finding.line, finding.line + PREVIEW_CONTEXT))].flatMap(url => url ?? [])
     : [];
-  const checks = checksSection(finding, links, 'flagged');
+  const checks = compact ? undefined : checksSection(finding, links, 'flagged');
   const fix = bodyFixPart(finding, files);
-  const parts = [...(fix ? [labelledPart(fix)] : []), ...(checks.status ? [`**How this was checked:** ${checks.status}`] : []), ...checks.parts.map(labelledPart)];
-  const fold = `<details>\n${summary}\n\n${[...formatFindingDescription(finding, links), ...preview, ...parts].join('\n\n')}\n\n</details>`;
+  const parts = [...(fix ? [labelledPart(fix)] : []), ...(checks?.status ? [`**How this was checked:** ${checks.status}`] : []), ...(checks?.parts ?? []).map(labelledPart)];
+  const fold = `<details>\n${summary}\n\n${[...formatFindingDescription(finding, links, compact), ...preview, ...parts].join('\n\n')}\n\n</details>`;
   // The box goes right under the fold, so it shows without opening it.
   return offerIssue ? `${fold}\n\n${issueBoxFor(finding)}` : fold;
 }
@@ -1941,11 +1948,12 @@ function formatUnthreadedWarnings(warnings: Finding[], links: CodeLinks): string
 }
 
 /**
- * Returns the findings listed in the review body in one section per origin, each headed by its counts per severity:
- * found this round (just "Findings" on a first round), still open from an earlier round's body, one section per round,
- * missed by an earlier review, and pre-existing, which a pre-existing finding stays in even when it restates one.
+ * Returns the findings listed in the review body in one group per origin, each a title, its findings in the order they
+ * show and an optional intro: found this round (just "Findings" on a first round), still open from an earlier round's
+ * body, one group per round, missed by an earlier review, and pre-existing, which a pre-existing finding stays in even
+ * when it restates one.
  */
-function formatOriginSections(findings: Finding[], links: CodeLinks, followUp: boolean): string[] {
+function originGroups(findings: Finding[], followUp: boolean): Array<[string, Finding[], string?]> {
   const isEarlier = (f: Finding): f is Finding & { raisedIn: number } => f.origin === 'earlier' && f.raisedIn !== undefined && !isPreExisting(f);
   const earlier = findings.filter(isEarlier);
   const rest = findings.filter(f => !isEarlier(f));
@@ -1967,11 +1975,32 @@ function formatOriginSections(findings: Finding[], links: CodeLinks, followUp: b
       ? 'It sits on code this PR did not change, or the code before this PR fails the same way, so it doesn\'t block. If it is a blocker, it is listed as a warning.'
       : 'These sit on code this PR did not change, or the code before this PR fails the same way, so none of them block. A blocker among them is listed as a warning.'],
   ];
-  return groups.flatMap(([title, listed, intro]) => {
-    const bySeverity = [...listed].sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity));
-    const section = formatFindingSection(`${title} · ${formatSeverityCounts(listed)}`, bySeverity.map(f => formatFindingFold(f, links, true)), intro, '###');
+  return groups.map(([title, listed, intro]) => [title, [...listed].sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity)), intro]);
+}
+
+/** Returns the `originGroups` of `findings` as sections of the review body, each headed by its counts per severity. */
+function formatOriginSections(findings: Finding[], links: CodeLinks, followUp: boolean): string[] {
+  return originGroups(findings, followUp).flatMap(([title, listed, intro]) => {
+    const section = formatFindingSection(`${title} · ${formatSeverityCounts(listed)}`, listed.map(f => formatFindingFold(f, links, true)), intro, '###');
     return section ? [section] : [];
   });
+}
+
+/**
+ * Returns the body of `render` that fits in `room` characters. It leaves out whole findings, one more at a time up to
+ * `cuts`, and cuts at a word only a body that does not fit without all of them.
+ */
+function fitBody(render: (cut: number) => string, cuts: number, room: number): string {
+  for (let cut = 0; cut <= cuts; cut++) {
+    const text = render(cut);
+    if (text.length <= room) return text;
+  }
+  return truncateBody(render(cuts), room);
+}
+
+/** The line that ends a review body which left out `count` findings for lack of room. */
+function leftOutForRoom(count: number): string {
+  return `<sub>${countOf(count, 'finding')} ${count === 1 ? 'is' : 'are'} left out of this review for lack of room. The round record keeps ${count === 1 ? 'it' : 'them'}.</sub>`;
 }
 
 /**
@@ -2412,11 +2441,22 @@ export async function postReview(
   const onAnchor = (noun: string, list: Finding[]): string | false => list.length > 0
     && `**${noun} not on a changed file:**\n\n${list.map(formatTraceEntry).join('\n')}\n\nComments are only possible on changed files, so the thread of each is on \`${sanitizeFilePath(encodeCommentBreakers(anchor ?? ''))}\`.`;
 
+  // Without their threads, the suggestions are listed in full with the other notes.
+  const notesListed = (withoutLineThreads: boolean): Finding[] => withoutLineThreads ? notes : listedNotes;
+  /** The findings a body too long for the review leaves out first: pre-existing ones from the end, then notes, then the others from the end. */
+  const cutOrder = (withoutLineThreads: boolean): Finding[] => {
+    const listed = originGroups(bodyFindings, blockerCounts.followUp).flatMap(([, group]) => group);
+    return [...listed.filter(f => !isPreExisting(f)), ...notesListed(withoutLineThreads), ...listed.filter(isPreExisting)].reverse();
+  };
+
   /**
    * Renders the body. A finding posted as a thread is only counted in it, since its thread sits right below.
    * `withoutLineThreads` leaves out the non-blocking line comments, for a review GitHub only takes without them.
+   * `cut` leaves out that many findings of `cutOrder`, which the verdict line still counts.
    */
-  const renderBody = (withoutLineThreads = false, approvalRefusal?: EventRefusal): string => {
+  const renderBody = (withoutLineThreads = false, approvalRefusal?: EventRefusal, cut = 0): string => {
+    const dropped = new Set(cutOrder(withoutLineThreads).slice(0, cut));
+    const shown = (list: Finding[]): Finding[] => list.filter(f => !dropped.has(f));
     const threads = threadFindings.filter(f => !(withoutLineThreads && inline.has(f)));
     // Without their threads, the body lists them, so the verdict line still counts them.
     const listed = [...bodyFindings, ...listedNotes, ...unthreadedWarnings, ...(withoutLineThreads ? inline : [])];
@@ -2452,10 +2492,10 @@ export async function postReview(
       generalFindings.length > 0 && `**Blockers not tied to a line:**\n\n${generalFindings.join('\n\n')}`,
       invalidComments.length > 0 && `**Blockers in files outside this diff:**\n\n${invalidComments.join('\n\n')}`,
       formatUnthreadedWarnings(unthreadedWarnings, links),
-      ...formatOriginSections(bodyFindings, links, blockerCounts.followUp),
+      ...formatOriginSections(shown(bodyFindings), links, blockerCounts.followUp),
       formatCarriedWarnings(carried),
-      // Without their threads, the suggestions are listed in full with the other notes.
-      formatNotesSection(withoutLineThreads ? notes : listedNotes, result.unposted ?? [], links),
+      formatNotesSection(shown(notesListed(withoutLineThreads)), result.unposted ?? [], links),
+      dropped.size > 0 && leftOutForRoom(dropped.size),
       skipped && skippedFileList(skipped) && `### Not read by any model · ${countOf(skipped.excluded.length + skipped.binary.length, 'file')}\n\nA person needs to look at these before the PR merges.\n\n${skippedFileList(skipped)}`,
       formatFindingSection(`📌 ${countOf(followUps.length, 'follow-up')} agreed for later`, followUps.map(f => formatFindingFold(f, links)), 'Agreed in their threads as later work. None of them blocks.'),
       formatRelatedWork(result.relatedWork, owner, repo),
@@ -2473,12 +2513,15 @@ export async function postReview(
   const codeTokens = diff ? codeTokensFromDiff(diff) : new Set<string>();
   const highlight = <T extends { body: string }>(c: T): T => ({ ...c, body: highlightCode(c.body, codeTokens) });
   const body = highlightCode(renderBody(), codeTokens);
+  /** The body as `renderBody` writes it, fitted to a number of characters by leaving out whole findings. */
+  const fitted = (withoutLineThreads = false, approvalRefusal?: EventRefusal): BodyFit => room =>
+    fitBody(cut => highlightCode(renderBody(withoutLineThreads, approvalRefusal, cut), codeTokens), cutOrder(withoutLineThreads).length, room);
   const postedComments = [...validComments, ...fileOnly].map(highlight);
   const inBody = new Set([...bodyFindings, ...listedNotes, ...unthreaded]);
-  // The record with each finding's place. A finding in `refused` got no thread from GitHub, so the body carries it.
+  // The record with each finding's place, in the `room` the body leaves. A finding in `refused` got no thread from GitHub, so the body carries it.
   // A record composed again for a retried post differs only in where findings went and whether the approval was refused, so the log shows the first cut one.
   const cutLog = { logged: false };
-  const recordFor = (refused: ReadonlySet<Finding> = new Set(), approvalRefused = false): string => {
+  const recordFor = (refused: ReadonlySet<Finding>, approvalRefused: boolean, room: number): string => {
     const placeOf = (f: Finding): PostedPlace => refused.has(f) || inBody.has(f) ? 'body' : threadFindings.includes(f) ? 'thread' : 'earlier_thread';
     const recordPlace = (entry: FindingFingerprintEntry, f: Finding): FindingFingerprintEntry => {
       const posted = placeOf(f);
@@ -2503,11 +2546,10 @@ export async function postReview(
         output: { bodyLength: body.length, commentLengths: postedComments.map(c => c.body.length) },
         ...(event === 'APPROVE' && { approval: roundApproval(approvalRefused ? 'refused' : approvalHeld, !!warningHold) }),
         ...(keptReport && { readyReport: keptReport }),
-      }, reviewTimeMs ?? 0, REVIEW_BODY_BUDGET - body.length, cutLog)
+      }, reviewTimeMs ?? 0, room, cutLog)
       : '') + (noVerdict ? `\n\n${NO_VERDICT_MARKER}` : '') + (noVerdict && result.retryAfter ? `\n${RETRY_AFTER_MARKER}${result.retryAfter} -->` : '')
       + (standingHold ? `\n\n${HELD_FOR_PERSON_MARKER}` : '');
   };
-  const record = recordFor();
 
   if (invalidComments.length > 0) {
     core.info(`Moved ${invalidComments.length} comments to review body (not postable as threads)`);
@@ -2522,8 +2564,10 @@ export async function postReview(
   }
   core.info(`Posting review: ${mapVerdictToEvent(postedVerdict)} with ${validComments.length} line comments, ${fileComments.length} of them off their finding's line, and ${fileOnly.length} file-level comments`);
 
-  const withoutLineThreads = (approvalRefusal?: EventRefusal): string => highlightCode(renderBody(true, approvalRefusal), codeTokens);
-  const review = await submitReview(octokit, owner, repo, prNumber, commitSha, postedVerdict, body, record, validComments.map(highlight), reviewedCommitFooter, withoutLineThreads, approvalRefusal => recordFor(inline, !!approvalRefusal), headlined.map(highlight));
+  const review = await submitReview(
+    octokit, owner, repo, prNumber, commitSha, postedVerdict, fitted(), room => recordFor(new Set(), false, room), validComments.map(highlight), reviewedCommitFooter,
+    approvalRefusal => fitted(true, approvalRefusal), (approvalRefusal, room) => recordFor(inline, !!approvalRefusal, room), headlined.map(highlight),
+  );
   const approvalRefused = postedVerdict === 'APPROVE' && !!review.refused;
   onPosted?.();
   // A blocker or a holding warning whose line comment GitHub refused gets a file-level thread on its file.
@@ -2535,18 +2579,19 @@ export async function postReview(
     const blockerSection = refusedBlockers.length > 0 ? `\n\n**Blockers that could not be posted as threads:**\n\n${refusedBlockers.map(f => formatFindingBlock(f, links, true)).join('\n\n')}` : '';
     const warningSection = formatUnthreadedWarnings(refused.filter(f => !isBlockingFinding(f)), links);
     const section = highlightCode(`${blockerSection}${warningSection ? `\n\n${warningSection}` : ''}`, codeTokens);
-    const refusedRecord = recordFor(new Set([...refused, ...(review.lineComments ? [] : inline)]), approvalRefused);
     // The verdict line counted each refused warning as one with a thread, so it is restated with them among those without one.
     const refusedHolding = refused.filter(holdsApproval);
     const holdLine = (h: ApprovalHold): string => highlightCode(approvalHoldLine(h, autoApprove), codeTokens);
-    const postedBody = warningHold?.count && refusedHolding.length > 0
-      ? review.body.replace(holdLine(warningHold), () => holdLine({
+    const restate = (text: string): string => warningHold?.count && refusedHolding.length > 0
+      ? text.replace(holdLine(warningHold), () => holdLine({
         ...warningHold,
         unthreaded: (warningHold.unthreaded ?? 0) + refusedHolding.length,
         guarded: (warningHold.guarded ?? 0) - refusedHolding.filter(f => isGuardedFinding(f.tags, f.reviewers)).length,
       }))
-      : review.body;
-    // Truncate the existing body, never the findings appended to it or the round record.
+      : text;
+    const fullBody = restate(review.fit(Infinity));
+    const refusedRecord = recordFor(new Set([...refused, ...(review.lineComments ? [] : inline)]), approvalRefused, REVIEW_BODY_BUDGET - section.length - fullBody.length);
+    // Cut the existing body, never the findings appended to it or the round record.
     const room = REVIEW_BODY_BUDGET - section.length - refusedRecord.length;
     if (room <= 0) {
       throw new Error(`Could not post findings as threads or fit them in review #${review.id}: ${titles}`);
@@ -2557,7 +2602,7 @@ export async function postReview(
         repo,
         pull_number: prNumber,
         review_id: review.id,
-        body: appendReviewFooter(`${truncateBody(postedBody, room)}${section}${refusedRecord}`, reviewedCommitFooter),
+        body: appendReviewFooter(`${restate(review.fit(room))}${section}${refusedRecord}`, reviewedCommitFooter),
       });
     } catch (error) {
       throw new Error(`Could not post findings as threads or in review #${review.id}: ${titles}. ${error instanceof Error ? error.message : error}`);
@@ -2572,11 +2617,15 @@ export function isApprovalSettingRefusal(error: unknown): boolean {
   return /not permitted to (create or )?approve pull requests/i.test(error instanceof Error ? error.message : String(error));
 }
 
+/** A review body fitted to a number of characters. Given `Infinity`, it returns the body whole. */
+type BodyFit = (room: number) => string;
+
 /**
  * Creates the review, falling back to a body-only review when GitHub rejects the line
  * comments and to COMMENT when it refuses the event with a 422. A refusal on a commit that
- * is no longer the PR head throws `SupersededError` instead. Returns the review ID
- * and the posted body without the reviewed-commit footer and the markers.
+ * is no longer the PR head throws `SupersededError` instead. The record gets the room the whole
+ * body leaves, and the body is fitted to the room the record leaves. Returns the review ID
+ * and the fit of the posted body, without the reviewed-commit footer and the markers.
  */
 async function submitReview(
   octokit: Octokit,
@@ -2585,36 +2634,42 @@ async function submitReview(
   prNumber: number,
   commitSha: string,
   verdict: ReviewVerdict,
-  body: string,
-  record: string,
+  body: BodyFit,
+  /** The record in the given room. */
+  record: (room: number) => string,
   validComments: Array<{path: string; line: number; side: 'RIGHT'; body: string}>,
   reviewedCommitFooter: string,
   /** The body without the line comments listed as threads, for when GitHub refuses their lines, or the approval for `approvalRefusal`. */
-  bodyWithoutLineComments: (approvalRefusal?: EventRefusal) => string = () => body,
+  bodyWithoutLineComments: (approvalRefusal?: EventRefusal) => BodyFit,
   /** The record for a review posted without its line comments, where no finding of theirs has a thread. */
-  recordWithoutLineComments: (approvalRefusal?: EventRefusal) => string = () => record,
+  recordWithoutLineComments: (approvalRefusal: EventRefusal | undefined, room: number) => string,
   /** The line comments the body names by their headline when the review posts without them. The caller posts a blocker as a file-level thread instead. */
-  unthreaded: typeof validComments = validComments,
-): Promise<{ id: number; body: string; lineComments: boolean; refused?: EventRefusal }> {
+  unthreaded: typeof validComments,
+): Promise<{ id: number; fit: BodyFit; lineComments: boolean; refused?: EventRefusal }> {
   const event = mapVerdictToEvent(verdict);
-  const fit = (text: string, trailer = record): string => truncateBody(text, REVIEW_BODY_BUDGET - trailer.length);
-  const compose = (text: string, trailer = record): string => appendReviewFooter(`${text}${trailer}`, reviewedCommitFooter);
+  /** The review text of the body of `fit` with `suffix` after it and the trailer that goes with it, and the fit of that body. */
+  const compose = (fit: BodyFit, suffix: string, trailerFor: (room: number) => string): { posted: string; fit: BodyFit } => {
+    const withSuffix: BodyFit = room => `${fit(room - suffix.length)}${suffix}`;
+    const trailer = trailerFor(REVIEW_BODY_BUDGET - withSuffix(Infinity).length);
+    return { posted: appendReviewFooter(`${withSuffix(REVIEW_BODY_BUDGET - trailer.length)}${trailer}`, reviewedCommitFooter), fit: withSuffix };
+  };
   const listUnthreaded = (heading: string, line: (c: typeof unthreaded[number]) => string): string =>
     unthreaded.length > 0 ? `\n\n**${heading}**\n${unthreaded.map(c => `- ${line(c)}`).join('\n')}` : '';
   assertWritesAllowed();
   try {
+    const full = compose(body, '', record);
     const { data: review } = await octokit.rest.pulls.createReview({
       owner,
       repo,
       pull_number: prNumber,
       commit_id: commitSha,
       event,
-      body: compose(fit(body)),
+      body: full.posted,
       comments: validComments,
     });
 
     core.info(`Posted review #${review.id} with verdict ${verdict}`);
-    return { id: review.id, body: fit(body), lineComments: true };
+    return { id: review.id, fit: full.fit, lineComments: true };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     const isLineError = errorMessage.includes('pull_request_review_thread.line') ||
@@ -2623,8 +2678,7 @@ async function submitReview(
     // If it's a line validation error, retry without inline comments
     if (isLineError && validComments.length > 0) {
       core.warning('Inline comments rejected by GitHub (invalid lines). Posting review without inline comments.');
-      const bare = recordWithoutLineComments();
-      const lineErrFallbackBody = fit(`${bodyWithoutLineComments()}${listUnthreaded('Inline comments could not be posted:', c => commentHeadline(c.body))}`, bare);
+      const bare = compose(bodyWithoutLineComments(), listUnthreaded('Inline comments could not be posted:', c => commentHeadline(c.body)), room => recordWithoutLineComments(undefined, room));
 
       const { data: review } = await octokit.rest.pulls.createReview({
         owner,
@@ -2632,12 +2686,12 @@ async function submitReview(
         pull_number: prNumber,
         commit_id: commitSha,
         event,
-        body: compose(lineErrFallbackBody, bare),
+        body: bare.posted,
         comments: [],
       });
 
       core.info(`Posted review #${review.id} without inline comments (line validation failed)`);
-      return { id: review.id, body: lineErrFallbackBody, lineComments: false };
+      return { id: review.id, fit: bare.fit, lineComments: false };
     }
 
     // Only a 422 is GitHub refusing this review event (e.g. approving or requesting
@@ -2655,8 +2709,11 @@ async function submitReview(
     core.warning(`GitHub refused the ${event} review (${status}: ${errorMessage}).${hint} Falling back to COMMENT.`);
 
     const approvalRefusal = event === 'APPROVE' ? refused : undefined;
-    const bare = recordWithoutLineComments(approvalRefusal);
-    const fallbackBody = fit(`${bodyWithoutLineComments(approvalRefusal)}${listUnthreaded('Findings (could not post inline):', c => `${commentHeadline(c.body)} (\`${findingLocation({ file: c.path, line: c.line })}\`)`)}`, bare);
+    const fallback = compose(
+      bodyWithoutLineComments(approvalRefusal),
+      listUnthreaded('Findings (could not post inline):', c => `${commentHeadline(c.body)} (\`${findingLocation({ file: c.path, line: c.line })}\`)`),
+      room => recordWithoutLineComments(approvalRefusal, room),
+    );
 
     const { data: review } = await octokit.rest.pulls.createReview({
       owner,
@@ -2664,12 +2721,12 @@ async function submitReview(
       pull_number: prNumber,
       commit_id: commitSha,
       event: 'COMMENT',
-      body: compose(fallbackBody, bare),
+      body: fallback.posted,
       comments: [],
     });
 
     core.info(`Posted fallback COMMENT review #${review.id} (original verdict: ${verdict})`);
-    return { id: review.id, body: fallbackBody, lineComments: false, refused };
+    return { id: review.id, fit: fallback.fit, lineComments: false, refused };
   }
 }
 

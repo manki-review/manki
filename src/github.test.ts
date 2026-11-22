@@ -1819,6 +1819,56 @@ describe('postReview with context', () => {
     infoSpy.mockRestore();
   });
 
+  it('gives the findings in the body the room first, and leaves out whole findings, least important first, only past the minimal record', async () => {
+    const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
+    const finding = (severity: Finding['severity'], title: string, line: number, extra: Partial<Finding> = {}): Finding => ({
+      severity, title, file: 'src/a.ts', line, description: 'word '.repeat(400), reviewers: [], ...extra,
+    });
+    const listed = (count: number) => [
+      // A warning holds the approval and gets a thread, so a note on reviewed code stands for the other sections.
+      ...[0, 1].map(i => finding('note', `New bug ${i}`, i + 1, { origin: 'reviewed' })),
+      ...[0, 1].map(i => finding('note', `Tidy ${i}`, i + 10)),
+      ...Array.from({ length: count }, (_, i) => finding('warning', `Old bug ${i}`, i + 100, { tags: ['pre-existing'] })),
+    ];
+    const result = (findings: Finding[]): ReviewResult => ({ verdict: 'COMMENT', summary: 'Findings.', findings, highlights: [], reviewComplete: true, agentNames: [] });
+    const llmCalls = [{ stage: 'reviewer', model: randomBytes(45000).toString('base64').slice(0, 45000), attempt: 1, durationMs: 1, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, costUsd: 0 }];
+    const ctx = makeContext({ usage: { llmCalls } });
+    const balanced = (body: string): boolean => body.split('<details>').length === body.split('</details>').length;
+    const shownTitles = (body: string): string[] => [...body.matchAll(/<b>((?:New|Old) bug \d+|Tidy \d+)<\/b>/g)].map(m => m[1]);
+
+    // A record near its budget leaves the body too little room, so it comes in a smaller form and every finding shows whole.
+    const near = listed(10);
+    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result(near), undefined, ctx, 1000);
+    const whole = mockCreateReview.mock.calls[0][0].body as string;
+    expect(shownTitles(whole).sort()).toEqual(near.map(f => f.title).sort());
+    expect(whole).not.toMatch(/truncated|left out of this review/);
+    expect(balanced(whole)).toBe(true);
+    expect(whole.length).toBeLessThanOrEqual(60000 + 600);
+    expect(extractReviewRecords(whole).records.map(r => (JSON.parse(r) as RoundContext).meta.omitted)).toEqual([['usage.llmCalls']]);
+
+    // A body that does not fit even beside the minimal record leaves out whole pre-existing findings from the end, and says how many.
+    const many = listed(40);
+    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result(many), undefined, ctx, 1000);
+    const cut = mockCreateReview.mock.calls[1][0].body as string;
+    const shown = shownTitles(cut);
+    const missing = many.filter(f => !shown.includes(f.title)).map(f => f.title);
+    expect(missing.length).toBeGreaterThan(0);
+    expect(missing).toEqual(Array.from({ length: missing.length }, (_, i) => `Old bug ${40 - missing.length + i}`));
+    expect(cut).toContain(`${missing.length} findings are left out of this review for lack of room. The round record keeps them.`);
+    expect(cut).not.toContain('truncated');
+    expect(balanced(cut)).toBe(true);
+    expect(cut.length).toBeLessThanOrEqual(60000 + 600);
+
+    // With every pre-existing finding left out, the notes go next, then the others from the end.
+    const notesToo = [...listed(0), ...Array.from({ length: 30 }, (_, i) => finding('note', `Tidy ${i + 2}`, i + 20))];
+    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result(notesToo), undefined, ctx, 1000);
+    const noteCut = mockCreateReview.mock.calls[2][0].body as string;
+    expect(shownTitles(noteCut)).toEqual(expect.arrayContaining(['New bug 0', 'New bug 1', 'Tidy 0']));
+    expect(shownTitles(noteCut)).not.toContain('Tidy 31');
+    expect(balanced(noteCut)).toBe(true);
+    infoSpy.mockRestore();
+  });
+
   it('shows 0s for review time when reviewTimeMs is omitted', async () => {
     const result: ReviewResult = {
       verdict: 'APPROVE', summary: '', findings: [],
@@ -5740,7 +5790,8 @@ describe('postReview fallback paths', () => {
 
       const update = updateReview.mock.calls[0][0].body as string;
       expect(update).toContain('*(Review body truncated)*');
-      expect(extractReviewRecords(update).records.map(r => JSON.parse(r))).toEqual([{ ...context, output: { bodyLength: expect.any(Number), commentLengths: [expect.any(Number)] } }]);
+      // The body has no finding to leave out, so it is cut at a word, beside the record's smallest form.
+      expect(extractReviewRecords(update).records.map(r => JSON.parse(r))).toEqual([{ ...context, meta: { ...context.meta, omitted: ['output'] } }]);
       expect(update).toContain('**Blockers that could not be posted as threads:**\n\n**Blocker**\n**Refused thread**\n[`src/a.ts:40`](https://github.com/owner/repo/blob/sha/src/a.ts#L40)\n**What goes wrong:** Desc.\n\n<!-- manki-issue-box -->\n- [ ] Create an issue for this <!-- manki-box:issue:src/a.ts:40:4846db4cafa8 -->\n\n<!-- manki-stats: ');
       expect(update.length).toBeLessThanOrEqual(60000 + 600);
     });
@@ -6613,6 +6664,29 @@ describe('postReview non-blocking findings', () => {
     ]);
     // A security finding on unchanged code still blocks, and its header says where it sits.
     expect(formatFindingComment(nonBlocking('blocker', 'Old SQL injection', 90, { tags: ['security', 'pre-existing'] }), TEST_LINKS).split('\n')[0]).toBe('\u{1F6AB} **Blocker** · Pre-existing');
+  });
+
+  it('lists a pre-existing finding in the body with one base line and none of its evidence, which its thread keeps', async () => {
+    const same = (model: string): OriginAnswer => ({ verdict: 'pre_existing', reason: 'It leaked before.', head: ['src/a.ts:20'], base: ['src/a.ts:18', 'src/a.ts:30', 'src/a.ts:40'], commit: 'base', model });
+    const refutation = { outcome: 'confirmed' as const, defect: 'confirmed' as const, reason: 'It leaks.', proof: ['src/a.ts:20'], files: ['src/a.ts'], codeDigest: 'abc' };
+    const old = nonBlocking('warning', 'Old leak', 20, {
+      tags: ['pre-existing'], howToFix: 'Close the handle.', checkStatus: 'confirmed',
+      evidence: { checks: ['src/a.ts:20 opens the handle'], proof: ['src/a.ts:20', 'src/a.ts:25'], relatedProof: ['acme/lib:src/io.ts:4'] },
+      refutation: { ...refutation, model: 'first-model' }, pairRefutation: { ...refutation, model: 'pair-model' },
+      originCheck: { lineChanged: false, answers: [same('first-model'), same('pair-model')] },
+    });
+    const { octokit, createReview } = makeOctokit();
+
+    await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([old]), diff);
+    const body = createReview.mock.calls[0][0].body as string;
+    const fold = body.slice(body.indexOf('<summary>\u26A0\uFE0F <b>Old leak</b>'), body.indexOf('</details>'));
+    expect(fold).toMatch(/<\/summary>\n\n\*\*Already broken before this PR\.\*\* Two checks found the same problem on [^\n]+ at \[`src\/a\.ts:18`\]\([^)]*\/blob\/base\/src\/a\.ts#L18\), so it doesn't block this PR\.\n\n\*\*What goes wrong:\*\* It goes wrong\./);
+    expect(fold).toContain('Close the handle.');
+    for (const evidence of ['src/a.ts:30', 'Checked in the code', 'How this was checked', 'Double-checked', 'related repository', 'src/a.ts#L18-L22']) expect(fold).not.toContain(evidence);
+    // Its thread, as on a finding that holds the approval, keeps every base line and the checks.
+    const thread = formatFindingComment(old, TEST_LINKS);
+    expect(thread).toContain('src/a.ts:30');
+    expect(thread).toContain('Double-checked');
   });
 });
 
