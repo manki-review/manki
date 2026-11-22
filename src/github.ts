@@ -4392,7 +4392,8 @@ type BotReviewSummary = {
 /**
   * Shared scanner: returns all non-DISMISSED reviews by `bot` on the
   * PR in API order (oldest first), or every one with `includeDismissed`. Callers
-  * filter to the commit SHA they care about.
+  * filter to the commit SHA they care about. An auto-approval counts like a round review, on the commit its approval
+  * record names.
  *
  * Fail-open contract: any API error returns `[]` rather than throwing, so
  * callers such as `hasBotReviewOnCommit` and `isApprovedOnCommit` return
@@ -4412,7 +4413,7 @@ async function fetchBotReviews(
     return reviews.slice(-500)
       .filter((r: { state?: string; user?: { login?: string } | null; body?: string | null }) =>
         isBotUser(bot, r.user) && (includeDismissed || r.state !== 'DISMISSED') &&
-        !!r.body && r.body.includes(BOT_MARKER),
+        !!r.body && (r.body.includes(BOT_MARKER) || isAutoApproval(r.body)),
       )
       .map((r: unknown) => {
         const raw = r as { id: number; state: string; html_url?: string; body?: string | null };

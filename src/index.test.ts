@@ -332,7 +332,7 @@ import * as fixRateModule from './fix-rate';
 import * as staticSignalsModule from './static-signals';
 import * as relatedWorkModule from './related-work';
 import { citedLine } from './finding-fingerprint';
-import { formatReviewRecord } from './review-record';
+import { formatApprovalRecord, formatReviewRecord } from './review-record';
 import { LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_BOT } from './test-utils';
 
 /**
@@ -7775,18 +7775,28 @@ describe('runFullReview orchestration', () => {
     });
 
     it.each([
-      ['posts the approval again on the head when the PR change is the same', true, REBASED_DIFF, 'stands'],
-      ['reviews the head in full when the PR change differs', true, REBASED_DIFF.replace('+const b = 2;', '+const b = 3;'), 'reviews'],
-      ['reviews the head in full when the approval body names no commit, also with the same PR change', false, REBASED_DIFF, 'reviews'],
-    ] as const)('reads the approved commit from the approval body when GitHub reports the approval on a rebased head: %s', async (_label, named, currentDiff, outcome) => {
+      ['posts the approval again on the head when the PR change is the same', 'round', REBASED_DIFF, 'stands'],
+      ['reviews the head in full when the PR change differs', 'round', REBASED_DIFF.replace('+const b = 2;', '+const b = 3;'), 'reviews'],
+      ['reviews the head in full when the approval body names no commit, also with the same PR change', 'unnamed', REBASED_DIFF, 'reviews'],
+      ['posts an auto-approval again on the head when the PR change is the same', 'auto', REBASED_DIFF, 'stands'],
+      ['reviews the head in full after an auto-approval when the PR change differs', 'auto', REBASED_DIFF.replace('+const b = 2;', '+const b = 3;'), 'reviews'],
+      ['reviews the head in full when an auto-approval has no approval record', 'auto without record', REBASED_DIFF, 'reviews'],
+      ['reviews the head in full when the approval record of an auto-approval does not parse', 'auto with broken record', REBASED_DIFF, 'reviews'],
+    ] as const)('reads the approved commit from the approval body when GitHub reports the approval on a rebased head: %s', async (_label, kind, currentDiff, outcome) => {
       const [reviewed, head] = ['a'.repeat(40), 'b'.repeat(40)];
       const actual = jest.requireActual<typeof ghUtils>('./github');
       const footer = `- Reviewed [\`${reviewed.slice(0, 7)}\`](https://github.com/test-owner/test-repo/commit/${reviewed})`;
-      // Manki approved `reviewed`. After the rebase GitHub lists that approval with `commit_id` set to the new head.
-      const approval = {
-        id: 5, state: 'APPROVED', commit_id: head, user: { login: 'manki-review[bot]', type: 'Bot' },
-        body: withMarkers(named ? `${actual.APPROVED_LINE}\n\n${footer}` : actual.APPROVED_LINE, '<!-- manki-bot -->'),
+      const record = formatApprovalRecord({ decision: 'approved', reason: 'all blocking threads are resolved', head: reviewed, threads: { total: 1, resolved: 1 }, timestamp: '2026-11-22T00:00:00Z', mankiVersion: '7.7.2' });
+      const autoApproval = (...records: string[]) => withMarkers(`${actual.APPROVED_LINE} All blocking threads are resolved.`, '<!-- manki -->', actual.AUTO_APPROVE_MARKER, ...records);
+      const bodies = {
+        round: withMarkers(`${actual.APPROVED_LINE}\n\n${footer}`, '<!-- manki-bot -->'),
+        unnamed: withMarkers(actual.APPROVED_LINE, '<!-- manki-bot -->'),
+        auto: autoApproval(record),
+        'auto without record': autoApproval(),
+        'auto with broken record': autoApproval('<!-- manki-approval-record: {"head": -->'),
       };
+      // Manki approved `reviewed`. After the rebase GitHub lists that approval with `commit_id` set to the new head.
+      const approval = { id: 5, state: 'APPROVED', commit_id: head, user: { login: 'manki-review[bot]', type: 'Bot' }, body: bodies[kind] };
       Object.assign(mockOctokitInstance, { paginate: jest.fn(async (endpoint: unknown) => (endpoint === mockListReviews ? [approval] : [])) });
       jest.mocked(ghUtils.isApprovedOnCommit).mockImplementation(actual.isApprovedOnCommit);
       jest.mocked(ghUtils.hasBotReviewOnCommit).mockImplementation(actual.hasBotReviewOnCommit);
