@@ -33,7 +33,7 @@ Usefulness. Answer \`useful: true\` unless code or a linked issue shows a concre
 - a change that reverts a recent change
 Otherwise answer \`useful: false\`, say in \`doubt\` what the problem is and what it means for the PR, and list in \`proof\` the \`file:line\` of each line that shows it. Manki keeps a doubt only when a cited line exists, so a doubt without such a line is never shown. When you cannot point at such a line, answer \`useful: true\`. A change you would have written differently, or one you find small, is useful.
 
-Topics. List in \`topics\` each distinct concern of the change, each with a short name and the changed files that belong to it. A change together with its tests, its docs and the refactor it needs is one topic. Two concerns are separate topics only when each makes sense merged on its own: neither needs the other to build, to work or to be tested.
+Topics. List in \`topics\` each distinct concern of the change, each with a short name and the changed files that belong to it. A change together with its tests, its docs and the refactor it needs is one topic. Two concerns are separate topics only when each makes sense merged on its own: neither needs the other to build, to work or to be tested. The same kind of change made in several places for one purpose is one topic, such as removing unused code, renaming one thing or one mechanical migration. Separate topics serve different purposes.
 
 Split. When there is more than one topic, propose in \`split\` the pull requests to split the change into, each with a short name and its files. Every changed file goes into exactly one of them. With one topic, \`split\` is empty.
 
