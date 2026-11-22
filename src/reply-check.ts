@@ -127,7 +127,7 @@ function changedLineNumbers(file: DiffFile): Set<number> {
  * `MAX_QUOTED_RANGE` lines counts only when every line in it is such a line, since a wide range holds an unrelated
  * change as easily as a fix.
  */
-function citesChangedLine(location: string, changed: readonly DiffFile[] = []): boolean {
+export function citesChangedLine(location: string, changed: readonly DiffFile[] = []): boolean {
   const file = changed.find(f => f.path === locationFile(location));
   if (!file) return false;
   const [start, end] = locationLines(location);

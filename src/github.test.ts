@@ -6150,9 +6150,11 @@ describe('postReview non-blocking findings', () => {
       nonBlocking('note', 'Near the end of `Vec<u8>`\n\n& co', 40),
       nonBlocking('note', 'Past the end', 50),
       nonBlocking('note', 'At the top', 1, { file: 'src/c.ts' }),
+      nonBlocking('note', 'Same check missing here', 20, { tags: ['pre-existing'], fixedElsewhere: 'src/a.ts:3' }),
     ]), diff);
 
     const { body } = createReview.mock.calls[0][0];
+    expect(body).toContain('**The same problem remains here.** This PR fixes it at [`src/a.ts:3`](https://github.com/owner/repo/blob/abc1234/src/a.ts#L3) but not on this path.');
     expect(getContent).toHaveBeenCalledWith(expect.objectContaining({ path: 'src/a.ts', ref: 'abc1234' }));
     expect(body).toContain('<summary>\u2728 <b>Near the end of <code>Vec&lt;u8&gt;</code> &amp; co</b>');
     expect(body).toContain('\n\nhttps://github.com/owner/repo/blob/abc1234/src/a.ts#L38-L41\n\n</details>\n\n<!-- manki-issue-box -->');
@@ -6218,6 +6220,10 @@ describe('postReview non-blocking findings', () => {
     const styleFills = buildResult([...rows]);
     capNotes(styleFills, [], 4);
     expect(titles(styleFills.findings)).toEqual(['Test the empty list', 'Document the limit', 'Reuse the parser', 'Rename the flag']);
+    // A note on a failure this PR fixes elsewhere comes before every other note, whatever the judge's order.
+    const incomplete = buildResult([...rows, nonBlocking('note', 'Same check missing here', 25, { ...cell('style'), fixedElsewhere: 'src/a.ts:3' })]);
+    capNotes(incomplete, [], 1);
+    expect(titles(incomplete.findings)).toEqual(['Same check missing here']);
 
     // A tool alert is listed in the judge's order with the notes, takes no place and is never left out.
     const alerts = [nonBlocking('note', 'Unused import', 12, { toolSource: 'eslint', noteRank: 2 }), nonBlocking('note', 'Shadowed name', 13, { toolSource: 'eslint' })];

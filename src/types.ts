@@ -428,6 +428,8 @@ export interface Finding {
   pairRefutation?: Refutation;
   /** The origin checks of whether the PR caused the failure. Set on blockers and warnings the round checked. */
   originCheck?: OriginCheck;
+  /** The line of an origin answer's `fixedElsewhere`, on a pre-existing finding posted as a note because the PR fixes the same failure there. */
+  fixedElsewhere?: string;
   /** The id of the memory suppression that hid the finding. */
   suppressedBy?: string;
   /** Why the review leaves the finding out. Only the round record keeps such a finding. */
@@ -1061,6 +1063,8 @@ export interface OriginAnswer {
   base?: string[];
   /** The PR's base commit that holds the `base` lines. */
   commit?: string;
+  /** On a `pre_existing` answer, the line the PR added or changed that fixes the same failure on another path. */
+  fixedElsewhere?: string;
   /** The model that answered. */
   model?: string;
 }

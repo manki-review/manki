@@ -82,7 +82,9 @@ export function postedWhenPreExisting(f: Finding): boolean {
  * way before this PR, as pre-existing. Only the findings `postedWhenPreExisting` accepts are `posted`, the rest are
  * `unposted`, for the round record only. A posted blocker becomes a warning, so no check that reads the severity, in
  * this round or a later one, lets it block. A security blocker on code this PR did not change stays a blocker, whatever
- * the origin checks found.
+ * the origin checks found. A finding `foundOnBase` would leave unposted is posted as a note instead when an origin
+ * answer names the line where this PR fixes the same failure (`fixedElsewhere`), since its author wants to know the fix
+ * is incomplete.
  */
 function markPreExisting(findings: Finding[], checkOf: (finding: Finding) => PreExistingCheck | undefined): { posted: Finding[]; unposted: Finding[] } {
   const posted: Finding[] = [];
@@ -98,7 +100,11 @@ function markPreExisting(findings: Finding[], checkOf: (finding: Finding) => Pre
     const tagged: Finding = { ...f, tags: [...(f.tags ?? []), PRE_EXISTING_TAG], ...(check && { preExistingCheck: check }) };
     const unchanged = check === 'pre_existing';
     const lowers = f.severity === 'blocker' && (unchanged ? !isSecurityFinding(f.tags, f.reviewers) : !!base);
-    if (!postedWhenPreExisting(f)) {
+    const fixedElsewhere = base && f.originCheck?.answers.find(a => a.fixedElsewhere)?.fixedElsewhere;
+    if (!postedWhenPreExisting(f) && fixedElsewhere) {
+      core.info(`Posting pre-existing ${f.severity} "${f.title}" on ${f.file}:${f.line} as a note: this PR fixes the same failure at ${fixedElsewhere}`);
+      posted.push({ ...tagged, ...gradeStep(f, 'note', 'pre_existing', `this PR fixes the same failure at ${fixedElsewhere}`), fixedElsewhere });
+    } else if (!postedWhenPreExisting(f)) {
       core.info(`Recording pre-existing ${f.severity} "${f.title}" on ${f.file}:${f.line} without posting it`);
       unposted.push(tagged);
     } else if (lowers) {

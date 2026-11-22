@@ -5172,6 +5172,16 @@ describe('runReview', () => {
     mockedRunJudgeAgent.mockResolvedValue({ findings: [warningOn(false)], summary: 'One defect.' });
     const unchangedWarning = await run(makeClients());
     expect([unchangedWarning.findings, unchangedWarning.unpostedPreExisting?.map(f => [f.title, f.tags])]).toEqual([[], [['Queue may stall', ['pre-existing']]]]);
+    // When an answer names the line where this PR fixes the same failure, the warning is posted as a note instead, which never holds the approval.
+    const fixedAt = { ...answer('pre_existing'), fixedElsewhere: 'src/a.ts:20' };
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [{ ...warningOn(false), originCheck: { lineChanged: false, answers: [fixedAt] } }], summary: 'One defect.' });
+    const incomplete = await run(makeClients());
+    expect([incomplete.outcome, incomplete.findings.map(f => [f.severity, f.tags, f.fixedElsewhere, f.gradePath?.at(-1)?.by]), incomplete.unpostedPreExisting ?? []]).toEqual(['READY', [['note', ['pre-existing'], 'src/a.ts:20', 'pre_existing']], []]);
+    expect(holdsApproval(incomplete.findings[0])).toBe(false);
+    // A blocker keeps its own rules: it is posted as a pre-existing warning, with no note.
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [onLine('Queue holds unverified entries', checked(fixedAt, { ...fixedAt, model: 'pair-model' }))], summary: 'One defect.' });
+    const fixedBlocker = await run(makeClients());
+    expect(fixedBlocker.findings.map(f => [f.severity, f.originalSeverity, f.fixedElsewhere])).toEqual([['warning', 'blocker', undefined]]);
 
     // A security blocker on code the PR did not change keeps blocking, even when both models found it the same before this PR.
     mockedRunJudgeAgent.mockResolvedValue({ findings: [{ ...oldInjection, ...checked(answer('pre_existing'), answer('pre_existing', 'pair-model')) }], summary: 'One defect.' });

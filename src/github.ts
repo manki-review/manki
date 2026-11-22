@@ -1803,9 +1803,16 @@ function baseNote(finding: Finding, links?: CodeLinks): string | undefined {
     : `**Possibly older than this PR.** One check found the same problem on ${branch} before this PR, at ${lines}. If that's right, a maintainer can dismiss this thread.`;
 }
 
-/** Returns the `trustNote`, the `trackedNote`, the `baseNote` and what goes wrong, as listed under a finding in the review body. */
+/** Returns the line that says this PR fixes the failure of `finding` at its `fixedElsewhere` line, linked when `links` can. */
+function fixedElsewhereNote(finding: Finding, links?: CodeLinks): string | undefined {
+  const [, file, range] = finding.fixedElsewhere?.match(/^(.+):(\d+(?:-\d+)?)$/) ?? [];
+  const at = file ? lineRange(file, range) : undefined;
+  return at && `**The same problem remains here.** This PR fixes it at ${linkedRange(at, links?.linkTo ?? (() => undefined))} but not on this path.`;
+}
+
+/** Returns the `trustNote`, the `trackedNote`, the `fixedElsewhereNote`, the `baseNote` and what goes wrong, as listed under a finding in the review body. */
 function formatFindingDescription(finding: Finding, links?: CodeLinks): string[] {
-  const lines = [trustNote(finding), trackedNote(finding), baseNote(finding, links)].filter((line): line is string => !!line);
+  const lines = [trustNote(finding), trackedNote(finding), fixedElsewhereNote(finding, links), baseNote(finding, links)].filter((line): line is string => !!line);
   const description = sanitizeMarkdown(finding.description).trim();
   if (description) lines.push(labelDescription(finding, description));
   return lines;
@@ -2061,14 +2068,15 @@ function carriedBy(finding: Finding, matched: string | undefined): string | unde
 
 /**
  * Puts the notes of `result.findings` last and keeps the first `limit` of them. The others move to `result.unposted`,
- * marked `note_cap`. Every note in the `style` row of the severity table follows every other note, so a style note
- * takes only a slot no other note fills. Within each group the notes keep the judge's order, and a note the judge did
- * not rank follows the ranked ones, in the order returned. A tool alert is listed with the notes and counts toward no
- * limit. A note an earlier thread carries is not listed, so it stays in place and counts toward no limit.
+ * marked `note_cap`. A note on a failure this PR fixes elsewhere (`fixedElsewhere`) comes first. Every note in the
+ * `style` row of the severity table follows every other note, so a style note takes only a slot no other note fills.
+ * Within each group the notes keep the judge's order, and a note the judge did not rank follows the ranked ones, in the
+ * order returned. A tool alert is listed with the notes and counts toward no limit. A note an earlier thread carries is
+ * not listed, so it stays in place and counts toward no limit.
  */
 export function capNotes(result: ReviewResult, existingThreads: PreviousFinding[], limit = DEFAULT_NOTES): void {
   const listable = new Set(result.findings.filter(f => isListedNote(f) && !carriedBy(f, openThreadFor(f, existingThreads))));
-  const group = (f: Finding): number => (f.cell?.row === 'style' ? 1 : 0);
+  const group = (f: Finding): number => (f.fixedElsewhere ? -1 : f.cell?.row === 'style' ? 1 : 0);
   const rank = (f: Finding): number => f.noteRank ?? Number.MAX_SAFE_INTEGER;
   const ordered = [...listable].sort((a, b) => group(a) - group(b) || rank(a) - rank(b));
   const capped = new Set(ordered.filter(canLeaveOut).slice(limit));
