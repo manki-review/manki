@@ -2996,10 +2996,10 @@ describe('runFullReview orchestration', () => {
       }));
 
       await runWith();
-      // The progress comment lists a note left out as not kept, with the reason, and counts it as dropped.
+      // The progress comment lists a note left out as not kept, with the reason, and counts it as kept, in the round record only.
       const [, , , , dashboard, metadata] = jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)!;
       expect(metadata?.judgeDecisions.filter(d => !d.kept).map(d => [d.title, d.unpostedReason])).toEqual([['Rename', 'reviewed_code'], ['Listed before', 'listed_earlier']]);
-      expect([dashboard.keptCount, dashboard.droppedCount, dashboard.droppedSeverities]).toEqual([10, 2, { note: 2 }]);
+      expect(dashboard).toMatchObject({ graded: { kept: 12, dropped: 0 }, droppedSeverities: {}, recordOnly: { reviewed_code: 1, listed_earlier: 1 } });
       await runWith({ fullReview: true });
       expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)![5]?.judgeDecisions.filter(d => !d.kept).map(d => [d.title, d.unpostedReason])).toEqual([['Also outside', 'note_cap']]);
       // Without the PR's change at the last reviewed commit no code counts as reviewed, so only the restated note is left out.
@@ -3457,11 +3457,12 @@ describe('runFullReview orchestration', () => {
     const unsettledLead = { severity: 'warning' as const, title: 'Token may not read the repo', file: 'src/app.ts', line: 3, description: 'd', reviewers: ['general'], lead: { checked: 'read it', left: 'check the repo' } };
     // The judge kept these, and a later step took each out without posting it.
     const later = (title: string, line: number) => ({ severity: 'note' as const, title, file: 'src/old.ts', line, description: 'd', reviewers: ['general'] });
-    const [oldCode, hidden, toolLine, testNit] = [later('Old helper name', 4), later('Hidden by memory', 5), later('Tool reports it', 6), later('Test nit', 7)];
+    const [oldCode, hidden, toolLine, testNit, folded] = [later('Old helper name', 4), later('Hidden by memory', 5), later('Tool reports it', 6), later('Test nit', 7), later('Folded into a reader blocker', 8)];
+    const disproved: Finding = { ...later('Disproved', 9), severity: 'ignore', gradePath: [{ from: 'warning', to: 'ignore', by: 'refutation' }] };
     const allJudged = [
       ...findings,
       { severity: 'ignore' as const, reviewerSeverity: 'note' as const, title: 'Dropped', file: 'src/app.ts', line: 2, description: 'dropped', reviewers: ['security'], judgeNotes: 'not relevant' },
-      unsettledLead, oldCode, hidden, toolLine, testNit,
+      unsettledLead, oldCode, hidden, toolLine, testNit, folded, disproved,
     ];
     const rawFindings = [
       ...findings,
@@ -3474,7 +3475,7 @@ describe('runFullReview orchestration', () => {
       findings: findings.map(f => ({ ...f })),
       highlights: [],
       reviewComplete: true,
-      rawFindingCount: 11,
+      rawFindingCount: 13,
       agentNames: ['security', 'general'],
       agentModels: new Map([['security', 'gpt-5.5'], ['general', 'claude-opus-5-5']]),
       allJudgedFindings: allJudged,
@@ -3523,21 +3524,27 @@ describe('runFullReview orchestration', () => {
 
     expect(statsArg!.meta.round).toBe(1);
 
-    // keptSeverities/droppedSeverities passed to dashboard use original severity for dropped findings, and a lead left
-    // unsettled is listed, not dropped.
-    const dashboardArg = jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[4];
-    expect(dashboardArg?.keptSeverities).toEqual({ blocker: 1, note: 2 });
-    expect(dashboardArg?.droppedSeverities).toEqual({ note: 5 });
-    expect(dashboardArg?.droppedCount).toBe(5);
+    // Only the judge's own drop counts as dropped, by the finders' grade. A finding it kept that a later step took out is
+    // kept, and the posted section says where it went.
+    const dashboardArg = jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)![4];
+    expect(dashboardArg).toMatchObject({
+      graded: { kept: 10, dropped: 1, merged: 2 }, droppedSeverities: { note: 1 }, postedSeverities: { blocker: 1, note: 2 },
+      recordOnly: { pre_existing: 1, memory_suppression: 1, static_signal_match: 1, refutation: 1 },
+      unsettledLeadCount: 1, openLeadCount: 0, repeatCount: 1, testNitSuppressedCount: 1, addedAfterJudgeCount: 0,
+    });
+    // The counts add up: the judge graded what it kept, dropped and merged, and what it kept, with what was added after
+    // it, is posted, in the round record only, not finished checking, a repeat or a test note.
+    const { graded, postedSeverities, recordOnly } = dashboardArg;
+    const sum = (counts: object | undefined) => Object.values(counts ?? {}).reduce((n: number, count: number) => n + count, 0);
+    expect(graded!.kept + graded!.dropped + graded!.merged).toBe(13);
+    expect(graded!.kept + dashboardArg.addedAfterJudgeCount!).toBe(sum(postedSeverities) + sum(recordOnly) + dashboardArg.unsettledLeadCount! + dashboardArg.repeatCount! + dashboardArg.testNitSuppressedCount!);
     const decisions = jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[5]?.judgeDecisions;
     // A finding a later step took out says which step, and one the judge dropped says none. A test file nit is only counted, so it has no reason.
     expect(decisions?.filter(d => !d.kept && !d.listed).map(d => [d.title, d.unpostedReason])).toEqual([
       ['Dropped', undefined], ['Old helper name', 'pre_existing'], ['Hidden by memory', 'memory_suppression'], ['Tool reports it', 'static_signal_match'], ['Test nit', undefined],
+      ['Folded into a reader blocker', undefined], ['Disproved', undefined],
     ]);
     expect(decisions?.find(d => d.title === 'Token may not read the repo')).toEqual(expect.objectContaining({ kept: false, listed: true }));
-    expect(dashboardArg?.keptCount).toBe(3);
-    // The progress comment counts what the record counts as merged, and the lead neither kept nor dropped.
-    expect(dashboardArg).toMatchObject({ mergedCount: 2, openLeadCount: 1, addedAfterJudgeCount: 0 });
   });
 
   it('adjusts mergedDuplicates and findingsRaw for pre-judge dedup counts, as the progress comment does', async () => {
@@ -3588,7 +3595,7 @@ describe('runFullReview orchestration', () => {
     // mergedDuplicates excludes pre-judge dedup: 5 - 1 (static) - 1 (llm) - 1 (judged) = 2
     expect(statsArg!.judge.mergedDuplicates).toBe(2);
     expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[4]).toMatchObject({
-      keptCount: 2, droppedCount: 0, mergedCount: 2, addedAfterJudgeCount: 1, openLeadCount: 0, staticDedupCount: 1, llmDedupCount: 1, sweepRepeatCount: 1, sweepDedupCount: 1,
+      graded: { kept: 1, dropped: 0, merged: 2 }, postedSeverities: { blocker: 2 }, addedAfterJudgeCount: 1, openLeadCount: 0, staticDedupCount: 1, llmDedupCount: 1, sweepRepeatCount: 1, sweepDedupCount: 1,
     });
 
     // findingsRaw comes from rawFindings (pre-dedup per-agent counts)
@@ -3675,7 +3682,7 @@ describe('runFullReview orchestration', () => {
     expect(statsArg!.judge.crossRoundSuppressed).toBe(1);
   });
 
-  it('aligns keptCount with keptSeverities sum when test-nit suppression fires', async () => {
+  it('counts a test note the throttle drops as kept, and names it apart from the posted findings', async () => {
     const testFiles = [
       { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] },
     ];
@@ -3710,17 +3717,10 @@ describe('runFullReview orchestration', () => {
 
     await callRunFullReview();
 
-    const dashboardArg = jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[4];
-
-    // keptCount must equal the sum of keptSeverities values
-    const keptSeverities = dashboardArg?.keptSeverities ?? {};
-    const keptSeveritiesSum = Object.values(keptSeverities).reduce((a, n) => a + n, 0);
-    expect(dashboardArg?.keptCount).toBe(keptSeveritiesSum);
-    expect(dashboardArg?.keptCount).toBe(1);
-    expect(keptSeverities['blocker']).toBe(1);
-
-    // test-nit suppression count must be surfaced in the dashboard
-    expect(dashboardArg?.testNitSuppressedCount).toBe(1);
+    // The throttle's note is neither posted nor a repeat, so the dashboard counts it on its own.
+    expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[4]).toMatchObject({
+      graded: { kept: 2, dropped: 0 }, postedSeverities: { blocker: 1 }, testNitSuppressedCount: 1, repeatCount: 0, recordOnly: {},
+    });
   });
 
   it('builds `RoundUsage` totals per stage and per model from the round\'s LLM calls', async () => {
@@ -5665,6 +5665,7 @@ describe('runFullReview orchestration', () => {
 
   it('shows judging progress at the next live edit', async () => {
     jest.useFakeTimers();
+    const hidden: Finding = { severity: 'note', title: 'Hidden by memory', file: 'src/app.ts', line: 2, description: 'd', reviewers: ['general'] };
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
@@ -5694,7 +5695,7 @@ describe('runFullReview orchestration', () => {
         return {
           verdict: 'APPROVE', outcome: 'READY', summary: 'ok', findings: [],
           highlights: [], reviewComplete: true,
-          agentNames: [], suppressionCount: 1,
+          agentNames: [], suppressionCount: 1, allJudgedFindings: [hidden], memorySuppressed: [hidden],
         };
       },
     );
@@ -5710,7 +5711,7 @@ describe('runFullReview orchestration', () => {
     expect(lastDashboard.judgeInputCount).toBe(3);
     expect(lastDashboard.agentProgress).toBeDefined();
     expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[4])
-      .toMatchObject({ phase: 'complete', suppressionCount: 1, staticDedupCount: 1, llmDedupCount: 0 });
+      .toMatchObject({ phase: 'complete', graded: { kept: 1, dropped: 0 }, recordOnly: { memory_suppression: 1 }, staticDedupCount: 1, llmDedupCount: 0 });
     expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[4].judgeDurationMs).toEqual(expect.any(Number));
 
     // A round with nothing to judge shows the judge as skipped, and neither the dashboard nor the record gives it a duration.

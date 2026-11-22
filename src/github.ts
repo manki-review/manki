@@ -8,7 +8,7 @@ import * as github from '@actions/github';
 import { assertWritesAllowed } from './abort';
 import { isAllowedAccount } from './auth';
 import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig, readClosedPaths } from './config';
-import { AgentProgressEntry, ApprovalRecord, SideCheckKind, agreedOutcome, oneCheckOnBase, sameOnBase, confirmsAll, confirmsCodePath, confirmsDefect, openCodePremise, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, RoundDependencySource, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundScope, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, SCOPE_READER_NAME, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
+import { AgentProgressEntry, ApprovalRecord, RecordOnlyReason, SideCheckKind, agreedOutcome, oneCheckOnBase, sameOnBase, confirmsAll, confirmsCodePath, confirmsDefect, openCodePremise, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, RoundDependencySource, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundScope, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, SCOPE_READER_NAME, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { holdsLines } from './code-window';
 import { firstCommentableLine, isLineInDiff, listedFilesDiff, findClosedPattern } from './diff';
 import { issueBox, ISSUE_BOX_LABEL, messageBox, withMessageBoxes } from './issue-box';
@@ -997,19 +997,29 @@ function sideCheckLine(checks: DashboardData['sideChecks'], kinds: SideCheckKind
   return `${INDENT}✅ ${text} (${formatDuration(took)})`;
 }
 
-/** The refuter's line, such as `refuter: 1 of 3 checks done · 1 disproved`. Unset while it checks nothing. */
+/**
+ * The refuter's line, such as `refuter: 1 of 3 checks done · 1 disproved` while it checks and `refuter: 3 checked · 1
+ * disproved` once every check ended. Unset while it checks nothing.
+ */
 function refuterLine(refuter: DashboardData['refuter']): string | undefined {
   if (!refuter || refuter.total === 0) return undefined;
   const outcomes = (['confirmed', 'disproved', 'unsettled'] as const).filter(o => (refuter.outcomes[o] ?? 0) > 0).map(o => `${refuter.outcomes[o]} ${o}`);
   const done = Object.values(refuter.outcomes).reduce((n, count) => n + (count ?? 0), 0);
-  return `${INDENT}refuter: ${done} of ${refuter.total} checks done${outcomes.map(o => ` · ${o}`).join('')}`;
+  const progress = done === refuter.total ? `${done} checked` : `${done} of ${refuter.total} checks done`;
+  return `${INDENT}refuter: ${progress}${outcomes.map(o => ` · ${o}`).join('')}`;
 }
 
-/** The live lines under the judge: its grades, the refuter's checks and the verdict reader, each once it started. */
-function judgeLiveLines(data: DashboardData, now: number): string[] {
+/**
+ * The lines under the judge in the order its steps ran: its grades, the refuter's checks, the origin checks, the sweeps
+ * and the verdict reader, each once it started. The finished comment names the finders' grades of the dropped findings.
+ */
+function judgeStepLines(data: DashboardData, now: number): string[] {
   const { graded, verdictReader: reader } = data;
+  const done = data.phase === 'complete';
+  const dropped = done && data.droppedSeverities ? renderSeverityBreakdown(data.droppedSeverities) : '';
   return [
-    graded && `${INDENT}graded ${countOf(graded.kept + graded.dropped + graded.merged, 'finding')}: ${graded.kept} kept · ${graded.dropped} dropped${graded.merged ? ` · ${graded.merged} merged` : ''} (${formatDuration(graded.durationMs)})`,
+    graded && `${INDENT}graded ${countOf(graded.kept + graded.dropped + graded.merged, 'finding')}: ${graded.kept} kept · ${graded.dropped} dropped${graded.merged ? ` · ${graded.merged} merged` : ''}${done ? '' : ` (${formatDuration(graded.durationMs)})`}`,
+    dropped && `${INDENT}dropped, as the finders filed them: ${dropped}`,
     refuterLine(data.refuter),
     originLine(data),
     ...sweepLines(data),
@@ -1019,11 +1029,11 @@ function judgeLiveLines(data: DashboardData, now: number): string[] {
 
 /**
  * What the round added to the review's findings or took out of them before the judge graded them, such as `1 tool alert
- * added`. While the judge runs it names the open leads too, which the finished comment gives a line of their own.
+ * added`.
  */
 function beforeJudge(data: DashboardData): string {
   const repeats = (data.staticDedupCount ?? 0) + (data.llmDedupCount ?? 0) - (data.sweepDedupCount ?? 0);
-  const leads = data.phase === 'complete' ? 0 : data.openLeadCount ?? 0;
+  const leads = data.openLeadCount ?? 0;
   return ([
     [data.toolAlertCount ?? 0, 'tool alert added', 'tool alerts added'],
     [data.carriedLeadCount ?? 0, 'lead carried over from the last round', 'leads carried over from the last round'],
@@ -1049,19 +1059,56 @@ function sweepLines(data: DashboardData): string[] {
   return [line, ...(drops.length > 0 ? [`${INDENT}${drops.join(', ')}`] : [])];
 }
 
-/** The origin checks' line, such as `origin checks: 1 of 2 done`, under the judge since they run on the findings it kept. */
+/**
+ * The origin checks' line, under the judge since they run on the findings it kept. While they run it reads `origin
+ * checks: 1 of 2 done`, and once every check ended `origin checks: 2 checked · 1 older than this PR`.
+ */
 function originLine(data: DashboardData): string | undefined {
   const origin = data.sideChecks?.origin;
   if (!origin || origin.total === 0) return undefined;
-  const took = origin.endedAt === undefined ? '' : ` (${formatDuration(origin.endedAt - origin.startedAt)})`;
-  return `${INDENT}origin checks: ${origin.ended} of ${origin.total} done${took}`;
+  if (origin.endedAt === undefined) return `${INDENT}origin checks: ${origin.ended} of ${origin.total} done`;
+  return `${INDENT}origin checks: ${origin.ended} checked${origin.findings > 0 ? ` · ${origin.findings} older than this PR` : ''}`;
 }
 
-/** The finished comment's lines on findings neither kept nor dropped, and on kept ones no judge call graded. */
-function afterJudgeLines(data: DashboardData): string[] {
+/** How the progress comment names each reason a finding is in the round record only. Reasons with one name are counted together. */
+const RECORD_ONLY_NAMES: Record<RecordOnlyReason, string> = {
+  pre_existing: 'older than this PR',
+  reviewed_code: 'on code an earlier round reviewed',
+  listed_earlier: 'listed by an earlier round',
+  note_cap: 'over the `review.notes` limit',
+  memory_suppression: 'suppressed by memory',
+  static_signal_match: 'reported by a CI tool',
+  no_trigger: 'no realistic trigger',
+  unsettled_check: 'no proof',
+  not_checked: 'no proof',
+  no_proof: 'no proof',
+  refutation: 'disproved by the refuter',
+  in_pr_suppression: 'suppressed in this PR',
+  resolved_thread: 'matches a resolved thread',
+  ratchet: 'matches an earlier round',
+};
+
+/**
+ * The finished comment's section on what the review posted: the count and grades of the posted findings, the ones no
+ * judge call graded, and why each finding the judge kept and the review did not post stayed out.
+ */
+function postedLines(data: DashboardData, posted: Record<string, number>): string[] {
+  const named = new Map<string, number>();
+  for (const [reason, name] of Object.entries(RECORD_ONLY_NAMES) as Array<[RecordOnlyReason, string]>) {
+    const count = data.recordOnly?.[reason] ?? 0;
+    if (count > 0) named.set(name, (named.get(name) ?? 0) + count);
+  }
+  const recordOnly = [...named].map(([name, count]) => `${count} ${name}`).join(' · ');
+  const grades = renderSeverityBreakdown(posted);
+  const throttled = data.testNitSuppressedCount ?? 0;
   return [
-    data.openLeadCount ? `${INDENT}not finished checking: ${countOf(data.openLeadCount, 'lead')}` : '',
+    `**Posted:** ${countOf(Object.values(posted).reduce((n, count) => n + count, 0), 'finding')}`,
+    grades && `${INDENT}${grades}`,
     data.addedAfterJudgeCount ? `${INDENT}added after the judge: ${countOf(data.addedAfterJudgeCount, 'finding')}` : '',
+    recordOnly && `${INDENT}round record only: ${recordOnly}`,
+    data.unsettledLeadCount ? `${INDENT}not finished checking: ${countOf(data.unsettledLeadCount, 'lead')}` : '',
+    data.repeatCount ? `${INDENT}left out as repeats of other findings: ${data.repeatCount}` : '',
+    throttled > 0 ? `${INDENT}suppressed: ${countOf(throttled, 'test-only suggestion')} (round ≥2 throttle)` : '',
   ].filter(line => line);
 }
 
@@ -1137,7 +1184,7 @@ export function buildDashboard(data: DashboardData, now = Date.now()): string {
     judgeLines.push(`**Judge:** skipped, nothing to judge`);
     const drops = beforeJudge(data);
     if (drops) judgeLines.push(`${INDENT}before the judge: ${drops}`);
-    judgeLines.push(...(data.phase === 'reviewed' ? judgeLiveLines(data, now) : afterJudgeLines(data)));
+    judgeLines.push(...judgeStepLines(data, now));
   } else if (data.phase === 'reviewed') {
     judgeLines.push(`**Judge**`);
     if (!data.graded) {
@@ -1145,28 +1192,15 @@ export function buildDashboard(data: DashboardData, now = Date.now()): string {
       const time = data.judgeStartedAt === undefined ? '' : ` · ${soFar(data.judgeStartedAt, now)}`;
       judgeLines.push(`${INDENT}grading ${data.judgeInputCount ?? data.rawFindingCount ?? 0} findings${drops ? ` (${drops})` : ''}${time}`);
     }
-    judgeLines.push(...judgeLiveLines(data, now));
+    judgeLines.push(...judgeStepLines(data, now));
   } else {
-    const judgeDur = data.judgeDurationMs != null ? ` (${formatDuration(data.judgeDurationMs)})` : '';
-    const merged = data.mergedCount ? ` · ${data.mergedCount} merged` : '';
-    judgeLines.push(`**Judge:** ${data.keptCount ?? 0} kept · ${data.droppedCount ?? 0} dropped${merged}${judgeDur}`);
-    if (data.keptSeverities) {
-      const breakdown = renderSeverityBreakdown(data.keptSeverities);
-      if (breakdown) judgeLines.push(`${INDENT}kept: ${breakdown}`);
-    }
-    if (data.droppedSeverities) {
-      const breakdown = renderSeverityBreakdown(data.droppedSeverities);
-      if (breakdown) judgeLines.push(`${INDENT}dropped: ${breakdown}`);
-    }
+    judgeLines.push(`**Judge**${data.judgeDurationMs != null ? ` (${formatDuration(data.judgeDurationMs)})` : ''}`);
     const drops = beforeJudge(data);
     if (drops) judgeLines.push(`${INDENT}before the judge: ${drops}`);
-    judgeLines.push(...sweepLines(data), ...afterJudgeLines(data));
-    if (data.suppressionCount) judgeLines.push(`${INDENT}suppressed by memory: ${data.suppressionCount}`);
-    if (data.testNitSuppressedCount != null && data.testNitSuppressedCount > 0) {
-      judgeLines.push(`${INDENT}suppressed: ${countOf(data.testNitSuppressedCount, 'test-only suggestion')} (round ≥2 throttle)`);
-    }
+    judgeLines.push(...judgeStepLines(data, now));
   }
   sections.push(judgeLines.join('\n'));
+  if (data.phase === 'complete' && data.postedSeverities) sections.push(postedLines(data, data.postedSeverities).join('\n'));
 
   return sections.join('\n\n');
 }

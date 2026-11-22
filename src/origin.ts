@@ -10,7 +10,7 @@ import { repoTools } from './related-repos';
 import { citesChangedLine } from './reply-check';
 import { changeSection, citedChanges, codeDigest, locationFile, locationLines, MAX_PARALLEL_REFUTATIONS, shownLines } from './refute';
 import { parseProof } from './review';
-import { CheckProgress, EffortLevel, Finding, oneAnswerSettles, OriginAnswer, OriginCheck, OriginVerdict, ParsedDiff, RelatedRepoTools, SEVERITY_ORDER } from './types';
+import { CheckProgress, EffortLevel, Finding, foundOnBase, oneAnswerSettles, OriginAnswer, OriginCheck, OriginVerdict, ParsedDiff, RelatedRepoTools, SEVERITY_ORDER } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { BASE_REF, baseReadsOf, runGit } from './workspace';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
@@ -60,6 +60,7 @@ export interface OriginOptions {
   skip?: (finding: Finding) => boolean;
   /** The checks the round has left, shared by its calls and lowered by each. Without it a call may make `MAX_ORIGIN_CHECKS`. */
   budget?: { left: number };
+  /** Hears of each check as it ends, with 1 when the check found the failure older than the PR (`foundOnBase`) and 0 otherwise. */
   progress?: CheckProgress<number>;
 }
 
@@ -227,10 +228,12 @@ export async function checkOrigins(client: LLMClient, findings: readonly Finding
     const lineChanged = !flaggedLineAtBase(finding, diff, excludedPaths);
     const second = pair && (lineChanged || !oneAnswerSettles(finding)) ? pair : undefined;
     const results = await Promise.all([ask(client, finding, 'origin check'), second ? ask(second, finding, 'second origin check') : null]);
-    const ran = results.some(r => r !== null);
-    progress?.ended(ran ? 0 : undefined);
-    if (!ran) return finding;
+    if (results.every(r => r === null)) {
+      progress?.ended(undefined);
+      return finding;
+    }
     const originCheck: OriginCheck = { lineChanged, answers: results.filter((a): a is OriginAnswer => !!a) };
+    progress?.ended(foundOnBase({ ...finding, originCheck }) ? 1 : 0);
     return { ...finding, originCheck };
   });
 }

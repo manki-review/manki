@@ -1269,6 +1269,10 @@ export const UNPOSTED_REASONS = {
   no_proof: 'it cites no lines that prove it',
 } as const;
 export type UnpostedReason = keyof typeof UNPOSTED_REASONS;
+/** A step after the judge's grading that can grade a finding the judge kept `ignore`. */
+export type LaterDrop = Extract<GradeChange, 'refutation' | 'in_pr_suppression' | 'resolved_thread' | 'ratchet'>;
+/** Why a finding the judge kept, or one added after it, is only in the round record. */
+export type RecordOnlyReason = UnpostedReason | LaterDrop;
 /** Why nothing proves a warning: a check ran and settled nothing, the round's checks did not reach it, or no check could decide and no line is cited. */
 const UNPROVEN_REASONS = ['unsettled_check', 'not_checked', 'no_proof'] as const satisfies readonly UnpostedReason[];
 export type UnprovenReason = typeof UNPROVEN_REASONS[number];
@@ -2116,7 +2120,7 @@ export interface CheckProgress<R> {
   ended(result: R | undefined): void;
 }
 
-/** What the judge made of the findings it graded, before the refuter checks them. `merged` folded into another finding. */
+/** What the judge made of the findings it graded, whatever a later step did with them. `merged` folded into another finding. */
 export interface GradedCounts {
   kept: number;
   dropped: number;
@@ -2141,25 +2145,26 @@ export interface DashboardData {
   judgeInputCount?: number;
   /** Set when the round had nothing to judge, so no judge was called. */
   judgeSkipped?: true;
-  suppressionCount?: number;
   staticDedupCount?: number;
   llmDedupCount?: number;
   /** Tool results the judge graded as findings, on top of the review's. */
   toolAlertCount?: number;
   /** Leads of the last round the judge graded again, on top of the review's findings. */
   carriedLeadCount?: number;
-  /** Leads listed as not finished checking, neither kept nor dropped. */
+  /** Leads listed as not finished checking before the judge saw them. */
   openLeadCount?: number;
+  /** Leads the judge kept that its checks left unsettled, listed as not finished checking. */
+  unsettledLeadCount?: number;
   /** Findings of the sweeps left out, since the round judged the same problem already. */
   sweepRepeatCount?: number;
   /** Findings of the sweeps dropped as repeats of earlier resolved findings, a part of `staticDedupCount` and `llmDedupCount`. */
   sweepDedupCount?: number;
-  keptCount?: number;
-  droppedCount?: number;
-  /** Findings the judge merged into another one. */
-  mergedCount?: number;
-  /** Kept findings no judge call graded, such as the verdict reader's blockers. */
+  /** Findings no judge call graded, such as the verdict reader's blockers, posted or in the round record only. */
   addedAfterJudgeCount?: number;
+  /** Findings the judge kept that a later step left out as a repeat of another finding, such as a verdict reader's blocker. */
+  repeatCount?: number;
+  /** The findings left in the round record only, by reason. */
+  recordOnly?: Partial<Record<RecordOnlyReason, number>>;
   agentProgress?: AgentProgressEntry[];
   /** The effort the judge runs at. Shown when there is no planner result, which shows it otherwise. */
   judgeEffort?: EffortLevel;
@@ -2174,7 +2179,9 @@ export interface DashboardData {
      */
     prType: string;
   };
-  keptSeverities?: Record<string, number>;
+  /** The grades of the posted findings. Set once the round finished. */
+  postedSeverities?: Record<string, number>;
+  /** The grades the finders gave the findings the judge dropped. */
   droppedSeverities?: Record<string, number>;
   testNitSuppressedCount?: number;
   plannerDurationMs?: number;
@@ -2192,6 +2199,7 @@ export interface DashboardData {
   sideChecks?: Partial<Record<SideCheckKind, SideCheckState>>;
   /** When the finders ended, which starts the judge's time. */
   judgeStartedAt?: number;
+  /** What the judge decided, over every judge call once the round finished. */
   graded?: GradedCounts & { durationMs: number };
   refuter?: { total: number; outcomes: Partial<Record<RefutationOutcome, number>> };
   verdictReader?: { startedAt: number; durationMs?: number };

@@ -104,6 +104,9 @@ describe('checkOrigins', () => {
     // A line the base does not hold is dropped, so no answer links a line of the head as one of the base.
     expect(checked[3].originCheck?.answers[0].base).toEqual(['src/math.ts:2']);
     expect([progress.started.mock.calls, progress.ended.mock.calls.length]).toEqual([[[8]], 8]);
+    // Each check that finds the failure older than the PR reports 1, so the progress comment can count them.
+    const older = progress.ended.mock.calls.reduce((n: number, [found]: [number]) => n + found, 0);
+    expect([older, checked.filter(f => foundOnBase(f)).length]).toEqual([2, 2]);
     // The message shows the claim as one to check, the other files the PR changes, and the PR's change to a cited file.
     const message = (title: string) => client.calls.find(c => c.user.includes(`: ${title}\n`))!.user;
     expect(message('Claimed older')).toContain("- **A reviewer's claim that it is older than this PR**, to check: The sum never had a bound.");

@@ -3688,14 +3688,18 @@ describe('buildDashboard', () => {
       )],
       [645, { ...reviewed, ...graded, refuter: { total: 3, outcomes: { unsettled: 1, disproved: 1, confirmed: 1 } }, verdictReader: { startedAt: 624_000 } }, lines(
         '**Review in progress**', '', planner, '', ...reviewDone, sideDone, '',
-        '**Judge**', '> graded 8 findings: 5 kept · 3 dropped (1m 26s)', '> refuter: 3 of 3 checks done · 1 confirmed · 1 disproved · 1 unsettled',
+        '**Judge**', '> graded 8 findings: 5 kept · 3 dropped (1m 26s)', '> refuter: 3 checked · 1 confirmed · 1 disproved · 1 unsettled',
         '> verdict reader: reading the diff · 21s so far',
       )],
+      // The finished comment keeps every step with its result. The judge kept 5: 3 posted, 1 older than the PR and 1 the refuter disproved.
       [692, {
         ...reviewed, ...graded, refuter: { total: 3, outcomes: { unsettled: 1, disproved: 1, confirmed: 1 } }, verdictReader: { startedAt: 624_000, durationMs: 47_000 },
-        phase: 'complete', keptCount: 3, droppedCount: 5, judgeDurationMs: 238_000, keptSeverities: { warning: 1, note: 2 }, droppedSeverities: { blocker: 1, warning: 2, note: 2 },
+        sideChecks: { ...side(3, 2, 1, 238_000), origin: { total: 3, ended: 3, findings: 1, startedAt: 560_000, endedAt: 600_000 } },
+        phase: 'complete', judgeDurationMs: 238_000, postedSeverities: { warning: 2, note: 1 }, droppedSeverities: { blocker: 1, warning: 2 }, recordOnly: { pre_existing: 1, refutation: 1 },
       }, lines(
-        planner, '', ...reviewDone, sideDone, '', '**Judge:** 3 kept · 5 dropped (3m 58s)', '> kept: 1 warning · 2 suggestions', '> dropped: 1 blocker · 2 warnings · 2 suggestions',
+        planner, '', ...reviewDone, sideDone, '', '**Judge** (3m 58s)', '> graded 8 findings: 5 kept · 3 dropped', '> dropped, as the finders filed them: 1 blocker · 2 warnings',
+        '> refuter: 3 checked · 1 confirmed · 1 disproved · 1 unsettled', '> origin checks: 3 checked · 1 older than this PR', '> verdict reader: read the diff (47s)', '',
+        '**Posted:** 3 findings', '> 2 warnings · 1 suggestion', '> round record only: 1 older than this PR · 1 disproved by the refuter',
       )],
     ];
     for (const [second, data, expected] of steps) expect(buildDashboard(data, second * 1000)).toBe(expected);
@@ -3704,10 +3708,11 @@ describe('buildDashboard', () => {
     const sweeping = buildDashboard({ ...reviewed, ...graded, sideChecks: { ...side(3, 2, 1, 238_000), sweep: { total: 2, ended: 1, findings: 0, startedAt: 560_000 } }, verdictReader: { startedAt: 624_000, durationMs: 47_000 } }, 700_000);
     expect(sweeping).toContain(lines(sideDone, '', '**Judge**'));
     expect(sweeping).toContain(lines('> graded 8 findings: 5 kept · 3 dropped (1m 26s)', '> sweeps: 1 of 2 done', '> verdict reader: read the diff (47s)'));
-    // The origin checks run beside the refuter on the same findings, so their line follows the refuter's.
+    // The origin checks run beside the refuter on the same findings, so their line follows the refuter's. Once they ended it says what they found.
     const origin = (state: SideCheckState) => buildDashboard({ ...reviewed, ...graded, refuter: { total: 1, outcomes: {} }, sideChecks: { ...side(3, 2, 1, 238_000), origin: state } }, 700_000);
     expect(origin({ total: 2, ended: 1, findings: 0, startedAt: 560_000 })).toContain(lines('> refuter: 0 of 1 checks done', '> origin checks: 1 of 2 done'));
-    expect(origin({ total: 2, ended: 2, findings: 0, startedAt: 560_000, endedAt: 590_000 })).toContain(lines('> origin checks: 2 of 2 done (30s)'));
+    expect(origin({ total: 2, ended: 2, findings: 0, startedAt: 560_000, endedAt: 590_000 })).toContain(lines('> origin checks: 2 checked'));
+    expect(origin({ total: 2, ended: 2, findings: 2, startedAt: 560_000, endedAt: 590_000 })).toContain(lines('> origin checks: 2 checked · 2 older than this PR'));
     expect(origin({ total: 0, ended: 0, findings: 0, startedAt: 560_000 })).not.toContain('origin checks');
     // A second read after the finders gets a line of its own, after the side checks.
     const reading = (read: SideCheckState) => buildDashboard({ ...started, agentProgress: [claudeDone, gptDone], sideChecks: { ...side(3, 2, 1, 238_000), second_read: read } }, 470_000);
@@ -3842,7 +3847,7 @@ describe('buildDashboard', () => {
       .toContain(`${INDENT}grading 10 findings (1 tool alert added, 2 leads carried over from the last round, 1 lead not finished checking, 1 dropped as a repeat of an earlier resolved finding)`);
     // A round with nothing to judge shows the judge as skipped while it runs and once it is done, never as pending.
     for (const phase of ['reviewed', 'complete'] as const) {
-      const skipped = buildDashboard({ ...data, phase, rawFindingCount: 1, judgeInputCount: 0, staticDedupCount: 1, llmDedupCount: 0, keptCount: 0, droppedCount: 0, judgeSkipped: true });
+      const skipped = buildDashboard({ ...data, phase, rawFindingCount: 1, judgeInputCount: 0, staticDedupCount: 1, llmDedupCount: 0, judgeSkipped: true });
       expect(skipped).toContain(`**Judge:** skipped, nothing to judge\n${INDENT}before the judge: 1 dropped as a repeat of an earlier resolved finding`);
       expect(skipped).not.toContain('grading');
       expect(skipped).not.toContain('kept');
@@ -3870,15 +3875,15 @@ describe('buildDashboard', () => {
   it('renders the complete phase with kept/dropped counts', () => {
     const data: DashboardData = {
       phase: 'complete', lineCount: 500, agentCount: 7,
-      rawFindingCount: 20, keptCount: 8, droppedCount: 12,
+      rawFindingCount: 20, graded: { kept: 8, dropped: 12, merged: 0, durationMs: 0 },
     };
     const md = buildDashboard(data);
     expect(md).not.toContain('**Review in progress**');
     expect(md).toContain('**Review:** 20 findings');
-    expect(md).toContain('**Judge:** 8 kept · 12 dropped');
+    expect(md).toContain(`**Judge**\n${INDENT}graded 20 findings: 8 kept · 12 dropped`);
     expect(md).not.toContain('before the judge');
-    expect(buildDashboard({ ...data, rawFindingCount: 1, keptCount: 0, droppedCount: 0, suppressionCount: 0, llmDedupCount: 1 }))
-      .toContain(`**Judge:** 0 kept · 0 dropped\n${INDENT}before the judge: 1 dropped as a repeat of an earlier resolved finding`);
+    expect(buildDashboard({ ...data, rawFindingCount: 1, graded: { kept: 0, dropped: 0, merged: 0, durationMs: 0 }, llmDedupCount: 1 }))
+      .toContain(`**Judge**\n${INDENT}before the judge: 1 dropped as a repeat of an earlier resolved finding\n${INDENT}graded 0 findings: 0 kept · 0 dropped`);
 
     // The finders and the side checks add up to the review's count, and every finding between it and the judge's is named.
     const lines = (...rows: string[]) => rows.map(row => row.replace(/^> /, INDENT)).join('\n');
@@ -3896,7 +3901,7 @@ describe('buildDashboard', () => {
         fix: { total: 0, ended: 0, findings: 0, startedAt: 10_000, endedAt: 10_000 },
         second_read: { total: 1, ended: 1, findings: 1, startedAt: 200_000, endedAt: 240_000 },
       },
-      toolAlertCount: 1, keptCount: 2, droppedCount: 2, judgeDurationMs: 179_000, keptSeverities: { warning: 2 }, droppedSeverities: { note: 2 },
+      toolAlertCount: 1, graded: { kept: 2, dropped: 2, merged: 0, durationMs: 0 }, judgeDurationMs: 179_000, postedSeverities: { warning: 2 }, droppedSeverities: { note: 2 },
     };
     expect(buildDashboard(finished)).toContain(lines(
       '**Review (behavior · full):** 3 findings',
@@ -3905,39 +3910,47 @@ describe('buildDashboard', () => {
       '> ✅ Comparisons and claim checks: 3 of 3 done, 1 finding (1m 0s)',
       '> ✅ Second reads: 1 of 1 done, 1 finding (40s)',
       '',
-      '**Judge:** 2 kept · 2 dropped (2m 59s)',
-      '> kept: 2 warnings',
-      '> dropped: 2 suggestions',
+      '**Judge** (2m 59s)',
       '> before the judge: 1 tool alert added',
+      '> graded 4 findings: 2 kept · 2 dropped',
+      '> dropped, as the finders filed them: 2 suggestions',
+      '',
+      '**Posted:** 2 findings',
+      '> 2 warnings',
     ));
     // The sweeps run on the kept findings, so their findings show under the judge. Here 3 found, plus 1 tool alert and 1
-    // carried lead, less 1 repeat and 1 lead not finished checking, plus 2 sweep findings less 1 judged already, plus 1
-    // added after the judge, make 3 kept, 1 dropped and 1 merged. A sweep finding that repeats an earlier resolved finding
-    // counts among the round's repeats but shows under the sweeps, so here 2 are recorded and 1 shows before the judge.
+    // carried lead, less 1 repeat and 1 lead not finished checking, plus 2 sweep findings less 1 judged already, make 2
+    // kept, 1 dropped and 1 merged. A sweep finding that repeats an earlier resolved finding counts among the round's
+    // repeats but shows under the sweeps, so here 2 are recorded and 1 shows before the judge. The 2 kept and the 1 added
+    // after the judge are 2 posted and 1 left in the round record only.
     const everything = buildDashboard({
       ...finished,
       sideChecks: { ...finished.sideChecks, sweep: { total: 1, ended: 1, findings: 2, startedAt: 420_000, endedAt: 450_000 } },
       carriedLeadCount: 1, staticDedupCount: 2, llmDedupCount: 0, sweepRepeatCount: 1, sweepDedupCount: 1, openLeadCount: 1,
-      keptCount: 3, droppedCount: 1, mergedCount: 1, addedAfterJudgeCount: 1, keptSeverities: { blocker: 1, warning: 2 }, droppedSeverities: { note: 1 },
+      graded: { kept: 2, dropped: 1, merged: 1, durationMs: 0 }, addedAfterJudgeCount: 1, postedSeverities: { blocker: 1, warning: 1 }, droppedSeverities: { note: 1 },
+      recordOnly: { no_proof: 1 },
     });
     expect(everything).toContain(lines('**Review (behavior · full):** 3 findings'));
     expect(everything).toContain(lines('> ✅ Second reads: 1 of 1 done, 1 finding (40s)', ''));
     expect(everything).toContain(lines(
-      '**Judge:** 3 kept · 1 dropped · 1 merged (2m 59s)',
-      '> kept: 1 blocker · 2 warnings',
-      '> dropped: 1 suggestion',
-      '> before the judge: 1 tool alert added, 1 lead carried over from the last round, 1 dropped as a repeat of an earlier resolved finding',
+      '**Judge** (2m 59s)',
+      '> before the judge: 1 tool alert added, 1 lead carried over from the last round, 1 lead not finished checking, 1 dropped as a repeat of an earlier resolved finding',
+      '> graded 4 findings: 2 kept · 1 dropped · 1 merged',
+      '> dropped, as the finders filed them: 1 suggestion',
       '> sweeps: 1 of 1 done, 2 findings (30s)',
       '> 1 sweep finding already judged this round, 1 sweep finding dropped as a repeat of an earlier resolved finding',
-      '> not finished checking: 1 lead',
+      '',
+      '**Posted:** 2 findings',
+      '> 1 blocker · 1 warning',
       '> added after the judge: 1 finding',
+      '> round record only: 1 no proof',
     ));
   });
 
   it('renders per-agent detail and the review class and group in the complete phase', () => {
     const data: DashboardData = {
       phase: 'complete', lineCount: 500, agentCount: 2,
-      rawFindingCount: 3, keptCount: 2, droppedCount: 1,
+      rawFindingCount: 3, graded: { kept: 2, dropped: 1, merged: 0, durationMs: 0 },
       routing: { class: 'security', group: 'full' },
       agentProgress: [
         { name: 'Claude Sonnet 5.5 · high', status: 'done', findingCount: 2, durationMs: 38000 },
@@ -3950,7 +3963,7 @@ describe('buildDashboard', () => {
       `${INDENT}✅ Claude Sonnet 5.5 · high: 2 findings (38s)`,
       `${INDENT}✅ Claude Opus 5.5 · high: 1 finding (41s)`,
     ].join('\n'));
-    expect(md).toContain('**Judge:** 2 kept · 1 dropped');
+    expect(md).toContain('graded 3 findings: 2 kept · 1 dropped');
     expect(buildDashboard({ ...data, routing: { group: 'full' } })).toContain('**Review (full):** 3 findings');
     expect(buildDashboard({ ...data, phase: 'started', agentProgress: [{ name: 'Quick check · Claude Haiku 5.5', status: 'reviewing' }], routing: { class: 'docs', group: 'trivial' } }))
       .toContain(`**Review (docs · trivial):** 0/1 agents complete\n${INDENT}⏳ Quick check · Claude Haiku 5.5`);
@@ -3959,7 +3972,7 @@ describe('buildDashboard', () => {
   it('renders failed agent in the complete phase', () => {
     const data: DashboardData = {
       phase: 'complete', lineCount: 200, agentCount: 2,
-      rawFindingCount: 3, keptCount: 2, droppedCount: 1,
+      rawFindingCount: 3, graded: { kept: 2, dropped: 1, merged: 0, durationMs: 0 },
       agentProgress: [
         { name: 'Security & Safety', status: 'done', findingCount: 3, durationMs: 2000 },
         { name: 'Architecture & Design', status: 'failed', durationMs: 500 },
@@ -3968,7 +3981,7 @@ describe('buildDashboard', () => {
     const md = buildDashboard(data);
     expect(md).toContain(`${INDENT}✅ Security & Safety: 3 findings (2s)`);
     expect(md).toContain(`${INDENT}🔴 Architecture & Design: failed (500ms)`);
-    expect(md).toContain('**Judge:** 2 kept · 1 dropped');
+    expect(md).toContain('graded 3 findings: 2 kept · 1 dropped');
   });
 
   it('formats sub-second durations in milliseconds', () => {
@@ -4055,35 +4068,26 @@ describe('buildDashboard', () => {
     },
   );
 
-  it('renders severity breakdown in judge section when provided', () => {
+  it('renders the grades of the posted findings and the finders\' grades of the dropped ones', () => {
     const data: DashboardData = {
       phase: 'complete', lineCount: 400, agentCount: 5,
-      rawFindingCount: 8, keptCount: 2, droppedCount: 6,
-      keptSeverities: { blocker: 1, note: 1 },
+      rawFindingCount: 8, graded: { kept: 2, dropped: 6, merged: 0, durationMs: 0 },
+      postedSeverities: { blocker: 1, note: 1 },
       droppedSeverities: { note: 5, ignore: 1 },
     };
     const md = buildDashboard(data);
-    expect(md).toContain('**Judge:** 2 kept · 6 dropped');
-    expect(md).toContain(`${INDENT}kept: 1 blocker · 1 suggestion`);
-    expect(md).toContain(`${INDENT}dropped: 5 suggestions · 1 ignore`);
-  });
-
-  it('renders warning in severity breakdown when warning count is non-zero', () => {
-    const data: DashboardData = {
-      phase: 'complete', lineCount: 200, agentCount: 3,
-      rawFindingCount: 5, keptCount: 3, droppedCount: 2,
-      keptSeverities: { blocker: 1, warning: 2 },
-      droppedSeverities: { warning: 1, note: 1 },
-    };
-    const md = buildDashboard(data);
-    expect(md).toContain(`${INDENT}kept: 1 blocker · 2 warning`);
-    expect(md).toContain(`${INDENT}dropped: 1 warning · 1 suggestion`);
+    expect(md).toContain(`graded 8 findings: 2 kept · 6 dropped\n${INDENT}dropped, as the finders filed them: 5 suggestions · 1 ignore`);
+    expect(md).toContain(`**Posted:** 2 findings\n${INDENT}1 blocker · 1 suggestion`);
+    expect(buildDashboard({ ...data, postedSeverities: { blocker: 1, warning: 2 }, droppedSeverities: { warning: 1, note: 1 } }))
+      .toContain(`**Posted:** 3 findings\n${INDENT}1 blocker · 2 warnings`);
+    // The finders' grades of the dropped findings show only once the round finished.
+    expect(buildDashboard({ ...data, phase: 'reviewed' })).not.toContain('as the finders filed them');
   });
 
   it('renders plannerInfo in complete phase', () => {
     const data: DashboardData = {
       phase: 'complete', lineCount: 400, agentCount: 5,
-      keptCount: 3, droppedCount: 5, rawFindingCount: 8,
+      graded: { kept: 3, dropped: 5, merged: 0, durationMs: 0 }, rawFindingCount: 8,
       plannerInfo: { agentCount: 5, judgeEffort: 'high', prType: 'fix' },
     };
     const md = buildDashboard(data);
@@ -4105,28 +4109,34 @@ describe('buildDashboard', () => {
   it('omits severity breakdown lines when severities are not provided', () => {
     const data: DashboardData = {
       phase: 'complete', lineCount: 400, agentCount: 5,
-      rawFindingCount: 8, keptCount: 2, droppedCount: 6,
+      rawFindingCount: 8, graded: { kept: 2, dropped: 6, merged: 0, durationMs: 0 },
     };
     const md = buildDashboard(data);
-    expect(md).toContain('**Judge:** 2 kept · 6 dropped');
-    expect(md).not.toContain(`${INDENT}kept:`);
-    expect(md).not.toContain(`${INDENT}dropped:`);
+    expect(md).toContain('graded 8 findings: 2 kept · 6 dropped');
+    expect(md).not.toContain('as the finders filed them');
+    expect(md).not.toContain('**Posted:**');
   });
 
-  it('renders the memory and test-nit suppression counts in judge section when provided', () => {
+  it('names why each kept finding the review did not post stayed out', () => {
     const data: DashboardData = {
       phase: 'complete', lineCount: 400, agentCount: 3,
-      rawFindingCount: 10, keptCount: 0, droppedCount: 3,
-      suppressionCount: 2, testNitSuppressedCount: 7,
+      rawFindingCount: 16, graded: { kept: 13, dropped: 3, merged: 0, durationMs: 0 }, postedSeverities: {},
+      recordOnly: { memory_suppression: 2, no_trigger: 1, unsettled_check: 1, no_proof: 1 }, unsettledLeadCount: 1, testNitSuppressedCount: 7,
     };
-    const md = buildDashboard(data);
-    expect(md).toContain(`${INDENT}suppressed by memory: 2\n${INDENT}suppressed: 7 test-only suggestions (round ≥2 throttle)`);
+    // Reasons with one name are counted together, in a fixed order.
+    expect(buildDashboard(data)).toContain([
+      '**Posted:** 0 findings',
+      `${INDENT}round record only: 2 suppressed by memory · 1 no realistic trigger · 2 no proof`,
+      `${INDENT}not finished checking: 1 lead`,
+      `${INDENT}suppressed: 7 test-only suggestions (round ≥2 throttle)`,
+    ].join('\n'));
+    expect(buildDashboard({ ...data, recordOnly: {}, unsettledLeadCount: 0, testNitSuppressedCount: 0, repeatCount: 1 })).toContain(`**Posted:** 0 findings\n${INDENT}left out as repeats of other findings: 1`);
   });
 
   it('omits test-nit suppression line when testNitSuppressedCount is not set', () => {
     const data: DashboardData = {
       phase: 'complete', lineCount: 400, agentCount: 3,
-      rawFindingCount: 10, keptCount: 3, droppedCount: 7,
+      rawFindingCount: 10, graded: { kept: 3, dropped: 7, merged: 0, durationMs: 0 },
     };
     const md = buildDashboard(data);
     expect(md).not.toMatch(/suppressed/i);
@@ -4166,7 +4176,7 @@ describe('buildDashboard', () => {
   it('renders per-team counts and durations from agentProgress when planner metadata is empty (heuristic-fallback path)', () => {
     const data: DashboardData = {
       phase: 'complete', lineCount: 600, agentCount: 5,
-      rawFindingCount: 18, keptCount: 12, droppedCount: 6,
+      rawFindingCount: 18, graded: { kept: 12, dropped: 6, merged: 0, durationMs: 0 },
       heuristicFallback: true,
       plannerDurationMs: 60000,
       agentProgress: [
@@ -4190,7 +4200,7 @@ describe('buildDashboard', () => {
   it('renders heuristic-fallback marker under the planner header when set', () => {
     const data: DashboardData = {
       phase: 'complete', lineCount: 200, agentCount: 5,
-      rawFindingCount: 0, keptCount: 0, droppedCount: 0,
+      rawFindingCount: 0, graded: { kept: 0, dropped: 0, merged: 0, durationMs: 0 },
       heuristicFallback: true,
       plannerDurationMs: 60000,
     };
@@ -4219,7 +4229,7 @@ describe('buildDashboard', () => {
   it('omits heuristic-fallback marker when not set', () => {
     const data: DashboardData = {
       phase: 'complete', lineCount: 200, agentCount: 5,
-      rawFindingCount: 0, keptCount: 0, droppedCount: 0,
+      rawFindingCount: 0, graded: { kept: 0, dropped: 0, merged: 0, durationMs: 0 },
       plannerDurationMs: 850,
     };
     const md = buildDashboard(data);
@@ -4229,34 +4239,34 @@ describe('buildDashboard', () => {
   it('renders judge duration in complete phase', () => {
     const data: DashboardData = {
       phase: 'complete', lineCount: 500, agentCount: 7,
-      rawFindingCount: 20, keptCount: 8, droppedCount: 12,
+      rawFindingCount: 20, graded: { kept: 8, dropped: 12, merged: 0, durationMs: 0 },
       judgeDurationMs: 8000,
     };
     const md = buildDashboard(data);
-    expect(md).toContain('**Judge:** 8 kept · 12 dropped (8s)');
+    expect(md).toContain(`**Judge** (8s)\n${INDENT}graded 20 findings: 8 kept · 12 dropped`);
   });
 
   it('omits judge duration when judgeDurationMs is not set', () => {
     const data: DashboardData = {
       phase: 'complete', lineCount: 500, agentCount: 7,
-      rawFindingCount: 20, keptCount: 8, droppedCount: 12,
+      rawFindingCount: 20, graded: { kept: 8, dropped: 12, merged: 0, durationMs: 0 },
     };
     const md = buildDashboard(data);
-    expect(md).toContain('**Judge:** 8 kept · 12 dropped');
-    expect(md).not.toContain('**Judge:** 8 kept · 12 dropped (');
+    expect(md).toContain('graded 20 findings: 8 kept · 12 dropped');
+    expect(md).toContain(`**Judge**\n`);
   });
 
   it('renders both planner and judge durations in complete phase', () => {
     const data: DashboardData = {
       phase: 'complete', lineCount: 400, agentCount: 5,
-      rawFindingCount: 10, keptCount: 6, droppedCount: 4,
+      rawFindingCount: 10, graded: { kept: 6, dropped: 4, merged: 0, durationMs: 0 },
       plannerInfo: { agentCount: 5, judgeEffort: 'medium', prType: 'fix' },
       plannerDurationMs: 2500,
       judgeDurationMs: 65000,
     };
     const md = buildDashboard(data);
     expect(md).toContain('**Planner** (3s)');
-    expect(md).toContain('**Judge:** 6 kept · 4 dropped (1m 5s)');
+    expect(md).toContain('**Judge** (1m 5s)');
   });
 
   it('renders retrying agent status with retry count', () => {
@@ -4350,8 +4360,7 @@ describe('updateProgressComment', () => {
     lineCount: 200,
     agentCount: 5,
     rawFindingCount: 10,
-    keptCount: 3,
-    droppedCount: 7,
+    graded: { kept: 3, dropped: 7, merged: 0, durationMs: 0 },
   };
 
   const baseMetadata: ReviewMetadata = {
@@ -4386,7 +4395,7 @@ describe('updateProgressComment', () => {
     const body = mockUpdateComment.mock.calls[0][0].body as string;
     expect(body).toContain('🔴 **Review failed**');
     expect(body).toContain('**Planner**');
-    expect(body).toContain('**Judge:**');
+    expect(body).toContain('**Judge**');
     expect(body).not.toContain('Review metadata');
   });
 
@@ -4531,7 +4540,7 @@ describe('updateProgressComment', () => {
     const dashboard: DashboardData = { ...baseDashboard, phase: 'reviewed' };
     await updateProgressComment(mockOctokit, 'owner', 'repo', 123, dashboard, baseMetadata);
     const body = mockUpdateComment.mock.calls[0][0].body as string;
-    expect(body).toContain('**Judge:** 3 kept · 7 dropped');
+    expect(body).toContain('graded 10 findings: 3 kept · 7 dropped');
     expect(body).not.toContain('grading');
   });
 
