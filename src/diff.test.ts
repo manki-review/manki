@@ -855,6 +855,14 @@ describe('orderDiffSections', () => {
     expect(ordered.map(s => s.text)).toEqual([fileDiff('src/z.ts'), fileDiff('src/a.ts'), binary, fileDiff('src/b.ts'), fileDiff('Cargo.lock')]);
     expect(orderDiffSections('')).toEqual([]);
   });
+
+  it('moves a renamed file to the front by its old or its new path, once', () => {
+    const renamed = 'diff --git a/src/old.ts b/src/new.ts\nsimilarity index 90%\nrename from src/old.ts\nrename to src/new.ts\n--- a/src/old.ts\n+++ b/src/new.ts\n@@ -1 +1 @@\n-old\n+new\n';
+    const withRename = `${fileDiff('src/a.ts')}${renamed}`;
+    expect(orderDiffSections(withRename).map(s => [s.path, s.oldPath])).toEqual([['src/a.ts', undefined], ['src/new.ts', 'src/old.ts']]);
+    expect(orderDiffSections(withRename, ['src/old.ts']).map(s => s.path)).toEqual(['src/new.ts', 'src/a.ts']);
+    expect(orderDiffSections(withRename, ['src/new.ts', 'src/old.ts']).map(s => s.text)).toEqual([renamed, fileDiff('src/a.ts')]);
+  });
 });
 
 describe('listedFilesDiff', () => {

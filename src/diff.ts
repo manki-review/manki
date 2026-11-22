@@ -257,19 +257,28 @@ export function rebuildRawDiff(diff: ParsedDiff): string {
 /** One file's part of a raw diff, from its `diff --git` line up to the next file's. */
 export interface DiffSection {
   path: string;
+  /** The path the file had before a rename. */
+  oldPath?: string;
   text: string;
 }
 
+/** Whether `section` is the diff of `path`, by its new path or by the path it had before a rename. */
+export function isSectionOf(section: Omit<DiffSection, 'text'>, path: string): boolean {
+  return section.path === path || section.oldPath === path;
+}
+
 /**
- * Returns the file sections of `rawDiff` with the files in `first` at the front, in its order. The other files keep
- * their order. Each text ends with a line break, so joining them gives a valid diff.
+ * Returns the file sections of `rawDiff` with the files in `first` at the front, in its order. A renamed file matches
+ * by its new or its old path. The other files keep their order. Each text ends with a line break, so joining them gives a valid diff.
  */
 export function orderDiffSections(rawDiff: string, first: readonly string[] = []): DiffSection[] {
   const sections = diffSections(rawDiff).map(text => {
     const parsed = parsePRDiff(text);
-    return { path: parsed.files[0]?.path ?? parsed.binarySkipped?.[0]?.path ?? '', text: text.endsWith('\n') ? text : `${text}\n` };
+    const file = parsed.files[0];
+    const path = file?.path ?? parsed.binarySkipped?.[0]?.path ?? '';
+    return { path, ...(file?.oldPath && { oldPath: file.oldPath }), text: text.endsWith('\n') ? text : `${text}\n` };
   });
-  const front = [...new Set(first)].flatMap(path => sections.filter(s => s.path === path));
+  const front = [...new Set(first.flatMap(path => sections.filter(s => isSectionOf(s, path))))];
   return [...front, ...sections.filter(s => !front.includes(s))];
 }
 
