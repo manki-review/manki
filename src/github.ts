@@ -17,7 +17,7 @@ import { citedLine, currentFindingLine, findPriorThreadId } from './finding-fing
 import type { FixClaim, PreviousFinding } from './recap';
 import { AUTHOR_CLEAR_ROLES, AuthorClearRole, breaksRule, cellGrade, findingKey, isDisprovedBlocker, isGuardedFinding, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, overruledDisproof, gradedAbove, pendingGrade, SEVERITY_NAME, SEVERITY_ORDER, threadBlocks } from './types';
 import { formatDuration, hiddenCharacters, ownMarker, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
-import { compressReviewRecord, extractApprovalRecords, formatReviewRecord, hasOwnMarker, smallerRecords } from './review-record';
+import { compressReviewRecord, extractApprovalRecords, formatReviewRecord, hasOwnMarker, hasReviewRecord, smallerRecords } from './review-record';
 import { modelDisplayName } from './providers/model-registry';
 import { formatRunner } from './run-diagnostics';
 import { RELATED_REPO_HOST } from './related-repos';
@@ -2892,6 +2892,14 @@ function asSentence(text: string): string {
 /** The first line of every review in which Manki approves the PR. */
 const APPROVED_LINE = '✅ **Approved.**';
 
+/**
+ * Whether `body` is the review body of an auto-approval. A round review quotes model text, which could echo the marker,
+ * so only a review without a round record counts.
+ */
+function isAutoApproval(body: string): boolean {
+  return !hasReviewRecord(body) && body.startsWith(APPROVED_LINE) && hasOwnMarker(body, AUTO_APPROVE_MARKER);
+}
+
 /** The first line of the review body for each outcome. Its emoji is the only one in the review. */
 const VERDICT_LINES: Record<RoundOutcome, (result: ReviewResult, blockers: BlockerCounts, posted: PostedFindings) => string> = {
   READY: (_result, _blockers, { threads, listed, carried, hold, warningHold, autoApprove }) => {
@@ -4522,5 +4530,5 @@ async function fetchStandingVerdict(
 }
 
 export type { CodeLinks };
-export { APPROVED_LINE, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, BASE_NOTE_RE, TRACKED_NOTE_RE, TRUST_NOTE_RE, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isBotUser, authorClearRole, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, givesVerdict, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, fetchStandingVerdict, REVIEW_STATE_VERDICTS, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, HELD_FOR_PERSON_MARKER };
+export { APPROVED_LINE, CHECKS_MARKER, isAutoApproval, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, BASE_NOTE_RE, TRACKED_NOTE_RE, TRUST_NOTE_RE, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isBotUser, authorClearRole, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, givesVerdict, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, fetchStandingVerdict, REVIEW_STATE_VERDICTS, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, HELD_FOR_PERSON_MARKER };
 export type { StandingVerdict };
