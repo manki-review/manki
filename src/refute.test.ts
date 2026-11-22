@@ -1214,6 +1214,8 @@ describe('refuteBlockers', () => {
     expect(client.messages[0][1]).not.toContain('Outside input');
     expect(system).toContain('disprove only when every path checks the value or cannot carry it');
     expect(system).toContain('Reading code cannot confirm that it fails to compile or that a test fails.');
+    // A premise about run time behaviour is answered on its code part, so a defect the code confirms is not left unconfirmed.
+    expect(system).toContain('- No code read can settle how a person, a model, a peer or the network will behave at run time. Answer any other premise that states such behaviour on its code part only: the input the code passes, the check it makes or leaves out, and the path it takes. Confirm it when the code shows that part holds, and never answer it unsettled only because the behaviour itself cannot be read. A defect the code confirms counts as confirmed.');
     expect(system).not.toContain('an intent the code states');
     expect([result.severity, result.refutation?.outcome, result.refutation?.rule]).toEqual(['ignore', 'disproved', rule]);
     expect(result.judgeNotes).toBe(`Refutation disproved: src/account.ts:3 reads \`account.email\` after the same early return, and it builds. Rule checked: ${rule}`);
