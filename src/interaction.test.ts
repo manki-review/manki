@@ -82,6 +82,7 @@ jest.mock('./github', () => ({
   plainCitedFiles: jest.requireActual('./github').plainCitedFiles,
   isBotLogin: jest.requireActual('./github').isBotLogin,
   isBotUser: jest.requireActual('./github').isBotUser,
+  isAutoApproval: jest.requireActual('./github').isAutoApproval,
   reactToIssueComment: jest.fn().mockResolvedValue(undefined),
   reactToReviewComment: jest.fn().mockResolvedValue(undefined),
   TooManyFilesError: jest.requireActual('./github').TooManyFilesError,
