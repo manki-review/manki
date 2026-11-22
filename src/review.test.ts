@@ -40,7 +40,7 @@ import { relatedReposCacheDir } from './related-repos';
 import * as core from '@actions/core';
 import * as napi from '@ast-grep/napi';
 import { formatFindingComment, LinkedIssue, titleToSlug } from './github';
-import { BASE_QUESTION, CELL_GRADES, cellGrade, EarlierAttempt, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, Refutation, RefutationOutcome, ReviewResult, RoundContext, RoundLead, RoundNotStarted, RoundScope, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG, SweepMode } from './types';
+import { CELL_GRADES, cellGrade, EarlierAttempt, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, OriginAnswer, OriginVerdict, Refutation, RefutationOutcome, ReviewResult, RoundContext, RoundLead, RoundNotStarted, RoundScope, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG, SweepMode } from './types';
 import { citedLine } from './finding-fingerprint';
 import { baseProofFixture, baseProofWorkspace, expectLinearTime, fingerprintEntriesFromLegacy, git, GIT_TEST_TIMEOUT_MS, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
 import { listUsesOutsideDiff } from './symbol-uses';
@@ -3730,7 +3730,7 @@ describe('runReview', () => {
     expect(result.unpostedPreExisting?.map(f => [f.title, f.preExistingCheck])).toEqual([['Loader ignores the lock entry', 'pre_existing']]);
   });
 
-  it('posts a blocker the judge calls pre-existing next to a re-indented line as a pre-existing warning once two checks find the same failure before this PR', async () => {
+  it('posts a blocker the judge calls pre-existing next to a re-indented line as a pre-existing warning once two origin checks find the same failure before this PR', async () => {
     // The PR only adds a comment and re-indents the loop, so the loop that never ends was there before.
     const before = 'export function drain(queue: number[]) {\n  while (queue.length > 0) {\n  queue.at(0);\n  }\n}\n';
     const after = 'export function drain(queue: number[]) {\n  // Reads the queue until it is empty.\n  while (queue.length > 0) {\n    queue.at(0);\n  }\n}\n';
@@ -3740,98 +3740,106 @@ describe('runReview', () => {
       preExisting: true, preExistingReason: 'The loop read the queue the same way before this PR.',
     }];
     mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
-    // `sameBefore` is each check's answer whether the failure is the PR's own: disproved when the loop failed the same
-    // way before. `pairModel` is the second refuter's model, `failed` when its call fails, or none without a second
-    // refuter. `readsBase` says the workspace holds the base, whose lines `baseProof` cites. The finding flags `line`,
-    // by default the loop's head, which the PR left as it was at base line 2.
+    // `origin` is each origin check's answer. `pairModel` is the second refuter's model, `failed` when its calls fail, or
+    // none without a second refuter. `readsBase` says the workspace holds the base, whose lines `baseProof` cites. The
+    // finding flags `line`, by default the loop's head, which the PR left as it was at base line 2.
     type Options = { repoTools?: boolean; pairModel?: string | null; readsBase?: boolean; baseProof?: string[]; security?: boolean; line?: number };
-    const run = async (sameBefore: RefutationOutcome, { repoTools = true, pairModel = 'pair-model', readsBase = true, baseProof = ['src/queue.ts:2', 'src/queue.ts:3'], security = false, line = 3 }: Options = {}) => {
+    const run = async (origin: OriginVerdict, { repoTools = true, pairModel = 'pair-model', readsBase = true, baseProof = ['src/queue.ts:2', 'src/queue.ts:3'], security = false, line = 3 }: Options = {}) => {
       const { root, diff } = gitWorkspace({ 'src/queue.ts': before }, { 'src/queue.ts': after }, readsBase ? [] : undefined);
       const refuterMessages: string[] = [];
-      const reply = (model: string) => ({
-        model, content: JSON.stringify({
-          outcome: 'confirmed', reason: 'Nothing removes an entry.', proof: ['src/queue.ts:4'],
-          base: { outcome: sameBefore, reason: 'The loop before this PR also only read the entry.', proof: baseProof },
-        }),
-      });
+      const originMessages: string[] = [];
+      const reply = (model: string) => async (system: string, user: string) => {
+        if (system.startsWith('You decide whether')) {
+          originMessages.push(user);
+          return { model, content: JSON.stringify({ origin, reason: 'The loop before this PR also only read the entry.', head: ['src/queue.ts:3', 'src/queue.ts:4'], base: baseProof }) };
+        }
+        refuterMessages.push(user);
+        return { model, content: JSON.stringify({ outcome: 'confirmed', reason: 'Nothing removes an entry.', proof: ['src/queue.ts:4'] }) };
+      };
       const pair = pairModel === null ? undefined : {
-        repoTools: true, sendMessage: pairModel === 'failed' ? jest.fn().mockRejectedValue(new Error('timed out')) : jest.fn().mockResolvedValue(reply(pairModel)),
+        repoTools: true, sendMessage: pairModel === 'failed' ? jest.fn().mockRejectedValue(new Error('timed out')) : jest.fn(reply(pairModel)),
       } as unknown as LLMClient;
       const clients = { ...makeClients(), ...(pair && { refuterPair: pair }) };
       jest.mocked(clients.reviewer.sendMessage).mockResolvedValueOnce({ content: JSON.stringify(found(line)) });
       Object.assign(clients.judge, { repoTools });
+      const judgeModel = reply('judge-model');
       jest.mocked(clients.judge.sendMessage).mockImplementation(async (system: string, user: string) => {
         if (system.startsWith('You are a code review judge')) {
           return { content: JSON.stringify({ summary: 's', findings: [{ id: 1, title, row: 'severe', preExisting: true, ...(security && { security: true }), reasoning: 'Pre-existing: the loop is only re-indented.' }] }) };
         }
-        if (!system.startsWith('You check one finding')) return { content: READY_VERDICT };
-        refuterMessages.push(user);
-        return reply('judge-model');
+        if (!system.startsWith('You check one finding') && !system.startsWith('You decide whether')) return { content: READY_VERDICT };
+        return judgeModel(system, user);
       });
       try {
-        return { result: await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root }), refuterMessages };
+        return { result: await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root }), refuterMessages, originMessages };
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
     };
 
-    const { result, refuterMessages } = await run('disproved');
+    const baseProofDefault = ['src/queue.ts:2', 'src/queue.ts:3'];
+    const { result, refuterMessages, originMessages } = await run('pre_existing');
     expect(result.reviewComplete).toBe(true);
-    // The finding cites changed lines, so only a check of the code before this PR can call it pre-existing. The check
-    // is asked that apart from any doubt, with the PR's change to the cited file.
-    expect(refuterMessages).toHaveLength(1);
-    expect(refuterMessages[0]).toContain(`- **Question about the base**, to answer in \`base\`: ${BASE_QUESTION}`);
-    expect(refuterMessages[0]).not.toContain('Premises the judge doubts');
-    expect(refuterMessages[0]).toContain('+  // Reads the queue until it is empty.');
-    expect(refuterMessages[0]).toContain('- **Other files this PR changes**: none');
+    // The finding cites changed lines, so only the origin checks can call it pre-existing. Each one sees the PR's change
+    // to the cited file, and the refuter is not asked about the base.
+    expect([refuterMessages.length, originMessages.length]).toEqual([2, 2]);
+    expect(refuterMessages[0]).not.toContain('base');
+    expect(originMessages[0]).toContain('+  // Reads the queue until it is empty.');
+    expect(originMessages[0]).toContain('- **Other files this PR changes**: none');
+    expect(originMessages[0]).toContain("- **A reviewer's claim that it is older than this PR**, to check: The loop read the queue the same way before this PR.");
     expect(result.outcome).toBe('READY');
     expect(result.findings.map(f => [f.title, f.severity, f.originalSeverity, f.tags, f.preExistingCheck])).toEqual([[title, 'warning', 'blocker', ['pre-existing', 'follow-up'], 'touches_diff']]);
     expect(result.findings[0].gradePath?.map(step => [step.from, step.to, step.by])).toEqual([['blocker', 'warning', 'pre_existing']]);
-
+    expect(result.findings[0].originCheck?.answers.map(a => [a.model, a.verdict, a.base])).toEqual([['judge-model', 'pre_existing', baseProofDefault], ['pair-model', 'pre_existing', baseProofDefault]]);
     expect(formatFindingComment(result.findings[0], TEST_LINKS)).toContain('**Already broken before this PR.** Two checks found the same problem on the base branch at ');
 
-    // The base answer cites base line 2, where the flagged head line 3 sat before this PR. One refuter's answer, alone,
-    // beside a second call that failed, or beside a second answer on the same model, changes no grade. The blocker only
-    // notes in its thread that it may be older than this PR.
+    // One answer, alone, beside a second call that failed, or beside a second answer on the same model, changes no
+    // grade. The blocker only notes in its thread that it may be older than this PR.
     for (const options of [{ pairModel: null }, { pairModel: 'failed' }, { pairModel: 'judge-model' }, { pairModel: null, security: true }]) {
-      const round = await run('disproved', options);
+      const round = await run('pre_existing', options);
       const [kept] = round.result.findings;
       expect([options, round.result.outcome, kept.severity, kept.tags?.filter(t => t !== 'security')]).toEqual([options, 'ADDRESS_FIRST', 'blocker', options.security ? [] : undefined]);
       expect(formatFindingComment(kept, TEST_LINKS)).toContain('**Possibly older than this PR.** One check found the same problem on the base branch before this PR, at ');
     }
+    // The re-indented line 4 has no place at the base, so two answers that compare the failure are enough, and one is not.
+    const reindented = await run('pre_existing', { line: 4, baseProof: ['src/queue.ts:3'] });
+    expect([reindented.result.outcome, reindented.result.findings.map(f => [f.severity, f.originCheck?.lineChanged])]).toEqual(['READY', [['warning', true]]]);
+    expect((await run('pre_existing', { line: 4, pairModel: null })).result.findings.map(f => f.severity)).toEqual(['blocker']);
 
-    // The judge's pre-existing call alone lowers nothing. Checks that find the failure the PR's own or leave it open, a
-    // security finding without both refuters, a workspace without the base, a line the base
-    // does not hold, no citation of the flagged line at its base line, a flagged line the PR re-indented, and a round with
-    // no check at all keep the blocker its cell gives.
-    const kept: Array<[RefutationOutcome, Options]> = [
-      ['confirmed', {}], ['unsettled', {}], ['disproved', { pairModel: 'judge-model', security: true }],
-      ['disproved', { readsBase: false }], ['disproved', { baseProof: ['src/queue.ts:2', 'src/queue.ts:6'] }], ['disproved', { baseProof: [] }],
-      ['disproved', { baseProof: ['src/queue.ts:3'] }], ['disproved', { line: 4 }], ['disproved', { repoTools: false }],
+    // The judge's pre-existing call alone lowers nothing. Answers that the PR caused or worsened the failure or that are
+    // unsure, a security finding without two models, a workspace without the base, a line the base does not hold, no
+    // citation of the flagged line at its base line, and a round with no check at all keep the blocker its cell gives.
+    const kept: Array<[OriginVerdict, Options]> = [
+      ['introduced', {}], ['worsened', {}], ['unsure', {}], ['pre_existing', { pairModel: 'judge-model', security: true }],
+      ['pre_existing', { readsBase: false }], ['pre_existing', { baseProof: ['src/queue.ts:2', 'src/queue.ts:6'] }], ['pre_existing', { baseProof: [] }],
+      ['pre_existing', { baseProof: ['src/queue.ts:3'] }], ['pre_existing', { repoTools: false }],
     ];
-    for (const [sameBefore, options] of kept) {
-      const round = await run(sameBefore, options);
+    for (const [origin, options] of kept) {
+      const round = await run(origin, options);
       expect([options, round.result.outcome, round.result.findings.map(f => [f.severity, f.gradeIfConfirmed, f.tags?.filter(t => t !== 'security')])])
         .toEqual([options, 'ADDRESS_FIRST', [['blocker', undefined, options.security ? [] : undefined]]]);
-      expect(round.refuterMessages).toHaveLength(options.repoTools === false ? 0 : 1);
+      expect(round.originMessages).toHaveLength(options.repoTools === false || options.readsBase === false ? 0 : 2);
     }
-    // Both refuters, on different models, lower a security blocker.
-    const both = await run('disproved', { security: true });
+    // Both models lower a security blocker.
+    const both = await run('pre_existing', { security: true });
     expect([both.result.outcome, both.result.findings.map(f => [f.severity, f.tags])]).toEqual(['READY', [['warning', ['security', 'pre-existing', 'follow-up']]]]);
   }, GIT_TEST_TIMEOUT_MS);
 
-  it('replays a rust-dashcore round: a blocker whose flagged line this PR left unchanged and the base already had is pre-existing with two refuters, and only noted with one', async () => {
+  it('replays a rust-dashcore round: a blocker the base already had is pre-existing with two models, and only noted with one', async () => {
     const fixture = baseProofFixture('base-proof-rust-dashcore');
     const found = fixture.findings.map(f => ({
       severity: 'blocker', title: f.title, file: f.file, line: f.line, description: f.description, evidence: [`${f.file}:${f.line} shows it`], proof: f.proof,
     }));
     mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
-    // Each refuter gives the recorded answer of the finding whose location its message names. `answer` can change it.
+    // Each refuter gives the recorded answer of the finding whose location its message names, and each origin check the
+    // recorded answer about the base, in its own form. `answer` can change the recorded answer.
     const run = async ({ pair = false, answer = (recorded: Record<string, unknown>) => recorded }: { pair?: boolean; answer?: (recorded: Record<string, unknown>, title: string) => Record<string, unknown> } = {}) => {
       const { root, diff } = baseProofWorkspace(fixture);
       const reply = (model: string) => async (system: string, user: string) => {
         const f = fixture.findings.find(x => user.includes(`- **Location**: ${x.file}:${x.line}\n`))!;
-        return { model, content: JSON.stringify(answer(f.recorded, f.title)) };
+        const { base, ...recorded } = answer(f.recorded, f.title) as Record<string, unknown> & { base: { outcome: string; reason: string; proof: string[] } };
+        const origin = { disproved: 'pre_existing', confirmed: 'introduced' }[base.outcome] ?? 'unsure';
+        return { model, content: JSON.stringify(system.startsWith('You decide whether') ? { origin, reason: base.reason, head: recorded.proof, base: base.proof } : recorded) };
       };
       const refuterPair = pair ? { repoTools: true, sendMessage: jest.fn(reply('pair-model')) } as unknown as LLMClient : undefined;
       const clients = { ...makeClients(), ...(refuterPair && { refuterPair }) };
@@ -3842,7 +3850,7 @@ describe('runReview', () => {
         if (system.startsWith('You are a code review judge')) {
           return { content: JSON.stringify({ summary: 's', findings: fixture.findings.map((f, i) => ({ id: i + 1, title: f.title, row: 'severe', ...(f.security && { security: true }), reasoning: 'r' })) }) };
         }
-        if (!system.startsWith('You check one finding')) return { content: READY_VERDICT };
+        if (!system.startsWith('You check one finding') && !system.startsWith('You decide whether')) return { content: READY_VERDICT };
         return refute(system, user);
       });
       try {
@@ -3858,17 +3866,16 @@ describe('runReview', () => {
       }
     };
 
-    // Only the findings on `masternodes/manager.rs` and on `instantsend/manager.rs` line 185 flag a line this PR left
-    // unchanged, and their answers cite it at its place in the base. Two refuters on different models make both
-    // pre-existing, the security one too. The others flag lines this PR added or changed and keep blocking.
-    expect(fixture.findings.map(f => f.expected)).toEqual(['blocker', 'blocker', 'blocker', 'pre-existing', 'blocker', 'pre-existing']);
+    // Every recorded answer but the first finds the same failure at the base, with lines the base holds. Two models that
+    // agree make those pre-existing, the security one too, whether the PR changed the flagged line or not.
+    expect(fixture.findings.map(f => f.expected)).toEqual(['blocker', 'pre-existing', 'pre-existing', 'pre-existing', 'pre-existing', 'pre-existing']);
     expect(await run({ pair: true })).toEqual(fixture.findings.map(f => [f.title, f.expected]));
-    // One refuter changes no grade. Both blockers only note that they may be older than this PR.
-    expect((await run()).map(([, posted]) => posted)).toEqual(['blocker', 'blocker', 'blocker', 'older', 'blocker', 'older']);
-    // The flagged line cited at its head number, which is another line at the base, proves nothing, so the blocker stays.
+    // One model changes no grade. Each such blocker only notes that it may be older than this PR.
+    expect((await run()).map(([, grade]) => grade)).toEqual(['blocker', 'older', 'older', 'older', 'older', 'older']);
+    // On the unchanged flagged line, its head number is another line at the base, which proves nothing, so the blocker stays.
     const headLines = (recorded: Record<string, unknown>, title: string) => title === fixture.findings[3].title
       ? { ...recorded, base: { ...(recorded.base as object), proof: [`${fixture.findings[3].file}:${fixture.findings[3].line}`] } } : recorded;
-    expect((await run({ pair: true, answer: headLines })).map(([, posted]) => posted)).toEqual(['blocker', 'blocker', 'blocker', 'blocker', 'blocker', 'pre-existing']);
+    expect((await run({ pair: true, answer: headLines })).map(([, grade]) => grade)).toEqual(['blocker', 'pre-existing', 'pre-existing', 'blocker', 'pre-existing', 'pre-existing']);
   }, GIT_TEST_TIMEOUT_MS);
 
   it('records a pre-existing warning in the `rare` column without a check, since no answer makes it a blocker', async () => {
@@ -5113,18 +5120,18 @@ describe('runReview', () => {
       ['Old SQL injection', 'blocker', ['security', 'pre-existing']],
     ]);
 
-    // A finding on a changed line is pre-existing when both refuters, on different models, found the same failure before
-    // this PR, with lines the code found at the base. It posts only what would block had this PR caused it, as a warning.
-    // One check, two on one model, an answer left open, one the code did not check at the base, or one without lines
-    // keep the blocker.
-    const check = (base: RefutationOutcome, model = 'first-model'): Refutation => ({
-      outcome: 'confirmed', defect: 'confirmed', reason: 'It fails.', files: ['src/a.ts'], codeDigest: 'abc', model,
-      base: { premise: BASE_QUESTION, outcome: base, reason: base === 'disproved' ? 'The same queue had no cap before this PR.' : 'r', proof: ['src/a.ts:11'], commit: 'base' },
+    // A finding on a changed line is pre-existing when two origin checks, on different models, found the same failure
+    // before this PR, with lines the code found at the base. It posts only what would block had this PR caused it, as a
+    // warning. One answer, two on one model, an answer that is unsure or finds the failure the PR's own, one the code did
+    // not check at the base, or one without lines keep the blocker.
+    const answer = (verdict: OriginVerdict, model = 'first-model'): OriginAnswer => ({
+      verdict, reason: verdict === 'pre_existing' ? 'The same queue had no cap before this PR.' : 'r', head: ['src/a.ts:12'], base: ['src/a.ts:11'], commit: 'base', model,
     });
-    const onLine = (title: string, extra: Partial<Finding> = {}) => blocker(title, 'src/a.ts', 12, { preExisting: undefined, refutation: check('disproved'), pairRefutation: check('disproved', 'pair-model'), ...extra });
+    const checked = (...answers: OriginAnswer[]): Pick<Finding, 'originCheck'> => ({ originCheck: { lineChanged: true, answers } });
+    const onLine = (title: string, extra: Partial<Finding> = {}) => blocker(title, 'src/a.ts', 12, { preExisting: undefined, ...checked(answer('pre_existing'), answer('pre_existing', 'pair-model')), ...extra });
     const based = [
       onLine('Queue holds unverified entries'),
-      onLine('Queue may grow', { severity: 'warning', gradeIfConfirmed: 'blocker', doubts: [{ premise: 'Entries arrive faster than they drain', decides: 'defect' }], refutation: { ...check('disproved'), outcome: 'unsettled' } }),
+      onLine('Queue may grow', { severity: 'warning', gradeIfConfirmed: 'blocker', doubts: [{ premise: 'Entries arrive faster than they drain', decides: 'defect' }] }),
     ];
     mockedRunJudgeAgent.mockResolvedValue({ findings: based, summary: 'Old defects on changed lines.' });
     const onBase = await run(makeClients());
@@ -5135,10 +5142,12 @@ describe('runReview', () => {
     expect(onBase.findings[0].gradePath?.at(-1)).toEqual({ from: 'blocker', to: 'warning', by: 'pre_existing', reason: 'the code before this PR fails the same way: The same queue had no cap before this PR.' });
     expect(onBase.unpostedPreExisting?.map(f => [f.title, f.severity, f.tags])).toEqual([['Queue may grow', 'warning', ['pre-existing']]]);
     const keptBlockers = [
-      onLine('Left open', { refutation: check('unsettled') }), onLine('Newly reachable', { refutation: check('confirmed') }),
-      onLine('Not asked', { refutation: { ...check('disproved'), base: undefined } }), onLine('No proof', { refutation: { ...check('disproved'), base: { ...check('disproved').base!, proof: [] } } }),
-      onLine('Not checked at the base', { refutation: { ...check('disproved'), base: { ...check('disproved').base!, commit: undefined } } }),
-      onLine('One check', { pairRefutation: undefined }), onLine('Two checks on one model', { pairRefutation: check('disproved') }), onLine('Security with one check', { tags: ['security'], pairRefutation: undefined }),
+      onLine('Left open', checked(answer('unsure'), answer('pre_existing', 'pair-model'))), onLine('Newly reachable', checked(answer('introduced'), answer('pre_existing', 'pair-model'))),
+      onLine('Worse now', checked(answer('pre_existing'), answer('worsened', 'pair-model'))), onLine('Not asked', { originCheck: undefined }),
+      onLine('No proof', checked({ ...answer('pre_existing'), base: [] }, answer('pre_existing', 'pair-model'))),
+      onLine('Not checked at the base', checked({ ...answer('pre_existing'), commit: undefined }, answer('pre_existing', 'pair-model'))),
+      onLine('One check', checked(answer('pre_existing'))), onLine('Two checks on one model', checked(answer('pre_existing'), answer('pre_existing'))),
+      onLine('Security with one check', { tags: ['security'], ...checked(answer('pre_existing')) }),
     ];
     for (const kept of keptBlockers) {
       mockedRunJudgeAgent.mockResolvedValue({ findings: [kept], summary: 'One defect.' });
@@ -5146,8 +5155,20 @@ describe('runReview', () => {
       expect([kept.title, result.outcome, result.findings[0].severity, result.findings[0].tags?.includes('pre-existing') ?? false]).toEqual([kept.title, 'ADDRESS_FIRST', 'blocker', false]);
     }
 
-    // A security blocker on code the PR did not change keeps blocking, even when both refuters found it the same before this PR.
-    mockedRunJudgeAgent.mockResolvedValue({ findings: [{ ...oldInjection, refutation: check('disproved'), pairRefutation: check('disproved', 'pair-model') }], summary: 'One defect.' });
+    // A warning on a changed line needs both models too. On a line the PR left unchanged, one answer keeps it in the round
+    // record only.
+    const warningOn = (lineChanged: boolean) => blocker('Queue may stall', 'src/a.ts', 12, {
+      severity: 'warning', preExisting: undefined, trigger: 'When entries arrive faster than they drain', evidence: { checks: [], proof: ['src/a.ts:12'] }, originCheck: { lineChanged, answers: [answer('pre_existing')] },
+    });
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [warningOn(true)], summary: 'One defect.' });
+    const changedWarning = await run(makeClients());
+    expect([changedWarning.findings.map(f => [f.severity, f.tags?.includes('pre-existing') ?? false]), changedWarning.unpostedPreExisting ?? []]).toEqual([[['warning', false]], []]);
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [warningOn(false)], summary: 'One defect.' });
+    const unchangedWarning = await run(makeClients());
+    expect([unchangedWarning.findings, unchangedWarning.unpostedPreExisting?.map(f => [f.title, f.tags])]).toEqual([[], [['Queue may stall', ['pre-existing']]]]);
+
+    // A security blocker on code the PR did not change keeps blocking, even when both models found it the same before this PR.
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [{ ...oldInjection, ...checked(answer('pre_existing'), answer('pre_existing', 'pair-model')) }], summary: 'One defect.' });
     const untouched = await run(makeClients());
     expect([untouched.outcome, untouched.findings.map(f => [f.severity, f.tags, f.preExistingCheck])]).toEqual(['ADDRESS_FIRST', [['blocker', ['security', 'pre-existing'], 'pre_existing']]]);
 

@@ -1160,7 +1160,8 @@ describe('fetchRecapState', () => {
         findings: { count: 1, severityCounts: { blocker: 0, warning: 1, note: 0 }, entries: [entry] },
       });
       // A round too large for its review posts the last of `smallerRecords`, which later rounds read like any other.
-      const blocker = { fingerprint: { file: 'src/bar.ts', lineStart: 4, lineEnd: 4, slug: 'lost-update' }, severity: 'blocker' as const, title: 'Lost update', threadId: 'T_BLOCKER', judgeNotes: 'Long reasoning.' };
+      const blocker = { fingerprint: { file: 'src/bar.ts', lineStart: 4, lineEnd: 4, slug: 'lost-update' }, severity: 'blocker' as const, title: 'Lost update', threadId: 'T_BLOCKER', judgeNotes: 'Long reasoning.',
+        originCheck: { lineChanged: true, answers: [{ verdict: 'introduced' as const, reason: 'The base reads under the lock.', model: 'm' }] } };
       const threadEvaluations: ThreadEvaluation[] = [{ threadId: 'T_OLD', status: 'partly_addressed', reason: 'Half done.', grade: 'warning' }];
       const [minimal] = [...smallerRecords(makeRoundContext(2, {
         findings: { count: 1, severityCounts: { blocker: 1, warning: 0, note: 0 }, entries: [blocker] },

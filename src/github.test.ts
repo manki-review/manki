@@ -4,7 +4,7 @@ import { gunzipSync } from 'zlib';
 
 import { relatedCommits, ApprovalHeld, plainCitedFiles, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, autoApproveHeadMarker, reviewedCommit, updateProgressDashboard, startLiveEdits, LIVE_EDIT_MS, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchChangesSince, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, fetchApprovalHold, SupersededError, isFailedProgress, markFailedProgressSuperseded, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError, githubRepoFiles, openRepoFiles, UnreadFileError } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
-import { BASE_QUESTION, DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases, RoundFix, SideCheckState } from './types';
+import { DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases, RoundFix, SideCheckState, OriginAnswer } from './types';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { contentAnswer, makeFindingFingerprintEntry, namingCommit, paginateSinglePage, TEST_BOT, TEST_LINKS, testSha } from './test-utils';
 import { withMarkers } from './utils';
@@ -574,16 +574,18 @@ describe('formatFindingComment', () => {
     expect(render({ ...baseFinding, toolSource: 'CodeQL' })).not.toContain(unchecked);
     expect(render({ ...baseFinding, reviewers: [] })).not.toContain(unchecked);
 
-    // A finding two checks on different models found at the base says so under its title, with the lines they read
-    // there, linked to the base commit, and the branch the PR merges into.
-    const same = { premise: BASE_QUESTION, outcome: 'disproved' as const, reason: 'The queue had no cap before this PR.', proof: ['src/main.ts:40'], commit: 'base' };
+    // A finding two origin checks on different models found at the base says so under its title, with the lines they
+    // read there, linked to the base commit, and the branch the PR merges into.
+    const same = (model: string): OriginAnswer => ({ verdict: 'pre_existing', reason: 'The queue had no cap before this PR.', head: ['src/main.ts:42'], base: ['src/main.ts:40'], commit: 'base', model });
     const baseLink = links.linkAt!('base')('src/main.ts', 40);
     const onMain = (finding: Finding, extra: Partial<typeof links> = {}): string => formatFindingComment(finding, { ...links, baseBranch: 'main', ...extra });
     const confirmedBefore: Finding = {
       ...baseFinding, severity: 'warning', tags: ['pre-existing'], evidence: { checks: [], proof: ['src/main.ts:42'] },
-      refutation: { outcome: 'confirmed', defect: 'confirmed', reason: 'It fills.', proof: ['src/main.ts:42'], files: ['src/main.ts'], codeDigest: 'abc', model: 'first-model', base: same },
-      pairRefutation: { outcome: 'confirmed', defect: 'confirmed', reason: 'It fills.', proof: ['src/main.ts:42'], files: ['src/main.ts'], codeDigest: 'abc', model: 'pair-model', base: same },
+      refutation: { outcome: 'confirmed', defect: 'confirmed', reason: 'It fills.', proof: ['src/main.ts:42'], files: ['src/main.ts'], codeDigest: 'abc', model: 'first-model' },
+      pairRefutation: { outcome: 'confirmed', defect: 'confirmed', reason: 'It fills.', proof: ['src/main.ts:42'], files: ['src/main.ts'], codeDigest: 'abc', model: 'pair-model' },
+      originCheck: { lineChanged: false, answers: [same('first-model'), same('pair-model')] },
     };
+    const answering = (finding: Finding, ...answers: OriginAnswer[]): Finding => ({ ...finding, originCheck: { lineChanged: false, answers } });
     const broken = `**Already broken before this PR.** Two checks found the same problem on \`main\` at [\`src/main.ts:40\`](${baseLink}), so it doesn't block this PR.`;
     const older = `**Possibly older than this PR.** One check found the same problem on \`main\` before this PR, at [\`src/main.ts:40\`](${baseLink}). If that's right, a maintainer can dismiss this thread.`;
     expect(baseLink).toContain('/blob/base/');
@@ -594,7 +596,7 @@ describe('formatFindingComment', () => {
     // One check, two on one model, or a second check that failed, leaves the blocker as it is with a note that it may be
     // older, on a security finding too.
     const blocking: Finding = { ...confirmedBefore, severity: 'blocker', tags: undefined };
-    for (const one of [{ ...blocking, pairRefutation: undefined }, { ...blocking, pairRefutation: { ...blocking.pairRefutation!, model: 'first-model' } }, { ...blocking, tags: ['security'], pairRefutation: undefined }]) {
+    for (const one of [answering(blocking, same('first-model')), answering(blocking, same('first-model'), same('first-model')), answering({ ...blocking, tags: ['security'] }, same('first-model'))]) {
       expect(onMain(one)).toContain(`**${baseFinding.title}**\n\n${older}\n\n`);
       expect(onMain(one)).not.toContain('Already broken');
     }
@@ -612,9 +614,9 @@ describe('formatFindingComment', () => {
     // With an answer left open, a second check that found the failure the PR's own, or lines the code never found at the
     // base, no note says so.
     for (const none of [
-      { ...blocking, refutation: { ...blocking.refutation!, base: { ...same, outcome: 'unsettled' as const } }, pairRefutation: undefined },
-      { ...blocking, pairRefutation: { ...blocking.pairRefutation!, base: { ...same, outcome: 'confirmed' as const } } },
-      { ...blocking, refutation: { ...blocking.refutation!, base: { ...same, commit: undefined } }, pairRefutation: undefined },
+      answering(blocking, { ...same('first-model'), verdict: 'unsure' }),
+      answering(blocking, same('first-model'), { verdict: 'introduced', reason: 'This PR adds the caller.', model: 'pair-model' }),
+      answering(blocking, { ...same('first-model'), commit: undefined }),
     ]) expect(onMain(none)).not.toMatch(/Possibly older|Already broken/);
 
     // A disproof keeps a security warning, so its line names security findings, not only blockers, and links its proof.
@@ -3581,6 +3583,11 @@ describe('buildDashboard', () => {
     const sweeping = buildDashboard({ ...reviewed, ...graded, sideChecks: { ...side(3, 2, 1, 238_000), sweep: { total: 2, ended: 1, findings: 0, startedAt: 560_000 } }, verdictReader: { startedAt: 624_000, durationMs: 47_000 } }, 700_000);
     expect(sweeping).toContain(lines(sideDone, '', '**Judge**'));
     expect(sweeping).toContain(lines('> graded 8 findings: 5 kept · 3 dropped (1m 26s)', '> sweeps: 1 of 2 done', '> verdict reader: read the diff (47s)'));
+    // The origin checks run beside the refuter on the same findings, so their line follows the refuter's.
+    const origin = (state: SideCheckState) => buildDashboard({ ...reviewed, ...graded, refuter: { total: 1, outcomes: {} }, sideChecks: { ...side(3, 2, 1, 238_000), origin: state } }, 700_000);
+    expect(origin({ total: 2, ended: 1, findings: 0, startedAt: 560_000 })).toContain(lines('> refuter: 0 of 1 checks done', '> origin checks: 1 of 2 done'));
+    expect(origin({ total: 2, ended: 2, findings: 0, startedAt: 560_000, endedAt: 590_000 })).toContain(lines('> origin checks: 2 of 2 done (30s)'));
+    expect(origin({ total: 0, ended: 0, findings: 0, startedAt: 560_000 })).not.toContain('origin checks');
     // A second read after the finders gets a line of its own, after the side checks.
     const reading = (read: SideCheckState) => buildDashboard({ ...started, agentProgress: [claudeDone, gptDone], sideChecks: { ...side(3, 2, 1, 238_000), second_read: read } }, 470_000);
     expect(reading({ total: 1, ended: 0, findings: 0, startedAt: 452_000 })).toContain(lines(sideDone, '> ⏳ Second reads: 0 of 1 done'));

@@ -7,7 +7,7 @@ import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDi
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, formatResetTime, InstructionFile, LinkedIssue, MANKI_VERSION, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, pushTouchesThread, replyClassOf, titleOverlapType, dropWaivedRestatements } from './recap';
-import { canLeaveOut, CheckProgress, sameOnBase, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundAgentMetric, RoundComparison, RoundContext, RoundDedupDuplicateMatch, RoundFix, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundPrClaim, RoundRawFinding, RoundRelatedRepo, RoundReusedFrom, RoundStaticSignalMatch, RoundUnitLine, RoundUses, EarlierAttempt, DiffHunk, EffortLevel, Finder, FinderError, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType, secondReadName, RoundSecondReads } from './types';
+import { canLeaveOut, CheckProgress, foundOnBase, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundAgentMetric, RoundComparison, RoundContext, RoundDedupDuplicateMatch, RoundFix, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundPrClaim, RoundRawFinding, RoundRelatedRepo, RoundReusedFrom, RoundStaticSignalMatch, RoundUnitLine, RoundUses, EarlierAttempt, DiffHunk, EffortLevel, Finder, FinderError, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType, secondReadName, RoundSecondReads } from './types';
 import { countChangedLines, diffSections, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE, repoPath } from './diff';
 import { guessClaimTerms, translateNames } from './name-translation';
 import { dependencyOutcomes } from './dependency-sources';
@@ -16,6 +16,7 @@ import { classifyRelatedWork, linkTrackingIssues } from './related-work';
 import { FULL_GROUP, GroupChoice, chooseGroup, classifyPr, distinctModels, findersOf, modelIdentity, resolveRouting } from './routing';
 import { extractJSON } from './json';
 import { currentFindingLine, indexThreadEvaluations, isPriorAddressedByJudge, placesReading } from './finding-fingerprint';
+import { checkOrigins, MAX_ORIGIN_CHECKS } from './origin';
 import { checkStatus, lacksTrigger, MAX_DOUBT_CHECKS, needsProof, refuteBlockers, unprovenReason } from './refute';
 import { combineVerdictReports, runVerdictReader } from './verdict';
 import { buildRepositoryRules, CLAIMS_MISSING_RULE, COST_SCALE_RULE, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, PRE_EXISTING_RULE, ROOT_CAUSE_FIX_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
@@ -63,17 +64,22 @@ export function preExistingCheck(f: Finding, diff: ParsedDiff, excludedPaths: Re
   return touchesChangedCode(f, diff) ? 'touches_diff' : 'pre_existing';
 }
 
+/** Returns each finding of `refuted` with the `originCheck` that `origins`, the same findings checked for their origin, holds at the same place. */
+function withOrigins(refuted: Finding[], origins: Finding[]): Finding[] {
+  return refuted.map((f, i) => (origins[i]?.originCheck ? { ...f, originCheck: origins[i].originCheck } : f));
+}
+
 /** Whether a pre-existing finding is worth an author's time: a security finding, or one that would block had this PR caused it. */
 export function postedWhenPreExisting(f: Finding): boolean {
   return isSecurityFinding(f.tags, f.reviewers) || f.severity === 'blocker';
 }
 
 /**
- * Tags each finding that `checkOf` finds on code this PR did not change, or that `sameOnBase` finds failing the same
+ * Tags each finding that `checkOf` finds on code this PR did not change, or that `foundOnBase` finds failing the same
  * way before this PR, as pre-existing. Only the findings `postedWhenPreExisting` accepts are `posted`, the rest are
  * `unposted`, for the round record only. A posted blocker becomes a warning, so no check that reads the severity, in
  * this round or a later one, lets it block. A security blocker on code this PR did not change stays a blocker, whatever
- * `sameOnBase` found.
+ * the origin checks found.
  */
 function markPreExisting(findings: Finding[], checkOf: (finding: Finding) => PreExistingCheck | undefined): { posted: Finding[]; unposted: Finding[] } {
   const posted: Finding[] = [];
@@ -81,7 +87,7 @@ function markPreExisting(findings: Finding[], checkOf: (finding: Finding) => Pre
   for (const f of findings) {
     // A claim the diff or the files contradict is kept with why, so the record shows which condition failed.
     const check = checkOf(f);
-    const base = f.severity === 'ignore' ? undefined : sameOnBase(f);
+    const base = foundOnBase(f);
     if (check !== 'pre_existing' && !base) {
       posted.push(check ? { ...f, preExistingCheck: check } : f);
       continue;
@@ -1905,8 +1911,16 @@ export async function runReview(
     ...(clients.refuterPair?.repoTools && { pair: lateFallback({ client: clients.refuterPair }, 'judge', 'refute_pair') }),
     doubtBudget: { left: MAX_DOUBT_CHECKS },
     ...(onProgress && { progress: reportChecks<RefutationOutcome>(event => onProgress({ phase: 'refuter', refuterCheck: event })) }),
+    originProgress: sideProgress('origin'),
+    originBudget: { left: MAX_ORIGIN_CHECKS },
   } : undefined;
   if (clients.refuterPair && !refutation?.pair) core.warning('No second refuter runs, since `models.second_refuter` needs the PR head checked out and repository tools on both its model and the judge\'s');
+  // Each blocker and warning asks whether the PR caused it, on the refuter's clients. `skip` names a finding decided without the check.
+  const originsOf = (findings: Finding[], skip?: (finding: Finding) => boolean): Promise<Finding[]> => (refutation
+    ? checkOrigins(refutation.client, findings, {
+      workspace: refutation.workspace, diff: diffWithLockfiles, excludedPaths: options.excludedPaths, related: refutation.related, effort: judgeEffort, pair: refutation.pair, skip, budget: refutation.originBudget, progress: refutation.originProgress,
+    })
+    : Promise.resolve(findings));
   const judgeInput: JudgeInput = {
     findings: findingsForJudge,
     diff: diffWithLockfiles,
@@ -2083,11 +2097,16 @@ export async function runReview(
   if (refutation) {
     const earlier = earlierFindings(priorRounds ?? [], openThreads ?? [], judgeThreadEvaluations);
     const kept = finalFindings;
-    const checked = await refuteBlockers(refutation.client, kept, {
-      workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, doubtBudget: refutation.doubtBudget, progress: refutation.progress, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff,
-      outsideInput: config.review?.outside_input, restatesEarlier: finding => restatesEarlier(earlier, finding), excludedPaths: options.excludedPaths,
-      unpostedLater: finding => unchangedCheck(finding) === 'pre_existing' && !postedWhenPreExisting(finding), roundEnd: true, rules: config.review?.rules,
-    });
+    // The origin checks run beside the refuter on the same findings, and only `markPreExisting` reads their answers.
+    const [refuted, origins] = await Promise.all([
+      refuteBlockers(refutation.client, kept, {
+        workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, doubtBudget: refutation.doubtBudget, progress: refutation.progress, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff,
+        outsideInput: config.review?.outside_input, restatesEarlier: finding => restatesEarlier(earlier, finding),
+        unpostedLater: finding => unchangedCheck(finding) === 'pre_existing' && !postedWhenPreExisting(finding), roundEnd: true, rules: config.review?.rules,
+      }),
+      originsOf(kept, finding => unchangedCheck(finding) === 'pre_existing'),
+    ]);
+    const checked = withOrigins(refuted, origins);
     const after = new Map(kept.map((f, i) => [f, checked[i]]));
     allJudgedFindings = allJudgedFindings?.map(f => after.get(f) ?? f);
     finalFindings = checked.filter(f => f.severity !== 'ignore');
@@ -2260,7 +2279,10 @@ export async function runReview(
       // found. It drops a claimed build failure that was posted as a warning. A blocker the check finds failing the same
       // way before this PR is pre-existing, as any other.
       const attributed = markPreExisting((refutation
-        ? await refuteBlockers(refutation.client, readerBlockers, { workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, progress: refutation.progress, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff, outsideInput: config.review?.outside_input, excludedPaths: options.excludedPaths })
+        ? withOrigins(...await Promise.all([
+          refuteBlockers(refutation.client, readerBlockers, { workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, progress: refutation.progress, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff, outsideInput: config.review?.outside_input }),
+          originsOf(readerBlockers),
+        ]))
         : readerBlockers).filter(f => f.severity !== 'ignore'), () => undefined);
       const refuted = attributed.posted;
       unpostedPreExisting = [...unpostedPreExisting, ...attributed.unposted];

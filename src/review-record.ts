@@ -181,7 +181,8 @@ const RECORD_CUTS: RecordCut[] = [
  * with and without traces, and each later one also leaves out the next part of `RECORD_CUTS` the record has. The last
  * keeps what later rounds need to follow findings and threads: the meta, each finding with its fingerprint, grade,
  * thread and the description a finding without a thread is listed again with, and the judge's thread evaluations. It
- * loses each finding's stored checks, proposed fix and evidence, so a later round checks such a finding again and its
+ * also keeps each finding's `originCheck`, which stays small since a round makes at most `MAX_ORIGIN_CHECKS`. It loses
+ * each finding's refuter checks, proposed fix and evidence, so a later round checks such a finding again and its
  * own-proposal check does not see the fix. `meta.omitted` names every part a form left out.
  */
 export function* smallerRecords(context: RoundContext): Generator<RoundContext> {

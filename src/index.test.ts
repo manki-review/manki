@@ -3407,6 +3407,7 @@ describe('runFullReview orchestration', () => {
   });
 
   it('populates enriched stats fields (agentMetrics, judgeMetrics, fileMetrics, model split)', async () => {
+    const originCheck = { lineChanged: false, answers: [{ verdict: 'pre_existing' as const, reason: 'The name was there before.', head: ['src/app.ts:9'], base: ['src/app.ts:9'], commit: 'base', model: 'm' }] };
     const testFiles = [
       { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] },
       { path: 'src/utils.js', changeType: 'added' as const, hunks: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 3, content: 'new' }] },
@@ -3449,7 +3450,7 @@ describe('runFullReview orchestration', () => {
       openLeads: [unsettledLead],
       rawFindings,
       verdictReason: 'required_present',
-      unpostedPreExisting: [{ ...oldCode, tags: ['pre-existing'] }],
+      unpostedPreExisting: [{ ...oldCode, tags: ['pre-existing'], originCheck }],
       memorySuppressed: [hidden],
       staticSignalMatches: [{ droppedTitle: toolLine.title, file: toolLine.file, line: toolLine.line, tool: 'eslint', ruleId: 'no-shadow' }],
       testNitSuppressedCount: 1,
@@ -3480,6 +3481,8 @@ describe('runFullReview orchestration', () => {
     ]);
     // A pre-existing finding Manki did not post is recorded apart, so nothing that reads posted findings counts it.
     expect(statsArg!.findings.unposted?.map(e => [e.title, e.tags])).toEqual([['Old helper name', ['pre-existing']]]);
+    // The round record keeps every origin answer of a finding it keeps out of the review.
+    expect(statsArg!.findings.unposted?.[0].originCheck).toEqual(originCheck);
     expect(statsArg!.findings.count).toBe(3);
 
     expect(statsArg!.diff.fileTypes).toEqual({ '.ts': 1, '.js': 1 });

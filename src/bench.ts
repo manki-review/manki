@@ -470,6 +470,7 @@ const RAISED_BY = {
   claim: 'claim check',
   fix: 'fix check',
   sweep: 'sweep',
+  origin: 'origin check',
   tool: 'tool result',
   scope: 'scope reader',
   reader: 'verdict reader',
