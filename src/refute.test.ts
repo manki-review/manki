@@ -4,6 +4,7 @@ import { join } from 'path';
 
 import * as core from '@actions/core';
 
+import { parsePRDiff } from './diff';
 import { LLMClient, SendMessageOptions } from './providers';
 import { checkStatus, confirmFixesElsewhere, lacksTrigger, needsProof, RefuteOptions, refuteBlockers, unprovenReason } from './refute';
 import { repoToolsPrompt } from './providers/cli-utils';

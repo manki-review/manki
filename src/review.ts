@@ -2209,7 +2209,7 @@ export async function runReview(
     ? await confirmFixesElsewhere(refutation.client, refutation.pair, fixesElsewhere(judgeThreadEvaluations, openThreadIndex, pushChangedFiles).filter(({ thread }) =>
       // A thread this round names again, or one a standing workaround concerns, stays open whatever a check says.
       !namedPriorThreadIds(finalFindings, priorBlockers).has(thread.threadId) && !standingWorkarounds.some(fix => concernsThread(fix, thread))), parsePRDiff(interRoundDiff ?? ''), {
-      workspace: refutation.workspace, related: refutation.related, diff: diffWithLockfiles, effort: judgeEffort, excludedPaths: options.excludedPaths,
+      workspace: refutation.workspace, related: refutation.related, diff: diffWithLockfiles, effort: judgeEffort,
     })
     : new Set<string>();
   const gradeThreads = (findings: Finding[]) => confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(findings, priorBlockers), pushChangedFiles, standingWorkarounds, fixedElsewhere);

@@ -748,7 +748,7 @@ export async function confirmFixesElsewhere(
   pair: LLMClient | undefined,
   threads: ReadonlyArray<{ thread: OpenThread; fixedIn: string }>,
   pushDiff: ParsedDiff,
-  options: Pick<RefuteOptions, 'workspace' | 'related' | 'diff' | 'effort' | 'excludedPaths'>,
+  options: Pick<RefuteOptions, 'workspace' | 'related' | 'diff' | 'effort'>,
 ): Promise<Set<string>> {
   if (!pair || threads.length === 0) return new Set();
   const findings = threads.map(({ thread, fixedIn }): Finding => ({
