@@ -1249,6 +1249,7 @@ describe('fetchRecapState', () => {
         securityRestated: entry('Key leaks into logs', 'src/key.ts', 'blocker', { tags: [SECURITY_TAG] }),
         gone: entry('Cache goes stale', 'src/cache.ts'),
         lowered: entry('Retry never stops', 'src/retry.ts'),
+        recordLowered: entry('Parse fails', 'src/parse.ts'),
         warned: entry('Lock is dropped', 'src/lock.ts'),
         alone: entry('Queue overflows', 'src/queue.ts'),
         chained: entry('Index drifts', 'src/index.ts'),
@@ -1262,12 +1263,15 @@ describe('fetchRecapState', () => {
         again(listed.securityRestated, 'Key is logged', 'blocker', { tags: [SECURITY_TAG] }),
         again(listed.gone, 'Cache is stale'),
         again(listed.lowered, 'Retry loops forever'),
+        again(listed.recordLowered, 'Parse breaks'),
         again(listed.warned, 'Lock may drop', 'warning'),
         again(listed.chained, 'Index is off'),
       ];
       // Round 3 lists the chained blocker again, and that one got a thread.
       const round3 = [entry('Index drifts', 'src/index.ts', 'blocker', { sameAs: keyOf(listed.chained), relisted: true })];
-      const rounds = [Object.values(listed), round2, round3].map((entries, i) => makeRoundContext(i + 1, { findings: { count: entries.length, severityCounts: {}, entries } }));
+      // Round 3 also found `Parse breaks` partly fixed, which lowers its blocker thread to a warning.
+      const lowering = { summary: '', threadEvaluations: [{ threadId: 'T_PARTLY', status: 'partly_addressed' as const, reason: 'Half of it.', grade: 'warning' as const }] };
+      const rounds = [Object.values(listed), round2, round3].map((entries, i) => makeRoundContext(i + 1, { findings: { count: entries.length, severityCounts: {}, entries }, ...(i === 2 && { judge: lowering }) }));
       const posted = (id: string, e: ReturnType<typeof entry>, grade: Grade, security = false) => makeThread({
         id, path: e.fingerprint.file, line: e.fingerprint.lineStart,
         comments: { nodes: [{ body: formatFindingComment(makeFinding({ severity: grade, title: e.title, file: e.fingerprint.file, line: e.fingerprint.lineStart, ...(security && { tags: [SECURITY_TAG] }) }), TEST_LINKS), author: { login: BOT_LOGIN } }] },
@@ -1278,7 +1282,8 @@ describe('fetchRecapState', () => {
         posted('T_SECURITY', round2[2], 'blocker', true),
         // The thread of `Cache is stale` is gone. The thread of `Retry loops forever` was lowered to a warning.
         posted('T_LOW', round2[4], 'warning'),
-        posted('T_WARN', round2[5], 'warning'),
+        posted('T_PARTLY', round2[5], 'blocker'),
+        posted('T_WARN', round2[6], 'warning'),
         posted('T_CHAIN', round3[0], 'blocker'),
       ], rounds.map((ctx, i) => ({ id: 100 + i, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } })));
 
@@ -1288,13 +1293,13 @@ describe('fetchRecapState', () => {
           ['Writers race', 'T_RACE'],
           // A security blocker never rides on a plain thread.
           ['Token leaks into logs', undefined], ['Key leaks into logs', 'T_SECURITY'],
-          // Neither a gone thread, a thread graded below a blocker, nor a warning's thread carries a blocker.
-          ['Cache goes stale', undefined], ['Retry never stops', undefined], ['Lock is dropped', undefined],
+          // Neither a gone thread, a thread graded below a blocker, one a round record lowered, nor a warning's thread carries a blocker.
+          ['Cache goes stale', undefined], ['Retry never stops', undefined], ['Parse fails', undefined], ['Lock is dropped', undefined],
           ['Queue overflows', undefined], ['Index drifts', 'T_CHAIN'],
         ],
         [
           ['Two writers interleave', 'T_RACE'], ['Token is logged', 'T_PLAIN'], ['Key is logged', 'T_SECURITY'], ['Cache is stale', undefined],
-          ['Retry loops forever', undefined], ['Lock may drop', 'T_WARN'], ['Index is off', 'T_CHAIN'],
+          ['Retry loops forever', undefined], ['Parse breaks', 'T_PARTLY'], ['Lock may drop', 'T_WARN'], ['Index is off', 'T_CHAIN'],
         ],
         [['Index drifts', 'T_CHAIN']],
       ]);

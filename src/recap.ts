@@ -923,7 +923,8 @@ function attachPriorThreadIds(rounds: RoundContext[], previousFindings: Previous
       }),
     },
   }));
-  const restating = restatingThreads(attached.flatMap(r => r.findings.entries), fitting('blocker'));
+  // A thread a round record lowered no longer blocks, so the PR author could resolve it alone. It carries no other blocker.
+  const restating = restatingThreads(attached.flatMap(r => r.findings.entries), fitting('blocker').filter(t => threadBlocks(t)));
   if (restating.size === 0) return attached;
   return attached.map(r => ({
     ...r,
@@ -941,7 +942,7 @@ function attachPriorThreadIds(rounds: RoundContext[], previousFindings: Previous
 /**
  * Returns the thread of each earlier blocker that a later blocker restates, by the key of the blocker it restates. A
  * restatement records that key as `sameAs`, linked by the judge or by the checks that fold a finding into an open
- * thread, which also let that thread carry the finding. A thread among `blockerThreads`, one graded as a blocker, carries it.
+ * thread, which also let that thread carry the finding. Only a thread among `blockerThreads`, which still block, carries it.
  */
 function restatingThreads(entries: RoundContext['findings']['entries'], blockerThreads: PreviousFinding[]): Map<string, PreviousFinding> {
   const restating = new Map<string, PreviousFinding>();
