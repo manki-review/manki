@@ -226,8 +226,9 @@ export async function runActionlint(workflows: Map<string, string>, config: stri
     configArgs.push('-config-file', path);
   }
   // shellcheck and pyflakes stay off, so the results never depend on what the runner has installed.
+  // The paths go without `./`, because actionlint matches the config's `paths:` globs against the path as given.
   const output = await runChecked(tools, 'actionlint', binary, [
-    '-format', '{{json .}}', '-no-color', '-shellcheck=', '-pyflakes=', ...configArgs, ...scanArgs(workflows),
+    '-format', '{{json .}}', '-no-color', '-shellcheck=', '-pyflakes=', ...configArgs, '--', ...workflows.keys(),
   ], root, [0, 1]);
   const errors = (JSON.parse(output.trim() || '[]') ?? []) as Array<{ message: string; filepath: string; line: number; kind: string }>;
   return errors.map(e => ({
