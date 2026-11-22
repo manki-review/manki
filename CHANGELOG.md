@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.7.1] - 2026-11-22
+
+Manki 7.7.1 is about noise. Each blocker and warning is checked for whether the PR caused it, so a problem the code already had stays out of the review, and a warning needs a trigger that happens in realistic use. Findings are matched by meaning instead of titles and lines, replies are decided by Manki's own checked answer, and a blocker every refuter disproved no longer blocks. Nothing breaks on the upgrade and no setting changes.
+
+### Review loop and verdicts
+
+- Every blocker and warning Manki keeps gets a check with repository tools that reads the PR's base and answers whether this PR caused the problem. A warning or note about a problem the code already had goes to the round record only. A blocker the code already had is posted as a pre-existing warning once two models agree. A finding on a line the PR added or changed needs two answers on different models, and an unsure or failed check leaves the finding the PR's own. A round checks at most 8 findings, blockers first. This replaces the refuter's base question ([#1896](https://github.com/manki-review/manki/pull/1896), [#1911](https://github.com/manki-review/manki/pull/1911)).
+- When the PR fixes a problem in one place of its own diff and leaves the same problem on another path, Manki posts a note: "The same problem remains here. This PR fixes it at <link> but not on this path." The note never blocks and comes first among the notes ([#1916](https://github.com/manki-review/manki/pull/1916)).
+- A warning whose consequence is a cost, not a wrong result, is posted only when the judge names a realistic trigger, a sequence of events normal use produces. Without one it stays in the round record. When only one finder reported such a warning, the refuter checks the trigger too. Lost data, security holes, crashes and wrong results keep their grade however rare the trigger ([#1897](https://github.com/manki-review/manki/pull/1897)).
+- A blocker every refuter disproved is posted as a warning with the refuter's reason, from the judge and from the verdict reader alike. It still holds the approval, and its thread clears only through a fix a review confirms or a person allowed to clear it ([#1907](https://github.com/manki-review/manki/pull/1907)).
+- The judge doubts only facts that reading code can settle. A real defect is no longer posted as "Manki could not confirm this" because the judge doubted how a model or a person behaves at run time ([#1909](https://github.com/manki-review/manki/pull/1909)).
+- Findings are matched by meaning. Code merges only copies with the same title on nearby lines, and every other pair goes to the dedup model, where an unsure answer keeps them apart. A merge keeps the highest grade, so a blocker no longer comes out as another line's warning, and a new defect next to an open thread is posted unless the model calls it the same ([#1902](https://github.com/manki-review/manki/pull/1902)).
+
+### Earlier threads
+
+- A reply counts as agreement only when Manki answered the latest reply with a settling Fixed, Withdrawn or Agreed, never because of words such as "done" or "fixed" in the reply. A "Fixed" needs a proof that cites a line the PR changed since the thread was posted, or it is answered Unverified. A warning is no longer lowered to a note because its text says "remove" or "instead" ([#1903](https://github.com/manki-review/manki/pull/1903)).
+- A warning carried from an earlier review body no longer ends because a neighbouring line changed. Only the judge ending it, a fix, or its file being gone ends it. A blocker fixed in a file the thread does not cite stays open, and gets a "Fix seen in" note when two refuters on different models find the failure gone ([#1905](https://github.com/manki-review/manki/pull/1905)).
+
+### Reliability
+
+- A review whose round record is too big for the review body is posted with a smaller record instead of failing. Manki cuts the parts no later round reads first, names what it left out, and writes the full record to the log ([#1906](https://github.com/manki-review/manki/pull/1906)).
+
+### Internal
+
+- New and corrected tuning keys: real blockers in existing cases and two cases from 7.7.0 review noise ([#1888](https://github.com/manki-review/manki/pull/1888), [#1895](https://github.com/manki-review/manki/pull/1895), [#1912](https://github.com/manki-review/manki/pull/1912)).
+- Two slow or timing-sensitive tests are steadier ([#1912](https://github.com/manki-review/manki/pull/1912), [#1913](https://github.com/manki-review/manki/pull/1913), [#1914](https://github.com/manki-review/manki/pull/1914)).
+
 ## [7.7.0] - 2026-11-21
 
 Manki 7.7 is about the first round finding what later rounds used to find. Each finder answers for every unit of the change, a second read looks for what the first one missed, and new checks beside the finders ask whether each fix reaches its root cause and whether new code fits how the repository already does the same thing. Each slice of a large PR gets a map of the whole change, and a check can read a dependency's source at the version the PR builds against, or any file as it was before the PR. A blocker the base branch already had stops blocking once two checks prove it, and a failed review retries only the part that failed. Read Breaking changes and migration before upgrading: a Gemini login kept on a self-hosted runner is no longer used, and pre-existing blockers need a second refuter on another model.
