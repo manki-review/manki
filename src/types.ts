@@ -895,7 +895,7 @@ export interface RoundFixes {
   fixes?: RoundFix[];
 }
 
-/** A topic the scope reader sees in a PR, with the changed files that belong to it. */
+/** A topic the scope reader sees in a PR, with the changed files that belong to it, each whole or as `path:start-end`. */
 export interface ScopeTopic {
   name: string;
   files: string[];
@@ -923,7 +923,7 @@ export interface RoundScope {
   proof?: string[];
   /** The distinct topics the reader sees. */
   topics?: ScopeTopic[];
-  /** The proposed PRs of a split, each with its files, kept only when every file of the diff is in exactly one of them. */
+  /** The proposed PRs of a split, each with its files and line ranges, kept only when every hunk of the diff is in exactly one of them. */
   split?: ScopeTopic[];
   /**
    * The parts of the answer the code check or the refuter left out, with why. Neither shows nor holds the approval. A
