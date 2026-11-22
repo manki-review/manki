@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [7.7.3] - 2026-11-23
 
-Manki 7.7.3 cuts review loops and unrelated findings. A maintainer's clear stays cleared, one blocker keeps one thread, a clean rebase keeps an auto-approval, and a fix in a renamed file is seen. A cost the PR only shares with existing code is no longer posted as its own. Split proposals now name side changes by purpose and by hunk. Nothing breaks on the upgrade and no setting changes.
+Manki 7.7.3 cuts review loops and unrelated findings. A maintainer's clear stays cleared, one blocker keeps one thread, a clean rebase keeps an auto-approval, and a fix in a renamed file is seen. A cost the PR only shares with existing code is no longer posted as its own, and the progress comment's counts add up. Split proposals now name side changes by purpose and by hunk. Nothing breaks on the upgrade and no setting changes.
 
 ### Review loop and verdicts
 
@@ -18,6 +18,7 @@ Manki 7.7.3 cuts review loops and unrelated findings. A maintainer's clear stays
 - A blocker an earlier round could only list in its review body takes the thread of a later blocker that restates it, instead of getting a second thread for the same defect ([#1943](https://github.com/manki-review/manki/pull/1943)).
 - A push that renames and edits the file of an open thread puts that file first in the diff the judge reads, matched by its old or its new path, and no longer tells a blocker thread there that the push did not change its file ([#1936](https://github.com/manki-review/manki/pull/1936)).
 - A cost finding is no longer posted as the PR's own when the PR's new path runs existing work no more often and on no larger input than existing code already does, such as a second delivery of the same data. The origin check answers pre-existing and cites the existing path, so the warning stays in the round record. A cost the PR makes grow faster, makes more expensive per run, or lets outside input newly trigger stays the PR's own, and so does a failure a new caller reaches ([#1948](https://github.com/manki-review/manki/pull/1948)).
+- A warning a finder filed as a blocker, but whose trigger the judge doubts, gets its trigger checked by a refuter. When the check disproves the trigger, the warning stays in the round record. When the check stays open or does not run, it is posted as before. Security findings and wrong results are never lowered this way ([#1952](https://github.com/manki-review/manki/pull/1952)).
 - A draft with an open blocking thread keeps its waiting check instead of a neutral one, which a required check counts as passing ([#1938](https://github.com/manki-review/manki/pull/1938)).
 
 ### Scope reader
@@ -26,6 +27,7 @@ Manki 7.7.3 cuts review loops and unrelated findings. A maintainer's clear stays
 
 ### Review format
 
+- The judge part of the progress comment lists its steps in the order they ran: grading, the refuter, the origin checks, then sweeps and the verdict reader, and keeps each step's result in the finished comment. Kept and dropped count only the judge's own decisions, the dropped line says the grades are the finders', and a new Posted part gives what was posted and, per reason, what stayed in the round record only ([#1953](https://github.com/manki-review/manki/pull/1953)).
 - A finding a refuter checked but could not confirm says "Manki could not confirm this", instead of saying no line in the code was cited for it ([#1939](https://github.com/manki-review/manki/pull/1939)).
 
 ### Commands
