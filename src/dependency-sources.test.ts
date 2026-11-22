@@ -143,15 +143,21 @@ describe('dependencyLoader', () => {
     await expect(load('crates.io/../demo')).rejects.toThrow('is not a package name of crates.io');
     expect(server.requests).toEqual([]);
     // Only the package the PR uses reaches the record, with the version it was named at refused as failed.
-    expect(dependencyOutcomes(stateDir)).toEqual([expect.objectContaining({ package: 'crates.io/demo', source: 'lockfile', file: 'Cargo.lock', status: 'failed', reason: expect.stringContaining('does not use crates.io/demo@1.2.5') })]);
+    expect(dependencyOutcomes(stateDir)).toEqual([expect.objectContaining({ package: 'crates.io/demo@1.2.5', source: 'lockfile', file: 'Cargo.lock', status: 'failed', reason: expect.stringContaining('does not use crates.io/demo@1.2.5') })]);
   });
 
   it('refuses a name its lockfiles lock at several versions unless the call names one, and one locked from another source', async () => {
-    const { load } = round({
+    const { stateDir, load } = round({
       'Cargo.lock': cargoLock([{ version: '1.2.0' }]),
       'tools/Cargo.lock': cargoLock([{ version: '2.0.0' }]),
     });
+    await expect(load('crates.io/demo@3.0.0')).rejects.toThrow('The PR does not use crates.io/demo@3.0.0.');
     await expect(load('crates.io/demo')).rejects.toThrow('Manki does not read crates.io/demo: its lockfiles lock several versions: 1.2.0 in Cargo.lock, 2.0.0 in tools/Cargo.lock. Name one as crates.io/demo@<version>.');
+    // An earlier call naming a version the PR does not use leaves the refusal its own record.
+    expect(dependencyOutcomes(stateDir)).toEqual([
+      expect.objectContaining({ package: 'crates.io/demo@3.0.0', status: 'failed', reason: expect.stringContaining('does not use crates.io/demo@3.0.0') }),
+      expect.objectContaining({ package: 'crates.io/demo', status: 'refused', reason: expect.stringContaining('several versions') }),
+    ]);
     expect((await load('crates.io/demo@2.0.0')).note).toContain('the version `tools/Cargo.lock` locks');
     // Without a locked version that meets every requirement, naming one cannot help, so the refusal does not suggest it.
     const apart = round({

@@ -224,7 +224,8 @@ async function resolveDependency(
     }
     const where = locked.map(p => `${p.version} in ${shown(p.file)}`).join(', ');
     const chosen = version === undefined ? locked[0] : locked.find(p => p.version === version);
-    if (!chosen) throw new UnreadPackage(`The PR does not use ${label}@${version}. Its lockfiles lock ${where}.`, label, { registry: registry.id, name, source: 'lockfile', file: locked[0].file }, false);
+    // A version the PR does not use is recorded under its own key, so it never holds the package's record.
+    if (!chosen) throw new UnreadPackage(`The PR does not use ${label}@${version}. Its lockfiles lock ${where}.`, `${label}@${version}`, { registry: registry.id, name, source: 'lockfile', file: locked[0].file }, false);
     if (version === undefined && locked.some(p => p.version !== chosen.version)) {
       // Naming a version helps only when one of them meets every requirement a manifest states.
       const meetsAll = (v: string) => requirements.every(r => { const range = registry.range(r.requirement); return range !== undefined && satisfies(v, range); });
@@ -248,7 +249,7 @@ async function resolveDependency(
   if (requirements.length === 0) throw new Error(`${label} is not a dependency in the PR's manifests or lockfiles, so Manki does not read it.`);
   const first = requirements[0];
   const origin = { name: first.name, source: 'requirement' as const, file: first.file, requirement: first.requirement };
-  const unread = (message: string) => new UnreadPackage(message, label, { registry: registry.id, ...origin }, false);
+  const unread = (message: string, key = label) => new UnreadPackage(message, key, { registry: registry.id, ...origin }, false);
   const distinct = [...new Set(requirements.map(r => r.requirement.trim()))];
   if (distinct.length > 1) {
     refuse(`the PR's manifests require it as ${requirements.map(r => `\`${shown(r.requirement)}\` in ${shown(r.file)}`).join(', ')}, and without a lockfile Manki cannot tell which an install follows`, origin);
@@ -268,7 +269,7 @@ async function resolveDependency(
   if (!registry.validName(published.name) || !registry.sameName(published.name, first.name)) throw unread(`${registry.id} lists ${label} under a name Manki does not read.`);
   const picked = pickVersion(published.versions, range!, published.latest);
   if (!picked) throw unread(`No published version of ${label} matches what the PR requires: \`${shown(first.requirement)}\` in ${shown(first.file)}.`);
-  if (version !== undefined && version !== picked.version) throw unread(`The PR does not use ${label}@${version}. It uses ${picked.version} (resolved from \`${shown(first.requirement)}\` in ${shown(first.file)}).`);
+  if (version !== undefined && version !== picked.version) throw unread(`The PR does not use ${label}@${version}. It uses ${picked.version} (resolved from \`${shown(first.requirement)}\` in ${shown(first.file)}).`, `${label}@${version}`);
   return {
     registry, name: published.name, version: picked.version, key: `${registry.id}/${published.name}@${picked.version}`,
     source: 'requirement', file: first.file, requirement: first.requirement, checksum: picked.checksum, hostAssumed: true,
