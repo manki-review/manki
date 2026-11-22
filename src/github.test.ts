@@ -6652,7 +6652,7 @@ describe('postReview non-blocking findings', () => {
     await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([old]), diff);
     const body = createReview.mock.calls[0][0].body as string;
     const fold = body.slice(body.indexOf('<summary>\u26A0\uFE0F <b>Old leak</b>'), body.indexOf('</details>'));
-    expect(fold).toMatch(/<\/summary>\n\n\*\*Already broken before this PR\.\*\* Two checks found the same problem on the base branch at \[`src\/a\.ts:18`\]\([^)]*\/blob\/base\/src\/a\.ts#L18\), so it doesn't block this PR\.\n\n\*\*What goes wrong:\*\* It goes wrong\./);
+    expect(fold).toMatch(/<\/summary>\n\n\*\*Already broken before this PR\.\*\* Two checks found the same problem on [^\n]+ at \[`src\/a\.ts:18`\]\([^)]*\/blob\/base\/src\/a\.ts#L18\), so it doesn't block this PR\.\n\n\*\*What goes wrong:\*\* It goes wrong\./);
     expect(fold).toContain('Close the handle.');
     for (const evidence of ['src/a.ts:30', 'Checked in the code', 'How this was checked', 'Double-checked', 'related repository', 'src/a.ts#L18-L22']) expect(fold).not.toContain(evidence);
     // Its thread, as on a finding that holds the approval, keeps every base line and the checks.
