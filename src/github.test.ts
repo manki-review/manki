@@ -335,6 +335,24 @@ describe('formatFindingComment', () => {
     // A description that opens with a list gets the label on its own line, so the list marker stays a marker.
     expect(render({ ...baseFinding, description: '- It throws.\n- It logs.' })).toContain('**What goes wrong:**\n\n- It throws.\n- It logs.');
     expect(wordy).toContain('**Why it matters**\nA very long first sentence');
+    // A blank line ends the lead, a list marker ends no sentence, and a list right after the lead shows whole when it fits.
+    const listed = render({ ...baseFinding, description: 'It drops two rows. Both are lost.\n\n1. The first row.\n2. The second row.' });
+    expect(listed).toContain('**What goes wrong:** It drops two rows. Both are lost.\n\n1. The first row.\n2. The second row.');
+    expect(listed).not.toContain('Why it matters');
+    // So does a list with no blank line before it, or with blank lines between its items.
+    for (const list of ['1. The first row.\n2. The second row.\n3. The third row.', '- The first row.\n\n- The second row.\n\n- The third row.']) {
+      for (const gap of ['\n', '\n\n']) {
+        const description = `It drops three rows. All are lost.${gap}${list}`;
+        expect(render({ ...baseFinding, description })).toContain(`**What goes wrong:** ${description}\n\n<!-- manki-checks -->`);
+      }
+    }
+    const paragraphs = render({ ...baseFinding, description: [`${sentence(1)} ${sentence(2)}`, `${sentence(3)} ${sentence(4)}`].join('\n\n') });
+    expect(paragraphs).toContain(`**What goes wrong:** ${sentence(1)} ${sentence(2)}\n\n<!-- manki-checks -->`);
+    expect(paragraphs).toContain(`**Why it matters**\n${sentence(3)} ${sentence(4)}`);
+    const longList = [1, 2, 3, 4, 5, 6].map(n => `${n}. ${sentence(n)}`).join('\n');
+    const folded = render({ ...baseFinding, description: `It drops rows. Each is lost.\n\n${longList}` });
+    expect(folded).toContain('**What goes wrong:** It drops rows. Each is lost.\n\n<!-- manki-checks -->');
+    expect(folded).toContain(`**Why it matters**\n${longList}`);
 
     expect(render(baseFinding)).not.toContain('<details>');
   });
@@ -6381,6 +6399,16 @@ describe('postReview non-blocking findings', () => {
     expect(threads[0].body).toContain('**This change may not be useful as it stands**');
     expect(threads[0].body).toContain('**Checked in the code**\nhttps://github.com/owner/repo/blob/sha/src/a.ts#L2-L9');
     expect(threads[1].body).toContain('**This PR mixes topics that belong in separate PRs**');
+    // The split shows its whole list with no fold, and neither warning claims a check it never needed.
+    expect(threads[1].body).toContain("separate PRs. This is a judgment of the PR as a whole, not a defect in its code.\n\n1. Date parsing: `src/a.ts`\n2. Flag [rename]: `src/b.ts`, `src/c'd.ts`");
+    expect(threads[1].body).not.toContain('<details>');
+    for (const { body } of threads) expect(body).not.toMatch(/Manki could not confirm|not checked against the code/i);
+    // A long list is shown whole too.
+    const files = (part: string) => [1, 2, 3, 4].map(n => `src/components/${part}/subsystem_${n}/implementation.ts`);
+    const [longSplit] = scopeWarnings({ split: [{ name: 'Date parsing', files: files('dates') }, { name: 'Flag rename', files: files('flags') }] });
+    const longBody = formatFindingComment(longSplit, TEST_LINKS, 'detached');
+    expect(longBody).toContain(`1. Date parsing: ${files('dates').map(f => `\`${f}\``).join(', ')}\n2. Flag rename:`);
+    expect(longBody).not.toContain('<details>');
   });
 
   it('formats the reply to an answered thread whose problem came back worse', () => {

@@ -7,7 +7,7 @@ import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDi
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, formatResetTime, InstructionFile, LinkedIssue, MANKI_VERSION, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, pushTouchesThread, replyClassOf, titleOverlapType, dropWaivedRestatements } from './recap';
-import { isGuardedFinding, canLeaveOut, CheckProgress, UnpostedReason, foundOnBase, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundAgentMetric, RoundComparison, RoundContext, RoundDedupDuplicateMatch, RoundFix, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundPrClaim, RoundRawFinding, RoundRelatedRepo, RoundReusedFrom, RoundStaticSignalMatch, RoundUnitLine, RoundUses, EarlierAttempt, DiffHunk, EffortLevel, Finder, FinderError, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType, secondReadName, RoundSecondReads } from './types';
+import { isGuardedFinding, canLeaveOut, CheckProgress, UnpostedReason, foundOnBase, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundAgentMetric, RoundComparison, RoundContext, RoundDedupDuplicateMatch, RoundFix, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundPrClaim, RoundRawFinding, RoundRelatedRepo, RoundReusedFrom, RoundStaticSignalMatch, RoundUnitLine, RoundUses, EarlierAttempt, DiffHunk, EffortLevel, Finder, FinderError, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, SCOPE_READER_NAME, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType, secondReadName, RoundSecondReads } from './types';
 import { countChangedLines, diffSections, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE, repoPath } from './diff';
 import { guessClaimTerms, translateNames } from './name-translation';
 import { dependencyOutcomes } from './dependency-sources';
@@ -124,7 +124,8 @@ function markPreExisting(findings: Finding[], checkOf: (finding: Finding) => Pre
  * out only when it is certain that no rule keeps it, so these stay `posted` too: a finding `foldIntoEarlierFindings` or
  * the judge put under one an earlier round still shows, and a finding that `wouldBlock`. A finding that `isRareClaim`
  * stays `posted` as well, whatever its check answered, and so does one that `staysWarningIfConfirmed`, since its cell
- * gives a blocker. Each posted blocker and warning that no tool reported gets its `checkStatus`.
+ * gives a blocker. Each posted blocker and warning that no tool reported gets its `checkStatus`, except a scope warning,
+ * which judges the PR as a whole and cites no code to check.
  */
 function hideUnprovenWarnings(findings: Finding[], rules: RulesMode | undefined, wouldBlock = wouldBlockIfTrue): { posted: Finding[]; unposted: Finding[] } {
   const posted: Finding[] = [];
@@ -132,7 +133,7 @@ function hideUnprovenWarnings(findings: Finding[], rules: RulesMode | undefined,
   for (const f of findings) {
     const unpostedReason = unprovenWarningReason(f, rules, wouldBlock);
     if (!unpostedReason) {
-      posted.push(isBlockingSeverity(f.severity) && !f.toolSource ? { ...f, checkStatus: checkStatus(f) } : f);
+      posted.push(isBlockingSeverity(f.severity) && !f.toolSource && !f.reviewers.includes(SCOPE_READER_NAME) ? { ...f, checkStatus: checkStatus(f) } : f);
     } else {
       core.info(`Recording warning "${f.title}" on ${f.file}:${f.line} without posting it: ${UNPOSTED_REASONS[unpostedReason]}`);
       unposted.push({ ...f, unpostedReason });

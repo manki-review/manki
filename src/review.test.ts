@@ -2991,10 +2991,12 @@ describe('runReview', () => {
       expect(fromScope(blocking)).toEqual([
         expect.objectContaining({
           severity: 'warning', title: doubtTitle, file: '', line: 0, description: scope.doubt,
-          evidence: { checks: [], proof: ['src/x.ts:1'] }, tags: ['follow-up'], checkStatus: 'confirmed',
+          evidence: { checks: [], proof: ['src/x.ts:1'] }, tags: ['follow-up'], refutation: expect.objectContaining({ outcome: 'confirmed' }),
         }),
-        expect.objectContaining({ severity: 'warning', title: splitTitle, file: '', line: 0, tags: ['follow-up'], checkStatus: 'unconfirmed' }),
+        expect.objectContaining({ severity: 'warning', title: splitTitle, file: '', line: 0, tags: ['follow-up'] }),
       ]);
+      // A scope warning judges the PR as a whole and cites no code to check, so it gets no check status.
+      expect(fromScope(blocking).map(f => f.checkStatus)).toEqual([undefined, undefined]);
       expect(fromScope(blocking)[1].description).toContain('1. Date parsing: `src/x.ts`\n2. Flag rename: `src/y.ts`');
 
       // A doubt the refuter does not confirm, or one no refuter can check, is dropped into the record. The split needs no refuter.
@@ -3102,7 +3104,7 @@ describe('runReview', () => {
       const round = async (priorRounds: RoundContext[]) => {
         const clients = refutingClients('confirmed');
         const result = await runReview(clients, { ...options, config, workspace: root, priorRounds });
-        return [refuterCalls(clients).length, fromScope(result).map(f => f.checkStatus)];
+        return [refuterCalls(clients).length, fromScope(result).map(f => f.refutation?.outcome)];
       };
 
       expect(await round(record(scope.doubt, 'digest-2'))).toEqual([0, ['confirmed']]);

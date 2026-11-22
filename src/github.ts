@@ -1735,17 +1735,23 @@ function formatBodyFix(fix: string, file: string): string {
 
 /**
  * Splits `text` after its first sentences: at most `maxSentences`, and fewer when they would pass `maxLength`.
- * The first sentence is always kept, truncated when it alone passes `maxLength`. A code fence ends the lead.
+ * The first sentence is always kept, truncated when it alone passes `maxLength`. A code fence, a blank line or a line
+ * that starts a list ends the lead. A list right after the lead joins it whole when both fit in `maxLength`, and is
+ * never cut, also across blank lines between its items.
  */
 function splitLead(text: string, maxSentences: number, maxLength: number): { lead: string; rest: string } {
   const trimmed = text.trim();
-  const fenceAt = trimmed.search(/`{3}|~{3}/);
-  const prose = fenceAt === -1 ? trimmed : trimmed.slice(0, fenceAt);
-  // Odd entries are the whitespace between sentences, so joining a slice keeps the original spacing.
-  const parts = prose.trimEnd().split(/(?<=[.!?])(\s+)/);
+  const stopAt = trimmed.search(/`{3}|~{3}|\n[ \t]*\n|\n[ \t]*(?:[-*+]|\d+[.)])\s/);
+  const prose = stopAt === -1 ? trimmed : trimmed.slice(0, stopAt);
+  // Odd entries are the whitespace between sentences, so joining a slice keeps the original spacing. The number that
+  // starts a list item ends no sentence.
+  const parts = prose.trimEnd().split(/(?<=[.!?])(?<!(?:^|\n)[ \t]*\d+\.)(\s+)/);
   let end = 1;
   while (end + 1 < parts.length && (end + 1) / 2 < maxSentences && parts.slice(0, end + 2).join('').length <= maxLength) end += 2;
-  const lead = parts.slice(0, end).join('');
+  const sentences = parts.slice(0, end).join('');
+  const list = end >= parts.length ? trimmed.slice(sentences.length).match(/^\s*\n([ \t]*(?:[-*+]|\d+[.)])\s[\s\S]*?)(?=\n\s*\n[ \t]*(?!(?:[-*+]|\d+[.)])\s)\S|$)/) : null;
+  const withList = list && !/`{3}|~{3}/.test(list[0]) && sentences.length + list[0].length <= maxLength;
+  const lead = withList ? trimmed.slice(0, sentences.length + list[0].length) : sentences;
   const rest = trimmed.slice(lead.length).trim();
   if (lead.length <= maxLength) return { lead, rest };
   return { lead: safeTruncate(lead, maxLength), rest: trimmed };
@@ -3750,7 +3756,7 @@ function checksSection(finding: Finding, links: CodeLinks, ownLine: string): Fin
   const status = finding.checkStatus && { status: CHECK_STATUSES[finding.checkStatus] };
   const rule = rulePart(finding);
   if (checks.length === 0 && refutations.length === 0 && !rule && relatedLines.length === 0) {
-    return { ...(finding.toolSource || finding.reviewers.length === 0 ? { parts: [], reads: [], outcomes: [] } : NOT_CHECKED), ...status };
+    return { ...(finding.toolSource || finding.reviewers.length === 0 || finding.reviewers.includes(SCOPE_READER_NAME) ? { parts: [], reads: [], outcomes: [] } : NOT_CHECKED), ...status };
   }
   const isOwn = (c: Check): boolean => !!c.at && c.at.file === finding.file && c.at.start <= finding.line && finding.line <= c.at.end;
   const ownChecks = checks.filter(isOwn);
@@ -3884,7 +3890,8 @@ function formatFindingComment(finding: Finding, links: CodeLinks, place: 'line' 
   // The line note takes no room, so a thread shows the same description with it as without it.
   const room = Math.max(MIN_VISIBLE_DESCRIPTION, MAX_VISIBLE_COMMENT - (comment.length - onLine.length) - label.length - visibleLength(open));
   const description = sanitizeMarkdown(finding.description);
-  const { lead, rest } = splitLead(description, 3, room);
+  // A scope warning's list is what it proposes, so no length budget folds it.
+  const { lead, rest } = splitLead(description, 3, finding.reviewers.includes(SCOPE_READER_NAME) ? Infinity : room);
   // A fold never holds a single sentence, so one sentence past the lead shows with it, unless the lead was cut short.
   const folds = rest.includes('\n') || rest.split(/(?<=[.!?])\s+/).length > 1 || !description.trim().startsWith(lead);
   const shown = folds ? lead : description.trim();
