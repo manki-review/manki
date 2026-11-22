@@ -124,6 +124,9 @@ describe('formatFindingComment', () => {
     expect(render({ ...cited, refutation: { ...refutation, premises: [disprovedPremise, refutation.premises![1]] } })).toContain(plain);
     expect(render({ ...cited, refutation, pairRefutation: { ...refutation, outcome: 'disproved', defect: 'disproved', premises: [] } })).toContain(plain);
     expect(render({ ...cited, evidence: { checks: [], proof: [], relatedProof: ['acme/lib:src/a.ts:3'] } })).toContain(plain);
+    // A finding that keeps no line but was checked does not claim that no line was cited.
+    expect(render({ ...cited, evidence: undefined, refutation: { ...refutation, premises: [disprovedPremise] } })).toContain(plain);
+    expect(render({ ...cited, evidence: undefined, pairRefutation: { ...refutation, outcome: 'disproved', defect: 'disproved', premises: [] } })).toContain(plain);
     expect(open).toContain(`**${baseFinding.title}**\n\n_Manki confirmed the code path but could not check: The caller passes \`null\` here when the cache is cold._\n\n`);
     expect(parseFindingFromComment(open)?.description).toBe(baseFinding.description);
     // A PR that adds the note's first word gets it highlighted, and the note is still skipped when read back.
