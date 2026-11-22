@@ -140,7 +140,9 @@ function parsePriorRound(raw: unknown, file: string): EarlierRound {
     if (f.posted === 'thread' ? !['open', 'resolved', 'fixed'].includes(f.state as string) : f.state !== undefined) {
       throw caseError(where, '`state` must be open, resolved or fixed for a thread, and unset for a body finding');
     }
-    if (f.security !== undefined && typeof f.security !== 'boolean') throw caseError(where, '`security` must be true or false');
+    for (const flag of ['security', 'disproved'] as const) {
+      if (f[flag] !== undefined && typeof f[flag] !== 'boolean') throw caseError(where, `\`${flag}\` must be true or false`);
+    }
     const evidenceFiles = f.evidence_files;
     if (evidenceFiles !== undefined && !(Array.isArray(evidenceFiles) && evidenceFiles.every(file => typeof file === 'string' && file.trim()))) {
       throw caseError(where, '`evidence_files` must be a list of file paths');
@@ -165,6 +167,7 @@ function parsePriorRound(raw: unknown, file: string): EarlierRound {
       ...(cell && { cell: { row: cell.row, column: cell.column } }),
       ...(doubts && { doubts: doubts.map((d): Doubt => ({ premise: d.premise as string, decides: d.decides as Doubt['decides'], ...(d.consequence === true && { consequence: true }) })) }),
       ...(description && { description }), ...(howToFix && { howToFix }), ...(suggestedFix && { suggestedFix }), ...(f.security === true && { security: true }),
+      ...(f.disproved === true && { disproved: true }),
       ...(f.posted === 'thread' && { thread: f.state as EarlierFinding['thread'] }),
       ...(evidenceFiles && { evidenceFiles: evidenceFiles as string[] }),
     };

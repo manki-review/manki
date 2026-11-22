@@ -156,7 +156,7 @@ describe('reviewLocal', () => {
       head: reviewed,
       findings: [
         { id: 'P1', severity: 'blocker' as const, title: 'Wrong value', file: 'src/b.ts', line: 20, description: 'Should be 0.', suggestedFix: 'const v20 = 0;', security: true, thread: 'open' as const },
-        { id: 'P2', severity: 'warning' as const, title: 'Unused constant', file: 'src/a.ts', line: 1, thread: 'resolved' as const },
+        { id: 'P2', severity: 'warning' as const, title: 'Unused constant', file: 'src/a.ts', line: 1, disproved: true, thread: 'resolved' as const },
         { id: 'P4', severity: 'blocker' as const, title: 'Missing check', file: 'src/a.ts', line: 2, thread: 'fixed' as const },
         { id: 'P3', severity: 'note' as const, title: 'Name the constant', file: 'src/a.ts', line: 1, gradeIfConfirmed: 'warning' as const },
         { id: 'P5', severity: 'warning' as const, title: 'Stale read', file: 'src/a.ts', line: 3, gradeIfConfirmed: 'blocker' as const, cell: { row: 'wrong' as const, column: 'rare' as const }, doubts: [REACH_DOUBT] },
@@ -177,13 +177,13 @@ describe('reviewLocal', () => {
     expect(options.relatedReposAsOf).toBe('2026-10-03T11:20:50Z');
     expect(options.interRoundDiff).toContain('-const v20 = 20;\n+const v20 = 0;');
     expect(options.interRoundDiff).not.toContain('src/a.ts');
-    expect(options.previousFindings?.map(f => [f.threadId, f.status, f.fixed, f.isSecurity])).toEqual([['P1', 'open', undefined, true], ['P2', 'resolved', undefined, undefined], ['P4', 'resolved', true, undefined]]);
-    expect(options.openThreads).toEqual([expect.objectContaining({ threadId: 'P1', severity: 'blocker', description: 'Should be 0.', currentCode: expect.stringContaining('>>> 20: const v20 = 0;') })]);
+    expect(options.previousFindings?.map(f => [f.threadId, f.status, f.fixed, f.isSecurity, f.disprovedBlocker])).toEqual([['P1', 'open', undefined, true, undefined], ['P2', 'resolved', undefined, undefined, true], ['P4', 'resolved', true, undefined, undefined]]);
+    expect(options.openThreads).toEqual([expect.objectContaining({ threadId: 'P1', severity: 'blocker', description: 'Should be 0.', isSecurity: true, currentCode: expect.stringContaining('>>> 20: const v20 = 0;') })]);
     const [record] = options.priorRounds!;
     expect(record.meta).toMatchObject({ round: 1, commitSha: reviewed });
     expect(record.judge.threadEvaluations).toEqual([{ threadId: 'P4', status: 'addressed', reason: 'Fixed by an earlier push.' }]);
     expect(record.findings.entries.map(e => [e.title, e.threadId, e.severity, e.tags, e.gradeIfConfirmed])).toEqual([
-      ['Wrong value', 'P1', 'blocker', ['security'], undefined], ['Unused constant', 'P2', 'warning', undefined, undefined], ['Missing check', 'P4', 'blocker', undefined, undefined],
+      ['Wrong value', 'P1', 'blocker', ['security'], undefined], ['Unused constant', 'P2', 'warning', ['disproved-blocker'], undefined], ['Missing check', 'P4', 'blocker', undefined, undefined],
       ['Name the constant', undefined, 'note', undefined, 'warning'], ['Stale read', undefined, 'warning', undefined, 'blocker'],
       ['Tenth value is wrong', undefined, 'warning', undefined, undefined], ['Guide is vague', undefined, 'warning', undefined, undefined],
       ['Null is returned', undefined, 'warning', undefined, undefined], ['End runs late', undefined, 'warning', undefined, undefined],
@@ -244,6 +244,9 @@ describe('reviewLocal', () => {
     expect(await heldBy([thread({ thread: 'resolved' })])).toBe(false);
     expect(await heldBy([thread({ thread: 'resolved', security: true })])).toBe('warnings');
     expect(await heldBy([thread({ thread: 'fixed', security: true })])).toBe(false);
+    // The thread of a disproved blocker holds as a security thread does.
+    expect(await heldBy([thread({ thread: 'resolved', disproved: true })])).toBe('warnings');
+    expect(await heldBy([thread({ disproved: true })], [{ threadId: 'W1', status: 'partly_addressed', reason: 'Smaller.', grade: 'note' }])).toBe('warnings');
     // Grades are read as a pull request round reads them: a security warning is never graded below its thread, and a blocker grade blocks instead.
     expect(await heldBy([thread({ security: true })], [{ threadId: 'W1', status: 'partly_addressed', reason: 'Smaller.', grade: 'note' }])).toBe('warnings');
     expect(await heldBy([thread({})], [{ threadId: 'W1', status: 'partly_addressed', reason: 'Worse.', grade: 'blocker' }])).toBe(false);

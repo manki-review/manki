@@ -92,6 +92,7 @@ const FOLLOW_UP_YAML = `${CASE_YAML}prior_round:
       line: 40
       posted: thread
       state: open
+      disproved: true
       evidence_files: [src/timeout.rs]
     - id: P3
       severity: suggestion
@@ -199,7 +200,7 @@ describe('parseCase', () => {
           cell: { row: 'severe', column: 'normal' }, doubts: [{ premise: 'A peer can send the length.', decides: 'defect' }, { premise: 'The reader aborts the process.', decides: 'grade', consequence: true }],
           description: 'A peer picks the size.', howToFix: 'Cap the length.', suggestedFix: 'let len = len.min(MAX);', security: true,
         },
-        { id: 'P2', severity: 'warning', title: 'No timeout on the connection', file: 'src/conn.rs', line: 40, thread: 'open', evidenceFiles: ['src/timeout.rs'] },
+        { id: 'P2', severity: 'warning', title: 'No timeout on the connection', file: 'src/conn.rs', line: 40, disproved: true, thread: 'open', evidenceFiles: ['src/timeout.rs'] },
         { id: 'P3', severity: 'note', title: 'The retry loop has no test', file: 'src/conn.rs', line: 70 },
         { id: 'P4', severity: 'warning', title: 'Stale comment', file: 'src/conn.rs', line: 90, thread: 'resolved' },
       ],
