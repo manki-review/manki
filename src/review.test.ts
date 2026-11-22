@@ -5535,11 +5535,14 @@ describe('runReview', () => {
     expect(await outcomeAfter('src/outside.ts')).toBe('READY');
     expect(await outcomeAfter('src/x.ts')).toBe('ADDRESS_FIRST');
 
-    // A thread of an earlier round that names it under another title does not carry it, even once that thread is resolved.
-    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'Clean.' });
-    const renamed = [listed(), listed({ fingerprint: { file: 'src/x.ts', lineStart: 30, lineEnd: 30, slug: 'Writers-race' }, title: 'Writers race', posted: 'thread', threadId: 'T3', sameAs: key, raisedIn: 1 }, 2)];
-    const second = await run(makeClients(), renamed, { previousFindings: [{ title: 'Writers race', file: 'src/x.ts', line: 30, severity: 'blocker', status: 'resolved', threadId: 'T3' }], headSha: 'sha3' });
-    expect([second.findings.map(f => [f.title, f.relisted]), second.outcome]).toEqual([[['Old issue', true]], 'ADDRESS_FIRST']);
+    // Two blockers without a thread that the record links by `sameAs` are one defect, so only the first is listed again,
+    // and a lower-grade finding that names either is left out. The other still blocks until a later round gives it the new thread.
+    const renamedKey = 'src/x.ts:30:30:Writers-race';
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [{ severity: 'warning', title: 'Writers may race', file: 'src/x.ts', line: 40, description: 'd', reviewers: ['r'], sameAs: renamedKey, raisedIn: 2 }], summary: 'Less bad.' });
+    const renamed = [listed(), listed({ fingerprint: { file: 'src/x.ts', lineStart: 30, lineEnd: 30, slug: 'Writers-race' }, title: 'Writers race', sameAs: key, raisedIn: 1 }, 2)];
+    const second = await run(makeClients(RAISED), renamed, { headSha: 'sha3' });
+    expect([second.findings.map(f => [f.title, f.relisted]), second.unposted?.map(f => [f.title, f.unpostedReason]), second.verdictTrace?.unresolvedPriors.map(p => p.fingerprint), second.outcome])
+      .toEqual([[['Old issue', true]], [['Writers may race', 'listed_earlier']], [renamedKey], 'ADDRESS_FIRST']);
   });
 
   it('clears an open blocker thread only when the round confirms the fix on a file the push changed', async () => {

@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 import { LLMClient, NotStartedError } from './providers';
 import { APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, BASE_NOTE_RE, TRACKED_NOTE_RE, TRUST_NOTE_RE, WHAT_GOES_WRONG_LABEL, WHY_LABEL, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, authorClearRole, paginateGraphql, plainCitedFiles, titleToSlug } from './github';
 import { BOX_ANCHOR } from './issue-box';
-import { currentFindingLine, findPriorThreadId } from './finding-fingerprint';
+import { currentFindingLine, findPriorThreadId, stringifyFindingFingerprint } from './finding-fingerprint';
 import { extractJSON } from './json';
 import { isLockfileAlert } from './lockfile';
 import { extractReviewRecords, FIXED_MARKER_OPENER, hasOwnMarker, hasReviewRecord, settledReplyId, settlingDecision } from './review-record';
@@ -904,23 +904,52 @@ function threadStatus(t: ReviewThread, settled: Settled | undefined): PreviousFi
  * thread posted for it. Round contexts are written before GitHub assigns
  * thread IDs, so the match goes by the thread marker's slug, the file, and the
  * nearest posted line. A prior left without a match was posted in the review
- * body, not as a thread.
+ * body, not as a thread. Such a blocker then takes the thread of a blocker that
+ * restates it, by `restatingThreads`.
  */
 function attachPriorThreadIds(rounds: RoundContext[], previousFindings: PreviousFinding[]): RoundContext[] {
   const threads = previousFindings.filter(pf => pf.threadId && pf.markerSlug);
   if (threads.length === 0) return rounds;
-  return rounds.map(r => ({
+  // A thread graded below the entry was not its thread, so a blocker never lands on a suggestion thread on its spot.
+  const fitting = (severity: FindingSeverity | 'ignore' | 'unknown') => threads.filter(t => severity === 'ignore' || severity === 'unknown' || !gradedAbove(severity, t));
+  const attached = rounds.map(r => ({
     ...r,
     findings: {
       ...r.findings,
       entries: r.findings.entries.map(entry => {
         if (entry.threadId) return entry;
-        // A thread graded below the entry was not its thread, so a blocker never lands on a suggestion thread on its spot.
-        const threadId = findPriorThreadId(entry.fingerprint, threads.filter(t => entry.severity === 'ignore' || entry.severity === 'unknown' || !gradedAbove(entry.severity, t)));
+        const threadId = findPriorThreadId(entry.fingerprint, fitting(entry.severity));
         return threadId ? { ...entry, threadId } : entry;
       }),
     },
   }));
+  const restating = restatingThreads(attached.flatMap(r => r.findings.entries), fitting('blocker'));
+  if (restating.size === 0) return attached;
+  return attached.map(r => ({
+    ...r,
+    findings: {
+      ...r.findings,
+      entries: r.findings.entries.map(entry => {
+        const thread = entry.threadId || entry.severity !== 'blocker' ? undefined : restating.get(entry.sameAs ?? stringifyFindingFingerprint(entry.fingerprint));
+        // A security blocker keeps its guard only on a security thread, so it never rides on a plain one.
+        return thread && (thread.isSecurity || !isSecurityFinding(entry.tags, entry.reviewers ?? [entry.specialist])) ? { ...entry, threadId: thread.threadId } : entry;
+      }),
+    },
+  }));
+}
+
+/**
+ * Returns the thread of each earlier blocker that a later blocker restates, by the key of the blocker it restates. A
+ * restatement records that key as `sameAs`, linked by the judge or by the checks that fold a finding into an open
+ * thread, which also let that thread carry the finding. A thread among `blockerThreads`, one graded as a blocker, carries it.
+ */
+function restatingThreads(entries: RoundContext['findings']['entries'], blockerThreads: PreviousFinding[]): Map<string, PreviousFinding> {
+  const restating = new Map<string, PreviousFinding>();
+  for (const entry of entries) {
+    const thread = entry.severity === 'blocker' && entry.threadId ? blockerThreads.find(t => t.threadId === entry.threadId) : undefined;
+    if (thread) restating.set(entry.sameAs ?? stringifyFindingFingerprint(entry.fingerprint), thread);
+  }
+  return restating;
 }
 
 

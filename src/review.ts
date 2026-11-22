@@ -3262,20 +3262,31 @@ function isPriorLikelyUnresolved(
 
 /**
  * Returns `findings` with each earlier blocker that no thread carries listed again as a blocker, so it gets a thread.
- * A blocker of `findings` that names it carries it already, and one the author's reply settled stays settled. A
- * lower-grade finding that names it lifts nothing and goes to `restated`. Whichever of the two is posted is a security
- * finding when either is. Call it only when the threads could be read.
+ * Threadless blockers the record links by `sameAs` are one defect, so only the first of them is listed again, and a
+ * finding that names any of them names that one. A blocker of `findings` that names it carries it already, and one the
+ * author's reply settled stays settled. A lower-grade finding that names it lifts nothing and goes to `restated`.
+ * Whichever of the two is posted is a security finding when either is. Call it only when the threads could be read.
  */
 function relistThreadlessBlockers(findings: Finding[], priorRounds: FindingFingerprintEntry[], priorRoundLookup: Map<string, number>): { findings: Finding[]; restated: Finding[] } {
   const namedAgain = new Set(findings.flatMap(f => f.severity === 'blocker' && f.sameAs ? [f.sameAs] : []));
-  const threadless = dedupePriorFindings(priorRounds).filter(p => p.severity === 'blocker' && !p.threadId).map(p => ({ p, key: stringifyFindingFingerprint(p.fingerprint) }));
-  const relisted = threadless.flatMap(({ p, key }): Finding[] => {
-    if (p.authorReplyClass === 'agree' || namedAgain.has(key)) return [];
+  const chains = new Map<string, FindingFingerprintEntry[]>();
+  for (const p of dedupePriorFindings(priorRounds).filter(p => p.severity === 'blocker' && !p.threadId)) {
+    const first = p.sameAs ?? stringifyFindingFingerprint(p.fingerprint);
+    chains.set(first, [...(chains.get(first) ?? []), p]);
+  }
+  const threadless = [...chains].map(([first, chain]) => ({
+    p: chain.find(p => stringifyFindingFingerprint(p.fingerprint) === first) ?? chain[0],
+    keys: new Set([first, ...chain.map(p => stringifyFindingFingerprint(p.fingerprint))]),
+    security: chain.some(p => isSecurityFinding(p.tags, p.reviewers ?? [p.specialist])),
+  }));
+  const relisted = threadless.flatMap(({ p, keys, security: securityChain }): Finding[] => {
+    const key = stringifyFindingFingerprint(p.fingerprint);
+    if (p.authorReplyClass === 'agree' || [...keys].some(k => namedAgain.has(k))) return [];
     const raisedIn = p.raisedIn ?? priorRoundLookup.get(key);
     // The thread is matched to the earlier blocker by its title's slug, so a title the record cut short is rebuilt from the slug.
     const title = p.title && titleToSlug(p.title) === p.fingerprint.slug ? p.title : p.fingerprint.slug.replace(/-/g, ' ');
     // A security finding that restates the blocker is left out, so the blocker speaks for it where the record says nothing.
-    const security = findings.find(f => f.sameAs === key && isSecurityFinding(f.tags, f.reviewers));
+    const security = findings.find(f => !!f.sameAs && keys.has(f.sameAs) && isSecurityFinding(f.tags, f.reviewers));
     const evidence = p.evidence ?? security?.evidence;
     core.info(`Listing the earlier blocker "${title}" again, since no thread carries it`);
     return [{
@@ -3285,7 +3296,7 @@ function relistThreadlessBlockers(findings: Finding[], priorRounds: FindingFinge
       line: p.fingerprint.lineStart,
       description: p.description ?? security?.description ?? 'An earlier review listed this blocker without a thread and did not record its description. That review\'s body has it.',
       reviewers: p.reviewers ?? (p.specialist ? [p.specialist] : []),
-      ...((security || p.tags?.includes(SECURITY_TAG)) && { tags: [SECURITY_TAG] }),
+      ...((security || securityChain) && { tags: [SECURITY_TAG] }),
       ...(p.category && { category: p.category }),
       ...(p.effort && { effort: p.effort }),
       ...(evidence && { evidence }),
@@ -3294,10 +3305,11 @@ function relistThreadlessBlockers(findings: Finding[], priorRounds: FindingFinge
       relisted: true,
     }];
   });
-  const listed = new Set(relisted.map(f => f.sameAs));
+  const listedChains = threadless.filter(({ p }) => relisted.some(f => f.sameAs === stringifyFindingFingerprint(p.fingerprint)));
+  const listed = new Set(listedChains.flatMap(({ keys }) => [...keys]));
   const restates = (f: Finding): boolean => !!f.sameAs && listed.has(f.sameAs);
   for (const f of findings.filter(restates)) core.info(`Leaving out the ${f.severity} "${f.title}", since it restates an earlier blocker this round lists again`);
-  const securityKeys = new Set(threadless.flatMap(({ p, key }) => isSecurityFinding(p.tags, p.reviewers ?? [p.specialist]) ? [key] : []));
+  const securityKeys = new Set(threadless.flatMap(({ keys, security }) => security ? [...keys] : []));
   const carrying = (f: Finding): Finding => f.severity === 'blocker' && f.sameAs && securityKeys.has(f.sameAs) && !f.tags?.includes(SECURITY_TAG)
     ? { ...f, tags: [...(f.tags ?? []), SECURITY_TAG] }
     : f;
