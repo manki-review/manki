@@ -6,7 +6,7 @@ import { BOX_ANCHOR } from './issue-box';
 import { currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import { extractJSON } from './json';
 import { isLockfileAlert } from './lockfile';
-import { extractReviewRecords, FIXED_MARKER_OPENER, hasOwnMarker, hasReviewRecord, settlingDecision } from './review-record';
+import { extractReviewRecords, FIXED_MARKER_OPENER, hasOwnMarker, hasReviewRecord, settledReplyId, settlingDecision } from './review-record';
 import { AuthorClearRole, AuthorReplyClass, EarlierAttempt, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, migrateStoredSeverities, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_ORDER, SEVERITY_TOKEN_PATTERN, threadBlocks, gradedAbove, isSecurityFinding } from './types';
 import { COMMENT_MARKER, escapeRegExp, ownMarker } from './utils';
 
@@ -160,9 +160,6 @@ function withoutCode(body: string): string {
 
 /** A command to Manki as `parseCommand` reads it, in lower-cased text without code. */
 const BOT_PREFIX_PATTERN = /(?:@manki-review|@manki|\/manki)\s+(explain|dismiss|help|remember|forget|check)(?:\s+(.*))?/;
-
-/** A reply that opens with a `dismiss` command. */
-const DISMISS_COMMAND_RE = /^\s*(?:@manki-review|@manki|\/manki)\s+dismiss\b/i;
 
 const SECURITY_OVERRIDE_OPENER = '<!-- manki-security-override:';
 
@@ -388,70 +385,6 @@ function fingerprintFinding(
   };
 }
 
-const AGREE_SIGNALS = [
-  'fixed', 'done', "you're right", 'good catch', 'addressed',
-  'resolved', 'agreed', 'will do', '\u{1F44D}',
-];
-
-const DISAGREE_SIGNALS = [
-  'disagree', 'intentional', 'keeping', "won't", 'wontfix',
-  'by design', 'not a bug', 'unnecessary', 'this is fine', '\u{1F44E}',
-];
-
-const PARTIAL_SIGNALS = [
-  'partially', 'sort of', 'kind of', 'some of', 'most of',
-  'mostly', 'working on', 'follow-up',
-];
-
-const NEGATION_WORDS = new Set([
-  'not', "don't", "doesn't", "didn't", "won't", "can't", "isn't", "wasn't", 'never',
-]);
-
-/**
- * Tokenize text by splitting on whitespace and stripping leading/trailing
- * ASCII punctuation from each token. Emoji and other non-ASCII characters
- * are preserved so emoji signals match correctly.
- */
-function tokenize(text: string): string[] {
-  return text.split(/\s+/).map(t => t.replace(/^[\x21-\x2F\x3A-\x40\x5B-\x60\x7B-\x7E]+|[\x21-\x2F\x3A-\x40\x5B-\x60\x7B-\x7E]+$/g, ''));
-}
-
-/**
- * Returns true if the signal (a phrase) appears in `tokens` starting at some
- * index, AND none of the two tokens immediately before that index is a
- * negation word. Multi-word signals are matched as a contiguous token run.
- */
-function hasSignalWithoutNegation(tokens: string[], signal: string): boolean {
-  const sigTokens = signal.split(/\s+/);
-  outer: for (let i = 0; i <= tokens.length - sigTokens.length; i++) {
-    for (let j = 0; j < sigTokens.length; j++) {
-      if (tokens[i + j] !== sigTokens[j]) continue outer;
-    }
-    // Found signal at index i — check for preceding negation
-    for (let offset = 1; offset <= 2; offset++) {
-      const prev = i - offset;
-      if (prev >= 0 && NEGATION_WORDS.has(tokens[prev])) return false;
-    }
-    return true;
-  }
-  return false;
-}
-
-/**
- * Classify an author reply body into a coarse stance.
- * Keyword order matters: agree wins over disagree, which wins over partial.
- * Signals preceded by a negation word within two tokens are skipped.
- */
-function classifyAuthorReply(text: string | undefined): AuthorReplyClass {
-  if (!text) return 'none';
-  if (DISMISS_COMMAND_RE.test(text)) return 'agree';
-  const tokens = tokenize(text.toLowerCase());
-  if (AGREE_SIGNALS.some(s => hasSignalWithoutNegation(tokens, s))) return 'agree';
-  if (DISAGREE_SIGNALS.some(s => hasSignalWithoutNegation(tokens, s))) return 'disagree';
-  if (PARTIAL_SIGNALS.some(s => hasSignalWithoutNegation(tokens, s))) return 'partial';
-  return 'none';
-}
-
 interface PreviousFinding extends FindingMetadata {
   title: string;
   file: string;
@@ -493,6 +426,8 @@ interface PreviousFinding extends FindingMetadata {
    */
   findingLine?: number;
   authorReplyText?: string;
+  /** Manki answered the latest reply by a person with Fixed, Withdrawn or Agreed after its checks, or recorded a dismissal after it. */
+  replyAgreed?: boolean;
   /** Login of the latest non-bot replier on this thread, if any. */
   authorReplyLogin?: string;
   /** `author_association` of the latest non-bot replier. */
@@ -511,14 +446,13 @@ interface PreviousFinding extends FindingMetadata {
 /**
  * Build suppression entries from the current PR's review threads. Returns one
  * entry per manki-authored thread that is either resolved or whose latest
- * author reply is classified `agree`. Threads without a parseable title
+ * author reply `replyClassOf` reads as `agree`. Threads without a parseable title
  * (missing severity marker) are skipped, and so are `fixed` threads, since a
  * finding at a fixed spot is left to the judge.
  *
  * `agree-reply` suppressions only fire when the reply author matches
- * `prAuthorLogin`. This prevents an arbitrary third-party commenter from
- * silently dropping findings by posting "Fixed!" on a manki thread on a
- * public repo. On a blocker or security finding they fire only for someone
+ * `prAuthorLogin`. This prevents an arbitrary third-party commenter whose
+ * reply Manki accepted from silently dropping findings on a public repo. On a blocker or security finding they fire only for someone
  * other than the PR author with write access. `resolved-thread` suppressions are
  * unaffected because resolving a thread already requires repository write access.
  */
@@ -558,8 +492,7 @@ function inPrSuppressionReasonFor(
 ): InPrSuppressionReason | undefined {
   if (pf.status === 'resolved') return 'resolved-thread';
   // Only honour agree-replies from the PR author. Without this gate, any
-  // third-party commenter on a public repo could suppress lower-severity
-  // findings by posting "Fixed!" on a manki thread.
+  // third-party commenter on a public repo could suppress lower-severity findings.
   if (
     (isGuarded(pf) || (prAuthorLogin && pf.authorReplyLogin === prAuthorLogin)) &&
     replyClassOf(pf) === 'agree'
@@ -567,10 +500,9 @@ function inPrSuppressionReasonFor(
   return undefined;
 }
 
-/** Classifies the latest human reply on `pf`. A guarded finding is agreed away only when `authorReplyMayClear` holds. */
+/** Returns `agree` when Manki settled the latest reply by a person on `pf`. A guarded finding is agreed away only when `authorReplyMayClear` holds. */
 function replyClassOf(pf: PreviousFinding): AuthorReplyClass {
-  const replyClass = classifyAuthorReply(pf.authorReplyText);
-  return replyClass === 'agree' && authorCannotClear(pf) && !pf.authorReplyMayClear ? 'none' : replyClass;
+  return pf.replyAgreed && (!authorCannotClear(pf) || pf.authorReplyMayClear) ? 'agree' : 'none';
 }
 
 /**
@@ -768,6 +700,7 @@ async function fetchRecapState(
       ...(t.evidenceFiles && { evidenceFiles: t.evidenceFiles }),
       authorReplyText: t.authorReplyText,
       authorReplyLogin: t.authorReplyLogin,
+      ...(t.replyAgreed && { replyAgreed: true }),
       ...(t.authorReplyAssociation && { authorReplyAssociation: t.authorReplyAssociation }),
       ...(t.isSecurity && { isSecurity: true }),
       ...(replierMayClear && { authorReplyMayClear: true }),
@@ -873,6 +806,23 @@ function settlement(bot: BotIdentity, comments: ThreadCommentNode[]): Settlement
     return ownMarker(body, SECURITY_OVERRIDE_OPENER, COMMENT_MARKER) !== undefined ? ['override'] : [];
   }).at(-1);
   return { fixAnswered: comments.slice(1).some(c => own(c) && fix(c.body ?? '')), ...(latest && latest !== 'fix' && { latestWaiver: latest }) };
+}
+
+/**
+ * Whether Manki settled the latest reply by a person since it last reopened the thread: a later comment of Manki's
+ * records a settling answer to that very reply, or a dismissal it accepted from that reply's writer. Answering takes a
+ * while, so an answer to an earlier reply can land after a later one, and the record's `answers` tells them apart. A
+ * reply Manki has not answered, or answered without settling, agrees to nothing, and neither does a dismissal by
+ * someone else, since who may clear the thread is read from the reply's writer.
+ */
+function replyAgreed(bot: BotIdentity, comments: ThreadCommentNode[]): boolean {
+  const since = [comments[0], ...sinceLastReopen(bot, comments)];
+  const reply = latestPersonReply(bot, since);
+  if (!reply) return false;
+  const answersReply = (body: string) => reply.databaseId !== undefined && settledReplyId(body) === reply.databaseId;
+  const dismissedByReplier = (body: string) => isLogin(ownMarker(body, DISMISS_RECORD_OPENER, COMMENT_MARKER), reply.author?.login);
+  return since.slice(since.indexOf(reply) + 1).some(c => isBotLogin(bot, c.author?.login)
+    && (answersReply(c.body ?? '') || dismissedByReplier(c.body ?? '')));
 }
 
 /** The replies in a thread that neither Manki nor another bot wrote. GraphQL types a bot's comment author as `Bot`. */
@@ -1086,6 +1036,8 @@ interface ReviewThread extends FindingMetadata {
   answer?: string;
   /** How Manki's replies and the dismiss commands settled the thread, by `settlement`. Unset when not every comment was read. */
   settlement?: Settlement;
+  /** Manki settled the latest reply by a person, by `replyAgreed`. Unset when not every comment was read. */
+  replyAgreed?: boolean;
 }
 
 /** Earlier wordings of `MISSED_EARLIER_NOTE` that threads posted before still carry. */
@@ -1163,7 +1115,7 @@ interface FetchReviewThreadsResult {
   state: OpenThreadsState;
 }
 
-const THREAD_COMMENT_FIELDS = 'body url authorAssociation author { login __typename } originalCommit { oid }';
+const THREAD_COMMENT_FIELDS = 'databaseId body url authorAssociation author { login __typename } originalCommit { oid }';
 
 const THREAD_COMMENTS_QUERY = `
   query($threadId: ID!, $cursor: String) {
@@ -1179,6 +1131,7 @@ const THREAD_COMMENTS_QUERY = `
 `;
 
 interface ThreadCommentNode {
+  databaseId?: number;
   body: string;
   url?: string;
   authorAssociation?: string;
@@ -1241,9 +1194,7 @@ async function fetchReviewThreads(
       const firstComment = thread.comments.nodes[0];
       const isBotThread = !!firstComment?.body?.includes(BOT_MARKER) && isBotLogin(bot, firstComment.author?.login);
 
-      // Use the latest non-bot reply so evolving threads (e.g. initial
-      // "Fixed!" followed by a retraction) classify by the author's current
-      // stance rather than their first reaction.
+      // The latest non-bot reply is the one Manki's answer has to settle, so a retraction after a first "Fixed!" counts.
       const lastNonBotReply = latestPersonReply(bot, thread.comments.nodes);
       const hasHumanReply = lastNonBotReply !== undefined;
       const authorReplyText = lastNonBotReply?.body;
@@ -1272,6 +1223,7 @@ async function fetchReviewThreads(
       const fixClaim = isBotThread && !incomplete.has(thread.id) ? fixClaimOf(bot, thread.comments.nodes, `${owner}/${repo}`, prNumber) : undefined;
       const answer = isBotThread ? latestAnswer(bot, thread.comments.nodes) : undefined;
       const settled = isBotThread && !incomplete.has(thread.id) ? settlement(bot, thread.comments.nodes) : undefined;
+      const agreed = isBotThread && !incomplete.has(thread.id) && replyAgreed(bot, thread.comments.nodes);
 
       return {
         threadId: thread.id,
@@ -1305,6 +1257,7 @@ async function fetchReviewThreads(
         ...(incomplete.has(thread.id) && { commentsIncomplete: true }),
         ...(answer && { answer }),
         ...(settled && { settlement: settled }),
+        ...(agreed && { replyAgreed: true }),
       };
     });
     return { threads, state: threads.length === 0 ? 'empty' : 'fetched' };
@@ -1622,4 +1575,4 @@ function dropWaivedRestatements(
   return { unique, duplicates };
 }
 
-export { BOT_PREFIX_PATTERN, dismissRecordLogins, dismissRecordMarker, dropWaivedRestatements, withoutCode, blockersToRecheck, currentFindingLine, DuplicateMatch, FixClaim, fixClaimMarker, fixClaimOf, namedPullRequests, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, pushTouchesThread, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, latestPersonReply, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };
+export { BOT_PREFIX_PATTERN, dismissRecordLogins, dismissRecordMarker, dropWaivedRestatements, withoutCode, blockersToRecheck, currentFindingLine, DuplicateMatch, FixClaim, fixClaimMarker, fixClaimOf, namedPullRequests, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, pushTouchesThread, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, latestPersonReply, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };

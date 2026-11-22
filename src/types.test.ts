@@ -142,7 +142,6 @@ function fullyPopulatedContext(): RoundContext {
       verdictReason: 'required_present',
       inPrSuppressedCount: 1,
       crossRoundSuppressed: 0,
-      crossRoundDemoted: 1,
     },
     dedup: { staticDropped: 1, llmDropped: 0, durationMs: 200 },
     memory: { suppressionsApplied: 1 },
@@ -198,7 +197,6 @@ describe('RoundContext', () => {
       judge: {
         summary: 'split counters',
         ownProposalDemotedCount: 2,
-        contradictionDemotedCount: 1,
         ratchetSuppressedCount: 3,
         resolvedThreadSuppressedCount: 1,
         interRoundDiffEmptyOverride: { applied: true, affectedThreadCount: 4 },
@@ -208,7 +206,6 @@ describe('RoundContext', () => {
       },
     };
     expect(ctx.judge.ownProposalDemotedCount).toBe(2);
-    expect(ctx.judge.contradictionDemotedCount).toBe(1);
     expect(ctx.judge.ratchetSuppressedCount).toBe(3);
     expect(ctx.judge.resolvedThreadSuppressedCount).toBe(1);
     expect(ctx.judge.interRoundDiffEmptyOverride).toEqual({ applied: true, affectedThreadCount: 4 });

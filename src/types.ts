@@ -181,7 +181,6 @@ export function isNote(severity: FindingSeverity): boolean {
 export const SEVERITY_TOKEN_PATTERN = 'blocker|warning|note|ignore|suggestion|nitpick|required|nit';
 
 export const RATCHET_SUPPRESSED_TAG = 'suppressed-by-ratchet' as const;
-export const CONTRADICTION_TAG = 'contradicts-prior-round' as const;
 export const RESOLVED_THREAD_SUPPRESSED_TAG = 'suppressed-by-resolved-thread' as const;
 
 export const OWN_PROPOSAL_TAG = 'own-proposal-followup' as const;
@@ -930,7 +929,7 @@ export interface RoundSlicing {
 
 /** What changed a finding's severity. */
 export type GradeChange =
-  | 'judge' | 'rule' | 'unproven' | 'build_claim' | 'refutation' | 'in_pr_suppression' | 'own_proposal' | 'contradiction' | 'ratchet'
+  | 'judge' | 'rule' | 'unproven' | 'build_claim' | 'refutation' | 'in_pr_suppression' | 'own_proposal' | 'ratchet'
   | 'resolved_thread' | 'pre_existing';
 
 /** One change of a finding's severity. */
@@ -1288,7 +1287,8 @@ export interface FindingFingerprint {
   slug: string;
 }
 
-export type AuthorReplyClass = 'agree' | 'disagree' | 'partial' | 'none';
+/** `agree` when Manki settled the latest reply by a person in the finding's thread, by `replyClassOf`. */
+export type AuthorReplyClass = 'agree' | 'none';
 
 /** Reason why a prior-round thread's fingerprint is suppressing current findings. */
 export type InPrSuppressionReason = 'resolved-thread' | 'agree-reply';
@@ -1468,7 +1468,6 @@ export interface ReviewResult {
   /** Every LLM call of the round, in the order each finished. */
   llmCalls?: LLMCall[];
   crossRoundSuppressed?: number;
-  crossRoundDemoted?: number;
   /** Set when the judge stage forced every open thread to `not_addressed` because the inter-round diff was known-empty. */
   interRoundDiffEmptyOverride?: InterRoundDiffEmptyOverride;
   testNitSuppressedCount?: number;
@@ -1986,7 +1985,6 @@ export interface ReviewStats {
     inPrSuppressedCount?: number;
     verdictReason?: VerdictReason;
     crossRoundSuppressed?: number;
-    crossRoundDemoted?: number;
   };
 
   // File analysis
@@ -2734,19 +2732,11 @@ export interface RoundJudge {
   verdictReason?: VerdictReason;
   inPrSuppressedCount?: number;
   crossRoundSuppressed?: number;
-  crossRoundDemoted?: number;
   /**
    * Count of findings dropped because they object to code that applies a prior-round
    * `suggestedFix` (tagged `OWN_PROPOSAL_TAG`).
    */
   ownProposalDemotedCount?: number;
-  /**
-   * Subset of `crossRoundDemoted` tagged `CONTRADICTION_TAG`. Together with
-   * `ownProposalDemotedCount`, accounts for the full `crossRoundDemoted`
-   * aggregate; split so future demotion categories don't collapse into a
-   * single opaque counter.
-   */
-  contradictionDemotedCount?: number;
   /** Subset of `crossRoundSuppressed` tagged `RATCHET_SUPPRESSED_TAG`. */
   ratchetSuppressedCount?: number;
   /** Subset of `crossRoundSuppressed` tagged `RESOLVED_THREAD_SUPPRESSED_TAG`. */
@@ -2877,7 +2867,7 @@ export interface RoundSuppressedFinding {
 /**
  * Author-reply re-classification attribution recorded by `refreshAuthorReplyClass`.
  * The cached `authorReplyClass` on each prior-round fingerprint is `'none'` at
- * emit time. When live thread state shifts it to `agree`/`disagree`/`partial`,
+ * emit time. When live thread state shifts it to `agree` or back to `none`,
  * this records the flip so noise debugging can attribute prior-unaddressed
  * decisions to the reply state at recap time.
  */
@@ -3089,6 +3079,8 @@ export interface ReplyRecord {
   relatedRepos?: RoundRelatedRepo[];
   /** What a thread reply that settles the finding decided. */
   decision?: ReplyDecision;
+  /** The id of the developer's comment a thread reply answers, so a later reply in the thread never counts as answered by it. */
+  answers?: number;
   /** The statements of the developer's reply that a thread reply checked, in the order it lists them. */
   statements?: ReplyStatementRecord[];
   /** How many statements a thread reply left unchecked because the developer's reply held more than it checks. */

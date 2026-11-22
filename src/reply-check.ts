@@ -11,7 +11,7 @@ import { namedPullRequests } from './recap';
 import { isDiffLocation, locationFile, locationLines, shownLines } from './refute';
 import { fetchedRelatedRepos } from './related-repos';
 import { parseProof } from './review';
-import { leadingRelatedCitation } from './static-signals';
+import { leadingRelatedCitation, MAX_QUOTED_RANGE } from './static-signals';
 import { DiffFile, ParsedDiff, RelatedRepoTools, ReplyStatementRecord, UncheckedReason } from './types';
 
 type Octokit = ReturnType<typeof getOctokit>;
@@ -47,6 +47,11 @@ export interface ReplySources {
   repo?: string;
   /** The PR's own number, which never fixes its finding elsewhere. */
   pr?: number;
+  /**
+   * What the PR changed since the thread was posted, in the finding's file and the files it cited, by `fetchChangesSince`.
+   * A "Fixed" counts only when its proof cites a line one of these adds. Unset when that change could not be read.
+   */
+  changedSincePosted?: readonly DiffFile[];
 }
 
 /** What Manki's own look at the PR description showed: the text it holds, or the text it does not hold in any letter case. */
@@ -103,8 +108,31 @@ function collapse(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
-function citesRelated(cited: unknown, names: readonly string[]): boolean {
-  return Array.isArray(cited) && cited.some(entry => typeof entry === 'string' && !!leadingRelatedCitation(entry, names));
+/** Returns the lines of the new file that `file` adds, and the lines right before and after each removal. */
+function changedLineNumbers(file: DiffFile): Set<number> {
+  const lines = new Set(addedLines(file).keys());
+  for (const hunk of file.hunks) {
+    let next = hunk.newStart;
+    for (const content of hunk.content.split('\n')) {
+      if (content.startsWith('\\')) continue;
+      if (!content.startsWith('-')) next++;
+      else lines.add(next - 1).add(next);
+    }
+  }
+  return lines;
+}
+
+/**
+ * Whether `location` cites a line that one of `changed` adds, or a line right next to code it removes. A range over
+ * `MAX_QUOTED_RANGE` lines counts only when every line in it is such a line, since a wide range holds an unrelated
+ * change as easily as a fix.
+ */
+function citesChangedLine(location: string, changed: readonly DiffFile[] = []): boolean {
+  const file = changed.find(f => f.path === locationFile(location));
+  if (!file) return false;
+  const [start, end] = locationLines(location);
+  const cited = [...changedLineNumbers(file)].filter(line => line >= start && line <= end).length;
+  return end - start + 1 <= MAX_QUOTED_RANGE ? cited > 0 : cited === end - start + 1;
 }
 
 /**
@@ -208,8 +236,8 @@ function checkStatement(entry: Record<string, unknown>, quote: string, sources: 
  * "Outcome. text", with the statements whose quote is in `developerReply`.
  *
  * An outcome can only become "Unverified.", never anything else: when the answer is not the JSON asked for, when a
- * "Withdrawn" has no line of the PR's own repository in `proof`, and when a "Fixed" cites a related repo there and no
- * line of the PR's own. A "FixedElsewhere" is "Unverified." too, with `fixedIn` set when `developerReply` names that
+ * "Withdrawn" has no line of the PR's own repository in `proof`, and when a "Fixed" cites no line there that
+ * `changedSincePosted` adds. A "FixedElsewhere" is "Unverified." too, with `fixedIn` set when `developerReply` names that
  * pull request, for `checkFixedElsewhere` to confirm. No statement's status changes the outcome.
  */
 export function checkReply(content: string, developerReply: string, sources: ReplySources): CheckedReply {
@@ -234,7 +262,8 @@ export function checkReply(content: string, developerReply: string, sources: Rep
   const statements = [...quoted].slice(0, MAX_REPLY_STATEMENTS).map(([quote, entry]) => checkStatement(entry, quote, sources));
 
   const { own } = shownPlaces(parsed.proof, sources);
-  const unproven = own.length === 0 && (outcome === 'Withdrawn' || (outcome === 'Fixed' && citesRelated(parsed.proof, sources.relatedNames)));
+  // A fix is a change, so only a line the PR changed since the thread was posted can show one.
+  const unproven = outcome === 'Withdrawn' ? own.length === 0 : outcome === 'Fixed' && !own.some(at => citesChangedLine(at, sources.changedSincePosted));
   // Only a pull request the developer's own words name is checked, so the model cannot pick one.
   const fixedIn = outcome === 'FixedElsewhere' && sources.repo && typeof parsed.fixed_in === 'number' && parsed.fixed_in !== sources.pr && namedPullRequests(developerReply, sources.repo).includes(parsed.fixed_in)
     ? parsed.fixed_in : undefined;
@@ -516,7 +545,7 @@ export async function checkFixedElsewhere(pr: number, s: ElsewhereSources): Prom
     logFailure(`check the merge with #${pr}`)(error);
     return { why: `the check of the merge with #${pr} failed`, retry: RETRY_SOON };
   }
-  const checked = checkReply(answer, '', { workspace, relatedNames: [] });
+  const checked = checkReply(answer, '', { workspace, relatedNames: [], changedSincePosted: [findingFile] });
   // Every cited line has to be one of the lines `pr` put in place of the finding's line.
   const onPrLines = (at: string): boolean => {
     const [start, end] = locationLines(at);

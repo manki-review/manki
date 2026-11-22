@@ -5,11 +5,10 @@ import { MANKI_VERSION, RepoContext } from './github';
 import type { MemorySkip } from './memory';
 import { latestLimits, parseModelSpec, summarizeCalls } from './providers';
 import { routingDigest } from './routing';
-import { CONTRADICTION_TAG, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OpenThread, OWN_PROPOSAL_TAG, ParsedDiff, PromptVersions, RATCHET_SUPPRESSED_TAG, ReclassifiedPrior, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, ReviewModels, ReviewResult, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundJudgeDrop, RoundRawFinding, RoundRecap, RoundRelatedRepo, RoundRouting, RoundRunner, RoundStaticAnalysis, RoundTrigger, RoundUsage, RoundUsageStage, SECURITY_TAG, SecurityOverride, SEVERITY_ORDER, ThreadResolutionOverrides, TokenServiceCall, PRE_EXISTING_TAG, Finding, FindingFingerprintEntry } from './types';
+import { FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OpenThread, OWN_PROPOSAL_TAG, ParsedDiff, PromptVersions, RATCHET_SUPPRESSED_TAG, ReclassifiedPrior, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, ReviewModels, ReviewResult, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundJudgeDrop, RoundRawFinding, RoundRecap, RoundRelatedRepo, RoundRouting, RoundRunner, RoundStaticAnalysis, RoundTrigger, RoundUsage, RoundUsageStage, SECURITY_TAG, SecurityOverride, SEVERITY_ORDER, ThreadResolutionOverrides, TokenServiceCall, PRE_EXISTING_TAG, Finding, FindingFingerprintEntry } from './types';
 
 const ALLOWED_FINGERPRINT_TAGS = new Set<string>([
   OWN_PROPOSAL_TAG,
-  CONTRADICTION_TAG,
   RATCHET_SUPPRESSED_TAG,
   RESOLVED_THREAD_SUPPRESSED_TAG,
   FOLLOW_UP_TAG,
@@ -173,11 +172,9 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
   }
   const mergedDuplicates = mergedDuplicateCount(result);
   const ownProposalDemotedCount = allJudged.filter(f => f.tags?.includes(OWN_PROPOSAL_TAG)).length;
-  const contradictionDemotedCount = allJudged.filter(f => f.tags?.includes(CONTRADICTION_TAG)).length;
   const ratchetSuppressedCount = allJudged.filter(f => f.tags?.includes(RATCHET_SUPPRESSED_TAG)).length;
   const resolvedThreadSuppressedCount = allJudged.filter(f => f.tags?.includes(RESOLVED_THREAD_SUPPRESSED_TAG)).length;
   const crossRoundSuppressed = result.crossRoundSuppressed;
-  const crossRoundDemoted = result.crossRoundDemoted;
   const interRoundDiffEmptyOverride = result.interRoundDiffEmptyOverride;
   const inPrSuppressedCount = result.inPrSuppressedCount ?? 0;
   const openThreadCount = openThreads.length;
@@ -392,12 +389,10 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
       retryCount: result.judgeRetryCount ?? 0,
       ...(result.verdictReason && { verdictReason: result.verdictReason }),
       ...(ownProposalDemotedCount > 0 && { ownProposalDemotedCount }),
-      ...(contradictionDemotedCount > 0 && { contradictionDemotedCount }),
       ...(ratchetSuppressedCount > 0 && { ratchetSuppressedCount }),
       ...(resolvedThreadSuppressedCount > 0 && { resolvedThreadSuppressedCount }),
       ...(inPrSuppressedCount > 0 && { inPrSuppressedCount }),
       ...(crossRoundSuppressed != null && crossRoundSuppressed > 0 && { crossRoundSuppressed }),
-      ...(crossRoundDemoted != null && crossRoundDemoted > 0 && { crossRoundDemoted }),
       ...(interRoundDiffEmptyOverride && { interRoundDiffEmptyOverride }),
       ...(result.threadEvaluations && result.threadEvaluations.length > 0 && { threadEvaluations: result.threadEvaluations }),
       ...(result.verdictTrace && { verdictTrace: result.verdictTrace }),

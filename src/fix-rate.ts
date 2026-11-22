@@ -4,7 +4,7 @@ import * as github from '@actions/github';
 import { parsePRDiff } from './diff';
 import { BotIdentity, fetchInterRoundDiff } from './github';
 import { appendMemoryLine, MemoryStore } from './memory';
-import { classifyAuthorReply, fetchRecapState, judgeAddressedThreadIds, PreviousFinding } from './recap';
+import { fetchRecapState, judgeAddressedThreadIds, PreviousFinding } from './recap';
 import { AuthorClearRole, citesEvidence, FindingFingerprint, FindingFingerprintEntry, ParsedDiff, RoundContext } from './types';
 import { sanitizeTokens } from './utils';
 
@@ -168,5 +168,5 @@ function isDismissed(thread: PreviousFinding | undefined, prAuthorLogin: string 
   if (thread.status === 'resolved') return true;
   return prAuthorLogin !== undefined
     && thread.authorReplyLogin === prAuthorLogin
-    && classifyAuthorReply(thread.authorReplyText) === 'agree';
+    && !!thread.replyAgreed;
 }

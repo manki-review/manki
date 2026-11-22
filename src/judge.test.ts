@@ -943,7 +943,7 @@ describe('buildJudgeUserMessage', () => {
           fingerprint: { file: 'src/b.ts', lineStart: 20, lineEnd: 20, slug: titleToSlug('Unused import') },
           severity: 'note',
           title: 'Unused import',
-          authorReply: 'disagree',
+          authorReply: 'none',
         },
         { fingerprint: { file: 'src/b.ts', lineStart: 30, lineEnd: 30, slug: titleToSlug('Retry never ends') }, severity: 'warning', title: 'Retry never ends', authorReply: 'none', threadId: 'PRRT_2' },
         { fingerprint: { file: 'src/b.ts', lineStart: 40, lineEnd: 40, slug: titleToSlug('Cache never cleared') }, severity: 'warning', title: 'Cache never cleared', authorReply: 'none', threadId: 'PRRT_3' },
@@ -954,7 +954,7 @@ describe('buildJudgeUserMessage', () => {
 
     expect(msg).toContain('## Prior Round Findings');
     expect(msg).toContain('"authorReply": "agree"');
-    expect(msg).toContain('"authorReply": "disagree"');
+    expect(msg).toContain('"authorReply": "none"');
     expect(msg).toContain('"slug": "Null-check"');
     // Every earlier blocker can be linked, and every other earlier finding still open: in an open thread or in the body.
     expect(msg).toContain([
@@ -3583,8 +3583,8 @@ describe('runJudgeAgent', () => {
     expect(userMessage).toContain('Verify whether the concern still applies.');
   });
 
-  it('priorRounds with partial authorReply does not suppress the finding', async () => {
-    // Only 'agree' triggers dismissal; 'partial' leaves the finding in play.
+  it('priorRounds without an agreed reply does not suppress the finding', async () => {
+    // Only 'agree' triggers dismissal, so any other prior leaves the finding in play.
     const judgedResponse = JSON.stringify({
       summary: 'Finding still live.',
       findings: [
@@ -3601,7 +3601,7 @@ describe('runJudgeAgent', () => {
         fingerprint: { file: 'src/index.ts', lineStart: 10, lineEnd: 10, slug: 'Unused-variable' },
         severity: 'note',
         title: 'Unused variable',
-        authorReply: 'partial',
+        authorReply: 'none',
       }],
     }];
 
@@ -3624,7 +3624,7 @@ describe('runJudgeAgent', () => {
 
     // Prompt must include the prior round so the model has context.
     const [, userMessage] = mockSendMessage.mock.calls[0];
-    expect(userMessage).toContain('"authorReply": "partial"');
+    expect(userMessage).toContain('"authorReply": "none"');
     expect(userMessage).toContain('Prior Round Findings');
   });
 
@@ -4633,7 +4633,7 @@ describe('applyInPrSuppression', () => {
   });
 
   it('does not overwrite a pre-existing originalSeverity', () => {
-    // Finding was already demoted elsewhere (e.g., cross-round contradiction) and carries
+    // Finding was already demoted elsewhere (e.g., by the judge) and carries
     // originalSeverity: 'blocker'. In-PR suppression must keep that pre-existing value
     // rather than clobbering it with the current (demoted) severity.
     const findings = [makeFinding({ severity: 'note', originalSeverity: 'blocker' })];
@@ -5671,7 +5671,6 @@ describe('applyCrossRoundSuppression', () => {
 
     const result = applyCrossRoundSuppression(findings, prior);
     expect(result.suppressedCount).toBe(1);
-    expect(result.demotedCount).toBe(0);
     expect(result.findings[0].severity).toBe('ignore');
     expect(result.findings[0].gradePath).toEqual([{ from: 'note', to: 'ignore', by: 'ratchet', reason: 'matches round 1' }]);
     expect(result.findings[0].tags).toContain('suppressed-by-ratchet');
@@ -5692,13 +5691,13 @@ describe('applyCrossRoundSuppression', () => {
     expect(result.findings[0].tags).toBeUndefined();
   });
 
-  it('does not suppress when prior authorReply is disagree', () => {
+  it('does not suppress when prior authorReply is none', () => {
     const findings = [makeFinding({ title: 'Unused variable', file: 'src/a.ts', line: 10, severity: 'note' })];
     const prior = [makePriorRound([{
       fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') },
       severity: 'note',
       title: 'Unused variable',
-      authorReply: 'disagree',
+      authorReply: 'none',
     }])];
 
     const result = applyCrossRoundSuppression(findings, prior);
@@ -5748,135 +5747,7 @@ describe('applyCrossRoundSuppression', () => {
     expect(linked.findings[0].severity).toBe('ignore');
   });
 
-  it('does not demote required via contradiction (prompt injection guard)', () => {
-    const findings = [makeFinding({
-      title: 'Naming convention',
-      file: 'src/a.ts',
-      line: 12,
-      severity: 'blocker',
-      description: 'Replace the old helper and avoid the previous pattern instead.',
-    })];
-    const prior = [makePriorRound([{
-      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Naming convention') },
-      severity: 'note',
-      title: 'Naming convention',
-      authorReply: 'agree',
-    }], 3)];
-
-    const result = applyCrossRoundSuppression(findings, prior);
-    expect(result.suppressedCount).toBe(0);
-    expect(result.demotedCount).toBe(0);
-    expect(result.findings[0].severity).toBe('blocker');
-    expect(result.findings[0].originalSeverity).toBeUndefined();
-    expect(result.findings[0].tags ?? []).not.toContain('contradicts-prior-round');
-  });
-
-  it('appends contradiction note to pre-existing judgeNotes when a warning contradicts prior', () => {
-    const findings = [makeFinding({
-      title: 'Naming convention',
-      file: 'src/a.ts',
-      line: 12,
-      severity: 'warning',
-      description: 'Replace the old helper and avoid the previous pattern instead.',
-      judgeNotes: 'Prior note',
-    })];
-    const prior = [makePriorRound([{
-      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Naming convention') },
-      severity: 'warning',
-      title: 'Naming convention',
-      authorReply: 'agree',
-    }], 2)];
-
-    const result = applyCrossRoundSuppression(findings, prior);
-    expect(result.demotedCount).toBe(1);
-    expect(result.findings[0].judgeNotes).toBe('Prior note Contradicts round 2 guidance accepted by author');
-    expect(result.findings[0].gradePath).toEqual([{ from: 'warning', to: 'note', by: 'contradiction', reason: 'Contradicts round 2 guidance accepted by author' }]);
-  });
-
-  it('cites the most-recent agreeing round when multiple prior rounds match', () => {
-    const makeMatchingPriorRound = (round: number) => makePriorRound([{
-      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Naming convention') },
-      severity: 'warning',
-      title: 'Naming convention',
-      authorReply: 'agree',
-    }], round);
-    const makeContradictingFinding = () => makeFinding({
-      title: 'Naming convention',
-      file: 'src/a.ts',
-      line: 12,
-      severity: 'warning',
-      description: 'Replace the old helper and avoid the previous pattern instead.',
-    });
-
-    // Ascending input order: [round 1, round 3]. Round 3 must still be cited.
-    const ascending = applyCrossRoundSuppression(
-      [makeContradictingFinding()],
-      [makeMatchingPriorRound(1), makeMatchingPriorRound(3)],
-    );
-    expect(ascending.demotedCount).toBe(1);
-    expect(ascending.findings[0].severity).toBe('note');
-    expect(ascending.findings[0].tags).toContain('contradicts-prior-round');
-    expect(ascending.findings[0].judgeNotes).toBe('Contradicts round 3 guidance accepted by author');
-
-    // Descending input order: [round 3, round 1]. Without the descending sort, `find()` would
-    // still happen to land on round 3 above; supplying the rounds reversed proves the citation
-    // tracks recency rather than input position.
-    const descending = applyCrossRoundSuppression(
-      [makeContradictingFinding()],
-      [makeMatchingPriorRound(3), makeMatchingPriorRound(1)],
-    );
-    expect(descending.demotedCount).toBe(1);
-    expect(descending.findings[0].severity).toBe('note');
-    expect(descending.findings[0].tags).toContain('contradicts-prior-round');
-    expect(descending.findings[0].judgeNotes).toBe('Contradicts round 3 guidance accepted by author');
-
-    // Out-of-window round: round 3 has lineStart 100 (outside LINE_WINDOW from line 12),
-    // round 1 has lineStart 10 (within window). After sorting descending, find() visits
-    // round 3 first, but it falls through because of the window check, leaving round 1 as
-    // the correct citation.
-    const outOfWindowRound3 = (round: number, lineStart: number) =>
-      makePriorRound([{
-        fingerprint: { file: 'src/a.ts', lineStart, lineEnd: lineStart, slug: titleToSlug('Naming convention') },
-        severity: 'warning',
-        title: 'Naming convention',
-        authorReply: 'agree',
-      }], round);
-
-    const mixedWindow = applyCrossRoundSuppression(
-      [makeContradictingFinding()],
-      // Round 3 is outside LINE_WINDOW (line 100), round 1 is within (line 10).
-      [outOfWindowRound3(3, 100), outOfWindowRound3(1, 10)],
-    );
-    expect(mixedWindow.demotedCount).toBe(1);
-    expect(mixedWindow.findings[0].judgeNotes).toBe('Contradicts round 1 guidance accepted by author');
-  });
-
-  it('preserves required severity with reversal word and prior agree (prompt injection guard)', () => {
-    // Adversary injects reversal word into a round-2 required finding whose slug matches
-    // a round-1 agreed finding. The contradiction path must never fire for required findings.
-    const findings = [makeFinding({
-      title: 'Null pointer dereference',
-      file: 'src/a.ts',
-      line: 20,
-      severity: 'blocker',
-      description: 'Remove the null check — avoid dereferencing here instead.',
-    })];
-    const prior = [makePriorRound([{
-      fingerprint: { file: 'src/a.ts', lineStart: 18, lineEnd: 18, slug: titleToSlug('Null pointer dereference') },
-      severity: 'note',
-      title: 'Null pointer dereference',
-      authorReply: 'agree',
-    }], 1)];
-
-    const result = applyCrossRoundSuppression(findings, prior);
-    expect(result.demotedCount).toBe(0);
-    expect(result.suppressedCount).toBe(0);
-    expect(result.findings[0].severity).toBe('blocker');
-    expect(result.findings[0].originalSeverity).toBeUndefined();
-    expect(result.findings[0].tags ?? []).not.toContain('contradicts-prior-round');
-  });
-
-  it('demotes a warning to a note via contradiction when reversal word matches within line window', () => {
+  it('ratchets a warning that matches an agreed prior, whatever words it uses', () => {
     const findings = [makeFinding({
       title: 'Naming convention',
       file: 'src/a.ts',
@@ -5892,14 +5763,11 @@ describe('applyCrossRoundSuppression', () => {
     }], 2)];
 
     const result = applyCrossRoundSuppression(findings, prior);
-    expect(result.suppressedCount).toBe(0);
-    expect(result.demotedCount).toBe(1);
-    expect(result.findings[0].severity).toBe('note');
-    expect(result.findings[0].originalSeverity).toBe('warning');
-    expect(result.findings[0].tags).toContain('contradicts-prior-round');
-    expect(result.findings[0].tags).not.toContain('suppressed-by-ratchet');
+    expect(result.suppressedCount).toBe(1);
+    expect(result.findings[0].severity).toBe('ignore');
+    expect(result.findings[0].gradePath).toEqual([{ from: 'warning', to: 'ignore', by: 'ratchet', reason: 'matches round 2' }]);
 
-    // A prior graded below the finding, such as a suggestion the author agreed to, neither demotes nor hides a warning.
+    // A prior graded below the finding, such as a suggestion the author agreed to, does not hide a warning.
     const belowPrior = [makePriorRound([{
       fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Naming convention') },
       severity: 'note',
@@ -5907,55 +5775,8 @@ describe('applyCrossRoundSuppression', () => {
       authorReply: 'agree',
     }], 2)];
     const kept = applyCrossRoundSuppression(findings, belowPrior);
-    expect([kept.suppressedCount, kept.demotedCount, kept.findings[0].severity]).toEqual([0, 0, 'warning']);
+    expect([kept.suppressedCount, kept.findings[0].severity]).toEqual([0, 'warning']);
   });
-
-  it('demotes a warning via contradiction when reversal word is in suggestedFix only', () => {
-    const findings = [makeFinding({
-      title: 'Naming convention',
-      file: 'src/a.ts',
-      line: 12,
-      severity: 'warning',
-      description: 'The helper should be updated.',
-      suggestedFix: 'Replace it with the newer utility instead.',
-    })];
-    const prior = [makePriorRound([{
-      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Naming convention') },
-      severity: 'warning',
-      title: 'Naming convention',
-      authorReply: 'agree',
-    }])];
-
-    const result = applyCrossRoundSuppression(findings, prior);
-    expect(result.demotedCount).toBe(1);
-    expect(result.findings[0].severity).toBe('note');
-    expect(result.findings[0].tags).toContain('contradicts-prior-round');
-  });
-
-  it('does not demote a note via contradiction', () => {
-    const findings = [makeFinding({
-      title: 'Naming convention',
-      file: 'src/a.ts',
-      line: 12,
-      severity: 'note',
-      description: 'Replace the old helper instead.',
-    })];
-    const prior = [makePriorRound([{
-      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Naming convention') },
-      severity: 'warning',
-      title: 'Naming convention',
-      authorReply: 'agree',
-    }])];
-
-    const result = applyCrossRoundSuppression(findings, prior);
-    // Only a warning is demoted by a contradiction.
-    expect(result.demotedCount).toBe(0);
-    expect(result.findings[0].originalSeverity).toBeUndefined();
-    expect(result.findings[0].tags ?? []).not.toContain('contradicts-prior-round');
-    // Ratchet still fires for non-required findings, so severity ends up as ignore.
-    expect(result.suppressedCount).toBe(1);
-  });
-
   it('does not tag or count findings already marked ignore by the judge', () => {
     // The judge may return findings with severity `ignore` (explicitly dropped). The ratchet
     // condition `current.severity !== 'blocker'` is true for `ignore`, so without an early
@@ -5980,133 +5801,14 @@ describe('applyCrossRoundSuppression', () => {
     expect(result.findings[0].tags ?? []).not.toContain('suppressed-by-ratchet');
   });
 
-  it('does not demote contradiction when line delta exceeds the window', () => {
-    // Use `warning` severity so only the line-window guard prevents contradiction demotion.
-    // With `required`, both the severity guard and the window guard would block it, making the
-    // test ambiguous about which one is responsible.
-    const findings = [makeFinding({
-      title: 'Naming convention',
-      file: 'src/a.ts',
-      line: 100,
-      severity: 'warning',
-      description: 'Replace the old helper instead.',
-    })];
-    const prior = [makePriorRound([{
-      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Naming convention') },
-      severity: 'warning',
-      title: 'Naming convention',
-      authorReply: 'agree',
-    }])];
-
-    const result = applyCrossRoundSuppression(findings, prior);
-    expect(result.demotedCount).toBe(0);
-    expect(result.findings[0].tags ?? []).not.toContain('contradicts-prior-round');
-    // The ratchet needs the line window too, so the finding stays.
-    expect(result.suppressedCount).toBe(0);
-    expect(result.findings[0].severity).toBe('warning');
-  });
-
-  it('demotes a warning via contradiction at exact LINE_WINDOW boundary (inside)', () => {
-    // prior lineEnd=10, LINE_WINDOW=5 → boundary is line 15 (inclusive)
-    const findings = [makeFinding({
-      title: 'Naming convention',
-      file: 'src/a.ts',
-      line: 15,
-      severity: 'warning',
-      description: 'Replace the old helper instead.',
-    })];
-    const prior = [makePriorRound([{
-      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Naming convention') },
-      severity: 'warning',
-      title: 'Naming convention',
-      authorReply: 'agree',
-    }])];
-
-    const result = applyCrossRoundSuppression(findings, prior);
-    expect(result.demotedCount).toBe(1);
-    expect(result.findings[0].severity).toBe('note');
-    expect(result.findings[0].originalSeverity).toBe('warning');
-    expect(result.findings[0].tags).toContain('contradicts-prior-round');
-  });
-
-  it('does not demote a warning via contradiction at LINE_WINDOW + 1 (outside)', () => {
-    // prior lineEnd=10, LINE_WINDOW=5 → boundary is 15; line 16 is outside
-    const findings = [makeFinding({
-      title: 'Naming convention',
-      file: 'src/a.ts',
-      line: 16,
-      severity: 'warning',
-      description: 'Replace the old helper instead.',
-    })];
-    const prior = [makePriorRound([{
-      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Naming convention') },
-      severity: 'warning',
-      title: 'Naming convention',
-      authorReply: 'agree',
-    }])];
-
-    const result = applyCrossRoundSuppression(findings, prior);
-    expect(result.demotedCount).toBe(0);
-    expect(result.findings[0].severity).not.toBe('note');
-    expect(result.findings[0].tags ?? []).not.toContain('contradicts-prior-round');
-  });
-
-  it('demotes a warning via contradiction when current line is within lineEnd + LINE_WINDOW of a multi-line prior', () => {
-    const findings = [makeFinding({
-      title: 'Naming convention',
-      file: 'src/a.ts',
-      line: 33,
-      severity: 'warning',
-      description: 'Replace the old helper instead.',
-    })];
-    const prior = [makePriorRound([{
-      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 30, slug: titleToSlug('Naming convention') },
-      severity: 'warning',
-      title: 'Naming convention',
-      authorReply: 'agree',
-    }], 2)];
-
-    const result = applyCrossRoundSuppression(findings, prior);
-    expect(result.demotedCount).toBe(1);
-    expect(result.findings[0].severity).toBe('note');
-    expect(result.findings[0].tags).toContain('contradicts-prior-round');
-  });
-
-  it('does not overwrite pre-existing originalSeverity when contradiction fires', () => {
-    // Simulates a finding already demoted as an own-proposal follow-up (originalSeverity='blocker')
-    // before applyCrossRoundSuppression runs. The contradiction path must preserve it.
-    const findings = [makeFinding({
-      title: 'Naming convention',
-      file: 'src/a.ts',
-      line: 12,
-      severity: 'warning',
-      originalSeverity: 'blocker',
-      description: 'Replace the old helper instead.',
-    })];
-    const prior = [makePriorRound([{
-      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Naming convention') },
-      severity: 'warning',
-      title: 'Naming convention',
-      authorReply: 'agree',
-    }])];
-
-    const result = applyCrossRoundSuppression(findings, prior);
-    expect(result.demotedCount).toBe(1);
-    expect(result.findings[0].severity).toBe('note');
-    expect(result.findings[0].originalSeverity).toBe('blocker');
-    expect(result.findings[0].tags).toContain('contradicts-prior-round');
-  });
-
   it('passes through findings unchanged when priorRounds is empty or undefined', () => {
     const findings = [makeFinding({ title: 'Unused variable', severity: 'note' })];
     const emptyResult = applyCrossRoundSuppression(findings, []);
     expect(emptyResult.suppressedCount).toBe(0);
-    expect(emptyResult.demotedCount).toBe(0);
     expect(emptyResult.findings).toEqual(findings);
 
     const undefinedResult = applyCrossRoundSuppression(findings, undefined);
     expect(undefinedResult.suppressedCount).toBe(0);
-    expect(undefinedResult.demotedCount).toBe(0);
     expect(undefinedResult.findings).toEqual(findings);
   });
 
@@ -6130,7 +5832,7 @@ describe('applyCrossRoundSuppression', () => {
     expect(result.findings[0].tags).toContain('suppressed-by-ratchet');
   });
 
-  it('ratchet fires when same slug+file was agreed in round 2 even if disagreed in round 1', () => {
+  it('ratchet fires when same slug+file was agreed in round 2 even if not agreed in round 1', () => {
     const findings = [makeFinding({
       title: 'Unused variable',
       file: 'src/a.ts',
@@ -6142,7 +5844,7 @@ describe('applyCrossRoundSuppression', () => {
         fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') },
         severity: 'note',
         title: 'Unused variable',
-        authorReply: 'disagree',
+        authorReply: 'none',
       }], 1),
       makePriorRound([{
         fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') },
@@ -6248,7 +5950,7 @@ describe('applyCrossRoundSuppression', () => {
         fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Old issue') },
         severity: 'note',
         title: 'Old issue',
-        authorReply: 'disagree',
+        authorReply: 'none',
         threadId: 'TH1',
       }])];
 
@@ -6479,7 +6181,6 @@ describe('runJudgeAgent cross-round suppression', () => {
 
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
     expect(result.crossRoundSuppressed).toBe(1);
-    expect(result.crossRoundDemoted).toBeUndefined();
     expect(result.findings[0].severity).toBe('ignore');
     expect(result.findings[0].tags).toContain('suppressed-by-ratchet');
 
@@ -6555,47 +6256,6 @@ describe('runJudgeAgent cross-round suppression', () => {
     }
   });
 
-  it('reports crossRoundDemoted when prior contradiction fires on a warning', async () => {
-    const judgedResponse = JSON.stringify({
-      summary: 'Unchanged.',
-      findings: [
-        { title: 'Naming convention', row: 'degraded', reasoning: 'Still present.' },
-      ],
-    });
-    mockSendMessage.mockResolvedValue({ content: judgedResponse });
-
-    const input: JudgeInput = {
-      findings: [makeFinding({
-        title: 'Naming convention',
-        file: 'src/index.ts',
-        line: 12,
-        severity: 'warning',
-        description: 'Replace the old helper instead.',
-      })],
-      diff: makeDiff(),
-      rawDiff: '',
-      repoContext: '',
-      agentCount: 3,
-      priorRounds: [roundContextFromLegacy({
-        round: 1,
-        commitSha: 'abc',
-        timestamp: 't',
-        findings: [{
-          fingerprint: { file: 'src/index.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Naming convention') },
-          severity: 'warning',
-          title: 'Naming convention',
-          authorReply: 'agree',
-        }],
-      })],
-    };
-
-    const result = await runJudgeAgent(mockClient, makeConfig(), input);
-    expect(result.crossRoundDemoted).toBe(1);
-    expect(result.crossRoundSuppressed).toBeUndefined();
-    expect(result.findings[0].severity).toBe('note');
-    expect(result.findings[0].tags).toContain('contradicts-prior-round');
-  });
-
   it('does not double-count when both in-PR suppression and cross-round prior agree match', async () => {
     // Cross-round ratchet fires first and tags the finding with `suppressed-by-ratchet`,
     // setting severity to `ignore`. In-PR suppression then sees an already-ignored finding
@@ -6644,7 +6304,6 @@ describe('runJudgeAgent cross-round suppression', () => {
     expect(result.crossRoundSuppressed).toBe(1);
     // In-PR suppression must not double-count an already-suppressed finding.
     expect(result.inPrSuppressedCount).toBeUndefined();
-    expect(result.crossRoundDemoted).toBeUndefined();
   });
 });
 

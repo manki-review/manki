@@ -6,7 +6,7 @@ import { join } from 'path';
 import { parsePRDiff } from './diff';
 import * as mcpServer from './mcp-server';
 import { checkFixedElsewhere, checkReply, ElsewhereSources, fixedElsewhereText, ReplySources, statementList, statementRecords, statementSummary } from './reply-check';
-import { RelatedRepoTools } from './types';
+import { ParsedDiff, RelatedRepoTools } from './types';
 
 const REPLY = 'The exporter writes rows as CSV columns.\nNothing   calls `Ledger::snapshot`. The mobile app never stores them, see @alice and [the docs](https://example.com). The description no longer names `MAX_ROWS`.';
 // What the PR description says at the time of the reply. Its last paragraph is longer than a text Manki looks up.
@@ -27,7 +27,7 @@ describe('checkReply', () => {
     const reports = join(root, 'reports');
     const stateDir = join(root, 'state');
     for (const dir of [join(workspace, 'src'), join(reports, 'lib'), stateDir]) mkdirSync(dir, { recursive: true });
-    writeFileSync(join(workspace, 'src/ledger.rs'), 'pub struct Ledger;\nimpl Ledger {\n    rows.write_csv();\n    pub fn snapshot(&self) {}\n}\n// --force is not read here\n');
+    writeFileSync(join(workspace, 'src/ledger.rs'), 'pub struct Ledger;\nimpl Ledger {\n    rows.write_csv();\n    pub fn snapshot(&self) {}\n}\n// --force is not read here\n// end\n// of\n// file\n');
     writeFileSync(join(workspace, 'logo.png'), Buffer.from([0x89, 0x50, 0x00, 0x01]));
     writeFileSync(join(reports, 'lib/rows.py'), 'import csv\nrows = csv.reader(source)\n');
     writeFileSync(join(stateDir, `${encodeURIComponent('acme/reports')}.done`), reports);
@@ -36,7 +36,8 @@ describe('checkReply', () => {
       cacheDir: join(root, 'cache'),
       stateDir,
     };
-    sources = { workspace, related, relatedNames: ['acme/reports', 'acme/billing'], diff: DIFF, description: DESCRIPTION };
+    // Line 3 of `src/ledger.rs` changed since the thread was posted.
+    sources = { workspace, related, relatedNames: ['acme/reports', 'acme/billing'], diff: DIFF, description: DESCRIPTION, changedSincePosted: DIFF.files };
   });
 
   afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -210,8 +211,11 @@ describe('checkReply', () => {
     ['Withdrawn', 'becomes Unverified on a line that does not exist', ['src/ledger.rs:99'], `Unverified. The exporter writes CSV. ${UNPROVEN}`],
     ['Withdrawn', 'becomes Unverified without proof', undefined, `Unverified. The exporter writes CSV. ${UNPROVEN}`],
     ['Withdrawn', 'becomes Unverified on text of the PR description', [HELD], `Unverified. The exporter writes CSV. ${UNPROVEN}`],
-    ['Fixed', 'holds without proof', undefined, 'Fixed. The exporter writes CSV.'],
-    ['Fixed', 'holds on a line of the PR next to a related line', ['src/ledger.rs:3', 'acme/reports:lib/rows.py:2'], 'Fixed. The exporter writes CSV.'],
+    ['Fixed', 'holds on a line changed since the thread was posted next to a related line', ['acme/reports:lib/rows.py:2', 'src/ledger.rs:2-4'], 'Fixed. The exporter writes CSV.'],
+    // A fix is a change, so a line the PR has not changed since the thread was posted shows none.
+    ['Fixed', 'becomes Unverified without proof', undefined, `Unverified. The exporter writes CSV. ${UNPROVEN}`],
+    ['Fixed', 'becomes Unverified on a line not changed since the thread was posted', ['src/ledger.rs:4'], `Unverified. The exporter writes CSV. ${UNPROVEN}`],
+    ['Fixed', 'becomes Unverified on text of the PR description', [HELD], `Unverified. The exporter writes CSV. ${UNPROVEN}`],
     ['Fixed', 'becomes Unverified on related lines alone', ['acme/reports:lib/rows.py:2'], `Unverified. The exporter writes CSV. ${UNPROVEN}`],
     ['Fixed', 'becomes Unverified on a related line that was not fetched', ['acme/billing:lib/rows.py:2'], `Unverified. The exporter writes CSV. ${UNPROVEN}`],
     ['Agreed', 'needs no proof', ['acme/reports:lib/rows.py:2'], 'Agreed. The exporter writes CSV.'],
@@ -228,6 +232,21 @@ describe('checkReply', () => {
       { quote: snapshot, status: 'confirmed', description: HELD },
     ];
     expect(checkReply(JSON.stringify({ outcome, answer: `${outcome}. The exporter writes CSV.`, proof, statements }), REPLY, sources).text).toBe(text);
+    // When what changed since the thread was posted could not be read, no line shows a fix.
+    if (outcome === 'Fixed') {
+      const unread = checkReply(JSON.stringify({ outcome, answer: 'The guard runs first.', proof: ['src/ledger.rs:3'] }), REPLY, { ...sources, changedSincePosted: undefined });
+      expect(unread.text).toBe(`Unverified. The guard runs first. ${UNPROVEN}`);
+      // A fix that only removes code holds on the line right before or after the removal, and on no line further away.
+      const removal = parsePRDiff('diff --git a/src/ledger.rs b/src/ledger.rs\n--- a/src/ledger.rs\n+++ b/src/ledger.rs\n@@ -2,3 +2,2 @@\n context\n-    debug(rows);\n context').files;
+      const removed = (at: string) => checkReply(JSON.stringify({ outcome, answer: 'The debug call is gone.', proof: [at] }), REPLY, { ...sources, changedSincePosted: removal }).text;
+      expect(['src/ledger.rs:2', 'src/ledger.rs:3', 'src/ledger.rs:4'].map(removed)).toEqual(['Fixed. The debug call is gone.', 'Fixed. The debug call is gone.', `Unverified. The debug call is gone. ${UNPROVEN}`]);
+      // A range wider than a quote holds an unrelated change as easily as a fix, so it counts only when every line in it changed.
+      const wide = 'diff --git a/src/ledger.rs b/src/ledger.rs\n--- a/src/ledger.rs\n+++ b/src/ledger.rs\n@@ -1,0 +1,8 @@\n+a\n+b\n+c\n+d\n+e\n+f\n+g\n+h';
+      const ranged = (at: string, changed: ParsedDiff) => checkReply(JSON.stringify({ outcome, answer: 'The guard runs first.', proof: [at] }), REPLY, { ...sources, changedSincePosted: changed.files }).text;
+      expect(ranged('src/ledger.rs:1-8', parsePRDiff(wide))).toBe('Fixed. The guard runs first.');
+      expect(ranged('src/ledger.rs:1-8', DIFF)).toBe(`Unverified. The guard runs first. ${UNPROVEN}`);
+      expect(ranged('src/ledger.rs:1-7', DIFF)).toBe('Fixed. The guard runs first.');
+    }
   });
 
   it('sets `fixedIn` only to a pull request of this repository that the developer\'s own words name', () => {

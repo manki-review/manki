@@ -16,7 +16,7 @@ import * as github from '@actions/github';
 import { parsePRDiff } from '../src/diff';
 import { postedFindings, touchesFinding } from '../src/fix-rate';
 import { fetchInterRoundDiff, fetchReviewThreadNodes } from '../src/github';
-import { classifyAuthorReply, findingFile, judgeAddressedThreadIds, threadMarkerSlug } from '../src/recap';
+import { findingFile, judgeAddressedThreadIds, threadMarkerSlug } from '../src/recap';
 import { FindingFingerprintEntry, migrateStoredSeverities, ParsedDiff, RoundContext } from '../src/types';
 import { aggregate } from './fix-rate-report';
 import { githubToken, HistoryLine as RecordLine, UndecodedLine } from './review-history';
@@ -88,6 +88,11 @@ const REPLY_OUTCOME = /^\**(Fixed|Agreed|Withdrawn|Unverified|Still open|Kept)\b
 // A person's reply that opens with one of these says the finding was acted on, or turned down.
 const AUTHOR_FIXED = /^\**(Fixed|Applied|Added|Adopted|Addressed|Done|Switched|Restructured)\b/i;
 const AUTHOR_DECLINED = /^\**(Pushing back|Declin|Skipping|Not applied|Not fixing|Won't fix|Keeping|Leaving)/i;
+// A reply that agrees, or turns the finding down, in other words anywhere, unless a negation comes within two words before.
+// Agreement wins, so "Good catch, keeping the rest" declines nothing.
+const NOT_NEGATED = String.raw`(?<!\b(?:not|never|isn't|wasn't|don't|doesn't|didn't|won't|can't)\s+(?:\S+\s+)?)`;
+const AUTHOR_AGREES = new RegExp(`${NOT_NEGATED}(?:\\b(?:fixed|done|you're right|good catch|addressed|resolved|agreed|will do)\\b|\u{1F44D})`, 'iu');
+const AUTHOR_DISAGREES = new RegExp(`${NOT_NEGATED}(?:\\b(?:disagree|intentional|keeping|won't|wontfix|by design|not a bug|unnecessary|this is fine)\\b|\u{1F44E})`, 'iu');
 // The posted grade would anchor a replayed judge, so the export drops the severity header, a cap note under it and the
 // `AI context` block.
 const SEVERITY_HEADER = /^[^\n]*\*\*(Blocker|Warning|Note|Suggestion|Nitpick)\b[^\n]*\n*(<sub>\[[^\]\n]*\]<\/sub>\n*)?/;
@@ -116,8 +121,7 @@ export function labelFinding({ thread, lineChanged, judgeAddressed }: Evidence):
   const reply = replies.filter(c => !c.bot).at(-1)?.body.trim();
   if (reply !== undefined) {
     if (AUTHOR_FIXED.test(reply)) return ['real', 'author-fixed'];
-    if (AUTHOR_DECLINED.test(reply)) return ['false', 'author-declined'];
-    if (classifyAuthorReply(reply) === 'disagree') return ['false', 'author-declined'];
+    if (AUTHOR_DECLINED.test(reply) || (!AUTHOR_AGREES.test(reply) && AUTHOR_DISAGREES.test(reply))) return ['false', 'author-declined'];
   }
   if (judgeAddressed) return ['real', 'judge-addressed'];
   if (lineChanged) return ['real', 'line-changed'];
