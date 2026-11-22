@@ -525,7 +525,9 @@ export async function checkFixedElsewhere(pr: number, s: ElsewhereSources): Prom
   const otherDiff = otherFile && parsePRDiff(listedFilesDiff([otherFile])).files[0];
   if (otherFile && !otherDiff) return { why: `GitHub shows no lines of the change #${pr} makes to ${file}` };
   const byPr = otherDiff && baseLine !== undefined ? replacementOf(otherDiff, baseLine) : undefined;
-  if (!byPr) return { why: `#${pr} does not replace ${place}` };
+  // `pr`'s diff counts lines from its own merge base, where PRs merged between the two bases may have moved the line.
+  const moved = `#${pr}'s diff does not replace ${place}, but it counts lines from #${pr}'s own base, so whether #${pr} replaces the line is not certain`;
+  if (!byPr) return { why: otherDiff && baseLine !== undefined ? moved : `#${pr} does not replace ${place}` };
   const linesOf = (diff: DiffFile, [first, last]: [number, number]) => {
     const added = addedLines(diff);
     return Array.from({ length: Math.max(0, last - first + 1) }, (_, k) => added.get(first + k));
