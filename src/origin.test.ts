@@ -5,6 +5,7 @@ import { parsePRDiff } from './diff';
 import { checkOrigins, MAX_ORIGIN_CHECKS } from './origin';
 import { LLMClient, NotStartedError } from './providers';
 import { AnthropicClient } from './providers/anthropic';
+import { postedWhenPreExisting } from './review';
 import { baseProofFixture, fakeClient, FakeCall, git, GIT_TEST_TIMEOUT_MS, gitWorkspace } from './test-utils';
 import { Finding, foundOnBase, oneCheckOnBase, OriginAnswer, ParsedDiff, sameOnBase } from './types';
 import { BASE_READS_FILE, fetchWorkspace } from './workspace';
@@ -54,6 +55,9 @@ describe('checkOrigins', () => {
       'In a file the PR added': { ...same, head: ['src/new.ts:1'], base: ['src/math.ts:2'] },
       'Added to a changed file': { ...fixed, head: ['src/api.ts:9'], base: ['src/api.ts:8'] },
       'Added, with the base cited elsewhere': { ...same, head: ['src/api.ts:9'], base: ['src/math.ts:2'] },
+      // A new caller of work an existing caller at the base already runs for the same input adds no cost of its own.
+      'A new caller of shared work': { ...same, reason: 'The base runs the same work for the same input.', head: ['src/api.ts:9'], base: ['src/api.ts:1-8'] },
+      'A new caller of shared work, as a blocker': { ...same, head: ['src/api.ts:9'], base: ['src/api.ts:1-8'] },
     };
     const client = originClient(replies, 'first-model');
     const pair = originClient(replies, 'pair-model');
@@ -81,16 +85,22 @@ describe('checkOrigins', () => {
       ['Tool alert', undefined, undefined],
       ['In a file the PR added', true, ['first-model:unsure', 'pair-model:unsure']],
     ]);
-    const added = await checkOrigins(client, ['Added to a changed file', 'Added, with the base cited elsewhere'].map(title => finding(title, {
-      file: 'src/api.ts', line: 9, evidence: { checks: [], proof: ['src/api.ts:9'] },
-    })), { workspace: root, diff, pair });
+    const onAdded = (title: string, overrides: Partial<Finding> = {}) => finding(title, { file: 'src/api.ts', line: 9, evidence: { checks: [], proof: ['src/api.ts:9'] }, ...overrides });
+    const added = await checkOrigins(client, [
+      onAdded('Added to a changed file'), onAdded('Added, with the base cited elsewhere'),
+      onAdded('A new caller of shared work', { severity: 'warning', category: 'performance' }),
+      onAdded('A new caller of shared work, as a blocker', { category: 'performance' }),
+    ], { workspace: root, diff, pair });
     expect(added.map(f => [f.title, f.originCheck?.lineChanged, f.originCheck?.answers.map(a => a.verdict)])).toEqual([
       ['Added to a changed file', true, ['pre_existing', 'pre_existing']], ['Added, with the base cited elsewhere', true, ['unsure', 'unsure']],
+      ['A new caller of shared work', true, ['pre_existing', 'pre_existing']], ['A new caller of shared work, as a blocker', true, ['pre_existing', 'pre_existing']],
     ]);
+    // The warning goes to the round record only. The blocker stays posted, as a warning, like any pre-existing blocker.
+    expect(added.slice(2).map(f => [!!foundOnBase(f), postedWhenPreExisting(f)])).toEqual([[true, false], [true, true]]);
     expect(checked[0].originCheck?.answers[0]).toEqual({ verdict: 'pre_existing', reason: same.reason, head: ['src/math.ts:2'], base: ['src/math.ts:2'], commit: baseCommit, fixedElsewhere: 'src/api.ts:9', model: 'first-model' });
     // A fix line counts only on a standing pre-existing answer, on a line the PR added or changed other than the flagged one.
     const fixesOf = (f: Finding) => f.originCheck?.answers.map(a => a.fixedElsewhere);
-    expect([...checked.slice(1, 7), ...added].map(fixesOf)).toEqual([[undefined, undefined], [undefined, undefined], [undefined, undefined], [undefined, undefined], [undefined, undefined], [undefined], [undefined, undefined], [undefined, undefined]]);
+    expect([...checked.slice(1, 7), ...added].map(fixesOf)).toEqual([[undefined, undefined], [undefined, undefined], [undefined, undefined], [undefined, undefined], [undefined, undefined], [undefined], [undefined, undefined], [undefined, undefined], [undefined, undefined], [undefined, undefined]]);
     // A line the base does not hold is dropped, so no answer links a line of the head as one of the base.
     expect(checked[3].originCheck?.answers[0].base).toEqual(['src/math.ts:2']);
     expect([progress.started.mock.calls, progress.ended.mock.calls.length]).toEqual([[[8]], 8]);
@@ -102,6 +112,9 @@ describe('checkOrigins', () => {
     expect(message('In a file the PR added')).toContain("## The PR's Change to the Cited Files");
     expect(client.calls[0].system).toContain("A failure that comes from what this PR added to a line, such as a new argument, is the PR's own.");
     expect(client.calls[0].system).toContain('`fixed_elsewhere_in_pr`');
+    expect(client.calls[0].system).toContain('a new caller of old code that reaches a crash, a wrong result or a security hole.');
+    expect(client.calls[0].system).toContain('When the PR\'s new path runs existing work no more often and on no larger input than a path at the base already runs it for the same input, the cost is pre_existing');
+    expect(client.calls[0].system).toContain('A cost the PR makes grow faster, such as a new loop around the work, a larger or unbounded input or a repeat that grows with the input, is introduced.');
     expect(client.calls[0].options?.repoTools).toMatchObject({ root, steps: 10 });
 
     // A large PR still gets the check, with every changed file named.

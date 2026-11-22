@@ -30,10 +30,12 @@ const ORIGIN_SYSTEM_PROMPT = `You decide whether a defect a code review found on
 Follow the failure path the finding describes at the head, from its trigger to the damage. Then follow the same input through the same path at the base. A file the message does not name as changed by this PR is the same at the base, unless the list says it leaves files out. In a file whose change the message shows, only the lines that change shows differ. When the change shown is cut, read the cited files at the base before you answer.
 
 Answer \`origin\` with one of:
-- **introduced**: the base does not fail that way, or this PR makes the path newly reachable, such as a new caller of old code or a removed check.
+- **introduced**: the base does not fail that way, or this PR makes the path newly reachable, such as a removed check or a new caller of old code that reaches a crash, a wrong result or a security hole.
 - **worsened**: the base fails that way, but this PR makes the failure worse or more likely.
 - **pre_existing**: the base fails the same way for the same input through the same path, and this PR does neither. A failure that comes from what this PR added to a line, such as a new argument, is the PR's own.
 - **unsure**: you could not decide.
+
+For a cost finding, about time, memory, calls or work, a new caller alone does not make it the PR's own. When the PR's new path runs existing work no more often and on no larger input than a path at the base already runs it for the same input, the cost is pre_existing, and \`base\` cites that path. A cost the PR makes grow faster, such as a new loop around the work, a larger or unbounded input or a repeat that grows with the input, is introduced. A cost the PR multiplies by a fixed factor on a hot path is worsened.
 
 Cite in \`head\` the lines that show the failure at the head, with the line the finding flags. For pre_existing, cite in \`base\` the lines that show the same failure at the base, numbered as \`read_file\` with \`ref\` set to \`base\` shows them. When this PR left the flagged line unchanged, cite it there at its number in the base. An answer without lines on both sides counts as unsure.
 
