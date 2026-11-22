@@ -619,9 +619,12 @@ export function changesNextTo(file: DiffFile, oldLine: number): boolean {
  * GitHub only allows inline comments on lines that are part of the diff.
  */
 export function isLineInDiff(file: DiffFile, line: number, end = line): boolean {
-  return file.hunks.some(
-    (hunk) => end >= hunk.newStart && line <= hunk.newStart + hunk.newLines - 1,
-  );
+  return file.hunks.some(hunk => hunkHas(hunk, line, end));
+}
+
+/** Whether `hunk` holds the head side line `line`, or any line from `line` to `end`. */
+export function hunkHas(hunk: DiffHunk, line: number, end = line): boolean {
+  return end >= hunk.newStart && line <= hunk.newStart + hunk.newLines - 1;
 }
 
 /** A commit with its own diff against its parent. */
