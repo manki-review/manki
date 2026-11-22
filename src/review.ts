@@ -3690,6 +3690,8 @@ interface EarlierFinding {
   keys: Set<string>;
   /** The open thread that carries it. Without one, an earlier round listed it in its review body. */
   threadId?: string;
+  /** Whether its open thread is a security thread. */
+  isSecurity?: boolean;
   /** Whether its open thread is guarded: a security thread or the thread of a disproved blocker. */
   guarded?: boolean;
   /** Its grades: its open thread's, or the grade a review body listed it at. It carries no finding graded above it. */
@@ -3714,6 +3716,7 @@ export function earlierFindings(priorRounds: RoundContext[], openThreads: OpenTh
     finding: { title: t.title, file: t.file, line: t.line, description: t.description },
     keys: new Set(entries.filter(e => e.entry.threadId === t.threadId).map(e => e.key)),
     threadId: t.threadId,
+    ...(t.isSecurity && { isSecurity: true }),
     ...((t.isSecurity || t.disprovedBlocker) && { guarded: true }),
     grade: t,
   }));
@@ -3728,7 +3731,7 @@ export function earlierFindings(priorRounds: RoundContext[], openThreads: OpenTh
     const finding = { title: entry.title, file: entry.fingerprint.file, line: entry.fingerprint.lineStart, evidence: entry.evidence };
     const thread = threads.find(t => t.threadId === entry.threadId);
     byKey.set(key, thread
-      ? { finding, keys: new Set([key]), threadId: thread.threadId, recorded: true, ...(thread.guarded && { guarded: true }), grade: thread.grade }
+      ? { finding, keys: new Set([key]), threadId: thread.threadId, recorded: true, ...(thread.isSecurity && { isSecurity: true }), ...(thread.guarded && { guarded: true }), grade: thread.grade }
       : { finding, keys: new Set([key]), raisedIn: round, firstKey: entry.sameAs ?? key, grade: { severity: entry.severity } });
   }
   return [...threads, ...byKey.values()];
@@ -3755,13 +3758,14 @@ export function restatesEarlier(earlier: EarlierFinding[], f: Finding): boolean 
  * an earlier review body takes `raisedIn`. The judge's `sameAs` counts first. A finding the judge left unlinked is
  * matched by `sameProblem`, then by the `dedup` model for the pairs `mayRestate` makes, asked in one call for the whole round. A finding
  * the judge calls a variant of an open thread's finding goes to that thread too, and keeps `variantOf` so it is posted
- * there as a reply, unless the same checks find it restates a finding recorded under that thread. A guarded finding
- * (`isGuardedFinding`) joins only a guarded thread, and one no thread carries is marked `ownThread`.
+ * there as a reply, unless the same checks find it restates a finding recorded under that thread. A security finding
+ * joins only a security thread, and the warning of a disproved blocker only a guarded thread. A guarded finding no
+ * thread carries is marked `ownThread`.
  */
 async function foldIntoEarlierFindings(findings: Finding[], earlier: EarlierFinding[], dedup: LLMClient | undefined): Promise<Finding[]> {
   if (earlier.length === 0) return findings;
-  // A guarded finding joins only a guarded thread, so it never loses its guard, and finds the one it opened before.
-  const fits = (f: Finding) => (e: EarlierFinding) => (!e.threadId || !!e.guarded || !isGuardedFinding(f.tags, f.reviewers)) && carries(e, f);
+  // A guarded finding joins only a thread of its guard, so it never loses that guard, and finds the one it opened before.
+  const fits = (f: Finding) => (e: EarlierFinding) => (!e.threadId || (isSecurityFinding(f.tags, f.reviewers) ? !!e.isSecurity : !isGuardedFinding(f.tags, f.reviewers) || !!e.guarded)) && carries(e, f);
   const named = (f: Finding, key: string | undefined) => key ? earlier.filter(fits(f)).find(e => e.keys.has(key)) : undefined;
   // A lockfile alert names its package and change, so only the open thread with its exact title carries it.
   const unlinked = (f: Finding) => !f.threadId && !f.answeredIn && !f.sameAs && !f.variantOf && !isLockfileAlert(f.title);
@@ -3865,18 +3869,20 @@ function postedOnItsOwn(f: Finding): Finding {
 /**
  * Returns `f` with no link to a thread that may not carry it: the thread that carries it or the answered thread it
  * repeats, when that thread is graded below `f`. The grade is the final one, which the judge may have raised after the
- * link was made. A guarded finding (`isGuardedFinding`) also keeps no link to a thread that is not guarded, not even
- * the thread of the earlier finding its `sameAs` names. A thread is guarded by its first comment, so another would lose
- * the finding's guard, and a `sameAs` to it would leave that thread out of the open ones in the verdict. `priorThreads`
- * gives the thread of each earlier finding by its key.
+ * link was made. A guarded finding (`isGuardedFinding`) also keeps no link to a thread without its guard, not even
+ * the thread of the earlier finding its `sameAs` names: a security finding needs a security thread, and the warning of
+ * a disproved blocker any guarded thread. A thread is guarded by its first comment, so another would lose the finding's
+ * guard, and a `sameAs` to it would leave that thread out of the open ones in the verdict. `priorThreads` gives the
+ * thread of each earlier finding by its key.
  */
 function withoutUnfitThreads(f: Finding, openThreadIndex: Map<string, OpenThread>, previousFindings: PreviousFinding[] | undefined, priorThreads: ReadonlyMap<string, string>): Finding {
+  const security = isSecurityFinding(f.tags, f.reviewers);
   const guarded = isGuardedFinding(f.tags, f.reviewers);
   // A thread the round knows nothing about, as when the threads could not be read, keeps its link.
   const threadOf = (threadId: string | undefined) => threadId ? openThreadIndex.get(threadId) ?? previousFindings?.find(t => t.threadId === threadId) : undefined;
   const plain = (threadId: string | undefined): boolean => {
     const thread = threadOf(threadId);
-    return guarded && !!thread && !thread.isSecurity && !thread.disprovedBlocker;
+    return guarded && !!thread && !thread.isSecurity && (security || !thread.disprovedBlocker);
   };
   const below = (grade: ThreadGrade | undefined): boolean => !!grade && f.severity !== 'ignore' && gradedAbove(f.severity, grade);
   const unfit = (threadId: string | undefined): boolean => plain(threadId) || below(threadOf(threadId));

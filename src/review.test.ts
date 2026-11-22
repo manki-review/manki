@@ -5986,6 +5986,9 @@ describe('runReview', () => {
     });
     expect((await disproved(false)).findings).toEqual([expect.objectContaining({ title: 'Retry never ends', ownThread: true })]);
     expect((await disproved(true)).findings).toEqual([expect.objectContaining({ title: 'Retry never ends', threadId: 'T1' })]);
+    // A security finding needs a security thread, so the thread of a disproved blocker does not take it.
+    mockedRunJudgeAgent.mockResolvedValue({ summary: 'Findings.', findings: [finding('warning', 'Retry never ends', 'src/x.ts', 10, { tags: ['security'] })] });
+    expect((await disproved(true)).findings).toEqual([expect.objectContaining({ title: 'Retry never ends', ownThread: true })]);
     // So it does when the judge's `sameAs` names that thread's blocker from far away, and the link is dropped.
     mockedRunJudgeAgent.mockResolvedValue({ summary: 'Findings.', findings: [finding('blocker', 'Token logged on retry', 'src/x.ts', 80, { tags: ['security'], sameAs: 'src/x.ts:10:10:retry-never-ends' })] });
     const named = await runReview(makeClients(), {
