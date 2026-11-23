@@ -44,6 +44,12 @@ interface FetchedEvent {
 /** Whether the restored event is a review the token service's catch-up asked for. */
 let catchUp = false;
 
+/**
+ * The `pull_request` action the token service dispatches for a PR marked ready on a head that already has a review. No
+ * GitHub webhook has it. It runs the approval check and never a review.
+ */
+export const APPROVAL_CHECK_ACTION = 'approval_check';
+
 /** What a dispatched run does next: run the handlers, or stop because the head moved on or the comment or review is gone. */
 export type DispatchOutcome = 'run' | 'superseded' | 'gone';
 

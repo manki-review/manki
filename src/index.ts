@@ -13,7 +13,7 @@ import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, hasQueuedCheck, outcomeReport, reportCheck, ReviewCheck, startReviewCheck } from './check-run';
 import { extractCurrentCodeWindow, locatePostedFile, locatePostedLine } from './code-window';
 import { recordFixRate } from './fix-rate';
-import { dispatchedInputs, dispatchedNumber, eventPrClosed, isDispatchedRun, restoreDispatchedEvent, startedByCatchUp } from './dispatch';
+import { APPROVAL_CHECK_ACTION, dispatchedInputs, dispatchedNumber, eventPrClosed, isDispatchedRun, restoreDispatchedEvent, startedByCatchUp } from './dispatch';
 import { addCodeContext, changeDigest, hideSeenNotes, onlyCommitChanging, parsePRDiff, filterDiff, filterRawDiff, ownChangeSince, rebuildRawDiff, reviewableDiff, shortenLongLines, tagFindingOrigins, findClosedPattern } from './diff';
 import { handleBoxCommand, handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, mentionsMankiUser, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
@@ -274,12 +274,6 @@ function isAnswered(comments: Awaited<ReturnType<typeof fetchPRComments>>, bot: 
   const marker = answeredMarker(commentId);
   return comments.some(c => isBotLogin(bot, c.user?.login) && c.body?.trimEnd().endsWith(marker));
 }
-
-/**
- * The `pull_request` action the token service dispatches for a PR marked ready on a head that already has a review. No
- * GitHub webhook has it. It runs the approval check and never a review.
- */
-const APPROVAL_CHECK_ACTION = 'approval_check';
 
 async function run(): Promise<void> {
   const eventName = github.context.eventName;
