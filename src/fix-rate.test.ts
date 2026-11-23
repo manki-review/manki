@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 
-import { aggregateFixRates, calibrate, readFixRateHistory, recordFixRate } from './fix-rate';
+import { aggregateFixRates, calibrate, finderModel, readFixRateHistory, recordFixRate } from './fix-rate';
 import { MemoryStore } from './memory';
 import { fetchRecapState, PreviousFinding } from './recap';
 import { makeFindingFingerprintEntry, makeRoundContext, TEST_BOT } from './test-utils';
@@ -189,12 +189,31 @@ describe('fix-rate calibration', () => {
   it.each([
     ['the class with its category once it has 20 posted', finding({}), { class: 'warning · GPT 6.2 Sol · correctness', posted: 25, fixed: 5, rate: 0.2, wouldLower: true }],
     ['the class without the category below 20 posted', finding({ category: 'style' }), { class: 'warning · GPT 6.2 Sol', posted: 29, fixed: 5, rate: 0.17, wouldLower: true }],
+    ['a rate just under 30% that rounds to it, which still lowers', finding({ severity: 'note' }),
+      { class: 'note · GPT 6.2 Sol', posted: 200, fixed: 59, rate: 0.3, wouldLower: true }, [row('note', 'GPT 6.2 Sol · high', 200, 59)]],
     ['a low rate below the sample size, which lowers nothing', finding({ reviewers: ['Claude Opus 5.5 · high'] }), { class: 'warning · Claude Opus 5.5', posted: 8, fixed: 1, rate: 0.13, wouldLower: false }],
-    ['no class for a class without history', finding({ severity: 'note' }), undefined],
+    ['no class for a class without history', finding({ severity: 'blocker' }), undefined],
     ['no class for a security finding', finding({ tags: ['security'] }), undefined],
     ['no class for a tool alert', finding({ toolSource: 'zizmor' }), undefined],
-  ])('gives %s', (_case, f, expected) => {
-    expect(calibrate(aggregateFixRates(LINES), f)).toEqual(expected);
+  ])('gives %s', (_case, f, expected, counts: ReturnType<typeof row>[] = []) => {
+    expect(calibrate(aggregateFixRates([...LINES, JSON.stringify({ pr: 4, counts })]), f)).toEqual(expected);
+  });
+
+  it.each([
+    ['GPT 6.2 Sol · high', 'GPT 6.2 Sol'],
+    ['Claude Opus 5 · xhigh · Concurrency and locking #2', 'Claude Opus 5'],
+    ['Quick check · Claude Sonnet 5.5', 'Claude Sonnet 5.5'],
+    ['Quick check · Claude Sonnet 5.5 #2', 'Claude Sonnet 5.5'],
+    ['Sweep 1', 'Sweep'],
+    ['Second read 2', 'Second read'],
+    ['Claim check 4', 'Claim check'],
+    ['Fix check 1', 'Fix check'],
+    ['Sibling field: utxos vs spent_before_funded', 'Sibling field'],
+    ['Pattern check: refresh_reported_addresses', 'Pattern check'],
+    ['Verdict reader', 'Verdict reader'],
+    ['Security', 'Security'],
+  ])('takes the model or kind of reviewer %s', (name, model) => {
+    expect(finderModel(name)).toBe(model);
   });
 
   it('reads the newest 500 lines of the history, and nothing when the file is missing or the read fails', async () => {

@@ -181,9 +181,15 @@ function isDismissed(thread: PreviousFinding | undefined, prAuthorLogin: string 
 /** Posted and fixed findings per class, keyed by `FindingCalibration.class`. */
 export type FixRateHistory = Map<string, { posted: number; fixed: number }>;
 
-/** Returns the finder model of reviewer `name`, such as `GPT 6.2 Sol` for `GPT 6.2 Sol · high · focus`. */
-function finderModel(name: string): string {
-  return name.split(' · ')[0];
+/**
+ * Returns the model of reviewer `name`: `GPT 6.2 Sol` for the finder `GPT 6.2 Sol · high · focus` and for the quick
+ * check `Quick check · GPT 6.2 Sol`. A name without a model gives its kind, such as `Sweep` for `Sweep 1` and
+ * `Sibling field` for `Sibling field: a vs b`.
+ */
+export function finderModel(name: string): string {
+  const parts = name.replace(/ #\d+$/, '').split(' · ');
+  if (parts.length > 1) return parts[0] === 'Quick check' ? parts[1] : parts[0];
+  return parts[0].replace(/:.*$/s, '').replace(/ \d+$/, '');
 }
 
 const classOf = (severity: string, model: string, category?: string): string => [severity, model, ...(category ? [category] : [])].join(' · ');
@@ -251,6 +257,6 @@ export function calibrate(history: FixRateHistory, finding: Finding): FindingCal
   const fineRow = history.get(fine);
   const [name, row] = fineRow && fineRow.posted >= MIN_POSTED ? [fine, fineRow] : [coarse, history.get(coarse)];
   if (!row || row.posted === 0) return undefined;
-  const rate = Math.round((row.fixed / row.posted) * 100) / 100;
-  return { class: name, posted: row.posted, fixed: row.fixed, rate, wouldLower: row.posted >= MIN_POSTED && rate < LOW_FIX_RATE };
+  const rate = row.fixed / row.posted;
+  return { class: name, posted: row.posted, fixed: row.fixed, rate: Math.round(rate * 100) / 100, wouldLower: row.posted >= MIN_POSTED && rate < LOW_FIX_RATE };
 }
