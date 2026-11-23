@@ -2437,8 +2437,8 @@ function copyGroups(findings: readonly Finding[]): number[] {
 /**
  * Merges the copies of one finding that `copyGroups` finds: the same title in one file on nearby lines. The copy with the
  * highest grade is kept, and of copies graded alike a finder's over one only second reads reported, then the first. It
- * takes the reviewers of every copy, the first trigger a copy names, the finder grades `mergedFinderGrades` gives, the
- * `mergedDropCheck` and the first rule a copy quotes. It is a security finding when any copy is. The kept one stays
+ * takes the reviewers of every copy, the first trigger a copy names, the `mergedRevertGap`, the finder grades
+ * `mergedFinderGrades` gives, the `mergedDropCheck` and the first rule a copy quotes. It is a security finding when any copy is. The kept one stays
  * pre-existing only when every dropped copy was marked so too and `staysPreExisting` accepts it, since a dropped copy's
  * line and proof are lost.
  */
@@ -2454,9 +2454,10 @@ export function deduplicateFindings(findings: Finding[], staysPreExisting?: (cop
     }
     const keepsCopy = rank(f) !== rank(earlier) ? rank(f) < rank(earlier) : bySecondReadsOnly(earlier) && !bySecondReadsOnly(f);
     const [first, copy] = keepsCopy ? [f, earlier] : [earlier, f];
-    const { preExisting, ...unmarked } = first;
+    const { preExisting, revertGap: _gap, ...unmarked } = first;
     const stays = preExisting && copy.preExisting && (!staysPreExisting || staysPreExisting(copy));
-    kept.set(groups[i], { ...unmarked, reviewers: [...new Set([...first.reviewers, ...copy.reviewers])], ...(stays && { preExisting }), ...(!first.trigger && copy.trigger && { trigger: copy.trigger }), ...mergedFinderGrades(first, copy), ...mergedDropCheck(first, copy), ...(copy.tags?.includes(SECURITY_TAG) && asSecurity(first)), ...mergedRule(first, copy) });
+    const revertGap = mergedRevertGap(first, copy);
+    kept.set(groups[i], { ...unmarked, reviewers: [...new Set([...first.reviewers, ...copy.reviewers])], ...(stays && { preExisting }), ...(!first.trigger && copy.trigger && { trigger: copy.trigger }), ...(revertGap && { revertGap }), ...mergedFinderGrades(first, copy), ...mergedDropCheck(first, copy), ...(copy.tags?.includes(SECURITY_TAG) && asSecurity(first)), ...mergedRule(first, copy) });
   });
   return [...kept.values()];
 }

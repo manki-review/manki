@@ -5679,6 +5679,10 @@ describe('deduplicateFindings', () => {
     expect(deduplicateFindings([findings[0], { ...findings[1], trigger: 'When a page loads' }])[0].trigger).toBe('When a page loads');
     expect(deduplicateFindings([{ ...findings[0], trigger: 'When a user saves' }, { ...findings[1], trigger: 'When a page loads' }])[0].trigger).toBe('When a user saves');
     expect(deduplicateFindings([findings[0], { ...findings[1], preExisting: 'Old code.' }])[0].preExisting).toBe('Old code.');
+    // The kept finding takes a copy's located revert gap, and keeps `caught` only when every copy states it.
+    const gaps = (first?: string, second?: string) => deduplicateFindings([{ ...findings[0], revertGap: first }, { ...findings[1], revertGap: second }])[0];
+    expect([gaps(undefined, 'src/a.ts:12'), gaps('caught', 'src/a.ts:12'), gaps('caught', 'caught'), gaps('caught')].map(f => f.revertGap)).toEqual(['src/a.ts:12', 'src/a.ts:12', 'caught', undefined]);
+    expect(gaps('caught')).not.toHaveProperty('revertGap');
     // A dropped copy's security tag stays on the kept finding, next to the tags it has.
     expect(deduplicateFindings([{ ...findings[0], tags: ['follow-up'] }, { ...findings[1], tags: ['security'] }])[0].tags).toEqual(['follow-up', 'security']);
     expect(deduplicateFindings([findings[0], { ...findings[1], tags: ['follow-up'] }])[0].tags).toBeUndefined();
