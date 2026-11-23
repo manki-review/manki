@@ -277,14 +277,17 @@ function premisesOutcome(doubts: readonly Doubt[], checks: readonly PremiseCheck
 }
 
 /**
- * Returns the outside behavior a confirmation rests on, when its `outside` names one, with the lines of its `stated_in`
+ * Returns the outside behavior a confirmation rests on, when its `outside` names one in `behavior`, with the lines of its `stated_in`
  * that `shownLines` keeps. The behavior counts as stated only with such a line.
  */
 function outsideBehavior(value: unknown, workspace: string, related?: RelatedRepoTools): { outside: OutsideBehavior; proof: string[]; relatedProof: string[] } | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const { behavior, stated_in: statedIn } = value as Record<string, unknown>;
+  // An `outside` that names no behavior, such as the empty placeholder of the answer form, marks nothing.
+  const named = replyText(behavior);
+  if (!named) return undefined;
   const { proof, relatedProof } = shownLines(statedIn, workspace, related);
-  return { outside: { behavior: replyText(behavior), stated: proof.length + relatedProof.length > 0 }, proof, relatedProof };
+  return { outside: { behavior: named, stated: proof.length + relatedProof.length > 0 }, proof, relatedProof };
 }
 
 function parseRefutation(text: string, workspace: string, finding: Finding, diff?: ParsedDiff, related?: RelatedRepoTools): Refutation {
