@@ -165,6 +165,16 @@ describe('dependencyLoader', () => {
       'tools/Cargo.lock': cargoLock([{ version: '2.0.0' }]), 'tools/Cargo.toml': '[dependencies]\ndemo = "2"\n',
     });
     await expect(apart.load('crates.io/demo')).rejects.toThrow(/several versions: 1\.2\.0 in Cargo\.lock, 2\.0\.0 in tools\/Cargo\.lock\.$/);
+    // Cargo ignores the lockfile of a workspace member for the root's, but not one of a package the workspace excludes.
+    const workspace = (manifest: string) => round({
+      'Cargo.lock': cargoLock([{ version: '1.2.0' }]), 'Cargo.toml': manifest,
+      'tools/Cargo.lock': cargoLock([{ version: '2.0.0' }]), 'tools/Cargo.toml': '[package]\nname = "tools"\n',
+    });
+    expect((await workspace('[workspace]\nmembers = ["t*"]\n').load('crates.io/demo')).note).toContain('the version `Cargo.lock` locks');
+    await expect(workspace('[workspace]\nmembers = ["*"]\nexclude = ["tools"]\n').load('crates.io/demo')).rejects.toThrow('its lockfiles lock several versions');
+    // A workspace with more members than Manki matches against leaves its members' lockfiles counted.
+    const crowded = ['"tools"', ...Array.from({ length: 1000 }, (_, i) => `"m${i}"`)].join(', ');
+    await expect(workspace(`[workspace]\nmembers = [${crowded}]\n`).load('crates.io/demo')).rejects.toThrow('its lockfiles lock several versions');
     const git = round({ 'Cargo.lock': cargoLock([{ version: '1.2.0', source: 'git+https://example.com/demo#abc' }]) });
     await expect(git.load('crates.io/demo')).rejects.toThrow('Manki does not read crates.io/demo: Cargo.lock locks it from git+https://example.com/demo#abc, not from crates.io.');
     expect(dependencyOutcomes(git.stateDir)).toEqual([expect.objectContaining({ package: 'crates.io/demo', version: '1.2.0', status: 'refused', reason: expect.stringContaining('not from crates.io') })]);

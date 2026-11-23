@@ -1,13 +1,14 @@
 import * as core from '@actions/core';
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { devNull, tmpdir } from 'os';
-import { dirname, join, resolve, sep } from 'path';
+import { dirname, join, posix, resolve, sep } from 'path';
 
 import { runTool } from './binary-analyzers';
 import { RepoTools } from './providers/types';
 import { makeScratchDir } from './tool-install';
 import { STALE_TIMEOUT_MS } from './tool-steps';
 import { LOCKFILE_NAMES, lockedGitCommits, MAX_LOCKFILE_BYTES, MAX_LOCKFILES, MAX_LOCKFILES_TOTAL_BYTES } from './lockfile';
+import { ignoredMemberLockfiles } from './registries/crates';
 import { RelatedCheckout, RelatedRepo, RelatedRepoTools, RepoLock, RoundRelatedRepo } from './types';
 import { sanitizeLogOutput } from './utils';
 import { gitEnv } from './workspace';
@@ -93,7 +94,8 @@ export async function trackedFiles(
  * checkout at `workspace` lock for it, and how each such `ref` was chosen. A repo that no lockfile locks, or that two
  * lockfiles lock at different commits, keeps its default branch. So does every repo when a lockfile could not be read,
  * since it may lock another commit. Only files git tracks count, outside `node_modules` and `target`, and never a
- * symlink, which a checkout with `core.symlinks=false` writes as a file that holds the link's target.
+ * symlink, which a checkout with `core.symlinks=false` writes as a file that holds the link's target. Neither does a
+ * `Cargo.lock` of a workspace member, which Cargo ignores for the lockfile of the workspace root.
  */
 async function lockedRelatedRepos(repos: RelatedRepo[], workspace: string): Promise<{ repos: RelatedRepo[]; locks: Record<string, RepoLock> }> {
   const open = repos.filter(r => r.kind === 'dependency' && !r.ref);
@@ -101,13 +103,24 @@ async function lockedRelatedRepos(repos: RelatedRepo[], workspace: string): Prom
   // Each commit a lockfile locks, by `owner/name` in lower case, with the first lockfile that locks it.
   const found = new Map<string, Map<string, string>>();
   let unread: string | undefined;
-  const tracked = await trackedFiles(workspace, LOCKFILE_NAMES.map(name => `:(glob)**/${name}`));
+  const tracked = await trackedFiles(workspace, [...LOCKFILE_NAMES, 'Cargo.toml'].map(name => `:(glob)**/${name}`));
   if (!tracked) unread = 'the lockfiles of the checkout could not be listed';
-  const files = (tracked ?? []).filter(f => !f.symlink).map(f => f.path);
+  const lockfiles = (tracked ?? []).filter(f => !f.symlink && LOCKFILE_NAMES.includes(posix.basename(f.path))).map(f => f.path);
   // A lockfile past the cap may lock another commit, so it counts as one that could not be read.
-  if (files.length > MAX_LOCKFILES) unread ??= `the checkout holds ${files.length} lockfiles, more than the ${MAX_LOCKFILES} a round reads`;
+  if (lockfiles.length > MAX_LOCKFILES) unread ??= `the checkout holds ${lockfiles.length} lockfiles, more than the ${MAX_LOCKFILES} a round reads`;
   let budget = MAX_LOCKFILES_TOTAL_BYTES;
-  for (const file of unread ? [] : files) {
+  // The manifests that place a `Cargo.lock` in a workspace take their bytes from the lockfiles' budget.
+  const ignored = unread ? new Set<string>() : ignoredMemberLockfiles((tracked ?? []).map(f => f.path), file => {
+    try {
+      const stat = lstatSync(join(workspace, file));
+      if (!stat.isFile() || stat.size > MAX_LOCKFILE_BYTES || stat.size > budget) return undefined;
+      budget -= stat.size;
+      return readFileSync(join(workspace, file), 'utf-8');
+    } catch {
+      return undefined;
+    }
+  });
+  for (const file of unread ? [] : lockfiles.filter(f => !ignored.has(f))) {
     let commits: Map<string, Set<string>>;
     try {
       const path = join(workspace, file);
