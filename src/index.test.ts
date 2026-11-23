@@ -7141,6 +7141,32 @@ describe('runFullReview orchestration', () => {
     expect(jest.mocked(ghUtils.dismissPreviousReviews)).toHaveBeenCalledTimes(1);
   });
 
+  it('reopens an addressed thread the PR author resolved a second time, so Manki is its resolver', async () => {
+    const testFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+    };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
+    jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
+      previousFindings: [{ title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'blocker', status: 'open', threadId: 'PRRT_again' }],
+      priorRounds: [],
+    });
+    // Manki reopened the thread after the author's first resolve, and the author resolved it again.
+    jest.mocked(ghUtils.fetchReviewThreadNodes).mockResolvedValueOnce([{ id: 'PRRT_again', isResolved: true, resolvedBy: { login: 'author' } }]);
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'APPROVE', outcome: 'READY' as const, summary: 'ok', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
+      threadEvaluations: [{ threadId: 'PRRT_again', status: 'addressed', reason: 'Fixed' }],
+    });
+
+    await callRunFullReview();
+
+    expect(mockGraphql.mock.calls.filter(([query]) => String(query).includes('resolveReviewThread')).map(([query, vars]) => [String(query).includes('unresolveReviewThread'), vars]))
+      .toEqual([[true, { threadId: 'PRRT_again' }], [false, { threadId: 'PRRT_again', resolutionReason: 'ADDRESSED' }]]);
+    expect(jest.mocked(core.warning)).not.toHaveBeenCalledWith(expect.stringContaining('Failed to resolve thread PRRT_again'));
+    expect(jest.mocked(ghUtils.postReview).mock.calls[0][7]).toMatchObject({ judge: { threadEvaluations: [expect.objectContaining({ threadId: 'PRRT_again', status: 'addressed' })] } });
+  });
+
   it('fails fast with setFailed when no API key is configured', async () => {
     jest.mocked(core.getInput).mockReturnValue('');
 

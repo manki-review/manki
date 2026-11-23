@@ -1113,7 +1113,9 @@ describe('handleReviewCommentReply', () => {
     const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.at(-1)![0].body as string;
     const [record] = extractReplyRecords(body).map(r => JSON.parse(r) as ReplyRecord);
     const outcome = /^\**(Fixed|Agreed|Withdrawn)\b/.exec(reply)?.[1];
-    const fate = noted || keepsBlocking ? 'stays_open' : reason ? 'resolves' : resolved && sender !== 'reader' ? 'already_resolved' : staysOpen ? 'stays_open' : 'no_permission';
+    // Manki resolves the thread before it answers, so a clearing answer whose reopen failed says so.
+    const failed = resolved && !!reason && !reopens;
+    const fate = noted ? 'stays_open' : keepsBlocking ? 'stays_resolved' : failed ? 'resolve_failed' : reason ? 'resolves' : resolved && sender !== 'reader' ? 'already_resolved' : staysOpen ? 'stays_open' : 'no_permission';
     expect(record.decision).toEqual(outcome ? { outcome, thread: fate } : undefined);
     // Only a resolved thread is looked up, and the answer that reopens one carries the marker that stops a second reopen.
     expect(jest.mocked(state.authorResolvedNote).mock.calls).toEqual(resolved ? [[octokit, TEST_BOT, 'test-owner', 'test-repo', 1, prAuthor, CONFIG, 'PRRT_this']] : []);
@@ -1856,6 +1858,8 @@ describe('handleReviewCommentReply', () => {
     const opens = ['open', 'resolve-fails', 'save-fails', 'note-fails'].includes(threadCase);
     const resolves = opens && (sender === 'owner' || (sender === 'pr-author' && kind === 'warning'));
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toHaveLength(resolves ? 1 : 0);
+    // The record names a resolve only once it went through, since the answer is posted after it.
+    if (resolves) expect(extractReplyRecords(body).map(r => (JSON.parse(r) as ReplyRecord).decision?.thread)).toEqual([threadCase === 'resolve-fails' ? 'resolve_failed' : 'resolves']);
     // Only an answer that settles the thread for someone other than the PR author with write access records who Manki clears it for.
     expect(body.includes('<!-- manki-cleared-for:')).toBe(sender === 'owner' && !['missing', 'unreadable'].includes(threadCase));
     if (!saves) {

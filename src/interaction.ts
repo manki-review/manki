@@ -123,14 +123,22 @@ type ReplyOutcome = 'Fixed' | 'Agreed' | 'Withdrawn';
 
 /**
  * Returns what a thread reply decided for the record: the outcome it opens with, and what happens to the thread. A
- * reply that settles nothing records nothing.
+ * reply that settles nothing records nothing. `reopened` says that Manki reopened the thread before the answer, and
+ * `resolved` whether Manki's resolve before the answer went through. With `held`, the answer clears a resolved thread
+ * that keeps blocking, so its resolve counts as `resolves`.
  */
 function replyDecision(
-  outcome: ReplyOutcome | undefined, thread: ReviewThread | 'lookup_failed' | 'pr_closed' | undefined, mayResolve: boolean, staysOpen: boolean, held = false,
+  outcome: ReplyOutcome | undefined, thread: ReviewThread | 'lookup_failed' | 'pr_closed' | undefined, mayResolve: boolean, staysOpen: boolean,
+  reopened: boolean, resolved: boolean | undefined, held: boolean,
 ): ReplyDecision | undefined {
   if (!outcome) return undefined;
   if (typeof thread === 'string') return { outcome, thread };
-  const fate: ReplyDecision['thread'] = !thread ? 'not_found' : staysOpen ? 'stays_open' : !mayResolve ? 'no_permission' : thread.isResolved && !held ? 'already_resolved' : 'resolves';
+  const fate: ReplyDecision['thread'] = !thread ? 'not_found'
+    : reopened ? 'stays_open'
+      : staysOpen ? (thread.isResolved ? 'stays_resolved' : 'stays_open')
+        : !mayResolve ? 'no_permission'
+          : !resolved ? 'resolve_failed'
+            : thread.isResolved && !held ? 'already_resolved' : 'resolves';
   return { outcome, thread: fate };
 }
 
@@ -642,6 +650,20 @@ export async function handleReviewCommentReply(
     const answer = leftOpen ? fixReviewNote(reply, filePath, evidenceFiles) : reply;
     const settled = leftOpen && !filePath ? undefined : outcome;
 
+    // The thread is resolved before the answer is posted, so the record names what happened to it. An answer that fails
+    // to post leaves Manki's resolve without a record, which settles no guarded thread and lifts no warning's hold.
+    let resolved: boolean | undefined;
+    if (settled && thread && mayResolve && !noted) {
+      try {
+        resolved = await resolveThreadOf(octokit, thread, REPLY_RESOLUTION_REASONS[settled], mayClear, undefined, clears);
+      } catch (error) {
+        resolved = false;
+        core.warning(`Failed to resolve thread before the reply: ${error}`);
+      }
+    }
+    // A resolved thread that keeps blocking is left resolved, and `staysOpen` says that it is not cleared.
+    const cleared = !!resolved && !staysOpen;
+
     // A thread gets one Manki fix confirmation per head unless a second lifts a hold, but a writer's "Fixed." can still resolve it.
     let addNote: ((note: string) => Promise<unknown>) | undefined;
     if (!posts) {
@@ -652,7 +674,7 @@ export async function handleReviewCommentReply(
       // An answer that accepts nothing lifts no hold, and neither does one to someone Manki resolves no thread for, so a warning thread hears what does.
       const holdNote = (!outcome || !mayResolve) && live && !closed ? await warningHoldNote(octokit, bot, owner, repo, live, config?.author_clear_role) : undefined;
       const notes = [...(staysOpen ? [staysOpenNote(guard, settled === 'Fixed', config?.author_clear_role, thread?.isResolved)] : []), ...reopened, ...(closed && settled ? [REPLY_PR_CLOSED] : []), ...(holdNote ? [holdNote] : [])];
-      const decision = replyDecision(settled, closed ? 'pr_closed' : lookupFailed ? 'lookup_failed' : thread, mayResolve, staysOpen || noted, clears);
+      const decision = replyDecision(settled, closed ? 'pr_closed' : lookupFailed ? 'lookup_failed' : thread, mayResolve, staysOpen, noted, resolved, clears);
       // Whether the finding still blocks once this answer is posted. Only a maintainer's settling answer clears it.
       const blocks = !!live && (noted || ((live.isResolved ? held : isGuarded(live)) && !(settled && mayClear)));
       const list = statementList(checked);
@@ -676,16 +698,6 @@ export async function handleReviewCommentReply(
       });
       addNote = note => octokit.rest.pulls.updateReviewComment({ owner, repo, comment_id: posted.id, body: withMarkers([...text, note].join('\n\n'), ...markers) });
       core.info('Posted reply to review comment');
-    }
-
-    let cleared = false;
-    if (settled && thread && mayResolve && !noted) {
-      try {
-        // A resolved thread that keeps blocking is left resolved, and `staysOpen` says that it is not cleared.
-        cleared = await resolveThreadOf(octokit, thread, REPLY_RESOLUTION_REASONS[settled], mayClear, undefined, clears) && !staysOpen;
-      } catch (error) {
-        core.warning(`Failed to resolve thread after reply: ${error}`);
-      }
     }
 
     // A finding whose thread is not cleared is not settled, so it leaves no learning. A security finding never teaches
