@@ -514,6 +514,7 @@ const RAW_EXITS: Record<RawExit, string> = {
   reviewed_code: UNPOSTED_REASONS.reviewed_code,
   listed_earlier: UNPOSTED_REASONS.listed_earlier,
   note_cap: UNPOSTED_REASONS.note_cap,
+  caught_by_test: UNPOSTED_REASONS.caught_by_test,
   unknown: 'not recorded with certainty',
 };
 

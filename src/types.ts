@@ -393,6 +393,11 @@ export interface Finding {
   origin?: FindingOrigin;
   /** The kind of problem, set by the judge. */
   category?: FindingCategory;
+  /**
+   * On a `testing` finding, the `file:line` of a changed line whose removal or reversal no existing test would catch, as
+   * the judge named it, or `REVERT_CAUGHT` when the finding claims such a gap and an existing test already catches it.
+   */
+  revertGap?: string;
   /** How big the fix is, set by the judge. */
   effort?: FindingEffort;
   /** What the reviewer, and for proving lines also the judge, cited to back the finding. */
@@ -1266,11 +1271,12 @@ export function overruledDisproof(finding: Pick<Finding, 'severity' | 'rule' | '
 /** `earlier` restates a finding an earlier round listed in its review body, whatever code it sits on. */
 export type FindingOrigin = 'new' | 'reviewed' | 'earlier';
 
-/** Why a review leaves out a finding the judge kept, with the words that say it to a reader. The first three are set on a note, `listed_earlier` also on a finding that restates an earlier blocker the round lists again, `no_trigger` on a warning with no realistic trigger, and the last three on a warning nothing proves. */
+/** Why a review leaves out a finding the judge kept, with the words that say it to a reader. The first four are set on a note, `listed_earlier` also on a finding that restates an earlier blocker the round lists again, `no_trigger` on a warning with no realistic trigger, and the last three on a warning nothing proves. */
 export const UNPOSTED_REASONS = {
   reviewed_code: 'on code an earlier round reviewed',
   listed_earlier: 'listed by an earlier round',
   note_cap: 'over the `review.notes` limit',
+  caught_by_test: 'an existing test already fails when the change it names is reverted',
   pre_existing: 'on code this PR did not change',
   memory_suppression: 'hidden by a memory suppression',
   static_signal_match: 'a CI tool reports the same line',
@@ -1280,6 +1286,8 @@ export const UNPOSTED_REASONS = {
   no_proof: 'it cites no lines that prove it',
 } as const;
 export type UnpostedReason = keyof typeof UNPOSTED_REASONS;
+/** The `revertGap` the judge states on a `testing` finding whose missing test an existing test already provides. */
+export const REVERT_CAUGHT = 'caught';
 /** A step after the judge's grading that can grade a finding the judge kept `ignore`. */
 export type LaterDrop = Extract<GradeChange, 'refutation' | 'in_pr_suppression' | 'resolved_thread' | 'ratchet'>;
 /** Why a finding the judge kept, or one added after it, is only in the round record. */
@@ -3081,6 +3089,8 @@ export interface FindingFingerprintEntry {
   relisted?: boolean;
   /** Mirrors `Finding.category`. */
   category?: FindingCategory;
+  /** Mirrors `Finding.revertGap`. */
+  revertGap?: string;
   /** Mirrors `Finding.effort`. */
   effort?: FindingEffort;
   /** Mirrors `Finding.evidence`. */

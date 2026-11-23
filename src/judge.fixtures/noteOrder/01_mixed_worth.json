@@ -1,6 +1,7 @@
 {
   "name": "mixed-worth",
   "formatting": "Missing space after the comma in the import",
+  "revertGap": "No test runs the `RateLimited` branch",
   "noteOrWarning": [
     "The docstring says the function returns None, but it raises"
   ],
