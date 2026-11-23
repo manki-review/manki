@@ -1866,11 +1866,11 @@ function baseNote(finding: Finding, links?: CodeLinks, oneLine = false): string 
   const base = stopped || security ? both : oneCheckOnBase(finding);
   if (!base?.base?.length) return undefined;
   const linkTo = base.commit && links?.linkAt ? links.linkAt(base.commit) : () => undefined;
-  const lines = base.base.flatMap(location => {
+  const lines = linkedRanges(base.base.flatMap(location => {
     const [, file, range] = location.match(/^(.+):(\d+(?:-\d+)?)$/) ?? [];
     const at = file ? lineRange(file, range) : undefined;
-    return at ? [linkedRange(at, linkTo)] : [];
-  }).slice(0, oneLine ? 1 : undefined).join(', ');
+    return at ? [at] : [];
+  }).slice(0, oneLine ? 1 : undefined), linkTo);
   const branch = links?.baseBranch ? inlineCode(links.baseBranch) : 'the base branch';
   if (security) return `**Already broken before this PR.** Two checks found the same problem on ${branch} at ${lines}. It is a security finding, so it stays until it is fixed or a maintainer clears it.`;
   return stopped
@@ -3203,12 +3203,12 @@ export function fileList(files: readonly string[]): string {
  */
 function formatScope(scope: RoundScope | undefined, linkTo: LineLink): string | null {
   if (!scope || scope.warned || (!scope.doubt && !scope.split)) return null;
-  const cited = (scope.proof ?? []).flatMap(at => {
+  const cited = linkedRanges((scope.proof ?? []).flatMap(at => {
     const range = lineRange(at.slice(0, at.lastIndexOf(':')), at.slice(at.lastIndexOf(':') + 1));
-    return range ? [linkedRange(range, linkTo)] : [];
-  });
+    return range ? [range] : [];
+  }), linkTo);
   const parts = [
-    scope.doubt && `**Is this change useful?** ${sanitizeMarkdown(scope.doubt)}${cited.length > 0 ? ` See ${cited.join(', ')}.` : ''}`,
+    scope.doubt && `**Is this change useful?** ${sanitizeMarkdown(scope.doubt)}${cited ? ` See ${cited}.` : ''}`,
     scope.split && `**Split into ${scope.split.length} PRs?** The change covers topics that each make sense on their own:\n\n${scope.split.map((part, i) => `${i + 1}. ${sanitizeMarkdown(part.name)}: ${fileList(part.files)}`).join('\n')}`,
   ].filter(Boolean);
   return `**Scope:** a judgment of the PR as a whole, not a defect in its code. It never holds the approval.\n\n${parts.join('\n\n')}`;
@@ -3805,6 +3805,20 @@ function linkedRange(range: CodeRange, linkTo: LineLink): string {
 }
 
 /**
+ * Returns `ranges` as an inline list that names each file once. A file with one range keeps the `file:line` link, and a
+ * file with several gets its line numbers linked one by one after the file name.
+ */
+function linkedRanges(ranges: readonly CodeRange[], linkTo: LineLink): string {
+  const byFile = new Map<string, CodeRange[]>();
+  for (const range of ranges) byFile.set(range.file, [...(byFile.get(range.file) ?? []), range]);
+  return joinCounts([...byFile.values()].map(inFile => {
+    if (inFile.length === 1) return linkedRange(inFile[0], linkTo);
+    const lines = inFile.map(({ file, start, end }) => linked(`${start}${end > start ? `-${end}` : ''}`, linkTo(file, start, end)));
+    return `${inlineCode(inFile[0].file)} lines ${joinCounts(lines)}`;
+  }));
+}
+
+/**
  * Returns the part for one refuter's `check`, with the lines it cites. The lines of a confirming check that became
  * proof of the finding, in `evidence`, show under "Checked in the code" and not here.
  */
@@ -3814,9 +3828,9 @@ function refutationPart(label: string, lead: string, check: Pick<Refutation, 'ou
   const unlisted = (lines: readonly string[] = [], proven: readonly string[] = []): string[] => lines.filter(line => !(confirmed && proven.includes(line)));
   // The refuter keeps only proof locations that exist in the workspace, so a bare file name there is a root file.
   const cited = [
-    ...unlisted(proof, evidence?.proof).flatMap(p => parseCheck(p, known, true)?.at ?? []).map(r => linkedRange(r, linkTo)),
+    linkedRanges(unlisted(proof, evidence?.proof).flatMap(p => parseCheck(p, known, true)?.at ?? []), linkTo),
     ...relatedLineLinks(unlisted(relatedProof, evidence?.relatedProof), related),
-  ];
+  ].filter(Boolean);
   const text = [lead, reason ? oneLine(reason) : '', cited.length ? `See ${cited.join(', ')}.` : '']
     .filter(Boolean).join(' ');
   return { label, text, open: `**${label}:** ${text}` };
