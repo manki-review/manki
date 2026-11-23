@@ -3535,6 +3535,12 @@ function citedFiles(f: { file: string; evidence?: FindingEvidence }): string[] {
   return [f.file, ...citedLocations(f.evidence).map(at => at.file)].filter(Boolean);
 }
 
+/** Returns the locations `f` cites: in its evidence, and in the proof of its refuters' answers and premise checks. */
+export function citedPlaces(f: Finding): Array<{ file: string; start: number; end: number }> {
+  const answers = [f.refutation, f.pairRefutation].flatMap(r => (r ? [r, ...(r.premises ?? [])] : []));
+  return [...citedLocations(f.evidence), ...answers.flatMap(a => (a.proof ?? []).flatMap(at => parseLocation(at) ?? []))];
+}
+
 /** Returns the locations `evidence` cites, in its proof and in its checks. */
 function citedLocations(evidence: FindingEvidence | undefined): Array<{ file: string; start: number; end: number }> {
   // `parseEvidence` already read these lines with the round's workspace, so no checkout is needed to read them again.

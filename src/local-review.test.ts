@@ -147,7 +147,8 @@ describe('reviewLocal', () => {
     git(repo, 'checkout', '-q', 'main');
     const note = { ...finding, severity: 'note' as const, file: 'src/b.ts' };
     const findings = [
-      { ...finding }, { ...finding, file: 'src/b.ts', line: 2 }, { ...finding, file: 'src/b.ts', line: 20 },
+      { ...finding }, { ...finding, file: 'src/b.ts', line: 2 }, { ...finding, title: 'Reads the changed value', file: 'src/b.ts', line: 2, evidence: { checks: [], proof: ['src/b.ts:20'] } },
+      { ...finding, file: 'src/b.ts', line: 20 },
       { ...note, title: 'Rename', line: 3 }, { ...note, title: 'Name the constant', file: 'src/a.ts', line: 1, raisedIn: 1 }, { ...note, title: 'New name', line: 19 },
       { ...note, title: 'Second name', line: 20 }, { ...note, title: 'Third name', line: 20 }, { ...note, title: 'Fifth again', line: 20, sameAs: 'src/b.ts:5:5:Fifth-value-is-wrong' },
     ];
@@ -201,12 +202,13 @@ describe('reviewLocal', () => {
     ]);
     // The earlier round's cell and doubts come back with its conditional grade, and an earlier finding without them has none.
     expect(record.findings.entries.map(e => [e.cell, e.doubts]).slice(3, 5)).toEqual([[undefined, undefined], [{ row: 'wrong', column: 'rare' }, [REACH_DOUBT]]]);
-    // A note on code the earlier round reviewed, or one it listed, is left out as in a pull request round.
+    // A note on code the earlier round reviewed, or one it listed, is left out as in a pull request round. A finding that
+    // cites a line the push changed is new on an untouched line too.
     expect(review.result.findings.map(f => [f.file, f.line, f.origin])).toEqual([
-      ['src/a.ts', 2, 'reviewed'], ['src/b.ts', 2, 'reviewed'], ['src/b.ts', 20, 'new'], ['src/b.ts', 19, 'new'], ['src/b.ts', 20, 'new'], ['src/b.ts', 20, 'new'],
+      ['src/a.ts', 2, 'reviewed'], ['src/b.ts', 2, 'reviewed'], ['src/b.ts', 2, 'new'], ['src/b.ts', 20, 'new'], ['src/b.ts', 19, 'new'], ['src/b.ts', 20, 'new'], ['src/b.ts', 20, 'new'],
     ]);
     expect(review.context.findings.unposted?.map(e => [e.title, e.unpostedReason])).toEqual([['Rename', 'reviewed_code'], ['Name the constant', 'listed_earlier'], ['Fifth again', 'note_cap']]);
-    expect(review.context.findings.count).toBe(6);
+    expect(review.context.findings.count).toBe(7);
     // A warning the earlier round listed in its body is carried with the line the place it points at is on now, whatever
     // else the push changed in its file. One on a line the file does not have is not carried. An edited line ends no
     // warning without the judge, in a file outside the diff too, so its warning stays carried without a line, as one in a

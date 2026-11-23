@@ -30,6 +30,7 @@ import {
   hideSeenNotes,
 } from './diff';
 import { DEFAULT_CONFIG } from './config';
+import { citedPlaces } from './review';
 import { DiffFile, Finding, ParsedDiff, ReviewResult } from './types';
 
 // -- Test fixtures --
@@ -723,7 +724,7 @@ describe('tagFindingOrigins', () => {
     `diff --git a/${oldPath ?? path} b/${path}\n--- a/${oldPath ?? path}\n+++ b/${path}\n@@ -${start},1 +${start},${lines.length + 1} @@\n ctx\n${lines.map(l => `+${l}`).join('\n')}\n`;
   const finding = (file: string, line: number): Finding => ({ severity: 'note', title: 't', file, line, description: 'd', reviewers: [] });
   const tag = (findings: Finding[], current: string, prior?: string) => {
-    tagFindingOrigins(findings, parsePRDiff(current), prior === undefined ? undefined : parsePRDiff(prior));
+    tagFindingOrigins(findings, parsePRDiff(current), prior === undefined ? undefined : parsePRDiff(prior), undefined, citedPlaces);
     return findings.map(f => f.origin);
   };
 
@@ -752,6 +753,15 @@ describe('tagFindingOrigins', () => {
     // reviewed code. A variant of a thread is another failure and is tagged by its code.
     const linked = [{ ...finding('src/a.ts', 18), sameAs: 'src/a.ts:18:18:old' }, { ...finding('src/a.ts', 18), threadId: 'T1' }, { ...finding('src/a.ts', 18), threadId: 'T1', variantOf: 'T1' }];
     expect(tag(linked, current, prior)).toEqual(['new', 'new', 'reviewed']);
+    // A push that changes a line the finding cites can make its untouched line wrong, so the finding is new. It cites
+    // `fresh` in its proof, in an evidence check or in a refuter's premise check. Cited lines the push left alone keep it reviewed.
+    const refuted = (proof: string[]): Finding['refutation'] => ({ outcome: 'confirmed', reason: 'r', files: [], codeDigest: 'd', premises: [{ premise: 'p', outcome: 'confirmed', reason: 'r', proof }] });
+    expect(tag([
+      { ...finding('src/a.ts', 30), evidence: { checks: [], proof: ['src/a.ts:13'] } },
+      { ...finding('src/new.ts', 2), evidence: { checks: ['src/a.ts:12-13 adds a second lookup'], proof: [] } },
+      { ...finding('src/new.ts', 2), refutation: { outcome: 'confirmed', reason: 'r', files: [], codeDigest: 'd' }, pairRefutation: refuted(['src/a.ts:13']) },
+      { ...finding('src/new.ts', 2), evidence: { checks: ['src/a.ts:30 reads it'], proof: ['src/new.ts:1', 'src/a.ts:18'] }, refutation: refuted(['src/a.ts:40']) },
+    ], current, prior)).toEqual(['new', 'new', 'new', 'reviewed']);
   });
 
   it('tags a finding new near code removed or restored since: a base line the PR removed or put back, or a line it added before and dropped or moved', () => {
@@ -766,7 +776,7 @@ describe('tagFindingOrigins', () => {
     const droppedOwnLine = change('src/a.ts', 10, ['body']);
     const interRound = removal('src/a.ts', 10, 'guard', ['body']);
     const findings = [finding('src/a.ts', 11)];
-    tagFindingOrigins(findings, parsePRDiff(droppedOwnLine), parsePRDiff(prior), parsePRDiff(interRound));
+    tagFindingOrigins(findings, parsePRDiff(droppedOwnLine), parsePRDiff(prior), parsePRDiff(interRound), citedPlaces);
     expect(findings[0].origin).toBe('new');
     expect(tag([finding('src/a.ts', 11)], droppedOwnLine, prior)).toEqual(['reviewed']);
 
@@ -774,20 +784,20 @@ describe('tagFindingOrigins', () => {
     const priorRemoval = removal('src/b.ts', 10, 'if (!user) return;', ['use(user);']);
     const restored = change('src/b.ts', 10, ['if (!user) return;']);
     const restoredFindings = [finding('src/b.ts', 11), finding('src/b.ts', 30)];
-    tagFindingOrigins(restoredFindings, parsePRDiff(change('src/a.ts', 10, ['x'])), parsePRDiff(priorRemoval), parsePRDiff(restored));
+    tagFindingOrigins(restoredFindings, parsePRDiff(change('src/a.ts', 10, ['x'])), parsePRDiff(priorRemoval), parsePRDiff(restored), citedPlaces);
     expect(restoredFindings.map(f => f.origin)).toEqual(['new', 'reviewed']);
 
     // The PR moved its own `guard` line below `body`. The current change adds the same text, so only the diff between the commits shows it.
     const moved = change('src/a.ts', 10, ['body', 'guard']);
     const movedInterRound = `diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -10,3 +10,3 @@\n ctx\n-guard\n body\n+guard\n`;
     const movedFindings = [finding('src/a.ts', 12), finding('src/a.ts', 20)];
-    tagFindingOrigins(movedFindings, parsePRDiff(moved), parsePRDiff(prior), parsePRDiff(movedInterRound));
+    tagFindingOrigins(movedFindings, parsePRDiff(moved), parsePRDiff(prior), parsePRDiff(movedInterRound), citedPlaces);
     expect(movedFindings.map(f => f.origin)).toEqual(['new', 'reviewed']);
 
     // A rebase brings in a base line `}` that the PR also adds elsewhere. It sits on a line the PR does not add, so it stays reviewed.
     const rebaseInterRound = `diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,1 +1,2 @@\n ctx\n+}\n`;
     const rebaseFindings = [finding('src/a.ts', 2)];
-    tagFindingOrigins(rebaseFindings, parsePRDiff(change('src/a.ts', 10, ['guard', 'body', '}'])), parsePRDiff(change('src/a.ts', 10, ['guard', 'body', '}'])), parsePRDiff(rebaseInterRound));
+    tagFindingOrigins(rebaseFindings, parsePRDiff(change('src/a.ts', 10, ['guard', 'body', '}'])), parsePRDiff(change('src/a.ts', 10, ['guard', 'body', '}'])), parsePRDiff(rebaseInterRound), citedPlaces);
     expect(rebaseFindings[0].origin).toBe('reviewed');
   });
 
@@ -795,7 +805,7 @@ describe('tagFindingOrigins', () => {
     const current = parsePRDiff(change('src/a.ts', 10, ['x']));
     const fixed = { fixedElsewhere: 'src/a.ts:11' };
     const result = { findings: [finding('src/a.ts', 30), { ...finding('src/a.ts', 31), ...fixed }, { ...finding('src/a.ts', 32), ...fixed, raisedIn: 1 }] } as ReviewResult;
-    tagFindingOrigins(result.findings, current, current);
+    tagFindingOrigins(result.findings, current, current, undefined, citedPlaces);
     hideSeenNotes(result, current);
     expect([result.findings.map(f => f.line), result.unposted?.map(f => [f.line, f.unpostedReason])]).toEqual([[31], [[30, 'reviewed_code'], [32, 'listed_earlier']]]);
   });

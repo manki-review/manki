@@ -22,7 +22,7 @@ import { loadMemory, MemoryRefusedError, MemorySkip, openMemoryStore, RepoMemory
 import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
 import { findRelatedWork } from './related-work';
 import { currentFindingLine, fetchRecapState, FOUND_AGAIN_MARKER, parseContextBlocks, PreviousFinding, pushTouchesThread, RecapState, replyClassOf, replyShownToJudge, securityOverridesIn } from './recap';
-import { carryBodyWarnings, filesChangedByPush, RETRY_HINT, ReviewClients, ReviewOptions, ROUND_TIME_MS, runReview } from './review';
+import { carryBodyWarnings, citedPlaces, filesChangedByPush, RETRY_HINT, ReviewClients, ReviewOptions, ROUND_TIME_MS, runReview } from './review';
 import { stringifyFindingFingerprint } from './finding-fingerprint';
 import { buildReviewClients, warmUpClients } from './review-clients';
 import { roundReplyMarker } from './review-record';
@@ -2359,7 +2359,7 @@ async function runFullReview(
 
     const reviewed = withLockfiles(diff, lockfiles);
     addCodeContext(result.findings, reviewed);
-    tagFindingOrigins(result.findings, reviewed, options.fullReview ? undefined : priorChange, interRoundDiff ? parsePRDiff(interRoundDiff) : undefined);
+    tagFindingOrigins(result.findings, reviewed, options.fullReview ? undefined : priorChange, interRoundDiff ? parsePRDiff(interRoundDiff) : undefined, citedPlaces);
     if (priorRoundCount > 0 && (options.fullReview || !priorChange)) result.originsWithoutPrior = true;
     // Only the diff since the last round shows a line the push moved or restored, so without it no line counts as reviewed for certain.
     if (!options.fullReview) hideSeenNotes(result, interRoundDiff === undefined ? undefined : reviewed);
