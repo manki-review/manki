@@ -1106,7 +1106,7 @@ describe('checkAndAutoApprove', () => {
           expect(dismissPreviousReviews.mock.calls).toEqual([[expect.anything(), TEST_BOT, 'owner', 'repo', 1, undefined, 'APPROVED']]);
           // The check on the head fails as a round with an open blocker does, so a required check no longer passes.
           expect(checkRuns.create.mock.calls).toEqual([[expect.objectContaining({
-            name: 'Manki', head_sha: HEAD, status: 'completed', conclusion: 'failure', output: expect.objectContaining({ title: 'Changes requested', summary: expect.stringContaining('Manki withdrew its approval') }),
+            name: 'Manki', head_sha: HEAD, status: 'completed', conclusion: 'failure', output: expect.objectContaining({ title: 'Changes requested', summary: expect.stringMatching(/^A blocking thread is open again, so Manki withdrew its approval\. The next review round decides\./) }),
           })]]);
           // A dismissal GitHub refused, as under a ruleset, leaves the approval and its check as they are.
           checkRuns = { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) };

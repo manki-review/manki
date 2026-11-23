@@ -954,7 +954,8 @@ function heldForPerson(bot: BotIdentity, reviews: ReviewEntry[], headSha: string
  */
 type ApprovalCheck = { approved: true; standing?: true } | { approved: false; why: () => Promise<string>; answered?: true; held?: Exclude<ApprovalHeld, false> };
 
-const WITHDRAWN_LINE = 'A blocking thread is open again, so Manki withdrew its approval. Approval follows once every blocking thread is resolved by someone allowed to clear it, or the next review round decides.';
+// A dismissed approval no longer covers the head, so resolving the threads alone approves nothing.
+const WITHDRAWN_LINE = `A blocking thread is open again, so Manki withdrew its approval. ${NEXT_ROUND_LINE}`;
 
 /**
  * Dismisses Manki's approvals while a blocking thread is not cleared, as after a reopen, and then fails the `Manki`
