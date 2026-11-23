@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { LLMClient, NotStartedError } from './providers';
 import { BotIdentity, isAutoApproval, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, BASE_NOTE_RE, TRACKED_NOTE_RE, TRUST_NOTE_RE, WHAT_GOES_WRONG_LABEL, WHY_LABEL, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, authorClearRole, paginateGraphql, plainCitedFiles, titleToSlug } from './github';
-import { BOX_ANCHOR } from './issue-box';
+import { BOX_ANCHOR, filedIssueOf } from './issue-box';
 import { currentFindingLine, findPriorThreadId, stringifyFindingFingerprint } from './finding-fingerprint';
 import { extractJSON } from './json';
 import { isLockfileAlert } from './lockfile';
@@ -161,6 +161,11 @@ function latestAnswer(bot: BotIdentity, comments: ThreadCommentNode[]): string |
   const answer = comments.slice(1).filter(c => isBotLogin(bot, c.author?.login) && !!c.body
     && (REPLY_OUTCOME_RE.test(c.body) || hasOwnMarker(c.body, FOUND_AGAIN_MARKER, COMMENT_MARKER))).pop();
   return answer?.body.split('\n\n<!--')[0].trim();
+}
+
+/** Returns the issue of Manki's latest `filedIssueReply` in `comments`, which a later answer in the thread does not replace. */
+function filedIssue(bot: BotIdentity, comments: ThreadCommentNode[]): number | undefined {
+  return comments.slice(1).filter(c => isBotLogin(bot, c.author?.login)).map(c => filedIssueOf(c.body ?? '')).filter(n => n !== undefined).pop();
 }
 
 /** Returns `body` with its code blocks and inline code blanked out, since a command quoted there is text, not a command. */
@@ -482,6 +487,8 @@ interface PreviousFinding extends FindingMetadata {
   securityOverride?: ThreadSecurityOverride;
   /** Manki's latest answer to a developer in the thread, from `latestAnswer`. */
   answer?: string;
+  /** The issue Manki filed for the finding, from `filedIssue`. */
+  filedIssue?: number;
 }
 
 /**
@@ -750,6 +757,7 @@ async function fetchRecapState(
       ...(!settled && shouldReopen(t, prAuthorLogin) && { reopen: true }),
       ...(securityOverride && { securityOverride }),
       ...(t.answer && { answer: t.answer }),
+      ...(t.filedIssue && { filedIssue: t.filedIssue }),
       description: t.description,
       suggestedFix: t.suggestedFix,
       howToFix: t.howToFix,
@@ -1108,6 +1116,7 @@ interface ReviewThread extends FindingMetadata {
   /** Set when the thread's later comments could not be read, so its latest reply is unknown. */
   commentsIncomplete?: boolean;
   answer?: string;
+  filedIssue?: number;
   /** How Manki's replies and the dismiss commands settled the thread, by `settlement`. Unset when not every comment was read. */
   settlement?: Settlement;
   /** Manki settled the latest reply by a person, by `replyAgreed`. Unset when not every comment was read. */
@@ -1298,6 +1307,7 @@ async function fetchReviewThreads(
       // A claim in a thread whose comments were not all read may be out of date, so the thread names none.
       const fixClaim = isBotThread && !incomplete.has(thread.id) ? fixClaimOf(bot, thread.comments.nodes, `${owner}/${repo}`, prNumber) : undefined;
       const answer = isBotThread ? latestAnswer(bot, thread.comments.nodes) : undefined;
+      const filed = isBotThread ? filedIssue(bot, thread.comments.nodes) : undefined;
       const settled = isBotThread && !incomplete.has(thread.id) ? settlement(bot, thread.comments.nodes) : undefined;
       const agreed = isBotThread && !incomplete.has(thread.id) && replyAgreed(bot, thread.comments.nodes);
       const clearLogin = isBotThread && !incomplete.has(thread.id) ? clearRecordLogin(bot, thread.comments.nodes) : undefined;
@@ -1334,6 +1344,7 @@ async function fetchReviewThreads(
         ...(authorReplyAssociation && { authorReplyAssociation }),
         ...(incomplete.has(thread.id) && { commentsIncomplete: true }),
         ...(answer && { answer }),
+        ...(filed && { filedIssue: filed }),
         ...(settled && { settlement: settled }),
         ...(agreed && { replyAgreed: true }),
         ...(clearLogin && { clearLogin }),

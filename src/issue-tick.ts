@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { BotIdentity, buildLineLink, findingLocation, inline, linked, reviewedCommit, sanitizeMarkdown } from './github';
-import { BOX_ANCHOR, FILED_ISSUE_OPENER, filedIssueMarker, issueBoxLine, issueBoxOffset, messageBoxLine, replaceIssueBox, replaceMessageBox, tickedIssueBoxes, withoutFences } from './issue-box';
+import { BOX_ANCHOR, FILED_ISSUE_OPENER, filedIssueMarker, filedIssueReply, issueBoxLine, issueBoxOffset, messageBoxLine, replaceIssueBox, replaceMessageBox, tickedIssueBoxes, withoutFences } from './issue-box';
 import { findingFile, findingLineOf, isGuarded, parseFindingData, withoutPlaceNote } from './recap';
 import { boxLabel, MessageBox } from './settings';
 import { BOT_MARKER, fetchBotReviewThreads, replyToReviewThread, resolveReviewThread, TRACKED_MARKER } from './state';
@@ -136,7 +136,7 @@ export async function handleIssueBoxTick(
     // Opening with "Agreed." records the deferral, so a later round does not raise the finding in a new thread.
     // `TRACKED_MARKER` lifts a warning's hold, so only the reply that files the last ticked box carries it.
     const tracked = allFiled && id === ids.at(-1) ? [TRACKED_MARKER] : [];
-    if (filed && thread) await replyToReviewThread(octokit, thread.id, `Agreed. Filed as #${filed.number} for later work.`, ...tracked);
+    if (filed && thread) await replyToReviewThread(octokit, thread.id, filedIssueReply(filed.number), ...tracked);
   }
   // A deferred finding no longer needs this PR, but only someone other than the author clears a blocker or a security finding.
   if (!thread || !allFiled || isGuarded(thread)) return false;

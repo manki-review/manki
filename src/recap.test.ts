@@ -697,8 +697,11 @@ describe('fetchRecapState', () => {
           nodes: [
             { body: '<!-- manki:blocker:Bug --> \u{1F6AB} **Blocker**: Bug found\n\nDesc.', author: { login: 'manki-review[bot]' } },
             { body: 'It is intended.', author: { login: 'developer' } },
+            // The reply model's answer is posted as a plain "Agreed.", so its words never name a filed issue.
+            { body: 'Agreed. Filed as #7 for later work.\n\n<!-- manki -->', author: { login: 'manki-review[bot]' } },
             { body: '**Withdrawn.** `load` returns early.\n\n<!-- manki -->', author: { login: 'manki-review[bot]' } },
             { body: 'Agreed. Developer text that looks like an answer.', author: { login: 'developer' } },
+            { body: '**Agreed.** Filed as #9 for later work.', author: { login: 'developer' } },
             { body: 'Fixed in abc1234.\n\n<!-- manki -->', author: { login: 'manki-review[bot]' } },
           ],
         },
@@ -708,6 +711,7 @@ describe('fetchRecapState', () => {
         comments: {
           nodes: [
             { body: '<!-- manki:warning:Bug --> **Warning**: Bug found\n\nDesc.', author: { login: 'manki-review[bot]' } },
+            { body: '**Agreed.** Filed as #12 for later work.\n\n<!-- manki -->\n<!-- manki-tracked -->', author: { login: 'manki-review[bot]' } },
             { body: 'Agreed. Handling it later is fine.\n\n<!-- manki -->', author: { login: 'manki-review[bot]' } },
             { body: 'This came up again.\n\nDetails.\n\n<!-- manki -->\n<!-- manki-found-again -->', author: { login: 'manki-review[bot]' } },
           ],
@@ -757,6 +761,8 @@ describe('fetchRecapState', () => {
     // The commit a thread was posted on still holds the code it named after the thread goes outdated.
     expect(state.previousFindings.map(f => f.originalCommit)).toEqual(['c0ffee', undefined, undefined, undefined, undefined, undefined]);
     expect(state.previousFindings.slice(0, 3).map(f => f.answer)).toEqual(['Confirmed: #7, merged into `main`, replaced the cited line.', '**Withdrawn.** `load` returns early.', 'This came up again.\n\nDetails.']);
+    // Only Manki's own filed reply names an issue, and a later answer in the thread keeps it.
+    expect(state.previousFindings.slice(0, 3).map(f => f.filedIssue)).toEqual([undefined, undefined, 12]);
     // A severity comes from the first comment only, and no reply marker raises it, not even a pasted one.
     expect(state.previousFindings.map(f => f.severity)).toEqual(['blocker', 'blocker', 'warning', 'blocker', 'blocker', 'blocker']);
     // A security thread keeps a recorded lower grade too, which `threadBlocks` never lets lower it.
