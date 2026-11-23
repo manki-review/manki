@@ -455,8 +455,12 @@ export function toolAlertFindings(signals: StaticSignal[]): Finding[] {
   }));
 }
 
+/** Sources whose every result is a security problem: a vulnerable package, a leaked secret, hidden characters or a supply chain change. */
+const SECURITY_SOURCES: ReadonlySet<StaticSignalSource> = new Set(['dependency_review', 'dependencies', 'secrets', 'hidden_characters', 'lockfile']);
+
+/** Whether `signal` names a security problem: by its source, or for any other source by its tool or rule id. */
 function isSecuritySignal(signal: StaticSignal): boolean {
-  return signal.source === 'dependency_review' || SECURITY_RULE.test(signal.tool) || SECURITY_RULE.test(signal.ruleId);
+  return SECURITY_SOURCES.has(signal.source) || SECURITY_RULE.test(signal.tool) || SECURITY_RULE.test(signal.ruleId);
 }
 
 function isTriagedSignal(signal: StaticSignal): boolean {
