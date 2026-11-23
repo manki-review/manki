@@ -1530,6 +1530,44 @@ describe('runFullReview end to end', () => {
       expect(core.info).toHaveBeenCalledWith('Thread PRRT_2 stays as it is: it is resolved or guarded');
     });
 
+    /** Runs a round on a push that changes the warning's line, where the judge restates the warning as `cell` and adds `more`. */
+    async function restateAfterPush(cell: Record<string, unknown>, more: Record<string, unknown>[] = []): Promise<void> {
+      const restating = { ...BLOCKER, title: 'Unbounded sum reaches the invoice total' };
+      const judge = JSON.parse(restated(cell, 'P1', restating.title));
+      judge.findings.push(...more);
+      Object.assign(mockLLM.replies, { reviewer: JSON.stringify([restating, ...more.map(m => ({ ...warning, title: m.title, line: 3, proof: ['src/math.ts:3'] }))]), judge: JSON.stringify(judge) });
+      // On a changed line, a security suggestion gets a thread.
+      mockGitHub.headSha = 'c3'.repeat(20);
+      mockGitHub.prDiffs[mockGitHub.headSha] = PR_DIFF.replace('a + b;', 'b + a;');
+      await reviewRound();
+    }
+    const variant = { id: 2, title: 'Return value is never range checked', variantOf: 'P1', row: 'degraded', trigger: 'When an invoice sums very large amounts', reasoning: 'Same missing check.' };
+
+    // The reply lifts the warning's hold, so the thread stays open while the new thread holds less or this round put a finding into it.
+    it.each([
+      ['a security suggestion', { row: 'improvement', security: true }, [], 'PRRT_2 holds less than it does'],
+      ['a blocker beside a variant posted into the thread', { row: 'wrong' }, [variant], 'a finding of this round went into it'],
+    ])('leaves the warning thread open for %s', async (_label, cell, more, why) => {
+      await warnFirst();
+      await restateAfterPush(cell, more);
+
+      expect(mockGitHub.threads.map(t => [t.id, t.isResolved])).toEqual([['PRRT_1', false], ['PRRT_2', false]]);
+      expect(mockGitHub.threads[0].comments.map(c => c.body)).not.toContainEqual(expect.stringMatching(/^Raised to/));
+      expect(core.info).toHaveBeenCalledWith(`Thread PRRT_1 stays as it is: ${why}`);
+    });
+
+    it('resolves a suggestion thread for a security suggestion, since the suggestion held nothing', async () => {
+      Object.assign(mockLLM.replies, {
+        reviewer: JSON.stringify([warning]),
+        judge: JSON.stringify({ summary: 'One suggestion.', findings: [{ id: 1, title: warning.title, row: 'improvement', reasoning: 'A guard would be clearer.' }] }),
+      });
+      await reviewRound();
+      await restateAfterPush({ row: 'improvement', security: true });
+
+      expect(mockGitHub.threads.map(t => [t.id, t.isResolved])).toEqual([['PRRT_1', true], ['PRRT_2', false]]);
+      expect(mockGitHub.threads[0].comments.at(-1)!.body).toMatch(/^Raised to a security suggestion, continued in \[this thread\]\(https:\/\/github\.com\/acme\/widgets\/pull\/42#discussion_PRRT_2\)\./);
+    });
+
     it('leaves the warning thread alone when posting the review fails', async () => {
       await warnFirst();
       Object.assign(mockLLM.replies, BLOCKER_REPLIES, { judge: restated({ row: 'wrong' }, 'P1') });

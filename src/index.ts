@@ -1766,8 +1766,9 @@ async function replyFixedThreads(run: ReviewRun, threads: OpenThread[]): Promise
 
 /**
  * Points each earlier thread a finding `raises` to the thread the round posted for that finding, and resolves it, so the
- * PR shows the defect once. A guarded thread stays open, since only a fix or a person clears it. So does a thread whose
- * finding got no thread of its own. The reply lifts a warning's hold, which the new thread takes over.
+ * PR shows the defect once. The reply lifts a warning's hold, so the earlier thread stays open, with no reply, unless the
+ * new thread blocks whenever it blocked and blocks or warns whenever it warned, and no finding of this round went into it.
+ * A guarded thread stays open too, since only a fix or a person clears it.
  */
 async function closeRaisedThreads(run: ReviewRun, result: ReviewResult): Promise<void> {
   const raising = result.findings.filter(f => f.raises);
@@ -1781,23 +1782,34 @@ async function closeRaisedThreads(run: ReviewRun, result: ReviewResult): Promise
     return;
   }
   const earlier = new Set(run.recap.previousFindings.map(t => t.threadId));
-  const posted = live.flatMap(t => t.place?.commit === commitSha && !earlier.has(t.id) ? [{ threadId: t.id, threadUrl: t.threadUrl, ...t.place }] : []);
+  const posted = live.flatMap(t => t.place?.commit === commitSha && !earlier.has(t.id) ? [{ threadId: t.id, thread: t, ...t.place }] : []);
+  const carrying = new Set(result.findings.flatMap(g => [g.threadId, g.answeredIn?.threadId]));
   for (const f of raising) {
     const old = live.find(t => t.id === f.raises);
-    const fresh = posted.find(t => t.threadId === findPriorThreadId({ file: f.file, lineStart: f.line, lineEnd: f.line, slug: titleToSlug(f.title) }, posted));
-    if (!old || old.isResolved || isGuarded(old) || !fresh?.threadUrl) {
-      core.info(`Thread ${f.raises} stays as it is: ${!fresh?.threadUrl ? `"${f.title}" got no thread of its own` : 'it is resolved or guarded'}`);
+    const fresh = posted.find(t => t.threadId === findPriorThreadId({ file: f.file, lineStart: f.line, lineEnd: f.line, slug: titleToSlug(f.title) }, posted))?.thread;
+    const keeps = !fresh?.threadUrl ? `"${f.title}" got no thread of its own`
+      : !old || old.isResolved || isGuarded(old) ? 'it is resolved or guarded'
+      : carrying.has(old.id) ? 'a finding of this round went into it'
+      : !holdsAtLeast(fresh, old) ? `${fresh.id} holds less than it does`
+      : undefined;
+    if (keeps || !old || !fresh?.threadUrl) {
+      core.info(`Thread ${f.raises} stays as it is: ${keeps}`);
       continue;
     }
     const kind = `${isSecurityFinding(f.tags, f.reviewers) ? 'security ' : ''}${SEVERITY_NAME[f.severity]}`;
     try {
       await replyToReviewThread(octokit, old.id, `Raised to a ${kind}, continued in [this thread](${fresh.threadUrl}).`, RAISED_MARKER);
       await resolveReviewThread(octokit, old.id, 'WONT_FIX');
-      core.info(`Thread ${old.id} continues in ${fresh.threadId}, so it is resolved`);
+      core.info(`Thread ${old.id} continues in ${fresh.id}, so it is resolved`);
     } catch (error) {
-      core.warning(`Failed to close thread ${old.id}, which "${f.title}" continues in ${fresh.threadId}: ${error}`);
+      core.warning(`Failed to close thread ${old.id}, which "${f.title}" continues in ${fresh.id}: ${error}`);
     }
   }
+}
+
+/** Whether thread `to` holds the approval whenever thread `from` does: it blocks when `from` blocks, and blocks or warns when `from` warns. */
+function holdsAtLeast(to: ReviewThread, from: ReviewThread): boolean {
+  return (!from.isBlocking || to.isBlocking) && (!from.isWarning || !!to.isWarning || to.isBlocking);
 }
 
 /**
