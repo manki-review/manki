@@ -12,7 +12,7 @@ import { countChangedLines, diffSections, isLineInDiff, MAX_LINE_CHARS, MAX_SLIC
 import { guessClaimTerms, translateNames } from './name-translation';
 import { dependencyOutcomes } from './dependency-sources';
 import { fetchedRelatedRepos, fetchRelatedRepos, offeredRepos, relatedNames, relatedRepoGuides, relatedRepoOutcomes, relatedRepoTools, repoTools, requireRelatedRepos, withoutDependencies } from './related-repos';
-import { classifyRelatedWork, linkTrackingIssues } from './related-work';
+import { classifyRelatedWork, linkTrackingIssues, namesCitedCode } from './related-work';
 import { FULL_GROUP, GroupChoice, chooseGroup, classifyPr, distinctModels, findersOf, modelIdentity, resolveRouting } from './routing';
 import { extractJSON } from './json';
 import { currentFindingLine, indexThreadEvaluations, isPriorAddressedByJudge, placesReading, stringifyFindingFingerprint } from './finding-fingerprint';
@@ -1842,6 +1842,7 @@ export async function runReview(
   let dedupDurationMs: number | undefined;
   const duplicateMatches: RoundDedupDuplicateMatch[] = [];
   const citedCode = citedCodeUnchanged(priorRounds ?? [], interRoundDiff, await diffsSinceRaised(previousFindings ?? [], priorRounds ?? [], interRoundDiff, options.changesSince));
+  const deferred = deferredThreadIds(previousFindings ?? [], priorRounds ?? [], options.relatedWork);
   if (previousFindings && previousFindings.length > 0 && findingsForJudge.length > 0) {
     const changedSinceLastRound = interRoundDiff === undefined ? undefined : new Set(parsePRDiff(interRoundDiff).files.map(f => f.path));
     const { unique, duplicates } = deduplicateFindings(findingsForJudge, previousFindings, changedSinceLastRound);
@@ -1962,7 +1963,7 @@ export async function runReview(
     provenanceMap,
     interRoundDiff,
     resolvedThreadIds,
-    settledThreadIds: new Set((previousFindings ?? []).filter(p => !!p.answerPlaces && citedCode(p)).flatMap(p => p.threadId ? [p.threadId] : [])),
+    settledThreadIds: new Set((previousFindings ?? []).filter(p => (!!p.answerPlaces && citedCode(p)) || deferred.has(p.threadId ?? '')).flatMap(p => p.threadId ? [p.threadId] : [])),
     agreedCodeChanged: (threadId, f) => !!threadById.get(threadId) && !citedCode(threadById.get(threadId)!, f),
     guardedThreadIds,
     ...(related?.repos.length && { relatedRepos: related.repos }),
@@ -2098,7 +2099,8 @@ export async function runReview(
   if (stopped) return incompleteAfterJudge(stopped);
   if (previousFindings && previousFindings.length > 0) {
     const threadByKey = new Map((priorRounds ?? []).flatMap(r => r.findings.entries).flatMap(e => e.threadId ? [[stringifyFindingFingerprint(e.fingerprint), e.threadId] as const] : []));
-    const restated = dropWaivedRestatements(finalFindings, previousFindings, key => threadByKey.get(key), threadMayHaveChanged(priorRounds ?? [], interRoundDiff, citedCode));
+    const mayHaveChanged = threadMayHaveChanged(priorRounds ?? [], interRoundDiff, citedCode);
+    const restated = dropWaivedRestatements(finalFindings, previousFindings, key => threadByKey.get(key), (prev, f) => !deferred.has(prev.threadId ?? '') && mayHaveChanged(prev, f));
     // Listed as drops but not counted in `llmDedupCount`, since the judge returned them and `allJudgedFindings` keeps them.
     for (const d of restated.duplicates) duplicateMatches.push({ droppedTitle: d.finding.title, matchedTitle: d.matchedTitle, matchType: d.matchType });
     finalFindings = restated.unique;
@@ -4062,6 +4064,23 @@ function threadMayHaveChanged(priorRounds: RoundContext[], interRoundDiff: strin
     const files = [prev.file, ...(prev.evidenceFiles ?? []), ...recorded.flatMap(({ entry }) => citedFiles({ file: entry.fingerprint.file, evidence: entry.evidence })), ...citedFiles(f)];
     return filesMayHaveChangedSince(first, files, sorted, interRoundDiff);
   };
+}
+
+/**
+ * Returns the threads Manki settled by agreeing with an answer that names a tracking issue, while that issue still
+ * verifies: an open issue of `work` that a person with write access opened and that names the code the thread's
+ * finding cites (`namesCitedCode`), with the code the evidence of its round entries cites and a lowercase name both
+ * write in a code span.
+ */
+function deferredThreadIds(previousFindings: PreviousFinding[], priorRounds: RoundContext[], work: RelatedWork | undefined): Set<string> {
+  const issues = (work?.items ?? []).filter(item => item.kind === 'issue' && item.byWriter);
+  const entries = priorRounds.flatMap(r => r.findings.entries);
+  return new Set(previousFindings.flatMap(p => {
+    if (!p.decidedWithoutFix || !p.threadId || !p.trackingIssues) return [];
+    const checks = entries.filter(e => e.threadId === p.threadId).flatMap(e => e.evidence?.checks ?? []);
+    const finding = { title: p.title, file: p.file, description: [p.description ?? '', ...checks].join('\n') };
+    return issues.some(item => p.trackingIssues!.includes(item.number) && namesCitedCode(item, finding, true)) ? [p.threadId] : [];
+  }));
 }
 
 /** How many lines after the last cited line of a file a hunk of the push must start to leave the cited code alone. */

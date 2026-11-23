@@ -61,11 +61,14 @@ interface RelatedWorkTarget {
   diff: ParsedDiff;
   /** The `closed_paths` setting, whose files no other PR's file list names. */
   closedPaths?: readonly string[];
+  /** The issues Manki's answers named when they settled a thread without a fix, looked up by number. */
+  trackingIssues?: readonly number[];
 }
 
 /**
- * Lists the open PRs that change a file this PR changes, most shared files first, and the open issues a search for
- * the declared names and the title's words finds, without the issues the body links. A list that fails, or that is
+ * Lists the open PRs that change a file this PR changes, most shared files first, the open issues a search for the
+ * declared names and the title's words finds, without the issues the body links, and each of `trackingIssues` that
+ * is an open issue. A list that fails, or that is
  * not done within `LOOKUP_TIMEOUT_MS`, is left out and named in `skipped`. Each item a person with write access
  * opened is marked `byWriter`, within the same deadline. A permission that cannot be read in time marks none.
  */
@@ -81,15 +84,17 @@ export async function findRelatedWork(octokit: Octokit, target: RelatedWorkTarge
       controller.abort();
     }, LOOKUP_TIMEOUT_MS);
   });
-  const lists = [findOverlappingPrs(octokit, target, request), searchIssues(octokit, target, request)];
-  const [prs, issues] = await Promise.allSettled(lists.map(list => Promise.race([list, deadline])));
-  const items = [...(prs.status === 'fulfilled' ? prs.value : []), ...(issues.status === 'fulfilled' ? issues.value : [])];
+  const lists = [findOverlappingPrs(octokit, target, request), searchIssues(octokit, target, request), fetchTrackingIssues(octokit, target, request)];
+  const [prs, issues, tracking] = await Promise.allSettled(lists.map(list => Promise.race([list, deadline])));
+  const found = [...(prs.status === 'fulfilled' ? prs.value : []), ...(issues.status === 'fulfilled' ? issues.value : [])];
+  const items = [...found, ...(tracking.status === 'fulfilled' ? tracking.value : []).filter(t => !found.some(item => item.kind === 'issue' && item.number === t.number))];
   // `hasWriteAccess` takes no signal, so a lookup still running at the deadline is left behind and counts as no access.
   const byWriter = await Promise.all(items.map(item => !!item.author && Promise.race([hasWriteAccess(octokit, target.owner, target.repo, item.author), deadline]).catch(() => false)));
   clearTimeout(timer);
   const skipped = [
     ...(prs.status === 'rejected' ? [`open PRs: ${skipReason(prs.reason)}`] : []),
     ...(issues.status === 'rejected' ? [`issue search: ${skipReason(issues.reason)}`] : []),
+    ...(tracking.status === 'rejected' ? [`tracking issues: ${skipReason(tracking.reason)}`] : []),
   ];
   for (const reason of skipped) core.warning(`Related work skips the ${reason}`);
   return {
@@ -138,6 +143,19 @@ async function searchIssues(octokit: Octokit, { owner, repo, title, body, diff }
     .filter(issue => !issue.pull_request && !linked.has(issue.number))
     .slice(0, MAX_RELATED_ISSUES)
     .map(issue => ({ kind: 'issue', number: issue.number, title: issue.title, excerpt: excerpt(issue.body, MAX_EXCERPT), ...(issue.user && { author: issue.user.login }) }));
+}
+
+/**
+ * Returns each of `trackingIssues` that is an open issue, at most `MAX_RELATED_ISSUES`, without the issues the body
+ * links. A number that cannot be read, such as one of a deleted issue, is left out.
+ */
+async function fetchTrackingIssues(octokit: Octokit, { owner, repo, body, trackingIssues = [] }: RelatedWorkTarget, request: LookupRequest): Promise<RelatedItem[]> {
+  const linked = linkedIssueNumbers(body);
+  const numbers = [...new Set(trackingIssues)].filter(n => !linked.has(n)).slice(0, MAX_RELATED_ISSUES);
+  const fetched = await Promise.all(numbers.map(issue_number => octokit.rest.issues.get({ owner, repo, issue_number, request }).then(r => r.data, () => undefined)));
+  return fetched.flatMap((issue): RelatedItem[] => !issue || issue.state !== 'open' || issue.pull_request ? [] : [
+    { kind: 'issue', number: issue.number, title: issue.title, excerpt: excerpt(issue.body, MAX_EXCERPT), ...(issue.user && { author: issue.user.login }) },
+  ]);
 }
 
 /**
@@ -244,20 +262,35 @@ function buildTrackingMessage(findings: readonly Finding[], items: readonly Rela
   return `## Findings\n\n${listed.join('\n\n')}\n\n## Candidates\n\n${candidates.join('\n\n')}`;
 }
 
+/** Returns each name in a code span of `text`. */
+function spannedNames(text: string): string[] {
+  return [...text.matchAll(/`([^`\n]+)`/g)].flatMap(m => m[1].match(/[A-Za-z_$][\w$./-]{2,}/g) ?? []);
+}
+
 /**
  * Returns the file `finding` cites, its file name, and each name in a code span of its title or description. A plain
  * lowercase word such as `null` or `error` is prose too, so it names no code.
  */
-function citedCode(finding: Finding): string[] {
-  const spans = [...`${finding.title}\n${finding.description}`.matchAll(/`([^`\n]+)`/g)].map(m => m[1]);
-  const names = spans.flatMap(span => span.match(/[A-Za-z_$][\w$./-]{2,}/g) ?? []);
+function citedCode(finding: Pick<Finding, 'title' | 'description' | 'file'>): string[] {
+  const names = spannedNames(`${finding.title}\n${finding.description}`);
   return [finding.file, finding.file.split('/').pop() ?? '', ...names].filter(name => name.length >= 3 && !/^[a-z]+$/.test(name));
 }
 
-/** Whether the title or excerpt of `item` names the file or the code that `finding` cites, as a whole name: `a.ts` is not in `data.ts`. */
-function namesCitedCode(item: RelatedItem, finding: Finding): boolean {
+/** Whether `text` holds `name` as a whole name: `a.ts` is not in `data.ts`. */
+function namesWhole(text: string, name: string): boolean {
+  return new RegExp(`(?<![\\w$.-])${escapeRegExp(name)}(?![\\w$])`).test(text);
+}
+
+/**
+ * Whether the title or excerpt of `item` names the file or the code that `finding` cites, as a whole name. With
+ * `spannedWords`, a plain lowercase name such as `dialed` counts too, when both write it in a code span, as in `Bans::dialed`.
+ */
+export function namesCitedCode(item: RelatedItem, finding: Pick<Finding, 'title' | 'description' | 'file'>, spannedWords = false): boolean {
   const text = `${item.title}\n${item.excerpt}`;
-  return citedCode(finding).some(name => new RegExp(`(?<![\\w$.-])${escapeRegExp(name)}(?![\\w$])`).test(text));
+  if (citedCode(finding).some(name => namesWhole(text, name))) return true;
+  if (!spannedWords) return false;
+  const spans = [...text.matchAll(/`([^`\n]+)`/g)].map(m => m[1]).join('\n');
+  return spannedNames(`${finding.title}\n${finding.description}`).some(name => /^[a-z]{3,}$/.test(name) && namesWhole(spans, name));
 }
 
 /**

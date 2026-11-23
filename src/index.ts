@@ -1438,7 +1438,10 @@ async function collectRoundSignals(
   const { octokit, owner, repo, prNumber, commitSha, baseRef } = target;
   const prBody = prContext?.body;
   const relatedWorkPromise = prContext
-    ? findRelatedWork(octokit, { owner, repo, prNumber, title: prContext.title, body: prContext.body, diff, closedPaths: config.closed_paths })
+    ? findRelatedWork(octokit, {
+      owner, repo, prNumber, title: prContext.title, body: prContext.body, diff, closedPaths: config.closed_paths,
+      trackingIssues: recap.previousFindings.flatMap(f => f.trackingIssues ?? []),
+    })
     : Promise.resolve(undefined);
   // A parsed lockfile stays in the diffs between rounds, so a push that changes it counts as a change.
   const parsedLockfiles = new Set(lockfiles.map(l => l.path));

@@ -1515,8 +1515,9 @@ describe('fetchRecapState', () => {
         kind: 'thread-reply', prNumber: 1, timestamp: '2026-11-18T10:00:00Z', mankiVersion: '7.7.0', usage: {}, decision: { outcome: 'Agreed', thread: 'resolves' },
         statements: [{ status: 'confirmed', places: ['src/a.ts:40-42', 'org/lib:src/b.ts:7'] }, { status: 'confirmed', places: ['src/c.ts:5'] }],
       }));
-      const placesOf = async (replies: string[], people?: Array<[string, string]>) =>
-        (await fetchRecapState(withWriter(mockOctokit([answeredWith('T_BOT', files.bot, replies, people)], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }])), TEST_BOT, 'owner', 'repo', 1, 'author')).previousFindings.map(f => f.answerPlaces);
+      const settledOf = async (replies: string[], people?: Array<[string, string]>) =>
+        (await fetchRecapState(withWriter(mockOctokit([answeredWith('T_BOT', files.bot, replies, people)], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }])), TEST_BOT, 'owner', 'repo', 1, 'author')).previousFindings;
+      const placesOf = async (replies: string[], people?: Array<[string, string]>) => (await settledOf(replies, people)).map(f => f.answerPlaces);
       expect(await placesOf([cited])).toEqual([['src/a.ts:40-42', 'src/c.ts:5']]);
       // A statement that rests on a search, the PR description or a related repo alone cites no line of the PR, so a push anywhere may change it.
       for (const statement of [{ status: 'confirmed' as const, places: [], searched: 'pr' }, { status: 'confirmed' as const, description: 'held' as const }, { status: 'confirmed' as const, places: ['org/lib:src/b.ts:7'] }]) {
@@ -1540,6 +1541,12 @@ describe('fetchRecapState', () => {
       }
       expect(await placesOf([answer('Agreed')])).toEqual([undefined]);
       expect(await placesOf([`Finding dismissed by \`@alice\`, who has write access to this repository.\n\n<!-- manki -->\n${dismissRecordMarker('alice')}`], dismissed)).toEqual([undefined]);
+      // The settling answer also keeps the issues it names, such as the one tracking a deferred fix, without the PR itself,
+      // a number in code or one in its hidden record. An earlier answer that a later one replaced names none.
+      const tracked = answer('Agreed').replace('The caller checks it.', 'Bounding it in #1487 is fine, as the reply on #1 says. `#12` is code.');
+      expect((await settledOf([tracked])).map(f => f.trackingIssues)).toEqual([[1487]]);
+      expect((await settledOf([answer('Agreed').replace('<!-- manki -->', '<!-- manki --> #77')])).map(f => f.trackingIssues)).toEqual([undefined]);
+      expect((await settledOf([tracked, answer('Agreed')])).map(f => f.trackingIssues)).toEqual([undefined]);
       // A warning a writer dismissed carries Manki's record too, so a later round's repeat of it is dropped as waived.
       const dismissedWarning = makeThread({
         id: 'T_WARN', isResolved: true, resolvedBy: { login: BOT_LOGIN }, path: files.bot, line: 10,

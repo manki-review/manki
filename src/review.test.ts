@@ -42,7 +42,7 @@ import { relatedReposCacheDir } from './related-repos';
 import * as core from '@actions/core';
 import * as napi from '@ast-grep/napi';
 import { formatFindingComment, holdsApproval, LinkedIssue, titleToSlug } from './github';
-import { CELL_GRADES, cellGrade, EarlierAttempt, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, OriginAnswer, OriginVerdict, Refutation, RefutationOutcome, ReviewResult, RoundContext, RoundLead, RoundNotStarted, RoundScope, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG, SweepMode, triggerDoubt } from './types';
+import { CELL_GRADES, cellGrade, EarlierAttempt, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, OriginAnswer, OriginVerdict, Refutation, RefutationOutcome, RelatedItem, RelatedWork, ReviewResult, RoundContext, RoundLead, RoundNotStarted, RoundScope, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG, SweepMode, triggerDoubt } from './types';
 import { citedLine, stringifyFindingFingerprint } from './finding-fingerprint';
 import { baseProofFixture, baseProofWorkspace, expectLinearTime, fingerprintEntriesFromLegacy, git, GIT_TEST_TIMEOUT_MS, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
 import { listUsesOutsideDiff } from './symbol-uses';
@@ -5893,12 +5893,12 @@ describe('runReview', () => {
     const push = (file: string, line: number) => `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -${line} +${line} @@\n-a\n+b\n`;
     let changedFor: ((threadId: string, finding: Finding) => boolean) | undefined;
     let changesSince: ((base: string) => Promise<string | undefined>) | undefined;
-    const run = async (interRoundDiff: string | undefined, thread = settled, judged = restated, priorRounds = [buildPriorRound(1, [makePriorWarningFinding()])]) => {
+    const run = async (interRoundDiff: string | undefined, thread = settled, judged = restated, priorRounds = [buildPriorRound(1, [makePriorWarningFinding()])], relatedWork?: RelatedWork) => {
       mockedRunJudgeAgent.mockClear();
       mockedRunJudgeAgent.mockResolvedValue({ findings: [judged], summary: 's', threadEvaluations: [] });
       const result = await runReview(makeClients(JSON.stringify([{ severity: 'warning', title: restated.title, file: 'src/x.ts', line: 11, description: 'd' }])), {
         config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true,
-        openThreads: [], previousFindings: [thread], priorRounds, interRoundDiff, headSha: 'sha2', changesSince,
+        openThreads: [], previousFindings: [thread], priorRounds, interRoundDiff, headSha: 'sha2', changesSince, relatedWork,
       });
       changedFor = mockedRunJudgeAgent.mock.calls[0][2].agreedCodeChanged;
       return [[...mockedRunJudgeAgent.mock.calls[0][2].settledThreadIds ?? []], result.findings.map(f => f.title)];
@@ -5946,6 +5946,80 @@ describe('runReview', () => {
     for (const [diff, thread] of [[push('src/x.ts', 50)], [push('src/y.ts', 12)], [undefined], [renamed], [push('src/x.ts', 60), { ...settled, answerPlaces: undefined }]] as Array<[string | undefined, PreviousFinding?]>) {
       expect([diff, await run(diff, thread)]).toEqual([diff, [[], [restated.title]]]);
     }
+
+    // A thread Manki agreed to defer to a tracking issue stays settled after a push that changed its cited code, while
+    // that issue is open, a writer opened it and it names code the thread's finding cites, here in its round's evidence.
+    const deferred: PreviousFinding = { ...settled, answerPlaces: undefined, trackingIssues: [12], description: 'The table grows.' };
+    const issue: RelatedItem = { kind: 'issue', number: 12, title: 'Bound the ban table', excerpt: 'Nothing calls `purgeExpired`.', author: 'maintainer', byWriter: true };
+    const round = buildPriorRound(1, [makePriorWarningFinding()]);
+    const cites = [{ ...round, findings: { ...round.findings, entries: round.findings.entries.map(e => ({ ...e, evidence: { checks: ['`purgeExpired` is never called.'], proof: [] } })) } }];
+    expect(await run(push('src/x.ts', 12), deferred, restated, cites, { items: [issue] })).toEqual([['T1'], []]);
+    expect(await run(undefined, { ...deferred, description: 'Nothing runs `purgeExpired`.' }, restated, undefined, { items: [issue] })).toEqual([['T1'], []]);
+    // It is posted once the issue closed, which leaves it out of the related work, when someone without write access
+    // opened it, when it names none of the cited code, when the answer named another issue, or without related work.
+    for (const work of [{ items: [] }, { items: [{ ...issue, byWriter: undefined }] }, { items: [{ ...issue, excerpt: 'Make it smaller.' }] }, { items: [{ ...issue, number: 13 }] }, undefined]) {
+      expect([work, await run(push('src/x.ts', 12), deferred, restated, cites, work)]).toEqual([work, [[], [restated.title]]]);
+    }
+    // A restatement graded above the deferred thread is posted, even while the issue verifies.
+    expect(await run(push('src/x.ts', 12), { ...deferred, severity: 'note' }, restated, cites, { items: [issue] })).toEqual([['T1'], [restated.title]]);
+    // A plain lowercase name counts only when the issue writes it in a code span too, so a shared word links nothing.
+    const lowercase = [{ ...round, findings: { ...round.findings, entries: round.findings.entries.map(e => ({ ...e, evidence: { checks: ['Only `dialed` removes one.'], proof: [] } })) } }];
+    expect(await run(push('src/x.ts', 12), deferred, restated, lowercase, { items: [{ ...issue, excerpt: 'Make `Bans::dialed` reclaim it.' }] })).toEqual([['T1'], []]);
+    expect(await run(push('src/x.ts', 12), deferred, restated, lowercase, { items: [{ ...issue, excerpt: 'The entry is dialed again.' }] })).toEqual([[], [restated.title]]);
+  });
+
+  it('keeps quiet the repeats of a ban table growth deferred to an open tracking issue after pushes rewrote its code (rdc-1483)', async () => {
+    const file = 'dash-spv/src/network/bans.rs';
+    const raised = makePriorWarningFinding({ fingerprint: { file, lineStart: 41, lineEnd: 41, slug: 'the-ban-table-can-retain-an-unbounded-history-of-peer-addresses' }, title: 'The ban table can retain an unbounded history of peer addresses', threadId: 'T_R1' });
+    const repeated = makePriorWarningFinding({ fingerprint: { file, lineStart: 49, lineEnd: 49, slug: 'expired-bans-and-failed-dials-permanently-grow-the-ban-table' }, title: 'Expired bans and failed dials permanently grow the ban table', threadId: 'T_R3' });
+    const withChecks = (r: RoundContext, checks: Record<string, string[]>): RoundContext => ({
+      ...r, findings: { ...r.findings, entries: r.findings.entries.map(e => ({ ...e, evidence: { checks: checks[e.threadId ?? ''] ?? [], proof: [] } })) },
+    });
+    const round1 = withChecks(buildPriorRound(1, [raised]), { T_R1: [
+      `${file}:41 inserts with \`entries.entry(addr).or_insert((0, now))\` without a capacity check.`,
+      `${file}:64 deletes only the address passed to \`dialed\`. ${file}:75 filters expired entries without deleting them.`,
+    ] });
+    const round3 = withChecks(buildPriorRound(3, [repeated]), { T_R3: [
+      `dash-spv/src/network/mod.rs:134 exposes \`ban_peer(&self, addr: SocketAddr)\` without requiring the address to be connected.`,
+      `${file}:49 inserts with \`entries.entry(addr).or_insert(...)\` for each new address.`,
+    ] });
+    const thread1: PreviousFinding = {
+      title: raised.title, file, line: 57, severity: 'warning', status: 'auto-resolved', threadId: 'T_R1', decidedWithoutFix: true, trackingIssues: [1487],
+      description: 'Every distinct failed or banned address can leave an entry for the lifetime of the manager, even after its expiry.',
+      answer: 'Agreed. Handling the bound on the ban table in issue #1487 is fine, since the fix has to keep the dial backoff counts working.',
+    };
+    const thread3: PreviousFinding = {
+      title: repeated.title, file, line: 49, severity: 'warning', status: 'auto-resolved', threadId: 'T_R3', decidedWithoutFix: true, trackingIssues: [1487],
+      description: 'Each distinct address passed to the public `ban_peer` method or encountered on a failed dial adds a table entry.',
+      answer: 'Agreed. Handling the growth of the ban table in the follow-up tracked in #1487 is fine.',
+    };
+    const tracking: RelatedWork = { items: [{
+      kind: 'issue', number: 1487, title: 'dash-spv: the ban table never reclaims expired entries', author: 'maintainer', byWriter: true,
+      excerpt: '`Bans` keeps an entry for every address that ever failed a dial or got banned. `Bans::dialed` removes an entry only after a successful handshake, and nothing reclaims an expired one.',
+    }] };
+    // Each push rewrote the insert and `dialed`, the lines the threads and Manki's answers cite, but reclaimed nothing.
+    const rewrite = `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -38,8 +46,12 @@\n-old insert\n+new insert\n@@ -70,10 +78,14 @@\n-old dialed\n+new dialed\n`;
+    const run = async (judged: Finding, previousFindings: PreviousFinding[], priorRounds: RoundContext[], work: RelatedWork = tracking) => {
+      mockedRunJudgeAgent.mockClear();
+      mockedRunJudgeAgent.mockResolvedValue({ findings: [judged], summary: 's', threadEvaluations: [] });
+      const result = await runReview(makeClients(JSON.stringify([{ severity: 'warning', title: judged.title, file, line: 49, description: 'd' }])), {
+        config: makeConfig(), diff: diffChanging(file), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true, openThreads: [],
+        previousFindings, priorRounds, interRoundDiff: rewrite, headSha: 'sha9', changesSince: async () => rewrite, relatedWork: work,
+      });
+      return [[...mockedRunJudgeAgent.mock.calls[0][2].settledThreadIds ?? []], result.findings.map(f => f.title)];
+    };
+    const linkedTo = (title: string, entry: { fingerprint: FindingFingerprintEntry['fingerprint'] }): Finding => ({
+      severity: 'warning', title, file, line: 49, description: 'd', reviewers: ['r'], sameAs: stringifyFindingFingerprint(entry.fingerprint), evidence: { checks: [], proof: [`${file}:49`] },
+    });
+
+    // Round 3 repeats the round 1 thread, whose evidence names `dialed`, which the issue writes as `Bans::dialed`.
+    const third = linkedTo('Expired bans and failed dials permanently grow the ban table', raised);
+    expect(await run(third, [thread1], [round1, buildPriorRound(2, [])])).toEqual([['T_R1'], []]);
+    // Round 4 repeats it again. The round 3 thread cites no code the issue names, so the judge links to the round 1 thread.
+    const fourth = linkedTo('Expired dial failures and bans consume memory for the lifetime of the manager', raised);
+    expect(await run(fourth, [thread1, thread3], [round1, buildPriorRound(2, []), round3])).toEqual([['T_R1'], []]);
+    // Once the issue is closed, the repeat is posted again.
+    expect(await run(fourth, [thread1, thread3], [round1, buildPriorRound(2, []), round3], { items: [] })).toEqual([[], [fourth.title]]);
   });
 
   it('points a finding that restates an earlier finding still open at it, and a variant at its open thread', async () => {

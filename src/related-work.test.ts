@@ -25,16 +25,24 @@ function openPr(number: number, files: string[], extra: Record<string, unknown> 
   return { number, title: `PR ${number}`, body: `Body of ${number}`, isDraft: false, files: { nodes: files.map(path => ({ path })) }, ...extra };
 }
 
-/** An octokit that lists `prs` and finds `issues`, where each login of `permissions` has that permission and is a person, unless it ends in `[bot]`. */
-function makeOctokit(prs: unknown[], issues: unknown[] = [], permissions: Record<string, string> = {}) {
+/**
+ * An octokit that lists `prs`, finds `issues` and reads each of `numbered` by its number, where each login of
+ * `permissions` has that permission and is a person, unless it ends in `[bot]`.
+ */
+function makeOctokit(prs: unknown[], issues: unknown[] = [], permissions: Record<string, string> = {}, numbered: Array<{ number: number; [key: string]: unknown }> = []) {
   const graphql = jest.fn().mockResolvedValue({ repository: { pullRequests: { nodes: prs } } });
   const search = jest.fn().mockResolvedValue({ data: { total_count: issues.length, items: issues } });
   const permission = jest.fn(async ({ username }: { username: string }) => {
     if (!(username in permissions)) throw new Error('Not Found');
     return { data: { permission: permissions[username], user: { type: username.endsWith('[bot]') ? 'Bot' : 'User' } } };
   });
-  const octokit = { graphql, rest: { search: { issuesAndPullRequests: search }, repos: { getCollaboratorPermissionLevel: permission } } } as unknown as Octokit;
-  return { octokit, graphql, search, permission };
+  const get = jest.fn(async ({ issue_number }: { issue_number: number }) => {
+    const issue = numbered.find(i => i.number === issue_number);
+    if (!issue) throw new Error('Not Found');
+    return { data: issue };
+  });
+  const octokit = { graphql, rest: { search: { issuesAndPullRequests: search }, repos: { getCollaboratorPermissionLevel: permission }, issues: { get } } } as unknown as Octokit;
+  return { octokit, graphql, search, permission, get };
 }
 
 const target = (diff: ParsedDiff, extra: Partial<Parameters<typeof findRelatedWork>[1]> = {}) => ({
@@ -98,6 +106,21 @@ describe('findRelatedWork', () => {
     expect(marked.items.map(i => [i.number, i.author, i.byWriter])).toEqual([
       [50, 'maintainer', true], [51, 'reader', undefined], [52, 'helper[bot]', undefined], [53, undefined, undefined], [60, 'admin', true], [61, 'stranger', undefined],
     ]);
+    // An issue Manki's answer named as tracking a deferred fix is read by its number and listed when it is open, once,
+    // whoever opened it. A closed issue, a PR, an issue the body links and a number that cannot be read are left out.
+    const tracking = makeOctokit([], [{ number: 60, title: 'Tracked defect', body: 'b', user: { login: 'admin' } }], { admin: 'admin', maintainer: 'write' }, [
+      { number: 60, title: 'Tracked defect', body: 'b', state: 'open', user: { login: 'admin' } },
+      { number: 62, title: 'Bound the table', body: 'Reclaim `entries`.', state: 'open', user: { login: 'maintainer' } },
+      { number: 63, title: 'Report', body: null, state: 'open', user: { login: 'stranger' } },
+      { number: 64, title: 'Done', body: 'b', state: 'closed', user: { login: 'admin' } },
+      { number: 65, title: 'A pull request', body: 'b', state: 'open', pull_request: {}, user: { login: 'admin' } },
+      { number: 40, title: 'Linked already', body: 'b', state: 'open', user: { login: 'admin' } },
+    ]);
+    const deferred = await findRelatedWork(tracking.octokit, target(diff, { trackingIssues: [60, 62, 62, 63, 64, 65, 40, 99] }));
+    expect(deferred.items.map(i => [i.number, i.byWriter])).toEqual([[60, true], [62, true], [63, undefined]]);
+    expect(deferred.items[1]).toMatchObject({ kind: 'issue', title: 'Bound the table', excerpt: 'Reclaim `entries`.', author: 'maintainer' });
+    expect(tracking.get.mock.calls.map(([args]) => args.issue_number)).toEqual([60, 62, 63, 64, 65]);
+    expect(deferred.skipped).toBeUndefined();
 
     // A body keeps the comment starts that nothing closes, and is read once however many of them it holds.
     const unclosed = (n: number) => `<!-- closed -->kept ${'<!--'.repeat(n)}`;
