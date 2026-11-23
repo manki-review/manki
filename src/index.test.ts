@@ -226,7 +226,7 @@ jest.mock('./github', () => ({
   updateProgressDashboard: jest.fn().mockResolvedValue(undefined),
   startLiveEdits: jest.requireActual('./github').startLiveEdits,
   LIVE_EDIT_MS: jest.requireActual('./github').LIVE_EDIT_MS,
-  dismissPreviousReviews: jest.fn().mockResolvedValue(undefined),
+  dismissPreviousReviews: jest.fn().mockResolvedValue(0),
   postReview: jest.fn().mockResolvedValue({ id: 123, approvalHeld: false, warningsHeld: false }),
   formatFoundAgainReply: jest.fn().mockReturnValue('Found again.'),
   formatVariantReply: jest.fn().mockReturnValue('Another instance.'),
@@ -2434,7 +2434,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(ghUtils.fetchRepoContext).mockResolvedValue({ text: '', files: [] });
     jest.mocked(ghUtils.fetchFileContents).mockResolvedValue(new Map());
     jest.mocked(ghUtils.fetchLinkedIssues).mockResolvedValue([]);
-    jest.mocked(ghUtils.dismissPreviousReviews).mockResolvedValue(undefined);
+    jest.mocked(ghUtils.dismissPreviousReviews).mockResolvedValue(0);
     jest.mocked(ghUtils.updateProgressComment).mockResolvedValue(undefined);
     jest.mocked(ghUtils.updateProgressDashboard).mockResolvedValue(undefined);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

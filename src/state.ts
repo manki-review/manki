@@ -954,10 +954,13 @@ function heldForPerson(bot: BotIdentity, reviews: ReviewEntry[], headSha: string
  */
 type ApprovalCheck = { approved: true; standing?: true } | { approved: false; why: () => Promise<string>; answered?: true; held?: Exclude<ApprovalHeld, false> };
 
+const WITHDRAWN_LINE = 'A blocking thread is open again, so Manki withdrew its approval. Approval follows once every blocking thread is resolved by someone allowed to clear it, or the next review round decides.';
+
 /**
- * Dismisses Manki's approvals while a blocking thread is not cleared, as after a reopen. It never approves, so it also
- * runs where `auto_approve` is off and only a review round approves. Without every round record each thread counts as
- * blocking, which proves no blocker, so it then dismisses nothing.
+ * Dismisses Manki's approvals while a blocking thread is not cleared, as after a reopen, and then fails the `Manki`
+ * check on the head, so a required check no longer passes. It never approves, so it also runs where `auto_approve` is
+ * off and only a review round approves. Without every round record each thread counts as blocking, which proves no
+ * blocker, so it then dismisses nothing.
  */
 async function withdrawBlockedApproval(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, prAuthorLogin: string | undefined, clearRole: AuthorClearRole | undefined,
@@ -970,7 +973,15 @@ async function withdrawBlockedApproval(
     return;
   }
   const prAuthorRole = await overrideRole(octokit, owner, repo, threads, prAuthorLogin, clearRole);
-  if (unclearedThreads(threads, bot, prAuthorLogin, prAuthorRole).length > 0) await dismissPreviousReviews(octokit, bot, owner, repo, prNumber, undefined, 'APPROVED');
+  if (unclearedThreads(threads, bot, prAuthorLogin, prAuthorRole).length === 0) return;
+  if (await dismissPreviousReviews(octokit, bot, owner, repo, prNumber, undefined, 'APPROVED') === 0) return;
+  try {
+    const { data: pr } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
+    await reportCheck(octokit, owner, repo, pr.head.sha, outcomeReport('ADDRESS_FIRST', WITHDRAWN_LINE));
+  } catch (error) {
+    assertWritesAllowed();
+    core.warning(`Withdrew Manki's approval, but could not read the head to fail its check: ${error instanceof Error ? error.message : error}`);
+  }
 }
 
 /** Post an approval review if all findings are resolved. */

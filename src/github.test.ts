@@ -5124,7 +5124,7 @@ describe('dismissPreviousReviews', () => {
       rest: { pulls: { dismissReview: dismissMock } },
     } as unknown as Parameters<typeof dismissPreviousReviews>[0];
 
-    await dismissPreviousReviews(mockOctokit, TEST_BOT, 'owner', 'repo', 1, 3, 'APPROVED', SHA_B);
+    expect(await dismissPreviousReviews(mockOctokit, TEST_BOT, 'owner', 'repo', 1, 3, 'APPROVED', SHA_B)).toBe(4);
     expect(dismissMock.mock.calls.map(([args]) => args.review_id)).toEqual([1, 4, 5, 6]);
   });
 
@@ -5162,7 +5162,7 @@ describe('dismissPreviousReviews', () => {
       },
     } as unknown as Parameters<typeof dismissPreviousReviews>[0];
 
-    await expect(dismissPreviousReviews(mockOctokit, TEST_BOT, 'owner', 'repo', 1, 4)).resolves.toBeUndefined();
+    await expect(dismissPreviousReviews(mockOctokit, TEST_BOT, 'owner', 'repo', 1, 4)).resolves.toBe(0);
     expect(dismissMock).not.toHaveBeenCalled();
     expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to dismiss previous reviews: Server Error'));
     warningSpy.mockRestore();
@@ -5182,7 +5182,8 @@ describe('dismissPreviousReviews', () => {
       },
     } as unknown as Parameters<typeof dismissPreviousReviews>[0];
 
-    await expect(dismissPreviousReviews(mockOctokit, TEST_BOT, 'owner', 'repo', 1)).resolves.toBeUndefined();
+    // A refused dismissal counts as none.
+    await expect(dismissPreviousReviews(mockOctokit, TEST_BOT, 'owner', 'repo', 1)).resolves.toBe(0);
     expect(warningSpy).toHaveBeenCalledWith('Could not dismiss the previous review #1, it still requests changes: Forbidden');
     warningSpy.mockRestore();
   });

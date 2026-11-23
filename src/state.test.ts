@@ -20,7 +20,7 @@ jest.mock('./auth', () => ({
 
 jest.mock('./github', () => ({
   ...jest.requireActual('./github'),
-  dismissPreviousReviews: jest.fn().mockResolvedValue(undefined),
+  dismissPreviousReviews: jest.fn().mockResolvedValue(0),
   postAutoApproveProgressComment: jest.fn().mockResolvedValue(12345),
   deleteAutoApproveProgressComment: jest.fn().mockResolvedValue(undefined),
   markProgressCommentFailed: jest.fn().mockResolvedValue(undefined),
@@ -1084,14 +1084,15 @@ describe('checkAndAutoApprove', () => {
       expect(createReviewMock).not.toHaveBeenCalled();
     });
 
-    it('withdraws a round approval or an auto-approval once a blocking thread is open again, and never for a warning thread', async () => {
+    it('withdraws a round approval or an auto-approval once a blocking thread is open again and fails the check, and never for a warning thread', async () => {
       jest.spyOn(core, 'info').mockImplementation(() => {});
       const autoApproval = `${APPROVED_LINE} All blocking threads are resolved.\n\n<!-- manki -->\n<!-- manki-auto-approve -->\n${formatApprovalRecord({
         decision: 'approved', reason: 'all blocking threads are resolved', head: HEAD, threads: { total: 1, resolved: 1 }, timestamp: '2026-11-23T00:00:00Z', mankiVersion: '7.7.3',
       })}`;
       const approvals = [roundBody(roundThatPosted(HEAD, [])), autoApproval];
       for (const body of approvals) {
-        const setup = (threads: ReturnType<typeof thread>[]): Octokit => makeMockOctokit({ threads, prHeadSha: HEAD, mergeable: true, existingReviews: [{ id: 7, body, state: 'APPROVED', commit_id: HEAD, user }] });
+        let checkRuns = { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) };
+        const setup = (threads: ReturnType<typeof thread>[]): Octokit => makeMockOctokit({ threads, prHeadSha: HEAD, mergeable: true, checks: checkRuns, existingReviews: [{ id: 7, body, state: 'APPROVED', commit_id: HEAD, user }] });
         // The check that runs after a reopen, with `auto_approve` on, and the one that runs with it off.
         const checks = [
           async (threads: ReturnType<typeof thread>[]) => { await approveOrSayWhy(setup(threads), TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG); },
@@ -1099,8 +1100,18 @@ describe('checkAndAutoApprove', () => {
         ];
         for (const check of checks) {
           dismissPreviousReviews.mockClear();
+          checkRuns = { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) };
+          dismissPreviousReviews.mockResolvedValueOnce(1);
           await check([thread('t1', 'blocker')]);
           expect(dismissPreviousReviews.mock.calls).toEqual([[expect.anything(), TEST_BOT, 'owner', 'repo', 1, undefined, 'APPROVED']]);
+          // The check on the head fails as a round with an open blocker does, so a required check no longer passes.
+          expect(checkRuns.create.mock.calls).toEqual([[expect.objectContaining({
+            name: 'Manki', head_sha: HEAD, status: 'completed', conclusion: 'failure', output: expect.objectContaining({ title: 'Changes requested', summary: expect.stringContaining('Manki withdrew its approval') }),
+          })]]);
+          // A dismissal GitHub refused, as under a ruleset, leaves the approval and its check as they are.
+          checkRuns = { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) };
+          await check([thread('t1', 'blocker')]);
+          expect(checkRuns.create).not.toHaveBeenCalled();
           // A blocking thread someone allowed to clear it resolved, and an open warning thread, leave the approval to stand.
           dismissPreviousReviews.mockClear();
           await check([fixed('t1'), thread('t2', 'warning', undefined, { title: 'Retry never stops' })]);

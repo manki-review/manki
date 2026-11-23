@@ -1548,8 +1548,8 @@ export async function updateProgressDashboard(
 /**
  * Dismiss the bot's reviews in `state`, `CHANGES_REQUESTED` by default, on this PR, except `keepReviewId` and any
  * review on `keepCommit`. Call it only after the new review is posted, so a failed run leaves the merge
- * block in place. A failed dismissal only warns, since the new review already stands.
- * Throws the abort reason once GitHub writes are stopped.
+ * block in place. A failed dismissal only warns, since the new review already stands. Returns how many reviews it
+ * dismissed. Throws the abort reason once GitHub writes are stopped.
  */
 export async function dismissPreviousReviews(
   octokit: Octokit,
@@ -1560,7 +1560,7 @@ export async function dismissPreviousReviews(
   keepReviewId?: number,
   state: 'CHANGES_REQUESTED' | 'APPROVED' = 'CHANGES_REQUESTED',
   keepCommit?: string,
-): Promise<void> {
+): Promise<number> {
   assertWritesAllowed();
   let reviews;
   try {
@@ -1572,8 +1572,9 @@ export async function dismissPreviousReviews(
     });
   } catch (error) {
     core.warning(`Failed to dismiss previous reviews: ${error instanceof Error ? error.message : error}`);
-    return;
+    return 0;
   }
+  let dismissed = 0;
 
   for (const review of reviews) {
     const onKeptCommit = keepCommit !== undefined && reviewedCommit(review) === keepCommit;
@@ -1588,12 +1589,14 @@ export async function dismissPreviousReviews(
           message: 'Superseded by new review',
         });
         core.info(`Dismissed previous review #${review.id}`);
+        dismissed++;
       } catch (e) {
         // A repository ruleset can restrict who may dismiss reviews, and the stale review then stays in force.
         core.warning(`Could not dismiss the previous review #${review.id}, it still ${state === 'APPROVED' ? 'approves' : 'requests changes'}: ${e instanceof Error ? e.message : e}`);
       }
     }
   }
+  return dismissed;
 }
 
 function countOf(count: number, singular: string, pluralForm = `${singular}s`): string {
