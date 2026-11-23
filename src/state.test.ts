@@ -375,6 +375,8 @@ describe('fetchBotReviewThreads', () => {
       resolved('author-record', [own(dismissRecordMarker('author'))]),
       // Text a person writes is never Manki's record.
       resolved('forged', [own(clearRecordMarker('bob'), 'author')]),
+      // Text above Manki's comment marker, which echoes a reply or is edited in later, is never its record.
+      resolved('above-marker', [{ body: `Withdrawn.\n${clearRecordMarker('bob')}\n\n${BOT_MARKER}`, author: { login: manki } }]),
       // A reopen or a found-again reply by Manki ends the records before it.
       resolved('reopened', [own(clearRecordMarker('bob')), own(REOPENED_MARKER)]),
       resolved('found-again', [own(clearRecordMarker('bob')), own(FOUND_AGAIN_MARKER)]),
@@ -406,7 +408,7 @@ describe('fetchBotReviewThreads', () => {
     expect(threads.flatMap(t => t.addressed ? [t.id] : [])).toEqual(['addressed']);
     expect(threads.flatMap(t => t.writerClearLogin ? [[t.id, t.writerClearLogin]] : [])).toEqual([['writer', 'bob'], ['dismissed', 'bob'], ['author-record', 'author']]);
     expect(threads.flatMap(t => t.writerResolverLogin ? [[t.id, t.writerResolverLogin]] : [])).toEqual([['by-author', 'author'], ['by-writer', 'bob']]);
-    expect(unclearedThreads(threads, TEST_BOT, 'author').map(t => t.id)).toEqual(['alone', 'reply-only', 'reader', 'author-record', 'forged', 'reopened', 'found-again', 'by-author', 'cut-off', 'by-reader', 'by-triage', 'by-workflow-token', 'by-bare-workflow-token', 'by-app']);
+    expect(unclearedThreads(threads, TEST_BOT, 'author').map(t => t.id)).toEqual(['alone', 'reply-only', 'reader', 'author-record', 'forged', 'above-marker', 'reopened', 'found-again', 'by-author', 'cut-off', 'by-reader', 'by-triage', 'by-workflow-token', 'by-bare-workflow-token', 'by-app']);
     // A security thread below a blocker holds an approval only when the covering review names it, and a workflow token's resolve does not clear it then.
     expect(unclearedThreads(threads, TEST_BOT, 'author', undefined, new Set(['security-by-workflow-token'])).map(t => t.id)).toContain('security-by-workflow-token');
     expect(threads.flatMap(t => t.repliesUnread ? [t.id] : [])).toEqual(['cut-off']);
