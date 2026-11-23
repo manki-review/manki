@@ -44,7 +44,13 @@ interface FetchedEvent {
 /** Whether the restored event is a review the token service's catch-up asked for. */
 let catchUp = false;
 
-/** What a dispatched run does next: run the handlers, or stop because the head moved on or the comment or review is gone. */
+/**
+ * The `pull_request` action the token service dispatches for a PR marked ready on a head that already has a review. No
+ * GitHub webhook has it. It runs the approval check and never a review.
+ */
+export const APPROVAL_CHECK_ACTION = 'approval_check';
+
+/** What a dispatched run does next: run the handlers, or stop because the head of an approval check moved on or the comment or review is gone. */
 export type DispatchOutcome = 'run' | 'superseded' | 'gone';
 
 /** Whether the run was started by `workflow_dispatch`. The original event name stays in the environment after the payload is rebuilt. */
@@ -97,14 +103,21 @@ export async function restoreDispatchedEvent(octokit: Octokit): Promise<Dispatch
     return 'gone';
   }
 
-  catchUp = inputs.event === 'pull_request' && !!inputs.headSha && inputs.deliveryId === `catch-up-${inputs.headSha.slice(0, 12)}`;
+  // A catch-up asked for its head alone, so a run that finds a newer head reviews it as that head's push.
+  catchUp = inputs.event === 'pull_request' && !!inputs.headSha && inputs.headSha === event.headSha
+    && inputs.deliveryId === `catch-up-${inputs.headSha.slice(0, 12)}`;
   github.context.eventName = inputs.event;
   github.context.payload = { ...event.objects, action: inputs.action, sender: event.sender, repository: github.context.payload.repository };
   github.context.actor = event.sender.login;
 
   if (inputs.event === 'pull_request' && inputs.action !== 'closed' && event.headSha !== inputs.headSha) {
-    core.info(`Dispatched for ${inputs.headSha?.slice(0, 7)}, but the PR head is ${event.headSha?.slice(0, 7)}. A newer run reviews it.`);
-    return 'superseded';
+    const moved = `Dispatched for ${inputs.headSha?.slice(0, 7)}, but the PR head is ${event.headSha?.slice(0, 7)}.`;
+    // The approval check decides only on the head it was queued for. A review reviews the head it finds.
+    if (inputs.action === APPROVAL_CHECK_ACTION) {
+      core.info(`${moved} A newer run checks it.`);
+      return 'superseded';
+    }
+    core.info(`${moved} Reviewing the PR head instead.`);
   }
   return 'run';
 }
