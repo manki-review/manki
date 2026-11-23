@@ -663,9 +663,9 @@ export async function handleReviewCommentReply(
     }
     // A resolved thread that keeps blocking is left resolved, and `staysOpen` says that it is not cleared.
     const cleared = !!resolved && !staysOpen;
-    // The review never reads a reply on a thread that is not guarded, so an answer that settles the thread replaces its open verdict.
+    // On a thread that is not guarded, an answer that settles it replaces an open verdict the review of the same head gave after the reply.
     const roundReply = cleared && live && !isGuarded(live) ? live.roundReplies?.find(r => r.commit === head && Date.parse(r.at) > Date.parse(comment.created_at ?? '')) : undefined;
-    const replaces = roundReply ? [`This answer reads your reply, which the review of \`${roundReply.commit.slice(0, 7)}\` above did not, so it replaces that review's verdict.`] : [];
+    const replaces = roundReply ? [`This answer reads your reply and replaces the verdict of the review of \`${roundReply.commit.slice(0, 7)}\` above.`] : [];
 
     // A thread gets one Manki fix confirmation per head unless a second lifts a hold, but a writer's "Fixed." can still resolve it.
     let addNote: ((note: string) => Promise<unknown>) | undefined;

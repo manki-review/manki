@@ -1556,7 +1556,7 @@ describe('handleReviewCommentReply', () => {
 
     const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls[0][0].body as string;
     expect(body.startsWith(`${outcome}.`)).toBe(true);
-    expect(body.includes('\n\nThis answer reads your reply, which the review of `aaaaaaa` above did not, so it replaces that review\'s verdict.')).toBe(replaces);
+    expect(body.includes('\n\nThis answer reads your reply and replaces the verdict of the review of `aaaaaaa` above.')).toBe(replaces);
   });
 
   it('includes scoped PR diff context in the Claude prompt', async () => {
