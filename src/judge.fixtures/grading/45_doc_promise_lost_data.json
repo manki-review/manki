@@ -1,0 +1,18 @@
+{
+  "name": "doc-promise-lost-data",
+  "case": "doc-promise-lost-data",
+  "allowed": [
+    "blocker"
+  ],
+  "finding": {
+    "title": "`save_settings` empties the settings file on every sync, and is not atomic as its docstring says",
+    "file": "app/settings.py",
+    "line": 9,
+    "description": "`open(path, \"w\")` truncates the settings file before `json.dumps` runs. `remember_sync` stores a `datetime` in `settings[\"last_sync\"]`, which `json.dumps` cannot serialize, so it raises `TypeError` after the file was truncated. Every sync leaves the settings file empty and the user's saved settings are gone. The docstring also promises an atomic replace.",
+    "severity": "blocker",
+    "reviewers": [
+      "Correctness"
+    ]
+  },
+  "prDiff": "diff --git a/app/settings.py b/app/settings.py\nindex 1111111..2222222 100644\n--- a/app/settings.py\n+++ b/app/settings.py\n@@ -1,3 +1,15 @@\n import json\n+from datetime import datetime\n \n SETTINGS_PATH = \"~/.config/notes/settings.json\"\n+\n+\n+def save_settings(path, settings):\n+    \"\"\"Atomically replaces the settings file at `path`.\"\"\"\n+    with open(path, \"w\") as f:\n+        f.write(json.dumps(settings, indent=2))\n+\n+\n+def remember_sync(path, settings):\n+    settings[\"last_sync\"] = datetime.now()\n+    save_settings(path, settings)\n"
+}
