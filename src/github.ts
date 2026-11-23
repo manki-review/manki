@@ -4651,8 +4651,8 @@ async function fetchReviewDismissals(octokit: Octokit, owner: string, repo: stri
 /**
  * Returns the reviews of `onCommit`, Manki's reviews of one commit oldest first, that stand on it. The newest review with
  * a verdict decides. When a person dismissed it, a request for changes still stands, since the dismissal only sets its
- * block aside, while an approval leaves nothing standing on the commit. Otherwise every review not dismissed stands, as
- * after a dismissal by Manki, a push or another app, and when the timeline cannot be read.
+ * block aside, while an approval leaves nothing standing on the commit. When the timeline proves that Manki, a push or
+ * another app dismissed it, every review not dismissed stands. A dismissal the timeline does not show leaves nothing standing.
  */
 async function standingOnCommit<T extends { id: number; state?: string; body?: string | null }>(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, onCommit: T[],
@@ -4662,12 +4662,16 @@ async function standingOnCommit<T extends { id: number; state?: string; body?: s
   if (newest?.state !== 'DISMISSED') return kept;
   try {
     const set = (await fetchReviewDismissals(octokit, owner, repo, prNumber)).find(d => d.reviewId === newest.id);
-    if (!set || set.dismissalCommitId || set.actor?.type !== 'User' || isBotLogin(bot, set.actor.login)) return kept;
-    if (set.state === 'approved') return [];
-    return set.state === 'changes_requested' ? onCommit.filter(r => r.state !== 'DISMISSED' || r === newest) : kept;
+    if (!set) {
+      core.warning(`The timeline does not say who dismissed Manki's review ${newest.id}, so no review of its commit counts`);
+      return [];
+    }
+    if (set.dismissalCommitId || set.actor && (set.actor.type !== 'User' || isBotLogin(bot, set.actor.login))) return kept;
+    // A person dismissed it, or the timeline names nobody.
+    return set.actor && set.state === 'changes_requested' ? onCommit.filter(r => r.state !== 'DISMISSED' || r === newest) : [];
   } catch (error) {
-    core.warning(`Could not read who dismissed Manki's review, so it counts as no review: ${error instanceof Error ? error.message : error}`);
-    return kept;
+    core.warning(`Could not read who dismissed Manki's review, so no review of its commit counts: ${error instanceof Error ? error.message : error}`);
+    return [];
   }
 }
 

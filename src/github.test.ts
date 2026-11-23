@@ -7013,9 +7013,21 @@ describe('hasBotReviewOnCommit', () => {
     // So does a standing review before it.
     const standing = makeMockOctokit([{ id: 5, ...review, state: 'COMMENTED' }, { id: 6, ...review }], [dismissal(6, 'approved')]);
     expect(await hasBotReviewOnCommit(standing, TEST_BOT, 'owner', 'repo', 1, testSha('123'))).toBe(false);
-    // A dismissal by Manki keeps the standing review.
-    const ownDismissal = makeMockOctokit([{ id: 5, ...review, state: 'COMMENTED' }, { id: 6, ...review }], [{ ...dismissal(6, 'approved'), actor: { login: BOT_LOGIN, type: 'Bot' } }]);
-    expect(await hasBotReviewOnCommit(ownDismissal, TEST_BOT, 'owner', 'repo', 1, testSha('123'))).toBe(true);
+    // A dismissal by Manki keeps the standing review, while one the timeline does not show, or cannot show, leaves none.
+    const standingThen = (dismissals: unknown[]) => hasBotReviewOnCommit(makeMockOctokit([{ id: 5, ...review, state: 'COMMENTED' }, { id: 6, ...review }], dismissals), TEST_BOT, 'owner', 'repo', 1, testSha('123'));
+    expect(await standingThen([{ ...dismissal(6, 'approved'), actor: { login: BOT_LOGIN, type: 'Bot' } }])).toBe(true);
+    expect(await standingThen([])).toBe(false);
+    expect(await standingThen([{ ...dismissal(6, 'approved'), actor: null }])).toBe(false);
+    const unreadable = makeMockOctokit([{ id: 5, ...review, state: 'COMMENTED' }, { id: 6, ...review }]);
+    const listReviews = jest.mocked(unreadable.paginate).getMockImplementation();
+    jest.mocked(unreadable.paginate).mockImplementation((async (method: unknown, params: unknown) => {
+      if (method === unreadable.rest.issues.listEventsForTimeline) throw new Error('API down');
+      return listReviews?.(method as never, params as never);
+    }) as never);
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    expect(await hasBotReviewOnCommit(unreadable, TEST_BOT, 'owner', 'repo', 1, testSha('123'))).toBe(false);
+    expect(warnSpy).toHaveBeenCalledWith('Could not read who dismissed Manki\'s review, so no review of its commit counts: API down');
+    warnSpy.mockRestore();
   });
 
   it('returns false when the only bot review is on a different commit', async () => {
@@ -7064,11 +7076,11 @@ describe('hasBotReviewOnCommit', () => {
     expect(await hasBotReviewOnCommit(patOctokit, TEST_BOT, 'owner', 'repo', 1, testSha('123'))).toBe(false);
   });
 
-  it('returns true when a prior bot review is on the SHA and a later DISMISSED one is too', async () => {
+  it('returns true when a prior bot review is on the SHA and Manki dismissed a later one', async () => {
     const octokit = makeMockOctokit([
       { state: 'COMMENTED', commit_id: testSha('123'), body: `${BOT_MARKER}\nreview body`, user: { login: BOT_LOGIN, type: 'Bot' } },
-      { state: 'DISMISSED', commit_id: testSha('123'), body: `${BOT_MARKER}\nreview body`, user: { login: BOT_LOGIN, type: 'Bot' } },
-    ]);
+      { id: 6, state: 'DISMISSED', commit_id: testSha('123'), body: `${BOT_MARKER}\nreview body`, user: { login: BOT_LOGIN, type: 'Bot' } },
+    ], [{ actor: { login: BOT_LOGIN, type: 'Bot' }, dismissed_review: { review_id: 6, state: 'approved', dismissal_commit_id: null } }]);
 
     expect(await hasBotReviewOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, testSha('123'))).toBe(true);
   });

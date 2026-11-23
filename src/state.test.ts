@@ -2008,9 +2008,9 @@ describe('checkAndAutoApprove', () => {
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const head = testSha('5ae');
     const person = { login: 'maintainer', type: 'User' };
-    type Setup = { resolved?: boolean; commit?: string; heldForPerson?: boolean; timelineFails?: boolean; actor?: { login: string; type: string }; state?: string; pushed?: string; approvedAfter?: boolean; stands?: boolean };
+    type Setup = { resolved?: boolean; commit?: string; heldForPerson?: boolean; timelineFails?: boolean; actor?: { login: string; type: string }; state?: string; pushed?: string; approvedAfter?: boolean; stands?: boolean; unlisted?: boolean };
     // Round 1 requested changes on `commit` for one blocker thread, and `actor` dismissed that review, unless it `stands`.
-    // With `approvedAfter`, Manki then approved the head and a person dismissed that approval.
+    // With `approvedAfter`, Manki then approved the head and a person dismissed that approval, which the timeline leaves out when `unlisted`.
     const check = async (setup: Setup = {}) => {
       warnSpy.mockClear();
       const threads = [makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix --> fix', isResolved: setup.resolved ?? true })];
@@ -2027,7 +2027,7 @@ describe('checkAndAutoApprove', () => {
       const dismissal = { actor: setup.actor ?? person, dismissed_review: { review_id: 5, state: setup.state ?? 'changes_requested', dismissal_commit_id: setup.pushed ?? null } };
       const approvalDismissal = { actor: person, dismissed_review: { review_id: 6, state: 'approved', dismissal_commit_id: null } };
       Object.assign(octokit.rest.issues, {
-        listEventsForTimeline: setup.timelineFails ? jest.fn().mockRejectedValue(new Error('API down')) : jest.fn().mockResolvedValue({ data: [dismissal, approvalDismissal] }),
+        listEventsForTimeline: setup.timelineFails ? jest.fn().mockRejectedValue(new Error('API down')) : jest.fn().mockResolvedValue({ data: setup.unlisted ? [dismissal] : [dismissal, approvalDismissal] }),
       });
       const approved = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1, AUTO_REVIEW_OFF);
       const covered = !warnSpy.mock.calls.some(([m]) => String(m).includes('manki has not reviewed HEAD'));
@@ -2045,6 +2045,9 @@ describe('checkAndAutoApprove', () => {
     for (const setup of [
       { approvedAfter: true },
       { approvedAfter: true, stands: true },
+      // A dismissal the timeline does not show, or cannot show, leaves no review on the head either.
+      { approvedAfter: true, stands: true, unlisted: true },
+      { approvedAfter: true, stands: true, timelineFails: true },
       { actor: { login: 'manki-review[bot]', type: 'Bot' } },
       { actor: { login: 'other-app[bot]', type: 'Bot' } },
       { state: 'approved' },
