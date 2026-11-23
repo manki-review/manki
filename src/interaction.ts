@@ -586,6 +586,12 @@ export async function handleReviewCommentReply(
       lookupFailed = true;
       return undefined;
     });
+    // A reply held behind a review would get a second verdict that can contradict the one that review already gave.
+    const roundReply = live?.roundReplies?.find(r => r.commit === head && Date.parse(r.at) > Date.parse(comment.created_at ?? ''));
+    if (roundReply) {
+      core.info(`Skipped the reply in thread ${live?.id}: the review of ${roundReply.commit.slice(0, 7)} already gave its verdict there at ${roundReply.at}, after the reply`);
+      return;
+    }
     // Only the live thread's id finds the rounds that judged it. A merged or closed PR has none, and nothing there reads
     // a "Fixed." again. On an open PR a thread that could not be found may have such a judgment, so no change counts.
     const rounds = live ? await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber) : undefined;

@@ -10,7 +10,7 @@ import { MessageBox, SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
 import { clearRecordLogin, dismissRecordLogins, dismissRecordMarker, FixClaim, fixClaimOf, fetchPriorRoundContexts, fetchRecapState, guardedKind, isDisprovedThread, isOverrideCandidate, judgeAddressedThreadIds, parseContextBlocks, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, RecordedGrade, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingPlace } from './recap';
-import { FIXED_MARKER_OPENER, fixedMarker, formatApprovalRecord, hasOwnMarker, hasReviewRecord, settlingDecision } from './review-record';
+import { FIXED_MARKER_OPENER, fixedMarker, formatApprovalRecord, hasOwnMarker, hasReviewRecord, ROUND_REPLY_OPENER, settlingDecision } from './review-record';
 import { findPriorThreadId } from './finding-fingerprint';
 import { ApprovalRecord, AuthorClearRole, FindingSeverity, gradedAbove, PRE_EXISTING_TAG, ReviewConfig, RoundContext, SecurityOverride, threadBlocks, threadWarns } from './types';
 import { COMMENT_MARKER as BOT_MARKER, ownMarker, withMarkers } from './utils';
@@ -100,6 +100,8 @@ interface ReviewThread {
   threadUrl?: string;
   /** The head commits on which a Manki reply in this thread confirmed the fix, from `fixedMarker`. */
   fixedOn?: string[];
+  /** When the review of each head commit gave its verdict on this thread in a reply, from `roundReplyMarker`. */
+  roundReplies?: Array<{ commit: string; at: string }>;
 }
 
 
@@ -249,9 +251,12 @@ async function fetchBotReviewThreads(
       const complete = thread.comments.nodes.length < THREAD_COMMENTS_LIMIT;
       const dismissRecords = complete ? dismissRecordLogins(bot, thread.comments.nodes) : [];
       const fixClaim = (isSecurity || disprovedBlocker || isBlocking) && complete ? fixClaimOf(bot, thread.comments.nodes, `${owner}/${repo}`, prNumber) : undefined;
-      const fixedOn = thread.comments.nodes.slice(1).flatMap(c => {
-        const sha = isBotLogin(bot, c.author?.login) ? ownMarker(c.body ?? '', FIXED_MARKER_OPENER, BOT_MARKER)?.match(/^[0-9a-f]{40}$/)?.[0] : undefined;
-        return sha ? [sha] : [];
+      const markedSha = (c: { body: string; author: { login: string } | null }, opener: string) =>
+        isBotLogin(bot, c.author?.login) ? ownMarker(c.body ?? '', opener, BOT_MARKER)?.match(/^[0-9a-f]{40}$/)?.[0] : undefined;
+      const fixedOn = thread.comments.nodes.slice(1).flatMap(c => markedSha(c, FIXED_MARKER_OPENER) ?? []);
+      const roundReplies = thread.comments.nodes.slice(1).flatMap(c => {
+        const commit = markedSha(c, ROUND_REPLY_OPENER);
+        return commit && c.createdAt ? [{ commit, at: c.createdAt }] : [];
       });
       return {
         id: thread.id,
@@ -273,6 +278,7 @@ async function fetchBotReviewThreads(
         ...(place && { place }),
         ...(threadUrl && { threadUrl }),
         ...(fixedOn.length > 0 && { fixedOn }),
+        ...(roundReplies.length > 0 && { roundReplies }),
       };
     });
 }

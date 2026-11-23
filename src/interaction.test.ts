@@ -1525,6 +1525,32 @@ describe('handleReviewCommentReply', () => {
     }
   });
 
+  it.each([
+    ['a verdict the review of the head gave after the reply', '14:34:11', 'head', false, false],
+    ['a verdict given before the reply', '14:30:00', 'head', false, true],
+    ['a verdict the review of another head gave after the reply', '14:34:11', 'other', false, true],
+    ['a thread that could not be read', '14:34:11', 'head', true, true],
+  ])('answers a reply held behind a review in a thread with %s only when no verdict came after it', async (_case, verdictAt, verdictHead, readFails, answers) => {
+    const head = 'a'.repeat(40);
+    setContext({
+      comment: { id: 1, body: 'Fixed in d2c4380.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'MEMBER', created_at: '2026-11-06T14:32:05Z' },
+      pull_request: { number: 1, head: { sha: head } },
+      sender: { login: 'someone' },
+    });
+    const octokit = createMockOctokit();
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { original_commit_id: POSTED_ON, user: MANKI_USER, body: findingComment('warning'), path: 'src/file.ts', line: 10 } });
+    const client = createMockClient();
+    jest.mocked(client.sendMessage).mockResolvedValue({ content: structured('Withdrawn. The caller already checks for null at `src/file.ts:10`.') });
+    const thread = { id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: false, findingTitle: 'This', roundReplies: [{ commit: verdictHead === 'head' ? head : 'b'.repeat(40), at: `2026-11-06T${verdictAt}Z` }] };
+    if (readFails) jest.mocked(state.fetchBotReviewThreads).mockRejectedValueOnce(new Error('GraphQL timeout'));
+    else jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([thread]);
+
+    await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, undefined, CONFIG);
+
+    expect(jest.mocked(client.sendMessage).mock.calls.length).toBe(answers ? 1 : 0);
+    expect(jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.length).toBe(answers ? 1 : 0);
+  });
+
   it('includes scoped PR diff context in the Claude prompt', async () => {
     setContext({ comment: { id: 1, body: 'Why did you change this?', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'MEMBER' }, pull_request: { number: 1, head: { sha: 'a'.repeat(40) } } });
     const octokit = createMockOctokit();

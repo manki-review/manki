@@ -3,7 +3,7 @@ import { approveOrSayWhy, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker,
 import { clearRecordMarker, dismissRecordMarker, FOUND_AGAIN_MARKER, PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './recap';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, namingCommit, paginateSinglePage, reviewedLine, TEST_BOT, TEST_LINKS, testSha } from './test-utils';
 import { APPROVED_LINE, autoApproveHeadMarker, formatFindingComment, postReview, reviewedCommit, titleToSlug } from './github';
-import { extractApprovalRecords, formatApprovalRecord, formatReplyRecord, formatReviewRecord } from './review-record';
+import { extractApprovalRecords, formatApprovalRecord, formatReplyRecord, formatReviewRecord, roundReplyMarker } from './review-record';
 import { DEFAULT_CONFIG, fallbackConfig } from './config';
 import { determineOutcome } from './review';
 import { ApprovalRecord, AuthorClearRole, Finding, FindingFingerprintEntry, ReplyDecision, RoundContext, ThreadEvaluation, VerdictTraceEntry } from './types';
@@ -153,7 +153,7 @@ function makeGraphqlFetchThreadNode(overrides: {
   databaseId?: number;
   resolvedBy?: string;
   url?: string;
-  replies?: Array<{ body: string; author: { login: string; __typename?: string } }>;
+  replies?: Array<{ body: string; author: { login: string; __typename?: string }; createdAt?: string }>;
   path?: string;
   /** `null` for a file-level thread. */
   line?: number | null;
@@ -206,6 +206,9 @@ describe('fetchBotReviewThreads', () => {
           replies: [
             { body: `Fixed in abababa.\n\n${fixedMarker('ab'.repeat(20))}`, author: { login: 'manki-review' } },
             { body: `Done.\n\n${fixedMarker('cd'.repeat(20))}`, author: { login: 'alice' } },
+            // Only Manki's own reply carries a review's verdict, with the time it was posted.
+            { body: `**Partly fixed.** Still open: one path.\n\n<!-- manki -->\n${roundReplyMarker('ab'.repeat(20))}`, author: { login: 'manki-review' }, createdAt: '2026-11-06T14:34:11Z' },
+            { body: `Done.\n\n${roundReplyMarker('cd'.repeat(20))}`, author: { login: 'alice' }, createdAt: '2026-11-06T14:35:00Z' },
             // A marker in a fix that Manki's reply quotes is a finder's text.
             { body: `This came up again.\n\n\`\`\`\n${fixedMarker('ef'.repeat(20))}\n\`\`\`\n\n<!-- manki -->\n<!-- manki-found-again -->`, author: { login: 'manki-review' } },
           ],
@@ -219,7 +222,7 @@ describe('fetchBotReviewThreads', () => {
     expect(threads).toHaveLength(3);
     expect(threads[0]).toEqual({ id: 't1', rootCommentId: 501, isResolved: false, isBlocking: true, mayCarryBlocker: true, findingTitle: 'null check', place: { file: 'src/a.ts', line: 10, markerSlug: 'null-check', commit: testSha('1') } });
     expect(threads[1]).toEqual({ id: 't3', isResolved: false, isBlocking: false, isWarning: true, findingTitle: '`parse` drops a field', place: { file: 'src/parse.ts', line: 0, findingLine: 40, markerSlug: '-parse--drops-a-field' } });
-    expect(threads[2]).toEqual({ id: 't2', isResolved: true, resolvedByLogin: 'reviewer', writerResolverLogin: 'reviewer', isBlocking: false, findingTitle: 'rename var', place: { file: 'src/a.ts', line: 10, markerSlug: 'rename-var' }, fixedOn: ['ab'.repeat(20)] });
+    expect(threads[2]).toEqual({ id: 't2', isResolved: true, resolvedByLogin: 'reviewer', writerResolverLogin: 'reviewer', isBlocking: false, findingTitle: 'rename var', place: { file: 'src/a.ts', line: 10, markerSlug: 'rename-var' }, fixedOn: ['ab'.repeat(20)], roundReplies: [{ commit: 'ab'.repeat(20), at: '2026-11-06T14:34:11Z' }] });
   });
 
   it('reads every page of review threads', async () => {

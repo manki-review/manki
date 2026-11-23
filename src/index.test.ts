@@ -6807,9 +6807,9 @@ describe('runFullReview orchestration', () => {
     expect(mockGraphql.mock.calls.filter(([query]) => String(query).includes('addPullRequestReviewThreadReply')).map(([, vars]) => vars)).toEqual([
       ...openThreadReplies,
       ...(posted ? [
-        { threadId: 'PRRT_abc', body: 'Fixed in 1111111.\n\n<!-- manki -->\n<!-- manki-fixed:abc123 -->' },
-        { threadId: 'PRRT_def', body: 'Found again.\n\n<!-- manki -->\n<!-- manki-found-again -->' },
-        { threadId: 'PRRT_pqr', body: 'Found again.\n\n<!-- manki -->\n<!-- manki-found-again -->' },
+        { threadId: 'PRRT_abc', body: 'Fixed in 1111111.\n\n<!-- manki -->\n<!-- manki-fixed:abc123 -->\n<!-- manki-round-reply:abc123 -->' },
+        { threadId: 'PRRT_def', body: 'Found again.\n\n<!-- manki -->\n<!-- manki-found-again -->\n<!-- manki-round-reply:abc123 -->' },
+        { threadId: 'PRRT_pqr', body: 'Found again.\n\n<!-- manki -->\n<!-- manki-found-again -->\n<!-- manki-round-reply:abc123 -->' },
       ] : []),
     ]);
     // Every answered finding of a thread is in its one reply. The open scope thread is not reopened.
@@ -6938,11 +6938,11 @@ describe('runFullReview orchestration', () => {
     };
 
     // The push left the file alone, so a thread that already carries this grade gets no second reply. The round
-    // record keeps each grade, so a reply only tells the thread and carries no marker.
+    // record keeps each grade, so a reply only tells the thread, and its marker names only the head it was given on.
     expect(await run('abc123')).toEqual([
-      { threadId: 'PRRT_abc', body: '**Partly fixed.** Still open: No timeout yet, ask @\u200Balice. What remains is a warning, so this thread no longer blocks.\n\n<!-- manki -->' },
-      { threadId: 'PRRT_ghi', body: '**Partly fixed.** Still open: One path left. What remains is a suggestion.\n\n<!-- manki -->' },
-      { threadId: 'PRRT_jkl', body: '**Open again.** The timeout is gone again. This thread is a blocker again, so it blocks.\n\n<!-- manki -->' },
+      { threadId: 'PRRT_abc', body: '**Partly fixed.** Still open: No timeout yet, ask @\u200Balice. What remains is a warning, so this thread no longer blocks.\n\n<!-- manki -->\n<!-- manki-round-reply:abc123 -->' },
+      { threadId: 'PRRT_ghi', body: '**Partly fixed.** Still open: One path left. What remains is a suggestion.\n\n<!-- manki -->\n<!-- manki-round-reply:abc123 -->' },
+      { threadId: 'PRRT_jkl', body: '**Open again.** The timeout is gone again. This thread is a blocker again, so it blocks.\n\n<!-- manki -->\n<!-- manki-round-reply:abc123 -->' },
     ]);
     // The record carries each thread's grade with the review that decided it.
     expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)![7]!.judge.threadEvaluations?.map(e => [e.threadId, e.grade])).toEqual([
@@ -7018,7 +7018,7 @@ describe('runFullReview orchestration', () => {
       body: '**Fix seen in `src/api.ts`.** Two refuters on different models found that this failure no longer happens after the change to `src/api.ts`. '
         + 'Manki resolves no blocker on a fix outside the files its finding cited, so this thread stays open and keeps blocking. '
         + 'A maintainer can resolve it. The PR author may not clear a blocking thread. '
-        + 'A push that changes `src/math.ts` or `src/limits.ts` lets the next review confirm the fix.\n\n<!-- manki -->',
+        + 'A push that changes `src/math.ts` or `src/limits.ts` lets the next review confirm the fix.\n\n<!-- manki -->\n<!-- manki-round-reply:abc123 -->',
     }]);
   });
 

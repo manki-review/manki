@@ -93,6 +93,13 @@ export function fixedMarker(commitSha: string): string {
   return `${FIXED_MARKER_OPENER}${commitSha} -->`;
 }
 
+export const ROUND_REPLY_OPENER = '<!-- manki-round-reply:';
+
+/** Marks the reply in which the review of `commitSha` gives its verdict on a thread. */
+export function roundReplyMarker(commitSha: string): string {
+  return `${ROUND_REPLY_OPENER}${commitSha} -->`;
+}
+
 /** Serializes a record with secrets and tokens redacted, since nothing that scans posted text can see inside a compressed one. */
 function recordJson(record: object): string {
   return sanitizeTokens(JSON.stringify(redactSecretsDeep(record)));
