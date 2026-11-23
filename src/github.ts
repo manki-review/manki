@@ -4612,16 +4612,9 @@ async function fetchStandingVerdict(
   const verdict = REVIEW_STATE_VERDICTS[latest.state];
   if (verdict) return { verdict, commitSha };
   if (latest.state !== 'DISMISSED') return undefined;
-  // The reviews API reports only `DISMISSED`. The timeline keeps the state
-  // before the dismissal and, for a push, the commit that caused it.
   try {
-    const events = await octokit.paginate(octokit.rest.issues.listEventsForTimeline, {
-      owner, repo, issue_number: prNumber, per_page: 100,
-    });
-    const dismissed = events
-      .map(e => ('dismissed_review' in e ? e.dismissed_review : undefined))
-      .find(d => d?.review_id === latest.id);
-    if (dismissed?.state === 'approved' && dismissed.dismissal_commit_id) {
+    const dismissed = (await fetchReviewDismissals(octokit, owner, repo, prNumber)).find(d => d.reviewId === latest.id);
+    if (dismissed?.state === 'approved' && dismissed.dismissalCommitId) {
       return { verdict: 'APPROVE', commitSha };
     }
   } catch (error) {
@@ -4630,6 +4623,31 @@ async function fetchStandingVerdict(
   return undefined;
 }
 
+type ReviewDismissal = {
+  reviewId: number;
+  /** The review's state before the dismissal, such as `approved` or `changes_requested`. */
+  state: string;
+  /** The commit whose push dismissed the review, set only for a dismissal by a push. */
+  dismissalCommitId?: string | null;
+  actor?: { login?: string; type?: string } | null;
+};
+
+/**
+ * Returns every review dismissal on the PR's timeline. The reviews API reports only `DISMISSED`, while the timeline keeps
+ * who dismissed a review, its state before, and for a push the commit that caused it. Throws when the timeline cannot be read.
+ */
+async function fetchReviewDismissals(octokit: Octokit, owner: string, repo: string, prNumber: number): Promise<ReviewDismissal[]> {
+  const events = await octokit.paginate(octokit.rest.issues.listEventsForTimeline, {
+    owner, repo, issue_number: prNumber, per_page: 100,
+  });
+  return events.flatMap(e => 'dismissed_review' in e && e.dismissed_review ? [{
+    reviewId: e.dismissed_review.review_id,
+    state: e.dismissed_review.state,
+    dismissalCommitId: e.dismissed_review.dismissal_commit_id,
+    actor: 'actor' in e ? e.actor : undefined,
+  }] : []);
+}
+
 export type { CodeLinks };
-export { APPROVED_LINE, CHECKS_MARKER, isAutoApproval, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, BASE_NOTE_RE, TRACKED_NOTE_RE, TRUST_NOTE_RE, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isBotUser, authorClearRole, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, givesVerdict, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, fetchStandingVerdict, REVIEW_STATE_VERDICTS, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, HELD_FOR_PERSON_MARKER };
+export { APPROVED_LINE, CHECKS_MARKER, isAutoApproval, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, BASE_NOTE_RE, TRACKED_NOTE_RE, TRUST_NOTE_RE, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isBotUser, authorClearRole, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, givesVerdict, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, fetchReviewDismissals, fetchStandingVerdict, REVIEW_STATE_VERDICTS, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, HELD_FOR_PERSON_MARKER };
 export type { StandingVerdict };
