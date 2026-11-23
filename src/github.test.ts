@@ -6601,7 +6601,7 @@ describe('postReview non-blocking findings', () => {
     expect(review.body).not.toContain('On old code</b>');
     // A note on reviewed code gets no thread, even on a changed line, and sits in the section of listed suggestions.
     expect(review.body).toMatch(/### Pre-existing[\s\S]*\n\n---\n\n<details>\n<summary><b>1 suggestion<\/b> · not blocking<\/summary>\n\n<details>\n<summary>\u2728 <b>Note on old code<\/b>/u);
-    expect(review.body).toMatch(/\n\n---\n\n### Pre-existing · 1 warning\n\nIt sits on code this PR did not change, or the code before this PR fails the same way, so it doesn't block\. If it is a blocker, it is listed as a warning\.\n\n<details>\n<summary>\u26A0\uFE0F <b>Old race in the pool<\/b><br><sub><b>Warning, not blocking<\/b> · Pre-existing · <a /u);
+    expect(review.body).toMatch(/\n\n---\n\n### Pre-existing · 1 warning\n\nThis PR did not cause it, so it doesn't block: it is on lines the PR did not change, or the code fails the same way without the PR\.\n\n<details>\n<summary>\u26A0\uFE0F <b>Old race in the pool<\/b><br><sub><b>Warning, not blocking<\/b> · Pre-existing · <a /u);
     // A pre-existing finding in the body names the open PR that tracks it, and one no issue tracks names none.
     expect(review.body).toMatch(/<b>Old race in the pool<\/b>[^\n]*<\/summary>\n\nTracked in #23\.\n\n\*\*What goes wrong:\*\*/u);
     expect(review.body.match(/Tracked in #/g)).toHaveLength(1);
@@ -6619,7 +6619,7 @@ describe('postReview non-blocking findings', () => {
     // Both late warnings have a thread, so both hold the approval. The pre-existing ones never do.
     expect(counted).toMatch(/^\u26A0\uFE0F \*\*2 warnings to address\.\*\* Fix each one, reply in its thread with a reason Manki accepts, or tick `Create an issue for this` to track it for later\. Manki approves once every warning is handled\./u);
     expect(counted).toContain('### Missed by an earlier review · 1 suggestion\n\nIt sits on lines an earlier round already reviewed, so it doesn\'t block this PR.');
-    expect(counted).toContain('### Pre-existing · 2 warnings\n\nThese sit on code this PR did not change, or the code before this PR fails the same way, so none of them block. A blocker among them is listed as a warning.');
+    expect(counted).toContain('### Pre-existing · 2 warnings\n\nThis PR did not cause these, so none of them block: each is on lines the PR did not change, or the code fails the same way without the PR.');
     // With every late warning in a thread, the body has no section for them.
     const threaded = makeOctokit();
     const verdictReport = { verdict: 'READY' as const, blockers: [], summary: 'Nothing blocks.', whatThisDoes: 'Adds a retry.', whatToTest: { steps: ['Load the page twice.'] } };
@@ -6685,7 +6685,7 @@ describe('postReview non-blocking findings', () => {
     expect(third.body).toContain('<summary><b>1 suggestion</b> · not blocking</summary>\n\n<details>\n<summary>\u2728 <b>Note listed in round 1</b>');
     expect(third.body.indexOf('Still open from round 1')).toBeLessThan(third.body.indexOf('Still open from round 2'));
     // A pre-existing finding stays under "Pre-existing", where its intro says it does not block.
-    expect(third.body).toContain('### Pre-existing · 1 warning\n\nIt sits on code this PR did not change');
+    expect(third.body).toContain('### Pre-existing · 1 warning\n\nThis PR did not cause it, so it doesn');
     expect(third.body).not.toMatch(/Restates an open thread|Another field the check misses|Missed by an earlier review|Warning listed in round 1/);
     // Warnings an earlier round listed that this round did not raise again get one short list, and an approval counts them.
     // The list shows the line the warning is on now, and only the file for one whose place is not a single one.
