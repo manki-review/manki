@@ -1112,7 +1112,7 @@ describe('checkAndAutoApprove', () => {
             name: 'Manki', head_sha: HEAD, status: 'completed', conclusion: 'failure', output: expect.objectContaining({ title: 'Changes requested', summary: expect.stringMatching(/^A blocking thread is not cleared, so Manki withdrew its approval\. The next review round decides\./) }),
           })]]);
           // A dismissal GitHub refused, as under a ruleset, leaves that approval and the coordinator's record of it. The check
-          // still fails once another dismissal worked, and stays as it is when none did.
+          // still fails, also when no dismissal worked.
           checkRuns = { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) };
           jest.mocked(authModule.reportPrState).mockClear();
           dismissPreviousReviews.mockResolvedValueOnce({ dismissed: 1, failed: true });
@@ -1122,7 +1122,7 @@ describe('checkAndAutoApprove', () => {
           checkRuns = { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) };
           dismissPreviousReviews.mockResolvedValueOnce({ dismissed: 0, failed: true });
           await check([thread('t1', 'blocker')]);
-          expect(checkRuns.create).not.toHaveBeenCalled();
+          expect(checkRuns.create.mock.calls).toEqual([[expect.objectContaining({ conclusion: 'failure' })]]);
           expect(authModule.reportPrState).not.toHaveBeenCalled();
           // A blocking thread someone allowed to clear it resolved, and an open warning thread, leave the approval to stand.
           dismissPreviousReviews.mockClear();
