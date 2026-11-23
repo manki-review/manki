@@ -422,19 +422,21 @@ function restatesBlocker(finding: Finding, priorRounds: readonly RoundContext[],
  * blocker. It becomes a `guarded` warning, whose thread only a fix or someone allowed to clear it clears, never the PR
  * author's answer alone. A blocker only the judge raised, which two refuters on different models disproved, goes back
  * to the grade its finders gave without that guard. A finding that `breaksRule` goes no lower than the grade `rules`
- * gives. A tool alert, a security finding, an open lead, which is no finished finding to grade, and a blocker that
+ * gives. A tool alert is lowered only when two refuters on different models disproved it, and then always to a
+ * `guarded` warning. A security finding, an open lead, which is no finished finding to grade, and a blocker that
  * `restates` an earlier one keep blocking.
  */
 function disprovedGrade(
   finding: Finding, refutation: Refutation | undefined, pairRefutation: Refutation | undefined, restates: boolean, rules?: RulesMode,
 ): { grade: FindingSeverity; reason: string; guarded: boolean } | undefined {
-  if (finding.severity !== 'blocker' || restates || finding.toolSource || finding.lead || isSecurityFinding(finding.tags, finding.reviewers)) return undefined;
+  const twoModels = !!refutation?.model && !!pairRefutation?.model && refutation.model !== pairRefutation.model;
+  if (finding.severity !== 'blocker' || restates || (finding.toolSource && !twoModels) || finding.lead || isSecurityFinding(finding.tags, finding.reviewers)) return undefined;
   const checks = [refutation, pairRefutation].filter((r): r is Refutation => !!r);
   if (checks.length === 0 || !checks.every(r => r.outcome === 'disproved' && r.defect !== 'confirmed')) return undefined;
   const [raise, ...later] = finding.gradePath ?? [];
   const filed = finderGrade(finding);
-  const twoModels = !!refutation?.model && !!pairRefutation?.model && refutation.model !== pairRefutation.model;
-  const judgeRaised = twoModels && raise?.by === 'judge' && later.length === 0 && filed !== 'blocker';
+  // A tool, not a finder, reported a tool alert, so its grade before the judge says nothing about the damage.
+  const judgeRaised = twoModels && !finding.toolSource && raise?.by === 'judge' && later.length === 0 && filed !== 'blocker';
   const target = judgeRaised ? filed : 'warning';
   // The rule alone gives a finding that `breaksRule` its grade, whatever the refuters say about the damage.
   const ruled = breaksRule(finding) ? ruleGrade(rules) : undefined;
