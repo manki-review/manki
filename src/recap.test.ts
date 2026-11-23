@@ -1206,8 +1206,19 @@ describe('fetchRecapState', () => {
         prior('src/body.ts', 5, 'Old-issue', 'blocker'),
         prior('src/bar.ts', 77, 'File-issue', 'blocker'),
       ];
+      // Each of these got a thread of its own on line 5. The security one raised the plain thread, and the later plain one
+      // came once that thread was closed. The security one names no place, as an older record does, so only its guard
+      // tells the threads apart.
+      const sum = { ...prior('src/sum.ts', 5, titleToSlug('Sum overflows')), title: 'Sum overflows', posted: 'thread' as const };
+      const { posted: _posted, ...unplaced } = sum;
+      const later = [{ ...unplaced, tags: [SECURITY_TAG] }, sum];
       const ctx = makeRoundContext(1, {
-        findings: { count: 4, severityCounts: { blocker: 3, warning: 1, note: 0 }, entries },
+        findings: { count: 5, severityCounts: { blocker: 3, warning: 2, note: 0 }, entries: [...entries, sum] },
+      });
+      const ctx2 = makeRoundContext(2, { findings: { count: 2, severityCounts: { blocker: 0, warning: 2, note: 0 }, entries: later } });
+      const sumThread = (id: string, security = false) => makeThread({
+        id, path: 'src/sum.ts', line: 5,
+        comments: { nodes: [{ body: formatFindingComment(makeFinding({ severity: 'warning', title: sum.title, file: 'src/sum.ts', line: 5, ...(security && { tags: [SECURITY_TAG] }) }), TEST_LINKS), author: { login: BOT_LOGIN } }] },
       });
       const thread = (id: string, isResolved: boolean, slug: string, originalLine: number, grade = 'warning') => makeThread({
         id,
@@ -1230,12 +1241,18 @@ describe('fetchRecapState', () => {
           originalLine: null,
           comments: { nodes: [{ body: '**Blocker**: x\n\n<!-- manki:blocker:File-issue -->', author: { login: BOT_LOGIN } }] },
         }),
+        { ...sumThread('T_SUM'), isResolved: true },
+        sumThread('T_SUM_SECURITY', true),
+        sumThread('T_SUM_LATER'),
       ], [
         { id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } },
+        { id: 101, body: htmlCommentBlock(ctx2), user: { login: BOT_LOGIN } },
       ]);
 
       const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
-      const attached = state.priorRounds[0].findings.entries;
+      expect(state.priorRounds[1].findings.entries.map(e => e.threadId)).toEqual(['T_SUM_SECURITY', 'T_SUM_LATER']);
+      expect(state.priorRounds[0].findings.entries.at(-1)!.threadId).toBe('T_SUM');
+      const attached = state.priorRounds[0].findings.entries.slice(0, -1);
       expect(attached.map(e => e.threadId)).toEqual(['T_RESOLVED', undefined, undefined, 'T_FILE']);
 
       // The resolved threads, line or file-level, retire their blockers, and the warning too far from its thread blocks
