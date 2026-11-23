@@ -476,7 +476,7 @@ export async function fetchInterRoundDiff(
 }
 
 /** The most files GitHub lists for a comparison. It says nothing when it leaves more out. */
-const MAX_COMPARE_FILES = 300;
+export const MAX_COMPARE_FILES = 300;
 
 /**
  * Returns the unified diff of `files`, or of every file without them, from `base` to `head`, when `head` descends from `base`. Returns `undefined` when it

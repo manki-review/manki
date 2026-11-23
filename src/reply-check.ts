@@ -3,7 +3,7 @@ import type { getOctokit } from '@actions/github';
 
 import { RunCancelledError } from './abort';
 import { addedLines, changesNextTo, listedFilesDiff, oldLineOf, parsePRDiff, replacementOf } from './diff';
-import { inline, sanitizeMarkdown } from './github';
+import { inline, MAX_COMPARE_FILES, sanitizeMarkdown } from './github';
 import { extractJSON } from './json';
 import { findLines } from './mcp-server';
 import { sanitizeLogOutput } from './providers';
@@ -404,9 +404,6 @@ export type ElsewhereCheck = ConfirmedElsewhere | UnconfirmedElsewhere;
 
 const RETRY_SOON = 'in a few minutes';
 
-/** The most files GitHub lists for a comparison of two commits. */
-const MAX_COMPARED_FILES = 300;
-
 /** Returns a handler for a failed lookup that logs why `what` failed and gives `undefined`. */
 function logFailure(what: string) {
   return (error: unknown): undefined => {
@@ -436,7 +433,7 @@ async function lineAtHead(s: ElsewhereSources, line: number, head: string): Prom
   if (since.status !== 'ahead' && since.status !== 'identical') return { why: `this PR's head no longer holds the commit this finding was posted on, so where ${place} is now is not certain` };
   const files = since.files ?? [];
   const change = files.find(f => f.filename === s.file || f.previous_filename === s.file);
-  if (!change && files.length >= MAX_COMPARED_FILES) return { why: `GitHub lists only ${MAX_COMPARED_FILES} of the files this PR changed since this finding was posted, so where ${place} is now is not certain` };
+  if (!change && files.length >= MAX_COMPARE_FILES) return { why: `GitHub lists only ${MAX_COMPARE_FILES} of the files this PR changed since this finding was posted, so where ${place} is now is not certain` };
   if (!change) return line;
   const diff = change.status === 'modified' ? parsePRDiff(listedFilesDiff([change])).files[0] : undefined;
   return (diff && oldLineOf(diff, line, 'old')) ?? { why: `this PR changed ${place} or its file since this finding was posted, so where the line is now is not certain` };
@@ -506,7 +503,7 @@ export async function checkFixedElsewhere(pr: number, s: ElsewhereSources): Prom
   // What the merge changes against this PR's head, which holds the defect: the finding's line has to be among the lines it replaces.
   const sinceHeadFiles = sinceHead.files ?? [];
   const headChange = sinceHeadFiles.find(f => (f.previous_filename ?? f.filename) === s.file);
-  if (!headChange && sinceHeadFiles.length >= MAX_COMPARED_FILES) return { why: `GitHub lists only ${MAX_COMPARED_FILES} of the files the merge with #${pr} changes, so it does not show ${file}` };
+  if (!headChange && sinceHeadFiles.length >= MAX_COMPARE_FILES) return { why: `GitHub lists only ${MAX_COMPARE_FILES} of the files the merge with #${pr} changes, so it does not show ${file}` };
   const findingFile = headChange && parsePRDiff(listedFilesDiff([headChange])).files[0];
   if (headChange && !findingFile) return { why: `GitHub shows no lines of the change the merge with #${pr} makes to ${file}` };
   if (findingFile?.changeType === 'deleted') return { why: `the merge with #${pr} deletes ${file}` };
