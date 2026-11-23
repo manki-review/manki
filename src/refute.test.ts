@@ -65,7 +65,7 @@ describe('refuteBlockers', () => {
 
   afterEach(() => rmSync(workspace, { recursive: true, force: true }));
 
-  it('confirms a fix in another changed file only when two refuters on different models disprove the failure from a line the push added there', async () => {
+  it('confirms a fix only when two refuters on different models, or the one refuter allowed alone, disprove the claim from a line the push added', async () => {
     const pushDiff = parsePRDiff('diff --git a/src/api.ts b/src/api.ts\n--- a/src/api.ts\n+++ b/src/api.ts\n@@ -8,1 +8,2 @@\n // handler\n+if (a > 1000 || b > 1000) throw new Error();\n');
     const thread = (title: string): PushedFix => ({
       thread: { threadId: title, title, file: 'src/math.ts', line: 2, severity: 'blocker' }, title, description: 'Large inputs overflow. The push since the last review changed src/api.ts.', files: ['src/api.ts'],
@@ -92,6 +92,9 @@ describe('refuteBlockers', () => {
     first.calls.length = 0;
     expect([...await run(undefined)]).toEqual([]);
     expect(first.calls).toEqual([]);
+    // With `alone` and no pair, the one refuter's disproof from a line the push added is enough. A pair still has to agree.
+    expect([...await confirmPushedFixes(first, undefined, titles.map(thread), pushDiff, { workspace, diff }, true)]).toEqual(['Fixed in the caller', 'Pair unsure', 'Pair failed']);
+    expect([...await confirmPushedFixes(first, fakeClient(replies, 'gpt-6.1-sol'), titles.map(thread), pushDiff, { workspace, diff }, true)]).toEqual(['Fixed in the caller']);
   });
 
   it('checks each blocker and open lead with 15 tool steps, and grades it by the outcome', async () => {

@@ -781,8 +781,8 @@ export interface PushedFix {
 
 /**
  * Returns the IDs of the threads whose `fixes` the push holds: both refuters disprove the claim, each from its own model,
- * and each cites a line that `pushDiff` adds to one of the fix's `files`. Without a `pair`, an unsure or failed call,
- * or a disproof that rests on other lines, the fix is not confirmed.
+ * and each cites a line that `pushDiff` adds to one of the fix's `files`. With `alone` and no `pair`, the one refuter's
+ * disproof is enough. Otherwise no `pair`, an unsure or failed call, or a disproof that rests on other lines confirms nothing.
  */
 export async function confirmPushedFixes(
   client: LLMClient,
@@ -790,23 +790,26 @@ export async function confirmPushedFixes(
   fixes: readonly PushedFix[],
   pushDiff: ParsedDiff,
   options: Pick<RefuteOptions, 'workspace' | 'related' | 'diff' | 'effort'>,
+  alone = false,
 ): Promise<Set<string>> {
-  if (!pair || fixes.length === 0) return new Set();
+  if ((!pair && !alone) || fixes.length === 0) return new Set();
   const findings = fixes.map(({ thread, title, description }): Finding => ({ severity: 'blocker', title, file: thread.file, line: thread.line, reviewers: [], description }));
-  const checked = await refuteBlockers(client, findings, { ...options, pair });
+  const checked = await refuteBlockers(client, findings, { ...options, ...(pair && { pair }) });
   const confirmed = fixes.filter(({ thread, files }, i) => {
     const added = new Map(files.map(file => {
       const changed = pushDiff.files.find(f => f.path === file);
       return [file, changed ? [...addedLines(changed).keys()] : []] as const;
     }));
-    const citesFix = (check: Refutation | undefined): check is Refutation => check?.outcome === 'disproved' && !!check.model && (check.proof ?? []).some(at => {
+    const citesFix = (check: Refutation | undefined): check is Refutation => check?.outcome === 'disproved' && (check.proof ?? []).some(at => {
       const [start, end] = locationLines(at);
       // A wide range could rest on any line in it, so only a narrow one counts as resting on the added code.
       return end - start + 1 <= MAX_QUOTED_RANGE && (added.get(locationFile(at)) ?? []).some(line => start <= line && line <= end);
     });
     const { refutation, pairRefutation } = checked[i];
-    const agreed = citesFix(refutation) && citesFix(pairRefutation) && refutation.model !== pairRefutation.model;
-    core.info(`The fix of the thread ${thread.threadId} in ${files.join(' or ')} is ${agreed ? 'confirmed by two refuters' : 'not confirmed'}`);
+    const agreed = pair
+      ? citesFix(refutation) && citesFix(pairRefutation) && !!refutation.model && !!pairRefutation.model && refutation.model !== pairRefutation.model
+      : citesFix(refutation);
+    core.info(`The fix of the thread ${thread.threadId} in ${files.join(' or ')} is ${agreed ? `confirmed by ${pair ? 'two refuters' : 'the refuter'}` : 'not confirmed'}`);
     return agreed;
   });
   return new Set(confirmed.map(({ thread }) => thread.threadId));

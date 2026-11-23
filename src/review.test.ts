@@ -30,6 +30,7 @@ import {
   FINDER_TOOLS_TIMEOUT_MS,
   WORKAROUND_REASON,
   UNCONFIRMED_FIX_ENDING,
+  OWN_FIX_REASON,
   formatFinderError,
   postedWhenPreExisting,
 } from './review';
@@ -5790,6 +5791,68 @@ describe('runReview', () => {
       rmSync(workspace, { recursive: true, force: true });
     }
   });
+  it('posts a blocker that restates a thread as a warning only when a check confirms the push applies the fix that thread suggested', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'manki-own-fix-'));
+    try {
+      mkdirSync(join(workspace, 'src'));
+      writeFileSync(join(workspace, 'src', 'x.ts'), Array.from({ length: 12 }, (_, i) => `line${i + 1}();`).join('\n') + '\n');
+      writeFileSync(join(workspace, 'src', 'y.ts'), 'guard();\nif (bad) return;\n');
+      const pushX = 'diff --git a/src/x.ts b/src/x.ts\n--- a/src/x.ts\n+++ b/src/x.ts\n@@ -10 +10,2 @@\n line10();\n+line11();\n';
+      const pushY = 'diff --git a/src/y.ts b/src/y.ts\n--- a/src/y.ts\n+++ b/src/y.ts\n@@ -1 +1,2 @@\n guard();\n+if (bad) return;\n';
+      const answer = (outcome: string, proof = ['src/x.ts:11']) => JSON.stringify({ outcome, reason: 'The warning now names the failed rewrite.', proof });
+      const clientsWith = (outcome: string, proof?: string[], pairOutcome?: string) => {
+        const clients = makeClients();
+        Object.assign(clients.judge, { repoTools: true });
+        jest.mocked(clients.judge.sendMessage).mockImplementation(async (_system, _message, options) => (options?.repoTools ? { content: answer(outcome, proof), model: 'claude-opus-5-5' } : { content: READY_VERDICT }));
+        const refuterPair = pairOutcome ? { repoTools: true, sendMessage: jest.fn().mockResolvedValue({ content: answer(pairOutcome), model: 'gpt-6.1-sol' }) } as unknown as LLMClient : undefined;
+        return { ...clients, ...(refuterPair && { refuterPair }) };
+      };
+      const restated: Finding = { severity: 'blocker', title: 'Same bug, new words', file: 'src/x.ts', line: 10, description: 'A failed rewrite still leaves the record unsettled.', reviewers: ['r'], sameAs: 'src/x.ts:10:10:old-issue' };
+      const fixedThread = makePriorOpenThread({ severity: 'blocker', howToFix: 'Say in the warning that the rewrite can fail.' });
+      const runWith = (clients: ReviewClients, { thread = fixedThread, finding = restated, push = pushX as string | null, prior = buildPriorRound(1, [makePriorWarningFinding({ severity: 'blocker' })]) } = {}) => {
+        mockedRunJudgeAgent.mockResolvedValue({ findings: [finding], summary: 'Still broken.', threadEvaluations: [{ threadId: 'T1', status: 'not_addressed', reason: 'Still there.' }] });
+        return runReview(clients, {
+          config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true, workspace,
+          openThreads: [thread], previousFindings: [], priorRounds: [prior], interRoundDiff: push ?? undefined, headSha: 'sha2',
+        });
+      };
+      const capped = { threadId: 'T1', status: 'partly_addressed', reason: OWN_FIX_REASON, remaining: restated.description, grade: 'warning', ownFix: true };
+
+      // The judge's refuter alone confirms the fix from a line the push added, so the restatement is a warning in the thread.
+      const alone = clientsWith('disproved');
+      const lowered = await runWith(alone);
+      expect([lowered.outcome, lowered.findings[0].severity, lowered.findings[0].threadId, lowered.findings[0].gradePath?.at(-1)?.by, lowered.threadEvaluations]).toEqual(['READY', 'warning', 'T1', 'own_fix', [capped]]);
+      expect(jest.mocked(alone.judge.sendMessage).mock.calls.some(([, message]) => message.includes('An earlier review suggested this fix for the problem "Old issue": Say in the warning that the rewrite can fail.'))).toBe(true);
+      // With a second refuter, both must confirm it on different models.
+      expect((await runWith(clientsWith('disproved', undefined, 'disproved'))).outcome).toBe('READY');
+
+      // An unsure check, a disproof on lines the push did not add, an unsure second refuter, no fix on record, a security
+      // thread or finding, a tool alert, a push that leaves the thread's files alone and an unknown push keep the blocker.
+      for (const [clients, options] of [
+        [clientsWith('unsettled')], [clientsWith('disproved', ['src/x.ts:3'])], [clientsWith('disproved', undefined, 'unsettled')],
+        [clientsWith('disproved'), { thread: makePriorOpenThread({ severity: 'blocker' }) }],
+        [clientsWith('disproved'), { thread: { ...fixedThread, isSecurity: true } }],
+        [clientsWith('disproved'), { finding: { ...restated, tags: ['security'] } }],
+        [clientsWith('disproved'), { finding: { ...restated, toolSource: 'semgrep' } }],
+        [clientsWith('disproved'), { push: pushY }], [clientsWith('disproved'), { push: null }],
+      ] as Array<[ReviewClients, Parameters<typeof runWith>[1]?]>) {
+        const kept = await runWith(clients, options);
+        expect([kept.outcome, kept.findings.map(f => f.severity)]).toEqual(['ADDRESS_FIRST', ['blocker']]);
+      }
+
+      // A later round keeps the cap without a check while its push leaves the thread's files alone, and checks again after one that changes them.
+      const earlier = buildPriorRound(2, [makePriorWarningFinding({ severity: 'blocker' })]);
+      earlier.judge.threadEvaluations = [capped as ThreadEvaluation];
+      const loweredThread = { ...fixedThread, recordedGrade: 'warning' as const, peakGrade: 'blocker' as const };
+      const held = clientsWith('unsettled');
+      const kept = await runWith(held, { thread: loweredThread, push: pushY, prior: earlier });
+      expect([kept.outcome, kept.findings[0].severity, jest.mocked(held.judge.sendMessage).mock.calls.some(([, message]) => message.includes('An earlier review suggested'))]).toEqual(['READY', 'warning', false]);
+      expect((await runWith(clientsWith('unsettled'), { thread: loweredThread, prior: earlier })).outcome).toBe('ADDRESS_FIRST');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it('points a finding that restates an earlier finding still open at it, and a variant at its open thread', async () => {
     const prior = buildPriorRound(1, [
       makePriorWarningFinding({ title: 'Retry never ends', fingerprint: { file: 'src/x.ts', lineStart: 10, lineEnd: 10, slug: 'retry-never-ends' } }),
