@@ -279,7 +279,7 @@ on:
 
 permissions:
   contents: read          # read repo files and diffs
-  pull-requests: write    # post review comments and approvals
+  pull-requests: read     # read only, the Manki App posts reviews and approvals
   issues: write           # post a note on the PR when the token service fails
   id-token: write         # OIDC token for GitHub App identity
   actions: read           # verify workflow run is legitimate
