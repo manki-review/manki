@@ -958,8 +958,8 @@ type ApprovalCheck = { approved: true; standing?: true } | { approved: false; wh
 const WITHDRAWN_LINE = `A blocking thread is open again, so Manki withdrew its approval. ${NEXT_ROUND_LINE}`;
 
 /**
- * Dismisses Manki's approvals while a blocking thread is not cleared, as after a reopen, and then fails the `Manki`
- * check on the head, so a required check no longer passes. It never approves, so it also runs where `auto_approve` is
+ * Dismisses Manki's approvals while a blocking thread is not cleared, as after a reopen. It then clears the approval
+ * the coordinator recorded and fails the `Manki` check on the head, so a required check no longer passes. It never approves, so it also runs where `auto_approve` is
  * off and only a review round approves. Without every round record each thread counts as blocking, which proves no
  * blocker, so it then dismisses nothing.
  */
@@ -976,6 +976,7 @@ async function withdrawBlockedApproval(
   const prAuthorRole = await overrideRole(octokit, owner, repo, threads, prAuthorLogin, clearRole);
   if (unclearedThreads(threads, bot, prAuthorLogin, prAuthorRole).length === 0) return;
   if (await dismissPreviousReviews(octokit, bot, owner, repo, prNumber, undefined, 'APPROVED') === 0) return;
+  await reportPrState(owner, repo, prNumber, { approval: null });
   try {
     const { data: pr } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
     await reportCheck(octokit, owner, repo, pr.head.sha, outcomeReport('ADDRESS_FIRST', WITHDRAWN_LINE));

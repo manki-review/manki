@@ -2523,7 +2523,8 @@ export interface PrState {
 /** What a run tells the PR coordinator once it has posted, as `/state/report` takes it. */
 export interface StateReport {
   reviewed?: { commit: string };
-  approval?: { commit: string; held: boolean };
+  /** The approval of a commit and whether it is held, or `null` once Manki withdrew it. */
+  approval?: { commit: string; held: boolean } | null;
   /** Why automatic review is paused, or `null` once it is not. */
   pause?: { reason: string } | null;
 }
