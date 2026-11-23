@@ -2841,7 +2841,7 @@ describe('runFullReview orchestration', () => {
       ['the base branch has its own config file', 'dev', 'max_diff_lines: 2000\nreview:\n  notes: 1\n', devConfig, ['main'], undefined, 'base'],
       ['the base branch has no config file and the default branch has one', 'dev', null, devConfig, ['main', 'dev'], undefined, 'default_branch'],
       ['neither the base nor the default branch has a config file', 'dev', null, null, ['main', 'dev'], undefined, 'builtin'],
-      ['the base branch has no config file and the default branch\'s does not load', 'dev', null, 'max_diff_lines: 0\n', ['main', 'dev'], 'base', 'base_invalid'],
+      ['the base branch has no config file and the default branch\'s does not load', 'dev', null, 'max_diff_lines: 0\n', ['main', 'dev'], 'default_branch', 'default_branch_invalid'],
       ['the event names no default branch', undefined, null, devConfig, ['main'], undefined, 'builtin'],
     ] as const)('reviews with the right config when %s', async (_label, defaultBranch, base, dev, reads, configHold, configSource) => {
       setContext({ payload: { repository: { default_branch: defaultBranch } } });
@@ -2858,7 +2858,7 @@ describe('runFullReview orchestration', () => {
         setContext({});
       }
 
-      const expected = configSource === 'base_invalid' ? actualFallbackConfig([]) : actualLoadConfig(configSource === 'base' ? base! : configSource === 'default_branch' ? dev! : undefined);
+      const expected = configSource === 'default_branch_invalid' ? actualFallbackConfig([]) : actualLoadConfig(configSource === 'base' ? base! : configSource === 'default_branch' ? dev! : undefined);
       expect(reviewedConfig()).toEqual(expected);
       // The PR's head is read first, and never stands in for a missing base config.
       expect(jest.mocked(ghUtils.readConfigFile).mock.calls.map(call => call[3])).toEqual(['abc123', ...reads]);
@@ -2866,7 +2866,7 @@ describe('runFullReview orchestration', () => {
       expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual(expect.objectContaining({ configHold }));
       // A head without its own file edits no config the base branch lacks, such as the default branch's.
       if (configSource !== 'base') expect(jest.mocked(core.info).mock.calls.map(([message]) => String(message))).not.toContainEqual(expect.stringContaining('This PR changes'));
-      if (configSource === 'base_invalid') {
+      if (configSource === 'default_branch_invalid') {
         expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining('Could not load .manki.yml on the default branch, using the defaults and no approval'));
       }
       expect(jest.mocked(ghUtils.markProgressCommentFailed)).not.toHaveBeenCalled();

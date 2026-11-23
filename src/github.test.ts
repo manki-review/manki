@@ -2260,11 +2260,12 @@ describe('postReview body lead', () => {
     expect((mockCreateReview.mock.calls[0][0] as { body: string }).body).toBe(`**Approval held:** this PR is a draft. Mark it ready for review, then tick the review box in the settings block. \`auto_approve\` is off, so Manki approves only at the end of a review round, when nothing holds the approval.\n\n${withBox('Review again <!-- manki-box:again -->')}`);
   });
 
-  it('holds the approval of a READY round as a COMMENT when the base branch config or the PR\'s own changed copy did not load, shows a draft beside it, names a config hold on a request for changes too, and leads a request for changes with why when an earlier record could not be read', async () => {
+  it('holds the approval of a READY round as a COMMENT when the base branch config, the default branch config in its place or the PR\'s own changed copy did not load, shows a draft beside it, names a config hold on a request for changes too, and leads a request for changes with why when an earlier record could not be read', async () => {
     const approved = await postedBody(ready);
     mockGet.mockClear();
     for (const [configHold, line] of [
       ['base', '**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.'],
+      ['default_branch', '**Approval held:** the config file on the default branch, which this review reads because the base branch has none, could not be read or does not load, so Manki reviewed with the defaults.'],
       ['head', '**Approval held:** this PR\'s copy of the config file does not load or could not be read. Fix it and push, and Manki reviews the new commit. If the push starts no review, as while automatic review is off or paused, comment `/manki review`.'],
     ] as const) {
       const { approvalHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { configHold });

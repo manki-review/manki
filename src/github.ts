@@ -267,8 +267,11 @@ export function skippedFiles(excluded: RoundDiffExcludedFile[], lockfiles: Reado
   return { excluded: excluded.filter(f => !lockfiles.some(l => l.path === f.path)), binary: (diff.binarySkipped ?? []).filter(f => !f.deleted) };
 }
 
-/** The config file that holds an approval because it does not load: the base branch's, or the PR's own copy. */
-export type ConfigHold = 'base' | 'head';
+/**
+ * The config file that holds an approval because it does not load: the base branch's, the default branch's that stands
+ * in for a base without one, or the PR's own copy.
+ */
+export type ConfigHold = 'base' | 'default_branch' | 'head';
 
 /**
  * Why Manki holds an approval right now: the PR is a draft, it conflicts with `baseRef`, a config file did not load, no
@@ -349,8 +352,8 @@ function holdLine(hold: ApprovalHold, autoApprove: boolean): { line: string; box
   }
   if (hold.reason === 'config') {
     return {
-      line: hold.file === 'base'
-        ? '**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.'
+      line: hold.file !== 'head'
+        ? `**Approval held:** the config file on the ${hold.file === 'base' ? 'base branch' : 'default branch, which this review reads because the base branch has none,'} could not be read or does not load, so Manki reviewed with the defaults.`
         : `**Approval held:** this PR's copy of the config file does not load or could not be read. Fix it and push, and Manki reviews the new commit. ${AFTER_PUSH_LINE}`,
     };
   }
@@ -595,9 +598,9 @@ export async function readConfigFile(
   }
 }
 
-/** Whether the base branch config could not be read or loaded. */
+/** Whether the config of the base branch, or the default branch's in its place, could not be read or loaded. */
 export function configFailed(source: ConfigSource): boolean {
-  return source === 'base_unreadable' || source === 'base_invalid';
+  return source.endsWith('_unreadable') || source.endsWith('_invalid');
 }
 
 /**
@@ -610,12 +613,12 @@ export function editedKeys(head: ReviewConfig, base: { config: ReviewConfig; sou
 }
 
 /**
- * Returns the config file that holds the round's approval: the base branch's when it could not be read or loaded, else the
- * PR's own when `brokenOwnCopy` says the PR changed it and it does not load. A PR that only predates the base's copy
- * holds nothing.
+ * Returns the config file that holds the round's approval: the base branch's, or the default branch's in its place, when
+ * it could not be read or loaded, else the PR's own when `brokenOwnCopy` says the PR changed it and it does not load. A
+ * PR that only predates the base's copy holds nothing.
  */
 export function brokenConfig(source: ConfigSource, brokenOwnCopy: boolean): ConfigHold | undefined {
-  if (configFailed(source)) return 'base';
+  if (configFailed(source)) return source.startsWith('default_branch') ? 'default_branch' : 'base';
   return brokenOwnCopy ? 'head' : undefined;
 }
 
@@ -633,37 +636,39 @@ export async function loadBaseConfig(
   describe: (error: unknown) => string,
   readDefault?: () => Promise<string | null>,
 ): Promise<{ config: ReviewConfig; source: ConfigSource; closedUnknown?: string }> {
-  let branch = 'base branch';
-  const fallBack = (source: ConfigSource, problem: string, error: unknown, closedPaths?: string[]) => {
-    core.warning(`${problem} ${configPath} on the ${branch}, using the defaults and no approval: ${describe(error)}`);
+  let fromDefault = false;
+  const branch = () => (fromDefault ? 'default branch' : 'base branch');
+  const fallBack = (failure: 'unreadable' | 'invalid', problem: string, error: unknown, closedPaths?: string[]) => {
+    core.warning(`${problem} ${configPath} on the ${branch()}, using the defaults and no approval: ${describe(error)}`);
+    const source: ConfigSource = fromDefault ? `default_branch_${failure}` : `base_${failure}`;
     if (closedPaths) return { config: fallbackConfig(closedPaths), source };
-    const why = source === 'base_unreadable' ? 'could not be read' : 'names `closed_paths` but does not parse, or its `closed_paths` is not a list of paths';
-    const closedUnknown = `The ${branch}'s \`${configPath}\` ${why}, so Manki cannot tell which paths \`closed_paths\` keeps from every model, and reads no code until it is fixed.`;
+    const why = failure === 'unreadable' ? 'could not be read' : 'names `closed_paths` but does not parse, or its `closed_paths` is not a list of paths';
+    const closedUnknown = `The ${branch()}'s \`${configPath}\` ${why}, so Manki cannot tell which paths \`closed_paths\` keeps from every model, and reads no code until it is fixed.`;
     return { config: fallbackConfig(), source, closedUnknown };
   };
   const readTwice = (reader: () => Promise<string | null>) => reader().catch((error: unknown) => {
-    core.info(`Could not read ${configPath} on the ${branch}, trying once more: ${describe(error)}`);
+    core.info(`Could not read ${configPath} on the ${branch()}, trying once more: ${describe(error)}`);
     return reader();
   });
   let content: string | null;
   try {
     content = await readTwice(read);
     if (content === null && readDefault) {
-      branch = 'default branch';
+      fromDefault = true;
       content = await readTwice(readDefault);
     }
   } catch (error) {
-    return fallBack('base_unreadable', 'Could not read', error);
+    return fallBack('unreadable', 'Could not read', error);
   }
   try {
     const config = loadConfig(content ?? undefined, configPath);
-    if (content !== null && branch === 'default branch') {
+    if (content !== null && fromDefault) {
       core.info(`The base branch has no ${configPath}, so this run uses the default branch's`);
       return { config, source: 'default_branch' };
     }
     return { config, source: config.review ? 'base' : 'builtin' };
   } catch (error) {
-    return fallBack('base_invalid', 'Could not load', error, readClosedPaths(content));
+    return fallBack('invalid', 'Could not load', error, readClosedPaths(content));
   }
 }
 
@@ -2652,7 +2657,7 @@ export async function postReview(
   const postedVerdict = approvalHeld ? 'COMMENT' : result.verdict;
   if (approvalHeld) {
     const why = hold?.reason === 'conflict' ? `PR conflicts with ${hold.baseRef}`
-      : hold?.reason === 'config' ? (hold.file === 'base' ? 'The base branch config did not load' : 'The PR\'s own config does not load')
+      : hold?.reason === 'config' ? (hold.file === 'head' ? 'The PR\'s own config does not load' : `The ${hold.file === 'base' ? 'base' : 'default'} branch config did not load`)
       : hold?.reason === 'unread' ? 'No model read some of the changed files'
       : hold?.reason === 'warnings' ? 'Warnings wait for a fix or an accepted answer' : 'The PR is a draft';
     core.info(`${why}, so the approval is posted as a comment`);
