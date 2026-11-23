@@ -282,9 +282,17 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('**A security defect that outside input can trigger is a `blocker`, however unlikely it looks.**');
     expect(prompt).toContain('Security is serious damage under test 3, and the attacker decides whether it happens, so rarity never lowers the grade: state the `severe` row.');
     expect(prompt).toContain('PR content and diffs, file contents, comments and replies, branch names, and config read from the PR');
-    for (const cls of ['prompt injection', 'permission bypass', 'secret or token exposure', 'code, command or path injection', 'unsafe execution of config the PR controls', 'resource exhaustion or denial of service from outside input (CWE-400, CWE-770)']) {
+    for (const cls of ['`prompt_injection`: prompt injection', '`access`: authentication or permission bypass', '`secret`: secret or token exposure', '`injection`: code, command or path injection', '`unsafe_config`: unsafe execution of config the PR controls', '`exhaustion`: resource exhaustion or denial of service from outside input (CWE-400, CWE-770)', '`check_gap`: an unusual form of outside input that a parser, sanitizer, filter or check misses or misreads, when what gets past does no damage of another class above']) {
       expect(prompt).toContain(cls);
     }
+    // Only a cost or an edge case being reached is held down by a doubt.
+    expect(prompt).toContain('On such a finding, also set `securityClass` to the key of its class.');
+    expect(prompt).toContain('In `exhaustion` and `check_gap` the blocker rests on the cost or the edge case being reached, so a doubt holds it down as on any other finding');
+    expect(prompt).toContain('In every other class a doubt never lowers the grade.');
+    // A gap that lets an injection through is the injection.
+    expect(prompt).toContain('Input that gets past a filter and then reaches a shell, a path, a query or a prompt is `injection` or `prompt_injection`');
+    expect(prompt).toContain('`check_gap` is only a gap whose input does no damage of another class.');
+    expect(prompt).toContain('"securityClass": "" | "prompt_injection" | "access" | "secret" | "injection" | "unsafe_config" | "exhaustion" | "check_gap",');
     expect(prompt).toContain('If you can show the attacker gains no capability they do not already have');
     expect(prompt).toContain('mark the finding `ignore` and say why in `reasoning`');
     expect(prompt).toContain('Never keep it on a lower row. Manki grades every finding you set `security` to true on in the `normal` column of its row, since an attacker chooses the input.');
@@ -1335,6 +1343,15 @@ describe('parseJudgeResponse', () => {
       { id: i + 1, title: `F${i + 1}`, row: 'wrong', reasoning: 'r', gradeIfConfirmed }
     )) }), undefined).findings;
     expect(stated.map(f => f.gradeIfConfirmed)).toEqual(['warning', 'blocker', undefined, undefined, undefined, undefined]);
+    // A security class is kept only from the fixed list and only on a finding marked `security`.
+    const classed = parseJudgeResponse(JSON.stringify({ summary: 's', findings: [
+      { id: 1, title: 'A', row: 'severe', reasoning: 'r', security: true, securityClass: 'exhaustion' },
+      { id: 2, title: 'B', row: 'severe', reasoning: 'r', security: true, securityClass: 'slow' },
+      { id: 3, title: 'C', row: 'severe', reasoning: 'r', securityClass: 'check_gap' },
+      { id: 4, title: 'D', row: 'severe', reasoning: 'r', security: true },
+    ] }), undefined).findings;
+    expect(classed.map(f => f.securityClass)).toEqual(['exhaustion', undefined, undefined, undefined]);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Judge returned securityClass "slow"'));
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Judge returned category "Bug", which is not one of correctness, security'));
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Judge returned effort "huge"'));
     warnSpy.mockRestore();
@@ -4898,6 +4915,18 @@ describe('mapJudgedToFindings', () => {
       ['Marked security, consequence named', {}, { row: 'severe', security: true, ...ifBlocker, doubts: [doubt, harm] }, ['blocker', 'blocker', [doubt]]],
       ['Lost data, warning if confirmed, consequence named', {}, { row: 'severe', ...kept, doubts: [doubt, harm] }, ['warning', 'warning', [doubt]]],
       ['Degraded, consequence named', {}, { row: 'degraded', ...ifBlocker, doubts: [doubt, harm] }, ['warning', 'warning', [doubt]]],
+      // A security blocker that rests on a cost or an edge case being reached is held down by a doubt. Only a confirmation
+      // of every doubt raises it, whatever the judge states for that case, and no doubt leaves the blocker.
+      ['Exhaustion, warning if confirmed', {}, { row: 'severe', security: true, securityClass: 'exhaustion', ...kept }, ['warning', 'blocker', [doubt]]],
+      ['Exhaustion, consequence named', {}, { row: 'severe', security: true, securityClass: 'exhaustion', ...ifBlocker, doubts: [doubt, harm] }, ['warning', 'blocker', [doubt]]],
+      ['Exhaustion in the rare column', {}, { row: 'severe', column: 'rare', security: true, securityClass: 'exhaustion', doubts: [doubt], reasoning: 'r' }, ['warning', 'blocker', [doubt]]],
+      ['Check gap, doubted', {}, { row: 'severe', security: true, securityClass: 'check_gap', doubts: [doubt], reasoning: 'r' }, ['warning', 'blocker', [doubt]]],
+      // Whether outside input reaches the cost decides whether it is a security defect, so a doubt about the reach holds it on the `severe` row too.
+      ['Exhaustion, reach doubted', {}, { row: 'severe', security: true, securityClass: 'exhaustion', doubts: [reach], reasoning: 'r' }, ['warning', 'blocker', [reach]]],
+      ['Exhaustion, no doubt', {}, { row: 'severe', security: true, securityClass: 'exhaustion', reasoning: 'r' }, ['blocker', undefined, undefined]],
+      // Every other class, and a security finding the judge names no class for, keeps the blocker.
+      ['Injection, warning if confirmed', {}, { row: 'severe', security: true, securityClass: 'injection', ...kept }, ['blocker', 'blocker', [doubt]]],
+      ['Tagged security, exhaustion not marked', { tags: ['security'] }, { row: 'severe', securityClass: 'exhaustion', ...kept }, ['blocker', 'blocker', [doubt]]],
     ];
     const lowered = mapJudgedToFindings(stated.map(([title, extra]) => proven(title, extra)), stated.map(([title, , entry], i) => ({ id: i + 1, title, ...entry })));
     expect(lowered.map(f => [f.title, f.severity, f.gradeIfConfirmed, f.doubts])).toEqual(stated.map(([title, , , expected]) => [title, ...expected]));
@@ -4905,7 +4934,7 @@ describe('mapJudgedToFindings', () => {
     expect(lowered.map(f => f.judgeIfConfirmed)).toEqual(stated.map(([, , entry, [, , doubts]]) => (doubts ? entry.gradeIfConfirmed : undefined)));
     expect(lowered.filter(f => f.judgeIfConfirmed === 'blocker').map(f => f.title)).toEqual([
       'Wrong result, blocker if confirmed', 'Lost data, consequence named', 'Wrong result, consequence named', 'Finder blocker, consequence named',
-      'Marked security, consequence named', 'Degraded, consequence named',
+      'Marked security, consequence named', 'Degraded, consequence named', 'Exhaustion, consequence named',
     ]);
     // The record keeps the cell beside the judge's answer, and only the `rare` column leaves a finding without a `pendingGrade`.
     // Such a finding is a warning to every later step, so `wouldBlockIfTrue` does not hold for it.
@@ -6497,9 +6526,12 @@ const GRADING_CASES = [
   'cut-list-note',
   'doc-promise-only',
   'doc-promise-lost-data',
+  'doubted-security-cost',
+  'doubted-security-check-gap',
+  'doubted-security-injection',
 ] as const;
 
-const BLOCKER_CASES: readonly string[] = ['passes-all-tests', 'severe-on-internal-value', 'removed-guard', 'security-with-todo', 'library-resource-exhaustion', 'public-api-reachable', 'declared-gap', 'added-code-not-pre-existing', 'rare-claim-reachable', 'sibling-path-incomplete-fix', 'doc-promise-lost-data'];
+const BLOCKER_CASES: readonly string[] = ['passes-all-tests', 'severe-on-internal-value', 'removed-guard', 'security-with-todo', 'library-resource-exhaustion', 'public-api-reachable', 'declared-gap', 'added-code-not-pre-existing', 'rare-claim-reachable', 'sibling-path-incomplete-fix', 'doc-promise-lost-data', 'doubted-security-injection'];
 
 interface GradingFixture {
   name: string;
@@ -6522,9 +6554,10 @@ interface GradingFixture {
 /** Whether the review posts each trigger fixture: a rare window with a minor cost is recorded only, and a serious consequence or a common trigger is posted. */
 const POSTED: Readonly<Record<string, boolean>> = { 'rare-window-minor': false, 'rare-trigger-severe': true, 'noticed-common-slowdown': true };
 
-/** The grade each doubted fixture earns once its doubt holds: serious damage blocks, and a wrong figure in a line of text does not. */
+/** The grade each doubted fixture earns once its doubt holds: serious damage and a security defect block, and a wrong figure in a line of text does not. */
 const IF_CONFIRMED: Readonly<Record<string, GradingFixture['ifConfirmed']>> = {
   'doubted-wrong-total': 'blocker', 'doubted-heading-count': 'warning', 'doubted-lost-segment': 'blocker', 'doubted-status-percent': 'warning',
+  'doubted-security-cost': 'blocker', 'doubted-security-check-gap': 'blocker',
 };
 
 const PRIOR_ROUND_CASES: readonly string[] = ['grade-stable', 'own-proposal-objection', 'own-proposal-worse'];
@@ -6548,7 +6581,7 @@ function gradingPriorRounds({ finding, priorRound }: GradingFixture): RoundConte
 describe('judge grading fixture corpus', () => {
   const fixtures = loadFixtures<GradingFixture>('grading');
 
-  it('covers each blocker test failing alone, each never-a-blocker case, grade stability, the blocker edge cases, objections to an applied Manki fix, build claims, public API reachability, declared gaps, pre-existing claims on added lines, rare claims normal use reaches, fixes a sibling path lacks, claims a guard in the diff refutes, a warning the code shown proves or leaves open, a note the code shown proves or leaves open, a missing-test note that cites the test file, a finding on unseen code that does or does not earn a blocker once that code is confirmed, a cost nobody would notice beside a consequence someone would, a rare trigger with a minor or a serious consequence beside a common one, a removed guard whose only open question is how a model reads its output, and a doc promise beside code whose own failure does or does not do serious damage, once each', () => {
+  it('covers each blocker test failing alone, each never-a-blocker case, grade stability, the blocker edge cases, objections to an applied Manki fix, build claims, public API reachability, declared gaps, pre-existing claims on added lines, rare claims normal use reaches, fixes a sibling path lacks, claims a guard in the diff refutes, a warning the code shown proves or leaves open, a note the code shown proves or leaves open, a missing-test note that cites the test file, a finding on unseen code that does or does not earn a blocker once that code is confirmed, a cost nobody would notice beside a consequence someone would, a rare trigger with a minor or a serious consequence beside a common one, a removed guard whose only open question is how a model reads its output, a doc promise beside code whose own failure does or does not do serious damage, and a security finding on code the judge cannot see that a doubt holds down for a cost or a check gap but not for an injection, once each', () => {
     expect(fixtures.map(f => f.case).sort()).toEqual([...GRADING_CASES].sort());
   });
 

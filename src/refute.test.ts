@@ -491,6 +491,28 @@ describe('refuteBlockers', () => {
     expect(client.messages.find(([, user]) => user.includes(': Unbuilt confirmed\n'))![1]).toContain('## Claimed build failure: Unbuilt confirmed');
   });
 
+  it('raises a security finding the judge held down for a cost only when the check confirms every doubt, and never lowers it further', async () => {
+    const reached = { premise: 'The upload handler passes the request body to `parseRows` before any size check', decides: 'defect' as const };
+    const held = {
+      severity: 'warning' as const, gradeIfConfirmed: 'blocker' as const, cell: { row: 'severe' as const, column: 'normal' as const }, doubts: [reached],
+      tags: ['security'], description: 'A large request body makes `parseRows` loop quadratically.',
+    };
+    const replies = {
+      'Body exhaustion confirmed': { reason: 'It holds.', premises: [{ outcome: 'confirmed', reason: 'The handler passes the body unchecked.', proof: ['src/api.ts:4'] }] },
+      'Body exhaustion unsettled': { reason: 'Could not tell.', premises: [{ outcome: 'unsettled', reason: 'The size limit sits in a proxy config.' }] },
+      'Body exhaustion disproved': { reason: 'Bounded.', premises: [{ outcome: 'disproved', reason: 'A size check runs first.', proof: ['src/math.ts:1'] }] },
+    };
+    const result = await refuteBlockers(fakeClient(replies), Object.keys(replies).map(title => finding(title, held)), { workspace, diff });
+    // Only a confirmation changes a security finding, so a check that settles nothing or disproves the doubt leaves the
+    // warning posted on its guarded thread, and one that confirms the doubt gives the blocker the cell earns.
+    expect(result.map(f => [f.title, f.severity, f.refutation?.outcome, f.tags])).toEqual([
+      ['Body exhaustion confirmed', 'blocker', 'confirmed', ['security']],
+      ['Body exhaustion unsettled', 'warning', 'unsettled', ['security']],
+      ['Body exhaustion disproved', 'warning', 'disproved', ['security']],
+    ]);
+    expect(result.map(f => needsProof(f))).toEqual([false, false, false]);
+  });
+
   it('checks each premise the judge doubts on its own, raises a finding with a blocker cell only when every premise is confirmed and every finder filed a blocker or the check confirmed the defect and its consequence, and never raises or moves one in the `rare` column', async () => {
     const exists = { premise: 'No caller bounds `a`', decides: 'defect' as const };
     const reached = { premise: 'A public handler passes `a` through', decides: 'grade' as const };

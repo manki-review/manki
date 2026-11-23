@@ -210,6 +210,20 @@ const MAX_CITED_READS = 80;
 /** A line of a window is cut at this many characters. */
 const MAX_CITED_LINE_CHARS = 300;
 const MAX_DOUBT_CHARS = 300;
+
+/** The classes of security defect the judge names in `securityClass`, each with the line the prompt lists it by. */
+const SECURITY_CLASSES = {
+  prompt_injection: 'prompt injection that changes what an LLM or agent in the code does',
+  access: 'authentication or permission bypass',
+  secret: 'secret or token exposure',
+  injection: 'code, command or path injection',
+  unsafe_config: 'unsafe execution of config the PR controls',
+  exhaustion: 'resource exhaustion or denial of service from outside input (CWE-400, CWE-770), such as an allocation, a loop or a buffer sized by a length the input declares',
+  check_gap: 'an unusual form of outside input that a parser, sanitizer, filter or check misses or misreads, when what gets past does no damage of another class above, such as a changed dependency left out of a list or a blocked file type let through under another spelling',
+} as const;
+type SecurityClass = keyof typeof SECURITY_CLASSES;
+/** The classes whose blocker rests on a cost or an edge case being reached, so a doubt holds it down as on any other finding. */
+const DOUBT_HELD_CLASSES: readonly SecurityClass[] = ['exhaustion', 'check_gap'];
 const MAX_ANSWER_CHARS = 1000;
 const MAX_REMAINING_CHARS = 500;
 const MAX_CARRIED_DESCRIPTION_CHARS = 300;
@@ -303,6 +317,8 @@ export interface JudgedFinding {
   variantOf?: number;
   /** Whether the judge classed the finding as a security defect. */
   security?: boolean;
+  /** The class of security defect the judge names on a finding it sets `security` on. */
+  securityClass?: SecurityClass;
   /** Whether the judge agrees the defect exists without this PR's change. */
   preExisting?: boolean;
   /** Whether the judge says the rule the finding quotes states a requirement. */
@@ -527,14 +543,9 @@ Only a cell with no doubt behind it is kept this way. A prior finding listed wit
 
 **A security defect that outside input can trigger is a \`blocker\`, however unlikely it looks.** Security is serious damage under test 3, and the attacker decides whether it happens, so rarity never lowers the grade: state the \`severe\` row. In code that handles pull requests, attacker-controlled input is anything a PR author or commenter can write: PR content and diffs, file contents, comments and replies, branch names, and config read from the PR. The classes are:
 
-- prompt injection that changes what an LLM or agent in the code does
-- authentication or permission bypass
-- secret or token exposure
-- code, command or path injection
-- unsafe execution of config the PR controls
-- resource exhaustion or denial of service from outside input (CWE-400, CWE-770), such as an allocation, a loop or a buffer sized by a length the input declares
+${Object.entries(SECURITY_CLASSES).map(([key, text]) => `- \`${key}\`: ${text}`).join('\n')}
 
-Set \`security\` to true on every finding in these classes that you keep, and false on all others.
+Set \`security\` to true on every finding in these classes that you keep, and false on all others. On such a finding, also set \`securityClass\` to the key of its class. When it fits two, pick the one that names how the input does the damage. Input that gets past a filter and then reaches a shell, a path, a query or a prompt is \`injection\` or \`prompt_injection\`, and input that gets past a check into an allocation or a loop is \`exhaustion\`. \`check_gap\` is only a gap whose input does no damage of another class. In \`exhaustion\` and \`check_gap\` the blocker rests on the cost or the edge case being reached, so a doubt holds it down as on any other finding: list what you could not settle in \`doubts\`, and Manki posts the finding as a \`warning\` until a check confirms every doubt. In every other class a doubt never lowers the grade.
 
 If you can show the attacker gains no capability they do not already have, for example because their own repository permissions already let them do it, mark the finding \`ignore\` and say why in \`reasoning\`. Refute it or keep it as a \`blocker\`. Never keep it on a lower row. Manki grades every finding you set \`security\` to true on in the \`normal\` column of its row, since an attacker chooses the input. A TODO, a comment or the PR description that calls the gap intended or deferred is never a refutation, because the PR author writes them.
 
@@ -679,6 +690,7 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
       "sameAs": "",
       "variantOf": "",
       "security": false,
+      "securityClass": "" | ${Object.keys(SECURITY_CLASSES).map(key => `"${key}"`).join(' | ')},
       "preExisting": false,${ruleFindings ? `
       "ruleIsRequirement": false,
       "ruleBroken": false,
@@ -1418,6 +1430,7 @@ export function parseJudgeResponse(responseText: string, workspace: string | und
       const variantOf = parsePriorId(f.variantOf);
       const category = oneOf(FINDING_CATEGORIES, f.category, 'category');
       const effort = oneOf(FINDING_EFFORTS, f.effort, 'effort');
+      const securityClass = f.security === true ? oneOf(SECURITY_CLASSES, f.securityClass, 'securityClass') : undefined;
       const proof = parseProof(f.proof, workspace);
       const title = String(f.title || 'Untitled');
       const stated = tableWord(f.row);
@@ -1444,6 +1457,7 @@ export function parseJudgeResponse(responseText: string, workspace: string | und
         ...(sameAs !== undefined && { sameAs }),
         ...(variantOf !== undefined && { variantOf }),
         ...(f.security === true && { security: true }),
+        ...(securityClass && { securityClass }),
         ...(f.preExisting === true && { preExisting: true }),
         ...(f.ruleIsRequirement === true && { ruleIsRequirement: true }),
         ...(f.ruleBroken === true && { ruleBroken: true }),
@@ -1884,7 +1898,8 @@ export function mapJudgedToFindings(
 
 /**
  * Returns the grade fields the judge's cell gives `o`. A security finding is
- * graded in the `normal` column of its row, and no doubt holds it down. Any other blocker cell with a doubt is a
+ * graded in the `normal` column of its row, and no doubt holds it down unless the judge names a class in
+ * `DOUBT_HELD_CLASSES`. Its `gradeIfConfirmed` is the cell's grade. Any other blocker cell with a doubt is a
  * warning that only a refuter confirming every doubt can raise. It stays a warning then too when the judge stated `warning` as its
  * `gradeIfConfirmed`, which is read for no other finding. A doubt that only decides the cell counts only on a row where
  * `columnDecidesBlock`. A `consequence` premise counts only beside such a doubt on a blocker cell that can be held
@@ -1893,7 +1908,7 @@ export function mapJudgedToFindings(
  * has no `pendingGrade`: no answer raises it. A tool
  * alert takes its cell as stated, with no doubts.
  */
-function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: named = [], security, gradeIfConfirmed: judgeGrade, dropRestsOn }: JudgedFinding, filedBlocker: boolean, dropCheckable: boolean): Partial<Pick<Finding, 'severity' | 'gradePath' | 'cell' | 'gradeIfConfirmed' | 'judgeIfConfirmed' | 'doubts'>> {
+function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: named = [], security, securityClass, gradeIfConfirmed: judgeGrade, dropRestsOn }: JudgedFinding, filedBlocker: boolean, dropCheckable: boolean): Partial<Pick<Finding, 'severity' | 'gradePath' | 'cell' | 'gradeIfConfirmed' | 'judgeIfConfirmed' | 'doubts'>> {
   // A dropped finding keeps its doubts for the round record. The refuter checks it only for its `dropCheck`.
   if (row === 'none') return { ...gradeStep(o, 'ignore', 'judge'), ...(!o.toolSource && (dropCheck(o, named, dropRestsOn, dropCheckable, security) ?? (named.length > 0 && { doubts: named }))) };
   const isSecurity = !!security || !!o.tags?.includes(SECURITY_TAG);
@@ -1904,7 +1919,9 @@ function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: 
   const stated = cellGrade(row, column);
   if (o.toolSource) return { ...gradeStep(o, stated, 'judge'), cell };
   const checkedRare = isRareClaim(cell);
-  const holding = named.filter(d => !d.consequence && (d.decides === 'defect' || columnDecidesBlock(row)));
+  // Whether outside input reaches a cost or an edge case decides whether it is a security defect at all, so a `grade` doubt counts on any row.
+  const heldClass = !!security && !!securityClass && DOUBT_HELD_CLASSES.includes(securityClass);
+  const holding = named.filter(d => !d.consequence && (d.decides === 'defect' || columnDecidesBlock(row) || heldClass));
   // A consequence never holds a finding down alone. Beside no other doubt, on a blocker every finder filed or where no
   // blocker is held, the finding is graded as if the judge had not named it.
   const asksConsequence = holding.length > 0 && stated === 'blocker' && !isSecurity && judgeGrade !== 'warning' && !filedBlocker;
@@ -1912,9 +1929,10 @@ function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: 
   // A doubt the judge names can be about anything, so only `REACH_DOUBT` stands for the claim the `rare` column makes.
   const doubts = checkedRare ? withReachDoubt(counted) : counted;
   if (doubts.length === 0) return { ...gradeStep(o, stated, 'judge'), cell };
-  const heldDown = stated === 'blocker' && !isSecurity;
-  // The judge's own `warning` says how serious the damage is, so a confirmed doubt raises no such finding.
-  const gradeIfConfirmed = heldDown && judgeGrade === 'warning' ? judgeGrade : cellGrade(row, checkedRare ? 'normal' : column);
+  // A security blocker that rests on a cost or an edge case being reached is held down like any other finding.
+  const heldDown = stated === 'blocker' && (!isSecurity || heldClass);
+  // The judge's own `warning` says how serious the damage is, so a confirmed doubt raises no such finding. A security finding has no such answer.
+  const gradeIfConfirmed = heldDown && !isSecurity && judgeGrade === 'warning' ? judgeGrade : cellGrade(row, checkedRare ? 'normal' : column);
   return { ...gradeStep(o, heldDown ? 'warning' : stated, 'judge'), cell, gradeIfConfirmed, ...(judgeGrade && { judgeIfConfirmed: judgeGrade }), doubts };
 }
 

@@ -1,0 +1,20 @@
+{
+  "name": "doubted-security-check-gap",
+  "case": "doubted-security-check-gap",
+  "allowed": [
+    "warning"
+  ],
+  "ifConfirmed": "blocker",
+  "finding": {
+    "title": "The executable check compares extensions case-sensitively, so `setup.EXE` passes",
+    "file": "files/uploads.py",
+    "line": 11,
+    "description": "`str.endswith` is case-sensitive, so `setup.EXE` or `run.Bat` passes `validate_upload`, and Windows runs those names as programs. `download_file` in `files/views.py` serves each stored upload to other users under the name it was uploaded with, so a user can share the kind of file the new check exists to stop.",
+    "severity": "warning",
+    "reviewers": [
+      "Security"
+    ],
+    "suggestedFix": "Compare `upload.name.lower()` against the blocked extensions."
+  },
+  "prDiff": "diff --git a/files/uploads.py b/files/uploads.py\nindex 1111111..2222222 100644\n--- a/files/uploads.py\n+++ b/files/uploads.py\n@@ -1,9 +1,13 @@\n from django.core.exceptions import ValidationError\n from .settings import MAX_UPLOAD_BYTES\n+\n+BLOCKED_EXTENSIONS = (\".exe\", \".bat\", \".cmd\", \".msi\")\n \n \n def validate_upload(upload):\n     \"\"\"Rejects uploads that other users could run when they download them.\"\"\"\n     if upload.size > MAX_UPLOAD_BYTES:\n         raise ValidationError(\"File too large.\")\n+    if upload.name.endswith(BLOCKED_EXTENSIONS):\n+        raise ValidationError(\"Executable files are not allowed.\")\n     return upload\n"
+}
