@@ -1563,12 +1563,13 @@ describe('runFullReview end to end', () => {
       expect(failed.body).toMatch(/^\*\*Review superseded\*\* by a later review of `a1b2c3d`\. This attempt ended as follows\.\n\n🔴 \*\*Review failed\*\*/u);
     });
 
-    it('writes nothing for a push the PR head has moved past', async () => {
+    it('reviews the head a push run finds when the head moved before it started, and writes nothing for a PR that is gone', async () => {
       await dispatch({ event: 'pull_request', action: 'synchronize', pr: String(PR_NUMBER), head_sha: 'b2'.repeat(20) });
 
       expect(core.setFailed).not.toHaveBeenCalled();
-      expect(mockGitHub.writes).toEqual([]);
-      expect(mockLLM.calls).toEqual([]);
+      expect(postedReviews().map(r => [r.state, r.commit_id])).toEqual([['APPROVED', HEAD_SHA]]);
+      mockGitHub.writes = [];
+      mockLLM.calls = [];
 
       // A PR that is gone is read once. A second read would find it here and review it.
       mockGitHub.failures.push({ method: 'GET', path: new RegExp(`/pulls/${PR_NUMBER}$`), status: 404, times: 1 });
