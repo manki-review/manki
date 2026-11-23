@@ -540,7 +540,7 @@ export function needsProof(finding: Finding, rules?: RulesMode): boolean {
  * Returns the warnings to check with tools, at most `limit`, and those `over` that limit. A check that decides whether
  * the review shows a warning comes before one that only changes the status it shows. First come the warnings on code
  * the PR changed that `needsProof` and that nothing proves yet, in the order given: one the judge kept with a doubt
- * whether the defect exists, and one no cited line proves. Then come such warnings that `restatesEarlier` accepts,
+ * whether the defect exists or its trigger happens, and one no cited line proves. Then come such warnings that `restatesEarlier` accepts,
  * which an earlier finding keeps posted. Last come the findings the judge doubts that are posted without
  * proof: a security finding and one `gradedByRule` under `rules`. A round can judge findings in several calls, so only the first group is returned for a judge
  * call, and every later group once the round's last judge call is over, with `roundEnd`. The `limit` counts refuter
@@ -555,7 +555,7 @@ function doubtsToCheck(
   roundEnd = false, rules?: RulesMode,
 ): { checked: Finding[]; reused: Finding[]; over: Finding[] } {
   const warnings = findings.filter(f => f.severity === 'warning' && !alwaysChecked(f) && !f.toolSource && !f.refutation && !f.pairRefutation);
-  const unproven = warnings.filter(f => needsProof(f, rules) && (doubtsDefect(f) || citesNoProof(f)));
+  const unproven = warnings.filter(f => needsProof(f, rules) && (doubtsDefect(f) || citesNoProof(f) || !!f.doubts?.some(isTriggerDoubt)));
   const statusOnly = warnings.filter(f => !needsProof(f, rules) && doubtsDefect(f));
   const groups = roundEnd ? [...unproven.filter(restatesEarlier), ...statusOnly] : unproven.filter(f => !restatesEarlier(f));
   const open = groups.filter(f => !noCheck(f));

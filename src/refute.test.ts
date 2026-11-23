@@ -540,13 +540,17 @@ describe('refuteBlockers', () => {
       'Trigger confirmed': { ...defect, premises: [{ outcome: 'confirmed', reason: 'A handler writes two reports at once.', proof: ['src/api.ts:4'] }] },
       'Trigger unsettled': { ...defect, premises: [{ outcome: 'outside_code', reason: 'Collision odds are no code fact.' }] },
       'Trigger disproved': { ...defect, premises: [{ outcome: 'disproved', reason: 'The name has 128 random bits.', proof: ['src/math.ts:1'] }] },
+      // The judge stated `warning` for the case its doubts hold, so no answer raises it, and only the trigger check decides whether it is posted.
+      'Kept at a warning, trigger disproved': { ...defect, premises: [{ outcome: 'disproved', reason: 'The name has 128 random bits.', proof: ['src/math.ts:1'] }] },
     };
-    const result = await refuteBlockers(fakeClient(replies), Object.keys(replies).map(title => finding(title, capped)), { workspace, diff });
+    const keptAtWarning = { ...capped, gradeIfConfirmed: 'warning' as const, evidence: { checks: [], proof: ['src/math.ts:2'] } };
+    const result = await refuteBlockers(fakeClient(replies), Object.keys(replies).map(title => finding(title, title.startsWith('Kept') ? keptAtWarning : capped)), { workspace, diff });
     // The warning would block if its trigger held, so it stays posted until a check disproves the trigger, though that check confirmed the defect.
     expect(result.map(f => [f.title, f.severity, f.refutation?.outcome, disprovedTrigger(f), unpostedForTrigger(f)])).toEqual([
       ['Trigger confirmed', 'blocker', 'confirmed', false, false],
       ['Trigger unsettled', 'warning', 'unsettled', false, false],
       ['Trigger disproved', 'warning', 'unsettled', true, true],
+      ['Kept at a warning, trigger disproved', 'warning', 'unsettled', true, true],
     ]);
     // One check disproved the defect and left the trigger open, and the other disproved the trigger. No check confirmed it, so the warning is not posted.
     const premise = (outcome: RefutationOutcome) => ({ premise: trigger.premise, decides: 'grade' as const, outcome, reason: 'r' });
