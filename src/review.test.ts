@@ -50,7 +50,8 @@ import type { LockfileDiff } from './lockfile';
 import { runJudgeAgent, computeProvenanceMap } from './judge';
 import { applySuppressions } from './memory';
 import { PreviousFinding } from './recap';
-import { buildRoundContext, buildRoundUsage, mergedDuplicateCount } from './round-context';
+import { buildRoundContext, buildRoundUsage, mergedDuplicateCount, RoundRecordInput } from './round-context';
+import { aggregateFixRates } from './fix-rate';
 import { COST_SCALE_RULE, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, ROOT_CAUSE_FIX_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { latestLimits, LLMCall, LLMClient, LLMResponse, QuotaError, recordCalls, RefusalError, SendMessageOptions, summarizeCalls, TimeoutError, UnreachableError, withModelFallback, withSignal, wrapClientForUsage } from './providers';
 import { isClaimCheck } from './pr-claims';
@@ -111,11 +112,41 @@ const makeFinding = (overrides: Partial<Finding> = {}): Finding => ({
 });
 
 /** The round record a round with `result` posts on commit `abc`, as a later run reads it back from the review. */
-const postedRecord = (result: ReviewResult): RoundContext => JSON.parse(JSON.stringify(buildRoundContext({
+const postedRecord = (result: ReviewResult, input: Partial<RoundRecordInput> = {}): RoundContext => JSON.parse(JSON.stringify(buildRoundContext({
   prNumber: 1, commitSha: 'abc', trigger: { event: 'pull_request:synchronize', sender: 'alice' }, options: {}, config: makeConfig(), reviewSource: 'base',
   models: { planner: 'p', judge: 'j', dedup: 'd' }, recap: { previousFindings: [], priorRounds: [] }, priorRoundCount: 0, maxAutoRounds: 5,
-  diff: makeDiff(), changeDigest: 'digest', excludedFiles: [], openThreads: [], memoryLoadStatus: 'disabled',
+  diff: makeDiff(), changeDigest: 'digest', excludedFiles: [], openThreads: [], memoryLoadStatus: 'disabled', ...input,
 }, result, { judgeDurationMs: 0 }))) as RoundContext;
+
+describe('buildRoundContext', () => {
+  it('records the fix rate of each posted finding\'s class and the count it would lower, and changes nothing else', () => {
+    const fixRates = aggregateFixRates([JSON.stringify({ pr: 1, counts: [
+      { severity: 'warning', specialist: 'GPT 6.2 Sol · high', category: 'correctness', posted: 25, fixed: 5 },
+      { severity: 'note', specialist: 'Claude Opus 5.5 · high', posted: 30, fixed: 20 },
+    ] })]);
+    const findings = [
+      makeFinding({ severity: 'warning', title: 'Low rate', reviewers: ['GPT 6.2 Sol · medium'], category: 'correctness' }),
+      makeFinding({ title: 'High rate', reviewers: ['Claude Opus 5.5 · high'] }),
+      makeFinding({ severity: 'warning', title: 'Security', reviewers: ['GPT 6.2 Sol · high'], category: 'correctness', tags: ['security'] }),
+    ];
+    const result: ReviewResult = { verdict: 'REQUEST_CHANGES', summary: 's', findings, highlights: [], reviewComplete: true, agentNames: [] };
+    const before = structuredClone(result);
+
+    const record = postedRecord(result, { fixRates });
+    expect(result).toEqual(before);
+    expect(record.findings.entries.map(e => e.calibration)).toEqual([
+      { class: 'warning · GPT 6.2 Sol · correctness', posted: 25, fixed: 5, rate: 0.2, wouldLower: true },
+      { class: 'note · Claude Opus 5.5', posted: 30, fixed: 20, rate: 0.67, wouldLower: false },
+      undefined,
+    ]);
+    expect(record.meta.calibrationLowered).toBe(1);
+
+    // Without a history the record has no calibration, and every other field of the entries is the same.
+    const plain = postedRecord(result);
+    expect(plain.meta).not.toHaveProperty('calibrationLowered');
+    expect(record.findings.entries.map(({ calibration: _, ...rest }) => rest)).toEqual(plain.findings.entries);
+  });
+});
 
 describe('changeMapOf', () => {
   it('maps a file of many changed declarations in time that grows linearly with their number', async () => {

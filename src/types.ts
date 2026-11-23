@@ -2476,6 +2476,8 @@ export interface RoundMeta {
   retryAfter?: string;
   /** Set when the round kept results of an earlier attempt on the same commit that ended incomplete. */
   reusedFrom?: RoundReusedFrom;
+  /** How many posted findings the fix-rate history would lower (`FindingCalibration.wouldLower`). Unset without a history. */
+  calibrationLowered?: number;
   /**
    * Set when the record was too large for the review even compressed: the fields that were left out, such as
    * `judge.dropped`, in the order they were cut.
@@ -3054,6 +3056,17 @@ export interface RoundFindings {
   originsWithoutPrior?: true;
 }
 
+/** The fix rate of a finding's class, from the repo's `metrics/fix-rate.jsonl`. */
+export interface FindingCalibration {
+  /** Severity and finder model, plus the category when that finer class has enough posted findings. */
+  class: string;
+  posted: number;
+  fixed: number;
+  rate: number;
+  /** Whether the class has enough posted findings and a fix rate low enough that the finding would be lowered. */
+  wouldLower: boolean;
+}
+
 export interface FindingFingerprintEntry {
   fingerprint: FindingFingerprint;
   threadId?: string;
@@ -3115,6 +3128,8 @@ export interface FindingFingerprintEntry {
   doubts?: Doubt[];
   /** Mirrors `Finding.trigger`. */
   trigger?: string;
+  /** How often posted findings of the finding's class were fixed in the repo's fix-rate history. Recorded only, never acted on. */
+  calibration?: FindingCalibration;
   /** Mirrors `Finding.cell`. A record from before cells has none. */
   cell?: GradeCell;
   /** Mirrors `Finding.judgeCell`. */

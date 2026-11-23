@@ -12,7 +12,7 @@ import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, lates
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, hasQueuedCheck, outcomeReport, reportCheck, ReviewCheck, startReviewCheck } from './check-run';
 import { extractCurrentCodeWindow, locatePostedFile, locatePostedLine } from './code-window';
-import { recordFixRate } from './fix-rate';
+import { FixRateHistory, readFixRateHistory, recordFixRate } from './fix-rate';
 import { APPROVAL_CHECK_ACTION, dispatchedInputs, dispatchedNumber, eventPrClosed, isDispatchedRun, restoreDispatchedEvent, startedByCatchUp } from './dispatch';
 import { addCodeContext, changeDigest, hideSeenNotes, onlyCommitChanging, parsePRDiff, filterDiff, filterRawDiff, ownChangeSince, rebuildRawDiff, reviewableDiff, shortenLongLines, tagFindingOrigins, findClosedPattern } from './diff';
 import { handleBoxCommand, handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, mentionsMankiUser, parseCommand, isLLMAccessAllowed } from './interaction';
@@ -1196,7 +1196,7 @@ async function postUnreviewedRound(
 
 async function loadRunMemory(
   octokit: Octokit, config: ReviewConfig, owner: string, repo: string, prNumber: number,
-): Promise<{ memory: RepoMemory | null; memoryLoadStatus: MemoryLoadStatus; memoryLoadError?: string; memorySkip?: MemorySkip }> {
+): Promise<{ memory: RepoMemory | null; memoryLoadStatus: MemoryLoadStatus; memoryLoadError?: string; memorySkip?: MemorySkip; fixRates?: FixRateHistory }> {
   if (!config.memory?.enabled) {
     return { memory: null, memoryLoadStatus: 'disabled' };
   }
@@ -1205,9 +1205,9 @@ async function loadRunMemory(
     return { memory: null, memoryLoadStatus: 'skipped', memorySkip: skip };
   }
   try {
-    const memory = await loadMemory(store);
+    const [memory, fixRates] = await Promise.all([loadMemory(store), readFixRateHistory(store)]);
     core.info(`Loaded memory: ${memory.learnings.length} learnings, ${memory.suppressions.length} suppressions`);
-    return { memory, memoryLoadStatus: 'loaded' };
+    return { memory, memoryLoadStatus: 'loaded', ...(fixRates && { fixRates }) };
   } catch (error) {
     if (error instanceof MemoryRefusedError) {
       core.warning(`Memory is skipped: ${error.skip.message}`);
@@ -2292,7 +2292,7 @@ async function runFullReview(
     await warmUpClients(clients);
 
     const repoContext = await fetchRepoContext(target.octokit, target.owner, target.repo, target.baseRef, diff.files.map(f => f.path), config.closed_paths);
-    const { memory, memoryLoadStatus, memoryLoadError, memorySkip } = await loadRunMemory(octokit, config, owner, repo, prNumber);
+    const { memory, memoryLoadStatus, memoryLoadError, memorySkip, fixRates } = await loadRunMemory(octokit, config, owner, repo, prNumber);
 
     const priorRoundCount = recap.priorRounds.length;
     const maxAutoRounds = config.max_auto_rounds ?? 0;
@@ -2314,7 +2314,7 @@ async function runFullReview(
     const run: ReviewRun = {
       ...target, options, trigger, config, reviewSource, configHold: brokenConfig(reviewSource, brokenHead?.changed ?? false), models,
       recap, priorRoundCount, maxAutoRounds,
-      diff, changeDigest: digest, excludedFiles, lockfiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError, memorySkip, staticAnalysis, instructions: repoContext,
+      diff, changeDigest: digest, excludedFiles, lockfiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError, memorySkip, fixRates, staticAnalysis, instructions: repoContext,
       commentId, dashboard, progress, startTime, parseEndTime,
     };
 
@@ -2396,6 +2396,9 @@ async function runFullReview(
     capNotes(result, recap.previousFindings, config.review?.notes);
     await carryBodyWarnings(result, recap.priorRounds, openRepoFiles(githubRepoFiles(octokit, owner, repo, commitSha), config.closed_paths ?? [], true));
     const context = buildContext();
+    if (context.meta.calibrationLowered !== undefined) {
+      core.info(`Fix-rate calibration: ${context.meta.calibrationLowered} of ${context.findings.entries.filter(e => e.calibration).length} calibrated findings would be lowered, nothing changed`);
+    }
     const pauseAfter = pauseState({ ...recap, priorRounds: [...recap.priorRounds, context] }, config);
     let posted: Awaited<ReturnType<typeof postRound>>;
     try {

@@ -762,6 +762,7 @@ function mockMemoryService(files: Record<string, string>, { beforeWrite, status 
     if (refusal) return reply(refusal, { error: 'refused' });
     const file = String(body.file);
     if (endpoint === '/memory/read') {
+      if (body.file !== undefined) return reply(200, { repo: { [file]: stored.get(file) ?? null } });
       const pick = (prefix: string, names: string[]) => Object.fromEntries(names.map(name => [name, stored.get(prefix + name) ?? null]));
       return reply(200, { repo: pick('', ['learnings.yml', 'suppressions.yml', 'patterns.yml']), global: pick('_global/', ['learnings.yml', 'conventions.md']) });
     }
@@ -794,6 +795,13 @@ describe('central memory through the token service', () => {
     expect(memory.learnings.map(l => l.content)).toEqual(['repo learning', 'global learning', 'Use consistent naming']);
     expect(memory.suppressions).toHaveLength(1);
     expect(service.requests).toEqual([{ endpoint: '/memory/read', body: { owner: 'owner', repo: 'test-repo', pr: 7 }, auth: 'Bearer oidc-token' }]);
+  });
+
+  it('reads one file of the repo\'s folder by name', async () => {
+    const service = mockMemoryService({ 'metrics/fix-rate.jsonl': '{"pr":1}\n' });
+
+    expect(await (await centralStore()).read('metrics/fix-rate.jsonl')).toEqual({ sha: 'sha-0', text: '{"pr":1}\n' });
+    expect(service.requests.map(r => r.body)).toEqual([{ owner: 'owner', repo: 'test-repo', pr: 7, file: 'metrics/fix-rate.jsonl' }]);
   });
 
   it('creates a missing file with a null sha', async () => {

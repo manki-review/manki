@@ -195,8 +195,9 @@ function serviceMemoryStore(owner: string, repo: string, pr: number): MemoryStor
     if (response.status === 403) throw new MemoryRefusedError(endpoint);
     return response;
   };
-  const read = async () => {
-    const response = await call('read', {});
+  // With `file` the service returns only that file of the repo's folder. An older service ignores it and returns the usual set.
+  const read = async (file?: string) => {
+    const response = await call('read', file === undefined ? {} : { file });
     if (!response.ok) throw failed('read', response.status);
     return (response.data ?? {}) as { repo?: Record<string, ServiceFile>; global?: Record<string, ServiceFile> };
   };
@@ -211,7 +212,7 @@ function serviceMemoryStore(owner: string, repo: string, pr: number): MemoryStor
         globalConventions: serviceFile(global?.['conventions.md']).text,
       };
     },
-    read: async file => serviceFile((await read()).repo?.[file]),
+    read: async file => serviceFile((await read(file)).repo?.[file]),
     async write(file, content, sha, message) {
       const response = await call('write', { file, content, sha: sha ?? null, message });
       if (response.status === 409) return false;
