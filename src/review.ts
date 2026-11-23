@@ -2330,6 +2330,7 @@ export async function runReview(
       // A reader blocker takes the thread of a finding it absorbs, so the guard checks that link before the threads are graded.
       const foldedBlockers = folded.blockers.map(guard);
       ownFixed = new Map([...ownFixed, ...await findOwnFixes(foldedBlockers.filter(f => !f.threadId || !ownFixed.has(f.threadId)))]);
+      if (stopped) return incompleteAfterJudge(stopped);
       const readerFindings = hideUnprovenWarnings(foldedBlockers.map(f => capOwnFixRestatement(f, ownFixed, ownFinding)).map(f => f.severity === 'warning' ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f), config.review?.rules, () => true).posted;
       finalFindings = [...folded.findings, ...readerFindings];
       threadEvaluations = gradeThreads(finalFindings);
