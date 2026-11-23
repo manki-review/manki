@@ -1,0 +1,20 @@
+{
+  "name": "doubted-security-cost",
+  "case": "doubted-security-cost",
+  "allowed": [
+    "warning"
+  ],
+  "ifConfirmed": "blocker",
+  "finding": {
+    "title": "`DedupeLines` scans every kept line for each new one, so a large upload ties up a worker",
+    "file": "internal/importer/dedupe.go",
+    "line": 12,
+    "description": "`slices.Contains` walks every line kept so far, so a file of N distinct lines costs about N²/2 comparisons where the map lookup cost one. `handleImport` in `internal/api/import.go` passes the raw body of `POST /import` to `DedupeLines` with no size limit, so any client that uploads a few hundred thousand distinct lines keeps a worker busy for minutes, and a few such requests stall the service.",
+    "severity": "warning",
+    "reviewers": [
+      "Correctness"
+    ],
+    "suggestedFix": "Keep the `seen` map for the membership check and append to `out` only for the order."
+  },
+  "prDiff": "diff --git a/internal/importer/dedupe.go b/internal/importer/dedupe.go\nindex 1111111..2222222 100644\n--- a/internal/importer/dedupe.go\n+++ b/internal/importer/dedupe.go\n@@ -8,13 +8,11 @@\n // DedupeLines returns the lines of an uploaded import file, each line once, in the order first seen.\n func DedupeLines(body []byte) []string {\n-\tseen := make(map[string]struct{})\n \tvar out []string\n \tfor _, line := range strings.Split(string(body), \"\\n\") {\n-\t\tif _, ok := seen[line]; ok {\n+\t\tif slices.Contains(out, line) {\n \t\t\tcontinue\n \t\t}\n-\t\tseen[line] = struct{}{}\n \t\tout = append(out, line)\n \t}\n \treturn out\n }\n"
+}

