@@ -1886,13 +1886,20 @@ describe('postReview with context', () => {
 
     // A body that does not fit even beside the minimal record leaves out whole pre-existing findings from the end, and says how many.
     const many = listed(40);
-    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result(many), undefined, ctx, 1000);
+    const entries = many.map(f => makeFindingFingerprintEntry({ title: f.title, severity: f.severity, lineStart: f.line }));
+    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result(many), undefined, makeContext({ usage: { llmCalls }, findings: { count: many.length, severityCounts: {}, entries } }), 1000);
     const cut = mockCreateReview.mock.calls[1][0].body as string;
     const shown = shownTitles(cut);
     const missing = many.filter(f => !shown.includes(f.title)).map(f => f.title);
     expect(missing.length).toBeGreaterThan(0);
     expect(missing).toEqual(Array.from({ length: missing.length }, (_, i) => `Old bug ${40 - missing.length + i}`));
     expect(cut).toContain(`${missing.length} findings are left out of this review for lack of room. The round record keeps them.`);
+    // The record keeps the findings left out as in the record only, and the shown ones as in the body.
+    const [record] = extractReviewRecords(cut).records.map(r => JSON.parse(r) as RoundContext);
+    expect(record.findings.entries.filter(e => e.posted === 'record').map(e => e.title)).toEqual(missing);
+    // A warning left out keeps what carries a listed one to the next round.
+    expect(record.findings.entries.filter(e => e.severity === 'warning').every(e => !!(e.citedLine || e.unread) && !!e.description)).toBe(true);
+    expect(record.findings.entries.filter(e => e.posted === 'body').map(e => e.title)).toEqual(shown.sort((a, b) => many.findIndex(f => f.title === a) - many.findIndex(f => f.title === b)));
     expect(cut).not.toContain('truncated');
     expect(balanced(cut)).toBe(true);
     expect(cut.length).toBeLessThanOrEqual(60000 + 600);
