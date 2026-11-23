@@ -5844,6 +5844,10 @@ describe('applyCrossRoundSuppression', () => {
     const linked = applyCrossRoundSuppression([{ ...findings[0], sameAs: stringifyFindingFingerprint(fingerprint) }], prior);
     expect(linked.suppressedCount).toBe(1);
     expect(linked.findings[0].severity).toBe('ignore');
+    // A link to a settled thread is left to `dropWaivedRestatements`, which also checks the lines the finding cites.
+    const settledPrior = [makePriorRound([{ fingerprint, severity: 'note', title: 'Unused variable', authorReply: 'agree', threadId: 'TH1' }])];
+    const toSettled = applyCrossRoundSuppression([{ ...findings[0], sameAs: stringifyFindingFingerprint(fingerprint) }], settledPrior, { settledThreadIds: new Set(['TH1']) });
+    expect([toSettled.suppressedCount, toSettled.findings[0].severity]).toEqual([0, 'note']);
   });
 
   it('ratchets a warning that matches an agreed prior, whatever words it uses', () => {

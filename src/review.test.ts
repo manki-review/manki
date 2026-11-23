@@ -5894,6 +5894,10 @@ describe('runReview', () => {
     expect(await run(push('src/x.ts', 205), settled, far)).toEqual([['T1'], [far.title]]);
     expect(await run(push('src/y.ts', 105), settled, { ...far, evidence: { checks: [], proof: ['src/y.ts:100'] } })).toEqual([['T1'], [far.title]]);
     expect(await run(push('src/x.ts', 300), settled, far)).toEqual([['T1'], []]);
+    expect(await run(push('src/y.ts', 105), settled, { ...far, evidence: { checks: ['`src/y.ts:100` reads the ban.'], proof: ['src/x.ts:200'] } })).toEqual([['T1'], [far.title]]);
+    // A file cited without a line, the thread's own on a whole-file thread or one of its `evidenceFiles`, changes with any hunk.
+    expect(await run(push('src/x.ts', 600), { ...settled, line: 0 })).toEqual([[], [restated.title]]);
+    expect(await run(push('src/e.ts', 600), { ...settled, evidenceFiles: ['src/e.ts'] })).toEqual([[], [restated.title]]);
     // A hunk near a line the answer cited, in any of its files, an unknown push, a renamed file, and a waiver that is no
     // answer (no `answerPlaces`) keep the finding, which the judge then grades on its own.
     const renamed = 'diff --git a/src/x.ts b/src/w.ts\nsimilarity index 90%\nrename from src/x.ts\nrename to src/w.ts\n--- a/src/x.ts\n+++ b/src/w.ts\n@@ -90 +90 @@\n-a\n+b\n';

@@ -1748,7 +1748,9 @@ export async function runJudgeAgent(
     return answers.length > 0 && answers.every(e => e.status === 'addressed') ? [stringifyFindingFingerprint(entry.fingerprint)] : [];
   });
 
-  const crossRoundOptions: CrossRoundSuppressionOptions = { resolvedThreadIds, guardedThreadIds, threadEvaluations: threadEvaluations ?? input.evaluatedThreads?.evaluations };
+  const crossRoundOptions: CrossRoundSuppressionOptions = {
+    resolvedThreadIds, guardedThreadIds, threadEvaluations: threadEvaluations ?? input.evaluatedThreads?.evaluations, settledThreadIds: input.settledThreadIds,
+  };
 
   // A copy the judge merges or drops must pass every pre-existing check itself, since only the kept finding is checked later.
   const staysPreExisting = (copy: Finding): boolean => input.preExistingCheck?.(copy) === 'pre_existing';
@@ -2305,6 +2307,11 @@ export interface CrossRoundSuppressionOptions {
    * without GitHub thread resolution or explicit author agreement.
    */
   threadEvaluations?: ThreadEvaluation[];
+  /**
+   * `JudgeInput.settledThreadIds`. A link to the finding of such a thread drops nothing here, since only
+   * `dropWaivedRestatements` checks the lines the repeat itself cites.
+   */
+  settledThreadIds?: ReadonlySet<string>;
 }
 
 /**
@@ -2324,7 +2331,7 @@ export function applyCrossRoundSuppression(
     return { findings, suppressedCount: 0 };
   }
 
-  const { resolvedThreadIds, guardedThreadIds, threadEvaluations } = options;
+  const { resolvedThreadIds, guardedThreadIds, threadEvaluations, settledThreadIds } = options;
   const useResolved = resolvedThreadIds !== undefined && resolvedThreadIds.size > 0;
   const judgeIndex = indexThreadEvaluations(threadEvaluations);
 
@@ -2374,7 +2381,8 @@ export function applyCrossRoundSuppression(
       if (isLockfileAlert(current.title) || isLockfileAlert(prior.title ?? '')) return prior.title === current.title;
       // Only the judge's link, or the same title on a nearby line, makes it the same finding.
       // A reworded or moved repeat of a resolved thread is left to the dedup model before the judge.
-      return current.sameAs === stringifyFindingFingerprint(prior.fingerprint) || (prior.fingerprint.slug === slug
+      const settled = !!prior.threadId && !!settledThreadIds?.has(prior.threadId);
+      return (current.sameAs === stringifyFindingFingerprint(prior.fingerprint) && !settled) || (prior.fingerprint.slug === slug
         && current.line >= prior.fingerprint.lineStart - LINE_WINDOW
         && current.line <= prior.fingerprint.lineEnd + LINE_WINDOW);
     });

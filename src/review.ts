@@ -3528,8 +3528,13 @@ function filesMayHaveChangedSince(round: number, files: readonly string[], sorte
 
 /** Returns the file `f` sits in and the files it cites in its proof or checks. */
 function citedFiles(f: { file: string; evidence?: FindingEvidence }): string[] {
+  return [f.file, ...citedLocations(f.evidence).map(at => at.file)].filter(Boolean);
+}
+
+/** Returns the locations `evidence` cites, in its proof and in its checks. */
+function citedLocations(evidence: FindingEvidence | undefined): Array<{ file: string; start: number; end: number }> {
   // `parseEvidence` already read these lines with the round's workspace, so no checkout is needed to read them again.
-  return [f.file, ...[...(f.evidence?.proof ?? []), ...parseProof(f.evidence?.checks, undefined)].flatMap(at => parseLocation(at)?.file ?? [])].filter(Boolean);
+  return [...(evidence?.proof ?? []), ...parseProof(evidence?.checks, undefined)].flatMap(at => parseLocation(at) ?? []);
 }
 
 /**
@@ -4066,8 +4071,9 @@ const CITED_CODE_MARGIN = 10;
  * answer (`answerPlaces`): the thread's lines, the lines its round entries cite, and the lines the answer cited. It holds
  * only when the push is the only change since the thread was raised (`onlyPushSince`), and every hunk of the push in a
  * file with a cited line starts more than `CITED_CODE_MARGIN` lines after the last of them, before and after the push,
- * so no cited line moved either. With a repeat `f`, its line and the lines it cites count as cited too. A renamed file,
- * a change GitHub shows no hunk for, and a detached thread count as changed.
+ * so no cited line moved either. With a repeat `f`, its line and the lines it cites count as cited too. A file cited
+ * without a line, such as one of `evidenceFiles`, counts as changed by any hunk. A renamed file, a change GitHub shows no
+ * hunk for, and a detached thread count as changed.
  */
 function settledCodeUnchanged(priorRounds: RoundContext[], interRoundDiff: string | undefined): (prev: PreviousFinding, f?: Finding) => boolean {
   const sorted = [...priorRounds].sort((a, b) => a.meta.round - b.meta.round);
@@ -4077,11 +4083,14 @@ function settledCodeUnchanged(priorRounds: RoundContext[], interRoundDiff: strin
     const recorded = sorted.flatMap(r => r.findings.entries.filter(e => e.threadId === prev.threadId).map(entry => ({ entry, round: r.meta.round })));
     const first = recorded[0]?.round;
     if (first === undefined || !onlyPushSince(first, sorted, interRoundDiff)) return false;
+    const at = (file: string, line: number) => ({ file, end: line > 0 ? line : Infinity });
+    const threadLines = [prev.line, prev.originalLine, prev.findingLine].filter((line): line is number => !!line && line > 0);
     const cited = [
-      ...[prev.line, prev.originalLine, prev.findingLine].flatMap(line => line ? [{ file: prev.file, end: line }] : []),
-      ...recorded.flatMap(({ entry }) => [entry.fingerprint, ...(entry.evidence?.proof ?? []).flatMap(at => parseLocation(at) ?? [])]
-        .map(at => 'lineEnd' in at ? { file: at.file, end: at.lineEnd } : at)),
-      ...[...prev.answerPlaces, ...(f ? [`${f.file}:${f.line}`, ...(f.evidence?.proof ?? [])] : [])].flatMap(at => parseLocation(at) ?? []),
+      ...(threadLines.length > 0 ? threadLines : [0]).map(line => at(prev.file, line)),
+      ...(prev.evidenceFiles ?? []).map(file => at(file, 0)),
+      ...recorded.flatMap(({ entry }) => [at(entry.fingerprint.file, entry.fingerprint.lineEnd), ...citedLocations(entry.evidence)]),
+      ...prev.answerPlaces.flatMap(place => parseLocation(place) ?? []),
+      ...(f ? [at(f.file, f.line), ...citedLocations(f.evidence)] : []),
     ];
     return push.files.every(file => {
       const last = Math.max(...cited.filter(at => at.file === file.path || at.file === file.oldPath).map(at => at.end));
