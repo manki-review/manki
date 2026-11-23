@@ -1521,6 +1521,9 @@ describe('runFullReview end to end', () => {
       });
       await forcedRound();
       expect(mockGitHub.threads.map(t => [t.id, t.isResolved])).toEqual([['PRRT_1', true], ['PRRT_2', false]]);
+      // The review counts the warning once, since Manki closes the plain thread right after posting it.
+      expect(postedReviews().at(-1)!.body).toMatch(/^⚠️ \*\*1 warning to address\.\*\*/);
+      expect(postedReviews().at(-1)!.body).not.toContain('Still open from earlier reviews');
       expect(mockGitHub.threads[0].comments.at(-1)!.body).toMatch(/^Raised to a security warning, continued in \[this thread\]\(https:\/\/github\.com\/acme\/widgets\/pull\/42#discussion_PRRT_2\)\./);
 
       // A guarded thread clears only by a fix or a person, so it stays open beside the blocker's thread.

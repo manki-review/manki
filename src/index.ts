@@ -66,6 +66,7 @@ import {
   dismissPreviousReviews,
   postReview,
   capNotes,
+  holdsApproval,
   limitFallbackLines,
   formatOpenBlockers,
   unreadRecordsLine,
@@ -1783,13 +1784,14 @@ async function closeRaisedThreads(run: ReviewRun, result: ReviewResult): Promise
   }
   const earlier = new Set(run.recap.previousFindings.map(t => t.threadId));
   const posted = live.flatMap(t => t.place?.commit === commitSha && !earlier.has(t.id) ? [{ threadId: t.id, thread: t, ...t.place }] : []);
-  const carrying = new Set(result.findings.flatMap(g => [g.threadId, g.answeredIn?.threadId]));
+  const raised = raisedThreads(result);
+  const closed = new Set<string>();
   for (const f of raising) {
     const old = live.find(t => t.id === f.raises);
     const fresh = posted.find(t => t.threadId === findPriorThreadId({ file: f.file, lineStart: f.line, lineEnd: f.line, slug: titleToSlug(f.title) }, posted))?.thread;
     const keeps = !fresh?.threadUrl ? `"${f.title}" got no thread of its own`
       : !old || old.isResolved || isGuarded(old) ? 'it is resolved or guarded'
-      : carrying.has(old.id) ? 'a finding of this round went into it'
+      : !raised.has(old.id) ? 'a finding of this round went into it'
       : !holdsAtLeast(fresh, old) ? `${fresh.id} holds less than it does`
       : undefined;
     if (keeps || !old || !fresh?.threadUrl) {
@@ -1800,11 +1802,29 @@ async function closeRaisedThreads(run: ReviewRun, result: ReviewResult): Promise
     try {
       await replyToReviewThread(octokit, old.id, `Raised to a ${kind}, continued in [this thread](${fresh.threadUrl}).`, RAISED_MARKER);
       await resolveReviewThread(octokit, old.id, 'WONT_FIX');
+      closed.add(old.id);
       core.info(`Thread ${old.id} continues in ${fresh.id}, so it is resolved`);
     } catch (error) {
       core.warning(`Failed to close thread ${old.id}, which "${f.title}" continues in ${fresh.id}: ${error}`);
     }
   }
+  if (result.verdict !== 'APPROVE') return;
+  for (const t of live.filter(t => !closed.has(t.id) && t.isWarning && leftOutOfHeld(t, raised))) {
+    core.warning(`Thread ${t.id} still holds the approval, though the review did not count it, since it was to be closed`);
+  }
+}
+
+/** Returns the findings that raise each earlier thread no finding of the round went into, which `closeRaisedThreads` may close. */
+function raisedThreads(result: ReviewResult): Map<string, Finding[]> {
+  const carrying = new Set(result.findings.flatMap(g => [g.threadId, g.answeredIn?.threadId]));
+  const raised = new Map<string, Finding[]>();
+  for (const f of result.findings) if (f.raises && !carrying.has(f.raises)) raised.set(f.raises, [...raised.get(f.raises) ?? [], f]);
+  return raised;
+}
+
+/** Whether the review leaves warning thread `t` out of the warnings that hold, since a finding that blocks or holds the approval continues it and Manki closes it after posting. */
+function leftOutOfHeld(t: ReviewThread, raised: Map<string, Finding[]>): boolean {
+  return !!raised.get(t.id)?.some(f => f.severity === 'blocker' || holdsApproval(f)) && !isGuarded(t);
 }
 
 /** Whether thread `to` holds the approval whenever thread `from` does: it blocks when `from` blocks, and blocks or warns when `from` warns. */
@@ -1996,8 +2016,9 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
     return by ? [{ title: f.title, file: f.file, line: f.line, reason: by.reason }] : [];
   });
   // Read after the round resolved the threads it found fixed, and with its own grades, which can lower a blocker thread to a warning.
+  const raised = raisedThreads(result);
   const openWarnings = result.verdict === 'APPROVE'
-    ? await fetchHeldWarnings(octokit, bot, owner, repo, prNumber, run.options.prAuthorLogin, run.config.author_clear_role, context).catch((error: unknown) => {
+    ? await fetchHeldWarnings(octokit, bot, owner, repo, prNumber, run.options.prAuthorLogin, run.config.author_clear_role, context).then(held => held.filter(t => !leftOutOfHeld(t, raised)), (error: unknown) => {
       core.warning(`Could not read the warning threads, so the approval is held: ${error instanceof Error ? error.message : error}`);
       return 'unread' as const;
     }) : [];
