@@ -6504,6 +6504,7 @@ describe('runFullReview orchestration', () => {
     expect(runReviewArgs.relatedWork).toBe(relatedWork);
     expect(relatedWorkModule.findRelatedWork).toHaveBeenCalledWith(expect.anything(), {
       owner: 'test-owner', repo: 'test-repo', prNumber: 42, title: 'Test PR', body: 'Test body', diff: expect.objectContaining({ files: [expect.objectContaining({ path: 'src/app.ts' })] }),
+      trackingIssues: [],
     });
     expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining('so every finding counts as new'));
     expect(jest.mocked(ghUtils.postReview).mock.calls[0][7]?.findings.originsWithoutPrior).toBe(true);

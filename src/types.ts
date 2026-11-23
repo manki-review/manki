@@ -552,6 +552,8 @@ export interface RelatedItem {
 /** The open PRs and issues a round looked at, and why any source was left out, such as a rate-limited search. */
 export interface RelatedWork {
   items: RelatedItem[];
+  /** The open issues Manki's answers named when they settled a thread without a fix. Only the deferral check reads them, so none is classified or listed. */
+  tracking?: RelatedItem[];
   skipped?: string[];
 }
 
