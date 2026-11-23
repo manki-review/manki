@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.7.5] - 2026-11-23
+
+Manki 7.7.5 cuts review loops and false blockers. A blocker restated after Manki's own suggested fix, a blocker that needs an unrealistic trigger and a tool alert two models disprove no longer block, and a finding settled by agreement is not posted again. Taking an approval back now also works when a dismissal fails or a round is incomplete, and the review texts are plainer. On the tuning benchmark against 7.7.4, false blockers fell from 47 to 32 and verdict accuracy rose from 75% to 87.5%, with the same real blockers caught. Nothing breaks on the upgrade and no setting changes.
+
+### Grading
+
+- A blocker whose trigger needs an event that real use does not meet is posted as a warning at most: odds no real use meets, two failures in a row that only keep a hold in place longer, or a call no caller in the repository makes and no outside input reaches. A refuter checks the judge's claim, and a realistic trigger it confirms with cited lines gives the blocker back. Security findings are exempt ([#1983](https://github.com/manki-review/manki/pull/1983)).
+- A security finding about a cost or a missed input form, such as a quadratic loop or a parser gap, stays a warning while the doubt that it is actually reached stays open. An injection, an auth bypass or a leaked secret still blocks ([#1982](https://github.com/manki-review/manki/pull/1982)).
+- The judge puts a finding on the top rows of the severity table only when the code itself causes the damage those rows name. A doc that promises behaviour the code lacks, or a wrong figure in a heading, label or log line, is a warning ([#1981](https://github.com/manki-review/manki/pull/1981)).
+- A static tool alert, such as from actionlint, zizmor or shellcheck, that both refuters on two different models disprove with cited lines is posted as a warning that holds the approval until it is fixed or cleared, instead of blocking every round. Alerts from security scanners and rules with a security name always keep blocking ([#1984](https://github.com/manki-review/manki/pull/1984)).
+
+### Review loop and verdicts
+
+- A blocker that restates an earlier finding on code that carries Manki's own suggested fix is capped, so applying Manki's fix no longer starts a new blocker loop on the same defect ([#1978](https://github.com/manki-review/manki/pull/1978)).
+- A finding that restates a thread Manki settled by agreeing with the author is dropped while the push left the cited lines alone, and is no longer tagged as missed by an earlier review. When Manki cannot read what changed, it sends the finding to the judge instead ([#1986](https://github.com/manki-review/manki/pull/1986)).
+- A reply held behind a running review is answered as before, and when that answer clears the thread it says it replaces the verdict the review just posted, instead of contradicting it silently ([#1979](https://github.com/manki-review/manki/pull/1979)).
+- Manki resolves or reopens a thread before it posts its answer, so the hidden reply record names the state the thread is really in, including a failed resolve ([#1970](https://github.com/manki-review/manki/pull/1970)).
+- An open blocker fails the `Manki` check on the head even when no approval was left to dismiss, and the token service is told no approval stands only when every dismissal worked ([#1969](https://github.com/manki-review/manki/pull/1969)). After an incomplete round, the approval record is cleared only when no approval of the head is left ([#1985](https://github.com/manki-review/manki/pull/1985)).
+
+### Review format
+
+- The Pre-existing section says in one line why its findings do not block ([#1967](https://github.com/manki-review/manki/pull/1967)), and review texts use plain words, such as "Manki's record of this review" for the round record ([#1976](https://github.com/manki-review/manki/pull/1976)).
+- Follow-ups agreed for later are listed as one line each instead of in full ([#1980](https://github.com/manki-review/manki/pull/1980)).
+
+### Related repositories
+
+- A `Cargo.lock` in a workspace member's folder, which Cargo ignores, no longer decides a dependency's version ([#1971](https://github.com/manki-review/manki/pull/1971)).
+
+### Docs
+
+- The workflow examples grant `pull-requests: read`, since Manki posts with the App token. A workflow that grants `write` keeps working ([#1968](https://github.com/manki-review/manki/pull/1968)).
+
 ## [7.7.4] - 2026-11-23
 
 Manki 7.7.4 takes an approval back when a blocking thread opens again, and keeps the required check and the token service in step with it. A "Tracked in #N" link now needs an issue that names the flagged code, and the round record says which findings the review body left out. Nothing breaks on the upgrade and no setting changes.
