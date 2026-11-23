@@ -26,7 +26,7 @@ import { disprovedTrigger, lacksTrigger, MAX_DOUBT_CHECKS, MAX_RELATED_PROOF, ne
 import { fetchedRelatedRepos, relatedNames, repoTools } from './related-repos';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim, relatedCitations } from './static-signals';
-import { bySecondReadsOnly, canLeaveOut, CELL_GRADES, CheckProgress, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, RefutationOutcome, restsOnDrop, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, fixThreadFiles, GradedCounts, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isGuardedFinding, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RelatedRepoTools, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, wouldBlockIfTrue, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, triggerDoubt, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, ruleGrade, RulesMode, RuleVerdict } from './types';
+import { bySecondReadsOnly, canLeaveOut, CELL_GRADES, CheckProgress, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, RefutationOutcome, restsOnDrop, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, fixThreadFiles, GradedCounts, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isGuardedFinding, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RelatedRepoTools, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, wouldBlockIfTrue, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, triggerDoubt, isTriggerDoubt, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, ruleGrade, RulesMode, RuleVerdict } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -1926,16 +1926,18 @@ function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: 
   const checkedRare = isRareClaim(cell);
   // Whether outside input reaches a cost or an edge case decides whether it is a security defect at all, so a `grade` doubt counts on any row.
   const heldClass = !!security && !!securityClass && DOUBT_HELD_CLASSES.includes(securityClass);
-  const holding = named.filter(d => !d.consequence && (d.decides === 'defect' || columnDecidesBlock(row) || heldClass));
-  // A confirmed defect does not show that its trigger happens, so the judge's rare trigger holds the blocker until a check confirms the trigger.
-  const rare = stated === 'blocker' && !isSecurity && !!rareTrigger;
+  // A confirmed defect does not show that its trigger happens, so the judge's rare trigger holds the blocker until a check
+  // confirms the trigger. A trigger doubt the judge names again from an earlier round holds it the same way.
+  const namedTrigger = named.find(isTriggerDoubt);
+  const rare = stated === 'blocker' && !isSecurity && (!!rareTrigger || !!namedTrigger);
+  const holding = named.filter(d => !d.consequence && !(rare && isTriggerDoubt(d)) && (d.decides === 'defect' || columnDecidesBlock(row) || heldClass));
   // A consequence never holds a finding down alone. Beside no other doubt, on a blocker every finder filed or where no
   // blocker is held, the finding is graded as if the judge had not named it.
   const asksConsequence = (holding.length > 0 || rare) && stated === 'blocker' && !isSecurity && judgeGrade !== 'warning' && !filedBlocker;
   const counted = named.filter(d => (d.consequence ? asksConsequence : holding.includes(d)));
   // A doubt the judge names can be about anything, so only `REACH_DOUBT` stands for the claim the `rare` column makes.
   const reached = checkedRare ? withReachDoubt(counted) : counted;
-  const doubts = rare ? [...reached, { ...triggerDoubt(trigger), decides: 'grade' as const }] : reached;
+  const doubts = rare ? [...reached, { premise: (namedTrigger ?? triggerDoubt(trigger)).premise, decides: 'grade' as const }] : reached;
   if (doubts.length === 0) return { ...gradeStep(o, stated, 'judge'), cell };
   // A security blocker that rests on a cost or an edge case being reached is held down like any other finding.
   const heldDown = stated === 'blocker' && (!isSecurity || heldClass);

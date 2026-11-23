@@ -4942,6 +4942,10 @@ describe('mapJudgedToFindings', () => {
       ['Finder blocker, rare trigger', { severity: 'blocker' }, { row: 'wrong', rareTrigger: true, reasoning: 'r' }, ['warning', 'blocker', [rareDoubt]]],
       ['Wrong result, rare trigger, consequence named', {}, { row: 'wrong', ...ifBlocker, rareTrigger: true, doubts: [doubt, harm] }, ['warning', 'blocker', [doubt, harm, rareDoubt]]],
       ['Lost data, rare trigger, warning if confirmed', {}, { row: 'severe', ...kept, rareTrigger: true }, ['warning', 'warning', [doubt, rareDoubt]]],
+      // A later judge that names the trigger doubt again holds the blocker cell the same way, whatever it says the doubt decides.
+      ['Lost data, trigger doubt named again', {}, { row: 'severe', doubts: [rareDoubt], reasoning: 'r' }, ['warning', 'blocker', [rareDoubt]]],
+      ['Wrong result, trigger doubt named again', {}, { row: 'wrong', doubts: [doubt, { ...rareDoubt, decides: 'defect' }], reasoning: 'r' }, ['warning', 'blocker', [doubt, rareDoubt]]],
+      ['Degraded, trigger doubt named again', {}, { row: 'degraded', doubts: [{ ...rareDoubt, decides: 'defect' }], reasoning: 'r' }, ['warning', 'warning', [{ ...rareDoubt, decides: 'defect' }]]],
       // A security finding and a tool alert keep their blocker, and a cell that gives no blocker has nothing to cap.
       ['Marked security, rare trigger', {}, { row: 'severe', security: true, rareTrigger: true, reasoning: 'r' }, ['blocker', undefined, undefined]],
       ['Tool alert, rare trigger', { toolSource: 'clippy' }, { row: 'wrong', rareTrigger: true, reasoning: 'r' }, ['blocker', undefined, undefined]],
