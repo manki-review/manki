@@ -1034,7 +1034,14 @@ export const REACH_DOUBT: Doubt = { premise: 'Normal use or outside input can pr
  * check. Without a `trigger` the premise names the sequence of events the finding's description gives.
  */
 export function triggerDoubt(trigger: string | undefined): Doubt {
-  return { premise: `This trigger happens in realistic use: ${trigger || 'the sequence of events the description names'}`, decides: 'defect' };
+  return { premise: `${TRIGGER_PREMISE}${trigger || 'the sequence of events the description names'}`, decides: 'defect' };
+}
+
+const TRIGGER_PREMISE = 'This trigger happens in realistic use: ';
+
+/** Whether `doubt` is a premise `triggerDoubt` words, such as one a later judge names again from an earlier round. */
+export function isTriggerDoubt(doubt: Doubt): boolean {
+  return doubt.premise.startsWith(TRIGGER_PREMISE);
 }
 
 /** Returns `doubts` with `REACH_DOUBT` in place of any doubt that words the same premise. */

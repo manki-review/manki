@@ -1,0 +1,32 @@
+{
+  "name": "misuse-real-caller",
+  "case": "misuse-real-caller",
+  "allowed": [
+    "warning"
+  ],
+  "posted": true,
+  "finding": {
+    "title": "A failed handshake in one supervisor loop keeps another loop from dialing the same address for 60 seconds",
+    "file": "src/net/dialer.ts",
+    "line": 32,
+    "description": "When two supervisor loops run for the same address, one loop's failed handshake sets `backoffUntil` for the address, and the other loop then skips it although its own connection would work. The address is not dialed for up to 60 seconds. Two loops run when `start` is called twice for one address on the same `Dialer`. `Client.reconnect` calls `start` again without stopping the first loop, so every press of Reconnect adds one.",
+    "severity": "warning",
+    "reviewers": [
+      "Concurrency"
+    ],
+    "evidence": {
+      "checks": [
+        "src/net/dialer.ts:13 starts a new loop on every call",
+        "src/net/dialer.ts:32 sets the backoff shared by every loop",
+        "src/client.ts:14 calls `start`"
+      ],
+      "proof": [
+        "src/net/dialer.ts:13",
+        "src/net/dialer.ts:32",
+        "src/client.ts:14"
+      ]
+    },
+    "suggestedFix": "Have `start` return early when a loop for `addr` already runs."
+  },
+  "prDiff": "diff --git a/src/net/dialer.ts b/src/net/dialer.ts\nnew file mode 100644\nindex 0000000..2222222\n--- /dev/null\n+++ b/src/net/dialer.ts\n@@ -0,0 +1,37 @@\n+import { sleep } from './sleep';\n+\n+const BACKOFF_MS = 60_000;\n+\n+/** Keeps one connection to an address alive. */\n+export class Dialer {\n+  private readonly backoffUntil = new Map<string, number>();\n+  private running = false;\n+\n+  constructor(private readonly connect: (addr: string) => Promise<boolean>) {}\n+\n+  /** Starts the supervisor loop for `addr`. */\n+  start(addr: string): void {\n+    this.running = true;\n+    void this.supervise(addr);\n+  }\n+\n+  stop(): void {\n+    this.running = false;\n+  }\n+\n+  /** Whether `addr` may be dialed now. */\n+  eligible(addr: string): boolean {\n+    return (this.backoffUntil.get(addr) ?? 0) <= Date.now();\n+  }\n+\n+  private async supervise(addr: string): Promise<void> {\n+    while (this.running) {\n+      if (this.eligible(addr)) {\n+        const ok = await this.connect(addr);\n+        if (ok) this.backoffUntil.delete(addr);\n+        else this.backoffUntil.set(addr, Date.now() + BACKOFF_MS);\n+      }\n+      await sleep(1_000);\n+    }\n+  }\n+}\ndiff --git a/src/client.ts b/src/client.ts\nnew file mode 100644\nindex 0000000..2222222\n--- /dev/null\n+++ b/src/client.ts\n@@ -0,0 +1,20 @@\n+import { Dialer } from './net/dialer';\n+import { handshake } from './net/handshake';\n+\n+/** The app's one connection to its node, created at startup. */\n+export class Client {\n+  private readonly dialer = new Dialer(handshake);\n+\n+  constructor(private readonly addr: string) {\n+    this.dialer.start(addr);\n+  }\n+\n+  /** Called by the settings page when the user presses Reconnect. */\n+  reconnect(): void {\n+    this.dialer.start(this.addr);\n+  }\n+\n+  close(): void {\n+    this.dialer.stop();\n+  }\n+}\n"
+}

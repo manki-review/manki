@@ -1,0 +1,30 @@
+{
+  "name": "rare-odds-collision",
+  "case": "rare-odds-collision",
+  "allowed": [
+    "warning",
+    "ignore"
+  ],
+  "finding": {
+    "title": "Two concurrent `WriteReport` calls can share a temporary file and write one report's bytes into another",
+    "file": "export/report.go",
+    "line": 14,
+    "description": "`WriteReport` names its temporary file from `randomSuffix`. When two goroutines write reports in the same directory at once and `randomSuffix` returns the same value for both, both calls write the same `.report-` file, and one `os.Rename` moves the other report's bytes over its own path. That report's data is lost.",
+    "severity": "blocker",
+    "reviewers": [
+      "Concurrency"
+    ],
+    "evidence": {
+      "checks": [
+        "export/report.go:14 names the temporary file from `randomSuffix` alone",
+        "export/report.go:24 draws the suffix"
+      ],
+      "proof": [
+        "export/report.go:14",
+        "export/report.go:24"
+      ]
+    },
+    "suggestedFix": "Create the temporary file with `os.CreateTemp(filepath.Dir(path), \".report-*\")`, which fails rather than reuse an existing name."
+  },
+  "prDiff": "diff --git a/export/report.go b/export/report.go\nnew file mode 100644\nindex 0000000..2222222\n--- /dev/null\n+++ b/export/report.go\n@@ -0,0 +1,26 @@\n+package export\n+\n+import (\n+\t\"crypto/rand\"\n+\t\"encoding/hex\"\n+\t\"os\"\n+\t\"path/filepath\"\n+)\n+\n+// WriteReport writes data to path through a temporary file in the same directory,\n+// so a reader never sees a half-written report. Reports are written from many\n+// goroutines at once.\n+func WriteReport(path string, data []byte) error {\n+\ttmp := filepath.Join(filepath.Dir(path), \".report-\"+randomSuffix())\n+\tif err := os.WriteFile(tmp, data, 0o644); err != nil {\n+\t\treturn err\n+\t}\n+\treturn os.Rename(tmp, path)\n+}\n+\n+// randomSuffix returns 16 random bytes from crypto/rand as 32 hex characters.\n+func randomSuffix() string {\n+\tb := make([]byte, 16)\n+\t_, _ = rand.Read(b)\n+\treturn hex.EncodeToString(b)\n+}\n"
+}

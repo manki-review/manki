@@ -1,0 +1,30 @@
+{
+  "name": "double-failure-hold",
+  "case": "double-failure-hold",
+  "allowed": [
+    "warning",
+    "ignore"
+  ],
+  "finding": {
+    "title": "When both record updates fail, the pull request stays held although its thread is resolved",
+    "file": "src/hold.ts",
+    "line": 15,
+    "description": "`liftHold` resolves the thread first and then updates the record. When the update and its one retry both fail, the error is swallowed, the record still says `held: true`, and the approval check keeps withholding approval until the next push rewrites the record.",
+    "severity": "blocker",
+    "reviewers": [
+      "Correctness"
+    ],
+    "evidence": {
+      "checks": [
+        "src/hold.ts:12 updates the record after the thread is resolved",
+        "src/hold.ts:15 swallows the error of the retry"
+      ],
+      "proof": [
+        "src/hold.ts:12",
+        "src/hold.ts:15"
+      ]
+    },
+    "suggestedFix": "Update the record before resolving the thread, or let the error of the retry reach the caller."
+  },
+  "prDiff": "diff --git a/src/hold.ts b/src/hold.ts\nnew file mode 100644\nindex 0000000..2222222\n--- /dev/null\n+++ b/src/hold.ts\n@@ -0,0 +1,17 @@\n+import { Api } from './api';\n+import { log } from './log';\n+\n+/**\n+ * Lifts the hold on a pull request once its last blocking thread is resolved. While the\n+ * record says `held`, the approval check withholds approval. The next push rewrites the\n+ * record from the open threads.\n+ */\n+export async function liftHold(api: Api, pr: number, threadId: string): Promise<void> {\n+  await api.resolveThread(threadId);\n+  try {\n+    await api.updateRecord(pr, { held: false });\n+  } catch (error) {\n+    log.warning(`Could not update the record of #${pr}, retrying once: ${error}`);\n+    await api.updateRecord(pr, { held: false }).catch(() => undefined);\n+  }\n+}\n"
+}
