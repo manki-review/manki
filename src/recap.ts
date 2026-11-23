@@ -452,7 +452,10 @@ interface PreviousFinding extends FindingMetadata {
    * allows. That resolve still holds, no reply of Manki's accepted or confirmed a fix, and no round's judge found it fixed.
    */
   decidedWithoutFix?: boolean;
-  /** For a thread `decidedWithoutFix` by Manki's answer that accepted no fix, the lines of the PR that answer cited. */
+  /**
+   * For a thread `decidedWithoutFix` by Manki's answer that accepted no fix, the lines of the PR that answer cited, set
+   * only when each statement it checked cites one (`settlingPlaces`).
+   */
   answerPlaces?: string[];
   threadId?: string;
   threadUrl?: string;

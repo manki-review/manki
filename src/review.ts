@@ -4073,14 +4073,17 @@ const CITED_CODE_MARGIN = 10;
  * file with a cited line starts more than `CITED_CODE_MARGIN` lines after the last of them, before and after the push,
  * so no cited line moved either. With a repeat `f`, its line and the lines it cites count as cited too. A file cited
  * without a line, such as one of `evidenceFiles`, counts as changed by any hunk. A renamed file, a change GitHub shows no
- * hunk for, and a detached thread count as changed.
+ * hunk for, a detached thread, and a thread whose round records left out its findings' evidence or could not all be
+ * read count as changed.
  */
 function settledCodeUnchanged(priorRounds: RoundContext[], interRoundDiff: string | undefined): (prev: PreviousFinding, f?: Finding) => boolean {
   const sorted = [...priorRounds].sort((a, b) => a.meta.round - b.meta.round);
   const push = interRoundDiff === undefined ? undefined : parsePRDiff(interRoundDiff);
   return (prev, f) => {
-    if (!push || !prev.threadId || !prev.answerPlaces || !prev.file || prev.detached) return false;
-    const recorded = sorted.flatMap(r => r.findings.entries.filter(e => e.threadId === prev.threadId).map(entry => ({ entry, round: r.meta.round })));
+    if (!push || !prev.threadId || !prev.answerPlaces || !prev.file || prev.detached || prev.gradeUnknown) return false;
+    const rounds = sorted.filter(r => r.findings.entries.some(e => e.threadId === prev.threadId));
+    if (rounds.some(r => r.meta.omitted?.includes('findings.entries.evidence'))) return false;
+    const recorded = rounds.flatMap(r => r.findings.entries.filter(e => e.threadId === prev.threadId).map(entry => ({ entry, round: r.meta.round })));
     const first = recorded[0]?.round;
     if (first === undefined || !onlyPushSince(first, sorted, interRoundDiff)) return false;
     const at = (file: string, line: number) => ({ file, end: line > 0 ? line : Infinity });

@@ -75,9 +75,15 @@ export function settledReplyId(body: string): number | undefined {
   return typeof answers === 'number' ? answers : undefined;
 }
 
-/** Returns the lines of the PR that the settling answer in `body` cited for the statements it checked, each as `path:line` or `path:start-end`. A related repo's line is left out. */
-export function settlingPlaces(body: string): string[] {
-  return (settlingRecord(body)?.statements ?? []).flatMap(s => s.places ?? []).filter(at => at.split(':').length === 2);
+/**
+ * Returns the lines of the PR that the settling answer in `body` cited for the statements it checked, each as
+ * `path:line` or `path:start-end`, and leaves out a related repo's line. It returns nothing when the answer checked no
+ * statement, or when one of its statements cites no line of the PR, such as one that rests on a search or on the PR
+ * description, since a push anywhere can change what that statement rests on.
+ */
+export function settlingPlaces(body: string): string[] | undefined {
+  const own = (settlingRecord(body)?.statements ?? []).map(s => (s.places ?? []).filter(at => at.split(':').length === 2));
+  return own.length > 0 && own.every(places => places.length > 0) ? own.flat() : undefined;
 }
 
 function settlingRecord(body: string): (Partial<ReplyRecord> & { decision: ReplyDecision }) | undefined {

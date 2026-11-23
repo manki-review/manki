@@ -5876,12 +5876,12 @@ describe('runReview', () => {
       answer: 'Agreed. The ban is intended.', answerPlaces: ['src/x.ts:40-42', 'src/y.ts:5'],
     };
     const push = (file: string, line: number) => `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -${line} +${line} @@\n-a\n+b\n`;
-    const run = async (interRoundDiff: string | undefined, thread = settled, judged = restated) => {
+    const run = async (interRoundDiff: string | undefined, thread = settled, judged = restated, priorRounds = [buildPriorRound(1, [makePriorWarningFinding()])]) => {
       mockedRunJudgeAgent.mockClear();
       mockedRunJudgeAgent.mockResolvedValue({ findings: [judged], summary: 's', threadEvaluations: [] });
       const result = await runReview(makeClients(JSON.stringify([{ severity: 'warning', title: restated.title, file: 'src/x.ts', line: 11, description: 'd' }])), {
         config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true,
-        openThreads: [], previousFindings: [thread], priorRounds: [buildPriorRound(1, [makePriorWarningFinding()])], interRoundDiff, headSha: 'sha2',
+        openThreads: [], previousFindings: [thread], priorRounds, interRoundDiff, headSha: 'sha2',
       });
       return [[...mockedRunJudgeAgent.mock.calls[0][2].settledThreadIds ?? []], result.findings.map(f => f.title)];
     };
@@ -5898,6 +5898,10 @@ describe('runReview', () => {
     // A file cited without a line, the thread's own on a whole-file thread or one of its `evidenceFiles`, changes with any hunk.
     expect(await run(push('src/x.ts', 600), { ...settled, line: 0 })).toEqual([[], [restated.title]]);
     expect(await run(push('src/e.ts', 600), { ...settled, evidenceFiles: ['src/e.ts'] })).toEqual([[], [restated.title]]);
+    // A round record cut to fit without its findings' evidence, or a record that could not be read, may hide a cited line.
+    const cut = { ...buildPriorRound(1, [makePriorWarningFinding()]), meta: { ...buildPriorRound(1, []).meta, omitted: ['findings.entries.evidence'] } };
+    expect(await run(push('src/x.ts', 60), settled, restated, [cut])).toEqual([[], [restated.title]]);
+    expect(await run(push('src/x.ts', 60), { ...settled, gradeUnknown: true })).toEqual([[], [restated.title]]);
     // A hunk near a line the answer cited, in any of its files, an unknown push, a renamed file, and a waiver that is no
     // answer (no `answerPlaces`) keep the finding, which the judge then grades on its own.
     const renamed = 'diff --git a/src/x.ts b/src/w.ts\nsimilarity index 90%\nrename from src/x.ts\nrename to src/w.ts\n--- a/src/x.ts\n+++ b/src/w.ts\n@@ -90 +90 @@\n-a\n+b\n';
