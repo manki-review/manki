@@ -1113,8 +1113,12 @@ describe('handleReviewCommentReply', () => {
     const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.at(-1)![0].body as string;
     const [record] = extractReplyRecords(body).map(r => JSON.parse(r) as ReplyRecord);
     const outcome = /^\**(Fixed|Agreed|Withdrawn)\b/.exec(reply)?.[1];
-    const fate = noted || keepsBlocking ? 'stays_open' : reason ? 'resolves' : resolved && sender !== 'reader' ? 'already_resolved' : staysOpen ? 'stays_open' : 'no_permission';
+    // A clearing answer on a resolved thread says that it resolves only once the reopen and the resolve went through.
+    const clearing = resolved && !!reason;
+    const fate = noted ? 'stays_open' : keepsBlocking || clearing ? 'stays_resolved' : reason ? 'resolves' : resolved && sender !== 'reader' ? 'already_resolved' : staysOpen ? 'stays_open' : 'no_permission';
     expect(record.decision).toEqual(outcome ? { outcome, thread: fate } : undefined);
+    const rewrites = jest.mocked(octokit.rest.pulls.updateReviewComment).mock.calls.map(([args]: [{ body: string }]) => extractReplyRecords(args.body).map(r => (JSON.parse(r) as ReplyRecord).decision));
+    expect(rewrites).toEqual(clearing && reopens ? [[{ outcome, thread: 'resolves' }]] : []);
     // Only a resolved thread is looked up, and the answer that reopens one carries the marker that stops a second reopen.
     expect(jest.mocked(state.authorResolvedNote).mock.calls).toEqual(resolved ? [[octokit, TEST_BOT, 'test-owner', 'test-repo', 1, prAuthor, CONFIG, 'PRRT_this']] : []);
     expect(body.endsWith(`\n${REOPENED_MARKER}`)).toBe(noted);

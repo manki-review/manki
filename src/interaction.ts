@@ -123,14 +123,19 @@ type ReplyOutcome = 'Fixed' | 'Agreed' | 'Withdrawn';
 
 /**
  * Returns what a thread reply decided for the record: the outcome it opens with, and what happens to the thread. A
- * reply that settles nothing records nothing.
+ * reply that settles nothing records nothing. `reopened` says that Manki reopened the thread before the answer. With
+ * `held`, the answer clears a resolved thread that keeps blocking, which takes a reopen and a resolve after the answer,
+ * so the thread is `stays_resolved` until both went through.
  */
 function replyDecision(
-  outcome: ReplyOutcome | undefined, thread: ReviewThread | 'lookup_failed' | 'pr_closed' | undefined, mayResolve: boolean, staysOpen: boolean, held = false,
+  outcome: ReplyOutcome | undefined, thread: ReviewThread | 'lookup_failed' | 'pr_closed' | undefined, mayResolve: boolean, staysOpen: boolean, reopened: boolean, held: boolean,
 ): ReplyDecision | undefined {
   if (!outcome) return undefined;
   if (typeof thread === 'string') return { outcome, thread };
-  const fate: ReplyDecision['thread'] = !thread ? 'not_found' : staysOpen ? 'stays_open' : !mayResolve ? 'no_permission' : thread.isResolved && !held ? 'already_resolved' : 'resolves';
+  const fate: ReplyDecision['thread'] = !thread ? 'not_found'
+    : reopened ? 'stays_open'
+      : staysOpen || held ? (thread.isResolved ? 'stays_resolved' : 'stays_open')
+        : !mayResolve ? 'no_permission' : thread.isResolved ? 'already_resolved' : 'resolves';
   return { outcome, thread: fate };
 }
 
@@ -643,7 +648,7 @@ export async function handleReviewCommentReply(
     const settled = leftOpen && !filePath ? undefined : outcome;
 
     // A thread gets one Manki fix confirmation per head unless a second lifts a hold, but a writer's "Fixed." can still resolve it.
-    let addNote: ((note: string) => Promise<unknown>) | undefined;
+    let rewrite: ((note?: string, decision?: ReplyDecision) => Promise<unknown>) | undefined;
     if (!posts) {
       core.info(`Thread ${thread?.id} already confirms the fix on ${head?.slice(0, 7)}, so the reply posts no second one`);
     } else {
@@ -652,7 +657,7 @@ export async function handleReviewCommentReply(
       // An answer that accepts nothing lifts no hold, and neither does one to someone Manki resolves no thread for, so a warning thread hears what does.
       const holdNote = (!outcome || !mayResolve) && live && !closed ? await warningHoldNote(octokit, bot, owner, repo, live, config?.author_clear_role) : undefined;
       const notes = [...(staysOpen ? [staysOpenNote(guard, settled === 'Fixed', config?.author_clear_role, thread?.isResolved)] : []), ...reopened, ...(closed && settled ? [REPLY_PR_CLOSED] : []), ...(holdNote ? [holdNote] : [])];
-      const decision = replyDecision(settled, closed ? 'pr_closed' : lookupFailed ? 'lookup_failed' : thread, mayResolve, staysOpen || noted, clears);
+      const decision = replyDecision(settled, closed ? 'pr_closed' : lookupFailed ? 'lookup_failed' : thread, mayResolve, staysOpen, noted, clears);
       // Whether the finding still blocks once this answer is posted. Only a maintainer's settling answer clears it.
       const blocks = !!live && (noted || ((live.isResolved ? held : isGuarded(live)) && !(settled && mayClear)));
       const list = statementList(checked);
@@ -660,21 +665,25 @@ export async function handleReviewCommentReply(
       // open, and names a review as a way out only when a review can clear it.
       const checks = list ? [list, statementSummary(checked, blocks || !live), ...(blocks && !staysOpen && !noted ? [staysOpenNote(guard, !!filePath, config?.author_clear_role, live.isResolved)] : [])] : [];
       const text = [answer, ...checks, ...notes];
+      let record = response.record(decision, statementChecks(checked), comment.id);
       const markers = [
-        BOT_MARKER, response.record(decision, statementChecks(checked), comment.id),
         ...(settled === 'Fixed' && head && !closed ? [fixedMarker(head)] : []),
         ...(fixClaim ? [fixClaimMarker(fixClaim)] : []),
         ...(noted ? [REOPENED_MARKER] : []),
         ...(settled && thread && mayClear && senderLogin ? [clearRecordMarker(senderLogin)] : []),
       ];
+      const body = (note?: string) => withMarkers([...text, ...(note ? [note] : [])].join('\n\n'), BOT_MARKER, record, ...markers);
       const { data: posted } = await octokit.rest.pulls.createReplyForReviewComment({
         owner,
         repo,
         pull_number: prNumber,
         comment_id: comment.id,
-        body: withMarkers(text.join('\n\n'), ...markers),
+        body: body(),
       });
-      addNote = note => octokit.rest.pulls.updateReviewComment({ owner, repo, comment_id: posted.id, body: withMarkers([...text, note].join('\n\n'), ...markers) });
+      rewrite = (note, newDecision) => {
+        if (newDecision) record = response.record(newDecision, statementChecks(checked), comment.id);
+        return octokit.rest.pulls.updateReviewComment({ owner, repo, comment_id: posted.id, body: body(note) });
+      };
       core.info('Posted reply to review comment');
     }
 
@@ -687,17 +696,22 @@ export async function handleReviewCommentReply(
         core.warning(`Failed to resolve thread after reply: ${error}`);
       }
     }
+    // A clearing answer's record says that the thread resolves only once the reopen and the resolve went through.
+    if (cleared && clears && settled && rewrite) {
+      await rewrite(undefined, { outcome: settled, thread: 'resolves' })
+        .catch((error: unknown) => core.warning(`Cleared the thread, but failed to record that in the answer: ${error}`));
+    }
 
     // A finding whose thread is not cleared is not settled, so it leaves no learning. A security finding never teaches
     // the reviewers to skip a pattern, and only a writer's reply can change memory.
-    if (cleared && addNote && WITHDRAWN_REPLY_RE.test(reply) && !isSecurity && filePath && memory && await commenterCanWrite(octokit, owner, repo)) {
+    if (cleared && rewrite && WITHDRAWN_REPLY_RE.test(reply) && !isSecurity && filePath && memory && await commenterCanWrite(octokit, owner, repo)) {
       const title = parseFindingData(findingBody)?.title ?? filePath;
       const saved = await saveWithdrawnLearning(memory, owner, repo, prNumber, filePath, title, comment.body ?? '')
         .catch((error: unknown) => {
           core.warning(`Failed to save the learning of a withdrawn finding: ${error}`);
           return undefined;
         });
-      if (saved) await addNote(saved).catch((error: unknown) => core.warning(`Saved the learning, but failed to say so in the answer: ${error}`));
+      if (saved) await rewrite(saved).catch((error: unknown) => core.warning(`Saved the learning, but failed to say so in the answer: ${error}`));
     }
   } catch (error) {
     if (ownThread) {
