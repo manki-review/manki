@@ -2040,15 +2040,26 @@ function formatOriginSections(findings: Finding[], links: CodeLinks, followUp: b
 }
 
 /**
- * Returns the body of `render` that fits in `room` characters. It leaves out whole findings, one more at a time up to
- * `cuts`, and cuts at a word only a body that does not fit without all of them.
+ * Returns the body of `render` that fits in `room` characters, and the findings it left out. It leaves out whole
+ * findings of `order`, one more at a time, and cuts at a word only a body that does not fit without all of them.
  */
-function fitBody(render: (cut: number) => string, cuts: number, room: number): string {
-  for (let cut = 0; cut <= cuts; cut++) {
+function fitBody(render: (cut: number) => string, order: readonly Finding[], room: number): FittedBody {
+  for (let cut = 0; cut <= order.length; cut++) {
     const text = render(cut);
-    if (text.length <= room) return text;
+    if (text.length <= room) return { text, dropped: new Set(order.slice(0, cut)) };
   }
-  return truncateBody(render(cuts), room);
+  return { text: truncateBody(render(order.length), room), dropped: new Set(order) };
+}
+
+/**
+ * Returns the trailer for `body`, fitted under `trailer`: written again by `trailerFor` with the findings the body left
+ * out, so the record does not list them as posted. `trailer` stays when nothing was left out, or when the new trailer
+ * does not fit in the `room` the body leaves.
+ */
+function markLeftOut(trailer: string, body: FittedBody, room: number, trailerFor: (room: number, dropped: ReadonlySet<Finding>) => string): string {
+  if (body.dropped.size === 0) return trailer;
+  const marked = trailerFor(room, body.dropped);
+  return marked.length <= room ? marked : trailer;
 }
 
 /** The line that ends a review body which left out `count` findings for lack of room. */
@@ -2568,14 +2579,15 @@ export async function postReview(
   const body = highlightCode(renderBody(), codeTokens);
   /** The body as `renderBody` writes it, fitted to a number of characters by leaving out whole findings. */
   const fitted = (withoutLineThreads = false, approvalRefusal?: EventRefusal): BodyFit => room =>
-    fitBody(cut => highlightCode(renderBody(withoutLineThreads, approvalRefusal, cut), codeTokens), cutOrder(withoutLineThreads).length, room);
+    fitBody(cut => highlightCode(renderBody(withoutLineThreads, approvalRefusal, cut), codeTokens), cutOrder(withoutLineThreads), room);
   const postedComments = [...validComments, ...fileOnly].map(highlight);
   const inBody = new Set([...bodyFindings, ...listedNotes, ...unthreaded]);
   // The record with each finding's place, in the `room` the body leaves. A finding in `refused` got no thread from GitHub, so the body carries it.
   // A record composed again for a retried post differs only in where findings went and whether the approval was refused, so the log shows the first cut one.
   const cutLog = { logged: false };
-  const recordFor = (refused: ReadonlySet<Finding>, approvalRefused: boolean, room: number): string => {
-    const placeOf = (f: Finding): PostedPlace => refused.has(f) || inBody.has(f) ? 'body' : threadFindings.includes(f) ? 'thread' : 'earlier_thread';
+  // A finding the body left out for lack of room, in `dropped`, is in the record only.
+  const recordFor = (refused: ReadonlySet<Finding>, approvalRefused: boolean, room: number, dropped: ReadonlySet<Finding> = new Set()): string => {
+    const placeOf = (f: Finding): PostedPlace => dropped.has(f) ? 'record' : refused.has(f) || inBody.has(f) ? 'body' : threadFindings.includes(f) ? 'thread' : 'earlier_thread';
     const recordPlace = (entry: FindingFingerprintEntry, f: Finding): FindingFingerprintEntry => {
       const posted = placeOf(f);
       const bodyWarning = posted === 'body' && f.severity === 'warning';
@@ -2618,8 +2630,8 @@ export async function postReview(
   core.info(`Posting review: ${mapVerdictToEvent(postedVerdict)} with ${validComments.length} line comments, ${fileComments.length} of them off their finding's line, and ${fileOnly.length} file-level comments`);
 
   const review = await submitReview(
-    octokit, owner, repo, prNumber, commitSha, postedVerdict, fitted(), room => recordFor(new Set(), false, room), validComments.map(highlight), reviewedCommitFooter,
-    approvalRefusal => fitted(true, approvalRefusal), (approvalRefusal, room) => recordFor(inline, !!approvalRefusal, room), headlined.map(highlight),
+    octokit, owner, repo, prNumber, commitSha, postedVerdict, fitted(), (room, dropped) => recordFor(new Set(), false, room, dropped), validComments.map(highlight), reviewedCommitFooter,
+    approvalRefusal => fitted(true, approvalRefusal), (approvalRefusal, room, dropped) => recordFor(inline, !!approvalRefusal, room, dropped), headlined.map(highlight),
   );
   const approvalRefused = postedVerdict === 'APPROVE' && !!review.refused;
   onPosted?.();
@@ -2642,20 +2654,24 @@ export async function postReview(
         guarded: (warningHold.guarded ?? 0) - refusedHolding.filter(f => isGuardedFinding(f.tags, f.reviewers)).length,
       }))
       : text;
-    const fullBody = restate(review.fit(Infinity));
-    const refusedRecord = recordFor(new Set([...refused, ...(review.lineComments ? [] : inline)]), approvalRefused, REVIEW_BODY_BUDGET - section.length - fullBody.length);
+    const fullBody = restate(review.fit(Infinity).text);
+    const inRecord = (room: number, dropped?: ReadonlySet<Finding>) => recordFor(new Set([...refused, ...(review.lineComments ? [] : inline)]), approvalRefused, room, dropped);
+    const refusedRecord = inRecord(REVIEW_BODY_BUDGET - section.length - fullBody.length);
     // Cut the existing body, never the findings appended to it or the round record.
     const room = REVIEW_BODY_BUDGET - section.length - refusedRecord.length;
     if (room <= 0) {
       throw new Error(`Could not post findings as threads or fit them in review #${review.id}: ${titles}`);
     }
+    const cut = review.fit(room);
+    const kept = { ...cut, text: restate(cut.text) };
+    const record = markLeftOut(refusedRecord, kept, REVIEW_BODY_BUDGET - section.length - kept.text.length, inRecord);
     try {
       await octokit.rest.pulls.updateReview({
         owner,
         repo,
         pull_number: prNumber,
         review_id: review.id,
-        body: appendReviewFooter(`${restate(review.fit(room))}${section}${refusedRecord}`, reviewedCommitFooter),
+        body: appendReviewFooter(`${kept.text}${section}${record}`, reviewedCommitFooter),
       });
     } catch (error) {
       throw new Error(`Could not post findings as threads or in review #${review.id}: ${titles}. ${error instanceof Error ? error.message : error}`);
@@ -2670,8 +2686,14 @@ export function isApprovalSettingRefusal(error: unknown): boolean {
   return /not permitted to (create or )?approve pull requests/i.test(error instanceof Error ? error.message : String(error));
 }
 
+/** A review body and the findings it left out for lack of room. */
+interface FittedBody {
+  text: string;
+  dropped: ReadonlySet<Finding>;
+}
+
 /** A review body fitted to a number of characters. Given `Infinity`, it returns the body whole. */
-type BodyFit = (room: number) => string;
+type BodyFit = (room: number) => FittedBody;
 
 /**
  * Creates the review, falling back to a body-only review when GitHub rejects the line
@@ -2688,23 +2710,28 @@ async function submitReview(
   commitSha: string,
   verdict: ReviewVerdict,
   body: BodyFit,
-  /** The record in the given room. */
-  record: (room: number) => string,
+  /** The record in the given room, with the findings the body left out for lack of room. */
+  record: (room: number, dropped: ReadonlySet<Finding>) => string,
   validComments: Array<{path: string; line: number; side: 'RIGHT'; body: string}>,
   reviewedCommitFooter: string,
   /** The body without the line comments listed as threads, for when GitHub refuses their lines, or the approval for `approvalRefusal`. */
   bodyWithoutLineComments: (approvalRefusal?: EventRefusal) => BodyFit,
   /** The record for a review posted without its line comments, where no finding of theirs has a thread. */
-  recordWithoutLineComments: (approvalRefusal: EventRefusal | undefined, room: number) => string,
+  recordWithoutLineComments: (approvalRefusal: EventRefusal | undefined, room: number, dropped: ReadonlySet<Finding>) => string,
   /** The line comments the body names by their headline when the review posts without them. The caller posts a blocker as a file-level thread instead. */
   unthreaded: typeof validComments,
 ): Promise<{ id: number; fit: BodyFit; lineComments: boolean; refused?: EventRefusal }> {
   const event = mapVerdictToEvent(verdict);
   /** The review text of the body of `fit` with `suffix` after it and the trailer that goes with it, and the fit of that body. */
-  const compose = (fit: BodyFit, suffix: string, trailerFor: (room: number) => string): { posted: string; fit: BodyFit } => {
-    const withSuffix: BodyFit = room => `${fit(room - suffix.length)}${suffix}`;
-    const trailer = trailerFor(REVIEW_BODY_BUDGET - withSuffix(Infinity).length);
-    return { posted: appendReviewFooter(`${withSuffix(REVIEW_BODY_BUDGET - trailer.length)}${trailer}`, reviewedCommitFooter), fit: withSuffix };
+  const compose = (fit: BodyFit, suffix: string, trailerFor: (room: number, dropped: ReadonlySet<Finding>) => string): { posted: string; fit: BodyFit } => {
+    const withSuffix: BodyFit = room => {
+      const fitted = fit(room - suffix.length);
+      return { ...fitted, text: `${fitted.text}${suffix}` };
+    };
+    const trailer = trailerFor(REVIEW_BODY_BUDGET - withSuffix(Infinity).text.length, new Set());
+    const fitted = withSuffix(REVIEW_BODY_BUDGET - trailer.length);
+    const marked = markLeftOut(trailer, fitted, REVIEW_BODY_BUDGET - fitted.text.length, trailerFor);
+    return { posted: appendReviewFooter(`${fitted.text}${marked}`, reviewedCommitFooter), fit: withSuffix };
   };
   const listUnthreaded = (heading: string, line: (c: typeof unthreaded[number]) => string): string =>
     unthreaded.length > 0 ? `\n\n**${heading}**\n${unthreaded.map(c => `- ${line(c)}`).join('\n')}` : '';
@@ -2731,7 +2758,7 @@ async function submitReview(
     // If it's a line validation error, retry without inline comments
     if (isLineError && validComments.length > 0) {
       core.warning('Inline comments rejected by GitHub (invalid lines). Posting review without inline comments.');
-      const bare = compose(bodyWithoutLineComments(), listUnthreaded('Inline comments could not be posted:', c => commentHeadline(c.body)), room => recordWithoutLineComments(undefined, room));
+      const bare = compose(bodyWithoutLineComments(), listUnthreaded('Inline comments could not be posted:', c => commentHeadline(c.body)), (room, dropped) => recordWithoutLineComments(undefined, room, dropped));
 
       const { data: review } = await octokit.rest.pulls.createReview({
         owner,
@@ -2765,7 +2792,7 @@ async function submitReview(
     const fallback = compose(
       bodyWithoutLineComments(approvalRefusal),
       listUnthreaded('Findings (could not post inline):', c => `${commentHeadline(c.body)} (\`${findingLocation({ file: c.path, line: c.line })}\`)`),
-      room => recordWithoutLineComments(approvalRefusal, room),
+      (room, dropped) => recordWithoutLineComments(approvalRefusal, room, dropped),
     );
 
     const { data: review } = await octokit.rest.pulls.createReview({
