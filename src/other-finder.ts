@@ -7,14 +7,19 @@ import { sanitizeForPromptEmbed } from './memory';
 import { fenceText } from './github';
 import { LLMClient, NotStartedError } from './providers';
 import { changeSection, citedChanges, locationFile, locationLines, MAX_PARALLEL_REFUTATIONS } from './refute';
-import { cellGrade, DISPROVED_TAG, Finding, gradedByRule, gradeStep, isDisprovedBlocker, isGradeCell, isSecurityFinding, OtherFinderVote, ParsedDiff, pendingGrade, RulesMode } from './types';
+import { cellGrade, DISPROVED_TAG, Finding, FindingSeverity, gradedByRule, gradeStep, isDisprovedBlocker, isGradeCell, isSecurityFinding, OtherFinderVote, ParsedDiff, pendingGrade, RulesMode } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 
 // A safety net for a call without tools, which normally answers in well under a minute.
 const VOTE_TIMEOUT_MS = 120_000;
 const MAX_ANSWER_CHARS = 300;
 const MAX_CITED_LINES = 40;
-const DECLINED_BLOCKER_REASON = 'the other finder would not block on it';
+// How far from the line the answer names its quote may sit, since a model often names a line next to the one it quotes.
+const QUOTE_SLACK_LINES = 3;
+const DECLINED_REASON: Partial<Record<FindingSeverity, string>> = {
+  blocker: 'the other finder would not block on it',
+  warning: 'the other finder named no harm in realistic use',
+};
 
 const VOTE_SYSTEM_PROMPT = `You test a claim another code reviewer made about a pull request. Read the claim, the code it cites and the PR's change, and answer three questions about what the claim says goes wrong:
 
@@ -74,12 +79,16 @@ function parseVote(text: string): RawVote {
 
 const collapse = (text: string): string => text.replace(/\s+/g, ' ').trim();
 
-/** Whether the head in `workspace` holds `quote` on the line `location` names. */
-function holdsQuote(workspace: string, location: string, quote: string): boolean {
+/**
+ * Whether the head in `workspace` holds `quote` on the line `location` names or within `QUOTE_SLACK_LINES` of it, or
+ * undefined when the file cannot be read there.
+ */
+function holdsQuote(workspace: string, location: string, quote: string): boolean | undefined {
   const file = readFileInRoot(workspace, locationFile(location));
+  if (!file || file === 'too large') return undefined;
   const [line] = locationLines(location);
-  if (!file || file === 'too large' || !holdsLines(file.lines.length, line)) return false;
-  return collapse(quote).length > 0 && collapse(file.lines[line - 1]).includes(collapse(quote));
+  const near = file.lines.slice(Math.max(0, line - 1 - QUOTE_SLACK_LINES), Math.max(0, line + QUOTE_SLACK_LINES));
+  return collapse(quote).length > 0 && near.some(text => collapse(text).includes(collapse(quote)));
 }
 
 /**
@@ -109,8 +118,8 @@ export interface VoteOptions {
  * Returns the vote of another finder on each finding of `findings` that `getsVote`, in the same order, and undefined for
  * every other finding. One call asks the model of the first finder that did not report the finding for the harm, the
  * realistic situation and the line where the harm happens. The answer declines the finding when it names no line, or
- * one whose quoted code the head does not hold there. A call that fails, never starts or answers twice in a form that
- * does not parse gives no vote.
+ * one whose quoted code the head does not hold near it. A call that fails, never starts or answers twice in a form that
+ * does not parse gives no vote, and so does an answer whose file cannot be read.
  */
 export async function otherFinderVotes(findings: readonly Finding[], { workspace, diff, finders, restates, rules }: VoteOptions): Promise<Array<OtherFinderVote | undefined>> {
   return mapWithConcurrency([...findings], MAX_PARALLEL_REFUTATIONS, async finding => {
@@ -124,7 +133,12 @@ export async function otherFinderVotes(findings: readonly Finding[], { workspace
         error => core.warning(`The vote of ${other.name} on "${finding.title}" could not be used (${error}), asking once more`),
       );
       const named = raw.line !== 'none';
-      const declined = !named || !holdsQuote(workspace, raw.line, raw.quote);
+      const held = named ? holdsQuote(workspace, raw.line, raw.quote) : false;
+      if (held === undefined) {
+        core.info(`${other.name} named ${raw.line} for "${finding.title}", which could not be read, so its vote is not used`);
+        return undefined;
+      }
+      const declined = !held;
       core.info(`${other.name} ${declined ? 'declines' : 'backs'} "${finding.title}"${named && declined ? `, since ${raw.line} does not hold the quoted code` : ''}`);
       return { finder: other.name, harm: raw.harm, situation: raw.situation, ...(named && { line: raw.line, quote: safeTruncate(raw.quote, MAX_ANSWER_CHARS) }), declined, ...(raw.model && { model: raw.model }) };
     } catch (error) {
@@ -136,20 +150,20 @@ export async function otherFinderVotes(findings: readonly Finding[], { workspace
 
 /**
  * Returns `finding` with its `vote`. A vote that declines lowers a blocker to a warning that `DISPROVED_TAG` guards, so
- * text in the code that steers the vote cannot also let the PR author clear it. A warning it declines is returned with
- * `other_finder_declined` as its `unpostedReason`, for the round record only. A vote lowers a finding at most one step
- * below the grade of its cell, so a blocker cell the judge already held at a warning stays posted. A finding the refuter
- * lowered from a blocker or that `gradedByRule` under `rules` after the vote was asked keeps its grade and gets no vote.
+ * text in the code that steers the vote cannot also let the PR author clear it, and a warning to a note. A vote lowers a
+ * finding at most one step below the grade of its cell, so a blocker cell the judge already held at a warning stays a
+ * warning. A finding the refuter lowered from a blocker or that `gradedByRule` under `rules` after the vote was asked
+ * keeps its grade and gets no vote.
  */
 export function withVote(finding: Finding, vote: OtherFinderVote | undefined, rules?: RulesMode): Finding {
   if (!vote || isDisprovedBlocker(finding) || finding.tags?.includes(DISPROVED_TAG) || gradedByRule(finding, rules)) return finding;
   const voted = { ...finding, otherFinderVote: vote };
   if (!vote.declined) return voted;
   if (finding.severity === 'blocker') {
-    return { ...voted, ...gradeStep(finding, 'warning', 'other_finder', DECLINED_BLOCKER_REASON), tags: [...(finding.tags ?? []), DISPROVED_TAG] };
+    return { ...voted, ...gradeStep(finding, 'warning', 'other_finder', DECLINED_REASON.blocker), tags: [...(finding.tags ?? []), DISPROVED_TAG] };
   }
   // A disproof keeps the cell it moved the finding off as `judgeCell`.
   const cell = finding.judgeCell ?? finding.cell;
   const blockerCell = isGradeCell(cell) && cellGrade(cell.row, cell.column) === 'blocker';
-  return finding.severity === 'warning' && !blockerCell ? { ...voted, unpostedReason: 'other_finder_declined' } : voted;
+  return finding.severity === 'warning' && !blockerCell ? { ...voted, ...gradeStep(finding, 'note', 'other_finder', DECLINED_REASON.warning) } : voted;
 }

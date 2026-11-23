@@ -2141,8 +2141,7 @@ export async function runReview(
   const checked = withOrigins(refuted, origins).map((f, i) => withVote(f, votes[i], config.review?.rules));
   const after = new Map(judged.map((f, i) => [f, checked[i]]));
   allJudgedFindings = allJudgedFindings?.map(f => after.get(f) ?? f);
-  const declined = checked.filter(f => f.unpostedReason === 'other_finder_declined');
-  finalFindings = checked.filter(f => f.severity !== 'ignore' && !declined.includes(f));
+  finalFindings = checked.filter(f => f.severity !== 'ignore');
   if (stopped) return incompleteAfterJudge(stopped);
   // After the suppressions, so a blocker the PR did not cause keeps their blocker guard.
   const preExisting = markPreExisting(finalFindings, unchangedCheck, { rules: config.review?.rules });
@@ -2273,7 +2272,7 @@ export async function runReview(
   // Listed after the judge and the refuter, so no model reads an earlier blocker a second time.
   const relisting = openThreads != null ? relistThreadlessBlockers(finalFindings, priorFindingsFlat, priorRoundLookup) : { findings: finalFindings, restated: [] };
   finalFindings = relisting.findings;
-  const unposted = [...proven.unposted, ...relisting.restated, ...declined];
+  const unposted = [...proven.unposted, ...relisting.restated];
   const decided = determineOutcome(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, threadEvaluations, priorRoundLookup);
   let outcome: RoundOutcome = decided.outcome;
   let { verdictReason, verdictTrace } = decided;

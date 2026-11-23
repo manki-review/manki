@@ -1134,7 +1134,7 @@ export interface OtherFinderVote {
   /** Where the harm happens, as `path:line`, and the code quoted from it. Missing when the answer named no line. */
   line?: string;
   quote?: string;
-  /** Whether the answer named no line, or one the head does not hold with the quoted code. */
+  /** Whether the answer named no line, or one the head does not hold the quoted code near. */
   declined: boolean;
   model?: string;
 }
@@ -1341,7 +1341,7 @@ export function overruledDisproof(finding: Pick<Finding, 'severity' | 'rule' | '
 /** `earlier` restates a finding an earlier round listed in its review body, whatever code it sits on. */
 export type FindingOrigin = 'new' | 'reviewed' | 'earlier';
 
-/** Why a review leaves out a finding the judge kept, with the words that say it to a reader. The first four are set on a note, `listed_earlier` also on a finding that restates an earlier blocker the round lists again, `no_trigger` on a warning with no realistic trigger, the next three on a warning nothing proves, and `other_finder_declined` on a warning one finder reported that the other finder's vote declined. */
+/** Why a review leaves out a finding the judge kept, with the words that say it to a reader. The first four are set on a note, `listed_earlier` also on a finding that restates an earlier blocker the round lists again, `no_trigger` on a warning with no realistic trigger, and the last three on a warning nothing proves. */
 export const UNPOSTED_REASONS = {
   reviewed_code: 'on code an earlier round reviewed',
   listed_earlier: 'listed by an earlier round',
@@ -1354,7 +1354,6 @@ export const UNPOSTED_REASONS = {
   unsettled_check: 'a check of the code could not confirm it',
   not_checked: 'nothing proves it, and no check of the code ran on it',
   no_proof: 'it cites no lines that prove it',
-  other_finder_declined: 'only one of the finders reported it, and the other finder named no harm it causes in realistic use',
 } as const;
 export type UnpostedReason = keyof typeof UNPOSTED_REASONS;
 /** The `revertGap` the judge states on a `testing` finding whose missing test an existing test already provides. */
