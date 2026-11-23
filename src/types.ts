@@ -1168,7 +1168,7 @@ export function outcomeOf(check: Pick<Refutation, 'outcome' | 'defect'>): Refuta
 }
 
 /** Whether the refuter confirmed `answer` resting on outside behavior no cited line states, so it is stored `unsettled`. */
-const restsOnUnstated = (answer: { outside?: OutsideBehavior }): boolean => answer.outside?.stated === false;
+export const restsOnUnstated = (answer: { outside?: OutsideBehavior }): boolean => answer.outside?.stated === false;
 
 /**
  * Returns `check` as the refuter answered it, with each confirmation that `restsOnUnstated` confirmed again. A step that
