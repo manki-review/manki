@@ -26,7 +26,7 @@ import { EarlierAnswer, EarlierAnswers, runComparisons, runPatternChecks, runRel
 import { extractPrClaims, prClaimsRecord, runClaimChecks } from './pr-claims';
 import { concernsThread, fixesRecord, listFixes, pushedWorkarounds, runFixChecks, workaroundRemaining } from './fixes';
 import { citedBy, runSweeps, sharesCitedLine, startsSweep } from './sweep';
-import { otherFinderVotes, withVote } from './other-finder';
+import { otherFinderVotes, VOTE_TIMEOUT_MS, withVote } from './other-finder';
 import { confirmDoubt, placeScopeWarning, runScopeReader, scopeWarnings } from './scope';
 import { formatLockfileChanges, isLockfileAlert, LockfileDiff, withLockfiles } from './lockfile';
 
@@ -1093,7 +1093,8 @@ export async function runReview(
   const noTimeFor = (call: Pick<RoundNotStarted, 'stage' | 'agent'>, endsRound = true): string | undefined => {
     if (stopped) return stopped;
     const leftMs = deadline === undefined ? Infinity : deadline - Date.now();
-    const minMs = call.stage === 'dedup' ? MIN_DEDUP_MS : MIN_JUDGE_MS;
+    // A vote may run for its whole timeout and still leave the later calls their time.
+    const minMs = call.stage === 'dedup' ? MIN_DEDUP_MS : call.stage === 'vote' ? MIN_JUDGE_MS + VOTE_TIMEOUT_MS : MIN_JUDGE_MS;
     if (leftMs >= minMs) return undefined;
     const reason = `the round has ${formatDuration(Math.max(0, leftMs))} left, less than the ${formatDuration(minMs)} a ${lateCallName(call)} starts with`;
     skip({ kind: 'call', ...call, reason });

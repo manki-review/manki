@@ -23,9 +23,11 @@ describe('withVote', () => {
     expect([note.severity, note.gradePath, note.unpostedReason]).toEqual(['note', [{ from: 'warning', to: 'note', by: 'other_finder', reason: 'the other finder named no harm in realistic use' }], undefined]);
     expect(withVote(finding({}), backed).severity).toBe('warning');
 
-    // A check with tools that confirmed the defect outweighs the vote.
-    const confirmed = finding({ refutation: { outcome: 'confirmed', defect: 'confirmed', reason: 'The total drifts.', files: ['src/a.ts'], codeDigest: 'abc' } });
+    // A check with tools that confirmed the defect outweighs the vote on a blocker. A confirmed warning still becomes a note.
+    const refutation = { outcome: 'confirmed' as const, defect: 'confirmed' as const, reason: 'The total drifts.', files: ['src/a.ts'], codeDigest: 'abc' };
+    const confirmed = finding({ severity: 'blocker', refutation });
     expect(withVote(confirmed, declined)).toBe(confirmed);
+    expect(withVote(finding({ refutation }), declined).severity).toBe('note');
     // A finding the refuter already lowered from a blocker took its step, whether its disproof guards it or not.
     const disproved = finding({ gradePath: [{ from: 'blocker', to: 'warning', by: 'refutation' }], tags: [DISPROVED_TAG] });
     expect(withVote(disproved, declined)).toBe(disproved);
