@@ -696,10 +696,11 @@ export async function handleReviewCommentReply(
         core.warning(`Failed to resolve thread after reply: ${error}`);
       }
     }
-    // A clearing answer's record says that the thread resolves only once the reopen and the resolve went through.
+    // A clearing answer's record says that the thread resolves only once the reopen and the resolve went through. A
+    // failed rewrite leaves `stays_resolved`, which settles nothing, so it can keep a hold but never lift one wrongly.
     if (cleared && clears && settled && rewrite) {
       await rewrite(undefined, { outcome: settled, thread: 'resolves' })
-        .catch((error: unknown) => core.warning(`Cleared the thread, but failed to record that in the answer: ${error}`));
+        .catch((error: unknown) => core.warning(`Cleared the thread, but failed to record that in the answer, so its record says \`stays_resolved\` and does not count as settling the thread: ${error}`));
     }
 
     // A finding whose thread is not cleared is not settled, so it leaves no learning. A security finding never teaches
