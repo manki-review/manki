@@ -648,9 +648,6 @@ export async function handleReviewCommentReply(
     // a thread tied to no file, so that answer is "Unverified." and the thread hears who clears it.
     const leftOpen = outcome === 'Fixed' && (staysOpen || noted);
     const answer = leftOpen ? fixReviewNote(reply, filePath, evidenceFiles) : reply;
-    // The review never reads a reply on a thread that is not guarded, so a settling answer here replaces its open verdict.
-    const roundReply = outcome && live && !isGuarded(live) ? live.roundReplies?.find(r => r.commit === head && Date.parse(r.at) > Date.parse(comment.created_at ?? '')) : undefined;
-    const replaces = roundReply ? [`This answer reads your reply, which the review of \`${roundReply.commit.slice(0, 7)}\` above did not, so it replaces that review's verdict.`] : [];
     const settled = leftOpen && !filePath ? undefined : outcome;
 
     // The thread is resolved before the answer is posted, so the record names what happened to it. An answer that fails
@@ -666,6 +663,9 @@ export async function handleReviewCommentReply(
     }
     // A resolved thread that keeps blocking is left resolved, and `staysOpen` says that it is not cleared.
     const cleared = !!resolved && !staysOpen;
+    // The review never reads a reply on a thread that is not guarded, so an answer that settles the thread replaces its open verdict.
+    const roundReply = cleared && live && !isGuarded(live) ? live.roundReplies?.find(r => r.commit === head && Date.parse(r.at) > Date.parse(comment.created_at ?? '')) : undefined;
+    const replaces = roundReply ? [`This answer reads your reply, which the review of \`${roundReply.commit.slice(0, 7)}\` above did not, so it replaces that review's verdict.`] : [];
 
     // A thread gets one Manki fix confirmation per head unless a second lifts a hold, but a writer's "Fixed." can still resolve it.
     let addNote: ((note: string) => Promise<unknown>) | undefined;

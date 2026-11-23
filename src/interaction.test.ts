@@ -1526,27 +1526,30 @@ describe('handleReviewCommentReply', () => {
   });
 
   it.each([
-    ['a withdrawal after a verdict the review of the head gave', 'Withdrawn', '14:34:11', 'head', 'warning', false, true],
-    ['a withdrawal after a verdict given before the reply', 'Withdrawn', '14:30:00', 'head', 'warning', false, false],
-    ['a withdrawal after a verdict the review of another head gave', 'Withdrawn', '14:34:11', 'other', 'warning', false, false],
-    ['a withdrawal in a thread that could not be read', 'Withdrawn', '14:34:11', 'head', 'warning', true, false],
-    // An answer that settles nothing agrees with a review that found the thread open.
-    ['an unverified reply after a verdict the review of the head gave', 'Unverified', '14:34:11', 'head', 'warning', false, false],
+    ['a withdrawal after a verdict the review of the head gave', 'Withdrawn', '14:34:11', 'head', 'warning', 'none', true],
+    ['a withdrawal after a verdict given before the reply', 'Withdrawn', '14:30:00', 'head', 'warning', 'none', false],
+    ['a withdrawal after a verdict the review of another head gave', 'Withdrawn', '14:34:11', 'other', 'warning', 'none', false],
+    ['a withdrawal in a thread that could not be read', 'Withdrawn', '14:34:11', 'head', 'warning', 'read fails', false],
+    // Only an answer that settles the thread replaces the verdict of a review that found it open.
+    ['an unverified reply after a verdict the review of the head gave', 'Unverified', '14:34:11', 'head', 'warning', 'none', false],
+    ['a withdrawal by a reader after a verdict the review of the head gave', 'Withdrawn', '14:34:11', 'head', 'warning', 'reader', false],
+    ['a withdrawal whose resolve fails after a verdict the review of the head gave', 'Withdrawn', '14:34:11', 'head', 'warning', 'resolve fails', false],
     // The review reads the reply in a guarded thread, so its verdict stands there.
-    ['a withdrawal in a blocker thread after a verdict the review of the head gave', 'Withdrawn', '14:34:11', 'head', 'blocker', false, false],
-  ] as const)('answers %s, and says only when it replaces that verdict', async (_case, outcome, verdictAt, verdictHead, kind, readFails, replaces) => {
+    ['a withdrawal in a blocker thread after a verdict the review of the head gave', 'Withdrawn', '14:34:11', 'head', 'blocker', 'none', false],
+  ] as const)('answers %s, and says only when it replaces that verdict', async (_case, outcome, verdictAt, verdictHead, kind, trouble, replaces) => {
     const head = 'a'.repeat(40);
     setContext({
       comment: { id: 1, body: 'Fixed in d2c4380.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'MEMBER', created_at: '2026-11-06T14:32:05Z' },
       pull_request: { number: 1, head: { sha: head } },
-      sender: { login: 'someone' },
+      sender: { login: trouble === 'reader' ? 'reader' : 'someone' },
     });
     const octokit = createMockOctokit();
     octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { original_commit_id: POSTED_ON, user: MANKI_USER, body: findingComment(kind), path: 'src/file.ts', line: 10 } });
+    if (trouble === 'resolve fails') jest.mocked(state.resolveReviewThread).mockRejectedValueOnce(new Error('GitHub is down'));
     const client = createMockClient();
     jest.mocked(client.sendMessage).mockResolvedValue({ content: structured(`${outcome}. The caller already checks for null at \`src/file.ts:10\`.`) });
     const thread = { id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: kind === 'blocker', findingTitle: 'This', roundReplies: [{ commit: verdictHead === 'head' ? head : 'b'.repeat(40), at: `2026-11-06T${verdictAt}Z` }] };
-    if (readFails) jest.mocked(state.fetchBotReviewThreads).mockRejectedValueOnce(new Error('GraphQL timeout'));
+    if (trouble === 'read fails') jest.mocked(state.fetchBotReviewThreads).mockRejectedValueOnce(new Error('GraphQL timeout'));
     else jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([thread]);
 
     await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, undefined, CONFIG);
