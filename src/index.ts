@@ -66,8 +66,8 @@ import {
   dismissPreviousReviews,
   postReview,
   capNotes,
+  earlierPlaces,
   holdsApproval,
-  openThreadFor,
   limitFallbackLines,
   formatOpenBlockers,
   unreadRecordsLine,
@@ -106,7 +106,7 @@ import {
   skippedFiles,
   wasEdited,
 } from './github';
-import type { ApprovalHeld, BotIdentity, LinkedIssue, StandingVerdict } from './github';
+import type { ApprovalHeld, BotIdentity, EarlierPlace, LinkedIssue, StandingVerdict } from './github';
 import { announceSecurityOverrides, approveOrSayWhy, authorClearLine, autoReviewHalt, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, findUnchangedVerdict, fixedMarker, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread, withdrawBlockedApproval } from './state';
 import type { PauseState, ReviewThread } from './state';
 
@@ -1772,7 +1772,7 @@ async function replyFixedThreads(run: ReviewRun, threads: OpenThread[]): Promise
  * new thread blocks whenever it blocked and blocks or warns whenever it warned, and no finding of this round went into it.
  * A guarded thread stays open too, since only a fix or a person clears it.
  */
-async function closeRaisedThreads(run: ReviewRun, result: ReviewResult): Promise<void> {
+async function closeRaisedThreads(run: ReviewRun, result: ReviewResult, placements: ReadonlyMap<Finding, EarlierPlace | undefined>): Promise<void> {
   const raising = result.findings.filter(f => f.raises);
   if (raising.length === 0) return;
   const { octokit, bot, owner, repo, prNumber, commitSha } = run;
@@ -1785,7 +1785,7 @@ async function closeRaisedThreads(run: ReviewRun, result: ReviewResult): Promise
   }
   const earlier = new Set(run.recap.previousFindings.map(t => t.threadId));
   const posted = live.flatMap(t => t.place?.commit === commitSha && !earlier.has(t.id) ? [{ threadId: t.id, thread: t, ...t.place }] : []);
-  const raised = raisedThreads(run, result);
+  const raised = raisedThreads(result, placements);
   const closed = new Set<string>();
   for (const f of raising) {
     const old = live.find(t => t.id === f.raises);
@@ -1816,14 +1816,14 @@ async function closeRaisedThreads(run: ReviewRun, result: ReviewResult): Promise
 }
 
 /**
- * Returns the findings that raise each earlier thread no finding of the round went into, which `closeRaisedThreads` may
- * close. Only a finding that gets a thread of its own counts, never one an open thread carries.
+ * Returns the findings that raise each earlier thread, which `closeRaisedThreads` may close. By the review's `placements`,
+ * only a finding the review posts on its own counts, and only for a thread that takes no finding of the round.
  */
-function raisedThreads(run: ReviewRun, result: ReviewResult): Map<string, Finding[]> {
-  const carrying = new Set(result.findings.flatMap(g => [g.threadId, g.answeredIn?.threadId]));
+function raisedThreads(result: ReviewResult, placements: ReadonlyMap<Finding, EarlierPlace | undefined>): Map<string, Finding[]> {
+  const taking = new Set([...placements.values()].map(p => p?.threadId));
   const raised = new Map<string, Finding[]>();
   for (const f of result.findings) {
-    if (!f.raises || carrying.has(f.raises) || f.threadId || f.answeredIn || openThreadFor(f, run.recap.previousFindings)) continue;
+    if (!f.raises || taking.has(f.raises) || placements.get(f)) continue;
     raised.set(f.raises, [...raised.get(f.raises) ?? [], f]);
   }
   return raised;
@@ -2015,7 +2015,7 @@ function blockOnOpenThreads(result: ReviewResult, threads: OpenThread[]): void {
 const WARNINGS_ALSO_HOLD_LINE = 'Warnings also hold the approval. The review names each one and what clears it.';
 
 /** Posts the round's review and dismisses the previous one. Returns the new review's id, whether its approval was held, and whether warnings hold it. */
-async function postRound(run: ReviewRun, result: ReviewResult, context: RoundContext, reviewTimeMs: number, restart?: string, unreadRecords?: string[]): Promise<{ id: number; approvalHeld: ApprovalHeld; warningsHeld: boolean }> {
+async function postRound(run: ReviewRun, result: ReviewResult, context: RoundContext, reviewTimeMs: number, restart?: string, unreadRecords?: string[]): Promise<{ id: number; approvalHeld: ApprovalHeld; warningsHeld: boolean; placements: ReadonlyMap<Finding, EarlierPlace | undefined> }> {
   const { octokit, bot, owner, repo, prNumber, commitSha, diff, recap } = run;
   // A finding on a parsed lockfile gets a thread on its line like any other.
   const disproved = (result.allJudgedFindings ?? []).flatMap((f): DisprovedFinding[] => {
@@ -2023,14 +2023,17 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
     return by ? [{ title: f.title, file: f.file, line: f.line, reason: by.reason }] : [];
   });
   // Read after the round resolved the threads it found fixed, and with its own grades, which can lower a blocker thread to a warning.
-  const raised = raisedThreads(run, result);
+  const postedDiff = withLockfiles(diff, run.lockfiles);
+  const placements = earlierPlaces(result.findings, recap.previousFindings, postedDiff);
+  const raised = raisedThreads(result, placements);
   const openWarnings = result.verdict === 'APPROVE'
     ? await fetchHeldWarnings(octokit, bot, owner, repo, prNumber, run.options.prAuthorLogin, run.config.author_clear_role, context).then(held => held.filter(t => !leftOutOfHeld(t, raised)), (error: unknown) => {
       core.warning(`Could not read the warning threads, so the approval is held: ${error instanceof Error ? error.message : error}`);
       return 'unread' as const;
     }) : [];
-  const posted = await postReview(octokit, owner, repo, prNumber, commitSha, result, withLockfiles(diff, run.lockfiles), context, reviewTimeMs, {
+  const posted = await postReview(octokit, owner, repo, prNumber, commitSha, result, postedDiff, context, reviewTimeMs, {
     existingThreads: recap.previousFindings,
+    placements,
     openWarnings,
     disproved,
     draft: run.options.draft,
@@ -2048,7 +2051,7 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
   // A held approval posts a COMMENT, which leaves an approval of an older commit standing unless it is dismissed. A warning
   // also takes back an approval of this commit, as a round run again on it can find one.
   if (posted.approvalHeld) await dismissPreviousReviews(octokit, bot, owner, repo, prNumber, posted.id, 'APPROVED', posted.warningsHeld ? undefined : commitSha);
-  return posted;
+  return { ...posted, placements };
 }
 
 function metadataConfig(config: ReviewConfig, models: ReviewModels, triage: string, teamAgents: string[], reviewerModel?: string, memorySkip?: MemorySkip): ReviewMetadata['config'] {
@@ -2488,7 +2491,7 @@ async function runFullReview(
       pause: pauseReport(pauseAfter),
     });
     await replyFixedThreads(run, resolved);
-    await closeRaisedThreads(run, result);
+    await closeRaisedThreads(run, result, posted.placements);
     await replyPartlyFixedThreads(run, result);
     await replyFixedElsewhere(run, result);
     await replyAnsweredThreads(run, result);

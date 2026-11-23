@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 import { gunzipSync } from 'zlib';
 
-import { relatedCommits, ApprovalHeld, plainCitedFiles, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, autoApproveHeadMarker, reviewedCommit, updateProgressDashboard, startLiveEdits, LIVE_EDIT_MS, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchChangesSince, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, fetchApprovalHold, SupersededError, isFailedProgress, markFailedProgressSuperseded, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError, githubRepoFiles, openRepoFiles, UnreadFileError } from './github';
+import { relatedCommits, ApprovalHeld, earlierPlaces, plainCitedFiles, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, autoApproveHeadMarker, reviewedCommit, updateProgressDashboard, startLiveEdits, LIVE_EDIT_MS, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchChangesSince, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, fetchApprovalHold, SupersededError, isFailedProgress, markFailedProgressSuperseded, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError, githubRepoFiles, openRepoFiles, UnreadFileError } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases, RoundFix, Refutation, SideCheckState, OriginAnswer } from './types';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -6409,6 +6409,8 @@ describe('postReview non-blocking findings', () => {
       { title: 'Lock order flips', file: 'src/a.ts', line: 40, severity: 'note' as const, status: 'open' as const, threadId: 'T6', markerSlug: 'Lock-order-flips' },
       // Manki closed this one because its finding continues in a thread of its own.
       { title: 'Retry spins', file: 'src/a.ts', line: 9, severity: 'warning' as const, status: 'auto-resolved' as const, raised: true as const, threadId: 'T7', markerSlug: 'Retry-spins' },
+      { title: 'Lock is dropped', file: 'src/a.ts', line: 1, findingLine: 50, severity: 'blocker' as const, status: 'open' as const, threadId: 'T8', markerSlug: 'Lock-is-dropped' },
+      { title: 'Count overflows', file: 'src/a.ts', line: 12, severity: 'blocker' as const, status: 'open' as const, threadId: 'T9', markerSlug: 'Count-overflows' },
     ];
 
     const findings = [
@@ -6423,15 +6425,24 @@ describe('postReview non-blocking findings', () => {
       nonBlocking('blocker', 'Lock order flips', 40),
       // A thread closed as raised carries no later finding with its title, which gets a thread of its own.
       nonBlocking('warning', 'Retry spins', 9, { tags: ['follow-up'] }),
+      // A blocker off the diff's lines stays in the open blocker thread that matches it. On a changed line it gets a thread of its own.
+      nonBlocking('blocker', 'Lock is dropped', 50),
+      nonBlocking('blocker', 'Count overflows', 12),
     ];
+    // Each finding an earlier thread takes, which the review posts by and which decides the threads a raise may close.
+    const placements = earlierPlaces(findings, existingThreads, diff);
+    expect([...placements.values()]).toEqual([
+      { threadId: 'T1', by: 'matched' }, { threadId: 'T3', by: 'matched' }, { threadId: 'T2', by: 'linked' }, { threadId: 'T4', by: 'matched' },
+      undefined, undefined, undefined, { threadId: 'T8', by: 'matched' }, undefined,
+    ]);
     // The record entry of the answered thread's finding has its thread already, as `buildRoundContext` writes it.
     const context = makeContext({
       findings: { count: findings.length, severityCounts: {}, entries: findings.map(f => ({ fingerprint: { file: f.file, lineStart: f.line, lineEnd: f.line, slug: titleToSlug(f.title) }, severity: f.severity, ...(f.answeredIn && { threadId: f.answeredIn.threadId }) })) },
     });
-    await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult(findings), diff, context, undefined, { existingThreads });
+    await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult(findings), diff, context, undefined, { existingThreads, placements });
 
     const review = createReview.mock.calls[0][0];
-    expect(review.comments.map((c: { line: number; body: string }) => [c.line, c.body.split('\n')[0]])).toEqual([[9, '\u26A0\uFE0F **Warning**'], [1, '\u{1F6AB} **Blocker**'], [9, '\u26A0\uFE0F **Warning**']]);
+    expect(review.comments.map((c: { line: number; body: string }) => [c.line, c.body.split('\n')[0]])).toEqual([[9, '\u26A0\uFE0F **Warning**'], [1, '\u{1F6AB} **Blocker**'], [9, '\u26A0\uFE0F **Warning**'], [12, '\u{1F6AB} **Blocker**']]);
     expect(createReviewComment).not.toHaveBeenCalled();
     const visible = (review.body as string).slice(0, review.body.indexOf('<!-- manki-stats'));
     expect(visible).not.toContain('Extract helper');
@@ -6440,7 +6451,7 @@ describe('postReview non-blocking findings', () => {
     expect(visible).not.toContain('Retry leaks a timer');
     // The record says which thread carries each finding.
     const record = JSON.parse(extractReviewRecords(review.body as string).records[0]) as RoundContext;
-    expect(record.findings.entries.map(e => [e.posted, e.threadId])).toEqual([['earlier_thread', 'T1'], ['earlier_thread', 'T3'], ['earlier_thread', 'T2'], ['earlier_thread', 'T4'], ['thread', undefined], ['thread', undefined], ['thread', undefined]]);
+    expect(record.findings.entries.map(e => [e.posted, e.threadId])).toEqual([['earlier_thread', 'T1'], ['earlier_thread', 'T3'], ['earlier_thread', 'T2'], ['earlier_thread', 'T4'], ['thread', undefined], ['thread', undefined], ['thread', undefined], ['earlier_thread', 'T8'], ['thread', undefined]]);
   });
 
   it('lists the closed threads Manki agreed to leave for later as follow-ups, one line each', async () => {

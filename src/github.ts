@@ -1760,6 +1760,32 @@ function isOnChangedLine(finding: Finding, diff: ParsedDiff): boolean {
   return !!diffFile && isLineInDiff(diffFile, finding.line);
 }
 
+/** Whether a thread of `finding` can go on its own line: a changed line of `diff`, or any line of a file when no diff is known. */
+function onOwnLine(finding: Finding, diff: ParsedDiff | undefined): boolean {
+  return diff ? finding.line > 0 && isOnChangedLine(finding, diff) : !!finding.file && finding.line > 0;
+}
+
+/** The earlier thread `postReview` puts a finding into: the thread the finding is `linked` to, or the open thread `openThreadFor` `matched`. */
+export interface EarlierPlace { threadId: string; by: 'linked' | 'matched' }
+
+/** Returns the earlier thread `postReview` puts each finding into, and nothing for a finding it posts on its own or lists in the body. */
+export function earlierPlaces(findings: readonly Finding[], existingThreads: PreviousFinding[], diff: ParsedDiff | undefined): Map<Finding, EarlierPlace | undefined> {
+  return new Map(findings.map(f => [f, earlierPlaceOf(f, existingThreads, diff)]));
+}
+
+function earlierPlaceOf(finding: Finding, existingThreads: PreviousFinding[], diff: ParsedDiff | undefined): EarlierPlace | undefined {
+  const matched = openThreadFor(finding, existingThreads);
+  if (!isBlockingFinding(finding)) {
+    const linked = finding.answeredIn?.threadId ?? finding.threadId;
+    return linked ? { threadId: linked, by: 'linked' } : matched ? { threadId: matched, by: 'matched' } : undefined;
+  }
+  const threadId = finding.threadId ?? finding.answeredIn?.threadId;
+  const open = threadId ? existingThreads.find(t => t.threadId === threadId) : undefined;
+  if (threadId && open && !gradedAbove(finding.severity, open)) return { threadId, by: 'linked' };
+  // A blocker on its own line gets a thread there even when an open thread matches it.
+  return matched && !onOwnLine(finding, diff) ? { threadId: matched, by: 'matched' } : undefined;
+}
+
 function inlineCode(text: string): string {
   const longestRun = (text.match(/`+/g) ?? []).reduce((max, run) => Math.max(max, run.length), 0);
   const ticks = '`'.repeat(longestRun + 1);
@@ -2186,7 +2212,7 @@ function formatReplyFinding(finding: Finding): string[] {
  * A thread graded below the finding never carries it, so a warning or a blocker is never left to a suggestion thread.
  * Neither does a thread Manki closed because its finding continues in another thread.
  */
-export function openThreadFor(finding: Finding, existingThreads: PreviousFinding[]): string | undefined {
+function openThreadFor(finding: Finding, existingThreads: PreviousFinding[]): string | undefined {
   if (finding.ownThread) return undefined;
   const open = existingThreads.filter(t => t.status !== 'resolved' && !t.raised && t.threadId && t.markerSlug && !gradedAbove(finding.severity, t));
   const fingerprint = { file: finding.file, lineStart: finding.line, lineEnd: finding.line, slug: titleToSlug(finding.title) };
@@ -2312,8 +2338,10 @@ export async function postReview(
   diff?: ParsedDiff,
   context?: RoundContext,
   reviewTimeMs?: number,
-  { existingThreads = [], draft = false, autoApprove = true, configHold, noVerdict = false, skipped, memorySkip, restart, onPosted, unreadRecords, disproved = [], openWarnings = [], rules, closedPaths = [] }: {
+  { existingThreads = [], placements = earlierPlaces(result.findings, existingThreads, diff), draft = false, autoApprove = true, configHold, noVerdict = false, skipped, memorySkip, restart, onPosted, unreadRecords, disproved = [], openWarnings = [], rules, closedPaths = [] }: {
     existingThreads?: PreviousFinding[]; draft?: boolean; configHold?: ConfigHold; noVerdict?: boolean;
+    /** The `earlierPlaces` of the round's findings, which decide each finding an earlier thread takes. */
+    placements?: ReadonlyMap<Finding, EarlierPlace | undefined>;
     /** The `closed_paths` setting. A file it closes is neither read nor linked, so the review quotes no code of it. */
     closedPaths?: readonly string[];
     /** The `review.rules` setting, which decides whether a confirmed rule keeps a finding a check disproved. */
@@ -2401,18 +2429,19 @@ export async function postReview(
   /**
    * Posts a blocker or a holding warning as a thread of its own: a line comment on a changed line, or else a line comment
    * on the first changed line of its file, or of `anchor` when its file is not changed. A changed file with no such line
-   * takes a file-level thread. `matched` is its `openThreadFor`, which keeps carrying it.
+   * takes a file-level thread. A finding off its line that an open thread matched, by `placements`, stays in that thread.
    */
-  const postThread = (f: Finding, matched: string | undefined): void => {
+  const postThread = (f: Finding): void => {
     const blocking = isBlockingFinding(f);
     const diffFile = f.file ? diff?.files.find(df => df.path === f.file) : undefined;
     const elsewhere = diff ? !diffFile : !f.file || f.line <= 0;
-    if (!elsewhere && (!diff || (f.line > 0 && isLineInDiff(diffFile!, f.line)))) {
+    if (onOwnLine(f, diff)) {
       validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: formatFindingComment(f, links) });
       lineThreads.push({ path: f.file, finding: f });
       threadFindings.push(f);
       return;
     }
+    const matched = placements.get(f)?.threadId;
     if (matched) {
       core.info(`Skipping file-level comment for "${f.title}" on ${f.file}: the open thread ${matched} already carries it`);
       leftTo.set(f, matched);
@@ -2438,16 +2467,16 @@ export async function postReview(
   };
 
   for (const f of result.findings) {
-    const matched = openThreadFor(f, existingThreads);
+    const place = placements.get(f);
     if (!isBlockingFinding(f)) {
-      const carried = carriedBy(f, matched);
-      if (carried) {
-        core.info(`Skipping "${f.title}" on ${f.file}: ${carried}`);
+      if (place) {
+        const matched = openThreadFor(f, existingThreads);
+        core.info(`Skipping "${f.title}" on ${f.file}: ${carriedBy(f, matched)}`);
         if (matched) leftTo.set(f, matched);
       } else if (isListedNote(f)) {
         notes.push(f);
       } else if (holdsApproval(f)) {
-        postThread(f, matched);
+        postThread(f);
       } else if (isPreExisting(f) || f.origin === 'earlier' || (f.origin === 'reviewed' && isNote(f.severity))) {
         // On code an earlier round reviewed, only a warning gets a thread. A security note there stays listed.
         bodyFindings.push(f);
@@ -2457,14 +2486,12 @@ export async function postReview(
       continue;
     }
 
-    const threadId = f.threadId ?? f.answeredIn?.threadId;
-    const openThread = threadId ? existingThreads.find(t => t.threadId === threadId) : undefined;
-    if (threadId && openThread && !gradedAbove(f.severity, openThread)) {
-      core.info(`Skipping "${f.title}" on ${f.file}: the thread ${threadId} already carries it`);
-      carry(f, threadId);
+    if (place?.by === 'linked') {
+      core.info(`Skipping "${f.title}" on ${f.file}: the thread ${place.threadId} already carries it`);
+      carry(f, place.threadId);
       continue;
     }
-    postThread(f, matched);
+    postThread(f);
   }
 
   const onChangedLine = (f: Finding): boolean => !!diff && f.line > 0 && isOnChangedLine(f, diff);

@@ -196,6 +196,7 @@ jest.mock('./review', () => ({
 }));
 
 jest.mock('./github', () => ({
+  earlierPlaces: jest.fn(() => new Map()),
   fetchPRDiff: jest.fn().mockResolvedValue(''),
   wasEdited: jest.fn().mockResolvedValue(false),
   fetchConfigFile: jest.fn().mockResolvedValue(null),

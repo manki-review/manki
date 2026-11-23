@@ -1550,6 +1550,7 @@ describe('runFullReview end to end', () => {
     it.each([
       ['a security suggestion', { row: 'improvement', security: true }, [], 'PRRT_2 holds less than it does'],
       ['a blocker beside a variant posted into the thread', { row: 'wrong' }, [variant], 'a finding of this round went into it'],
+      ['a blocker beside a warning the thread carries by its title', { row: 'wrong' }, [{ id: 2, title: warning.title, row: 'degraded', trigger: 'When an invoice sums very large amounts', reasoning: 'Still reachable.' }], 'a finding of this round went into it'],
     ])('leaves the warning thread open for %s', async (_label, cell, more, why) => {
       await warnFirst();
       await restateAfterPush(cell, more);
