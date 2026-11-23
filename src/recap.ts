@@ -126,6 +126,9 @@ const REOPENED_MARKER = '<!-- manki-reopened -->';
 /** Marks Manki's reply in an answered thread that the problem came back and the code there got worse. */
 const FOUND_AGAIN_MARKER = '<!-- manki-found-again -->';
 
+/** Marks Manki's reply that a finding of a later round continues the thread's finding in a thread of its own, which holds instead. */
+const RAISED_MARKER = '<!-- manki-raised -->';
+
 /**
  * Returns the grade the round records last gave each thread: the grade a partial fix left it at, or `blocker` when a
  * round carried a blocker on it. A blocker outranks a partial fix in the same round. The record posts with its review,
@@ -156,16 +159,16 @@ interface RecordedGrade { grade: FindingSeverity; peak: FindingSeverity; history
 // The outcome a Manki reply to a developer starts with. "Confirmed:" answers a fix in another PR and settles nothing.
 const REPLY_OUTCOME_RE = /^\**(?:(?:Fixed|Withdrawn|Agreed|Kept|Unverified)\.|Confirmed:)/;
 
-/** Returns Manki's latest answer to a developer in `comments`, without its markers: an outcome reply, or a found-again reply. */
+/** Returns Manki's latest answer to a developer since `sinceLastRaise`, without its markers: an outcome reply, or a found-again reply. */
 function latestAnswer(bot: BotIdentity, comments: ThreadCommentNode[]): string | undefined {
-  const answer = comments.slice(1).filter(c => isBotLogin(bot, c.author?.login) && !!c.body
+  const answer = sinceLastRaise(bot, comments).filter(c => isBotLogin(bot, c.author?.login) && !!c.body
     && (REPLY_OUTCOME_RE.test(c.body) || hasOwnMarker(c.body, FOUND_AGAIN_MARKER, COMMENT_MARKER))).pop();
   return answer?.body.split('\n\n<!--')[0].trim();
 }
 
-/** Returns the issue of Manki's latest `filedIssueReply` in `comments`, which a later answer in the thread does not replace. */
+/** Returns the issue of Manki's latest `filedIssueReply` since `sinceLastRaise`, which a later answer in the thread does not replace. */
 function filedIssue(bot: BotIdentity, comments: ThreadCommentNode[]): number | undefined {
-  return comments.slice(1).filter(c => isBotLogin(bot, c.author?.login)).map(c => filedIssueOf(c.body ?? '')).filter(n => n !== undefined).pop();
+  return sinceLastRaise(bot, comments).filter(c => isBotLogin(bot, c.author?.login)).map(c => filedIssueOf(c.body ?? '')).filter(n => n !== undefined).pop();
 }
 
 /** Returns `body` with its code blocks and inline code blanked out, since a command quoted there is text, not a command. */
@@ -212,18 +215,23 @@ function dismissRecordMarker(login: string): string {
   return `${DISMISS_RECORD_OPENER}${login} -->`;
 }
 
-/** Marks Manki's reply that a finding of a later round continues the thread's finding in a thread of its own, which holds instead. */
-const RAISED_MARKER = '<!-- manki-raised -->';
+/** Returns the replies of a thread after the last of Manki's own replies that carries `marker`, or every reply without one. */
+function repliesAfter<T extends { body?: string | null; author?: { login: string } | null }>(bot: BotIdentity, replies: readonly T[], marker: string): T[] {
+  const at = replies.reduce((last, c, i) => isBotLogin(bot, c.author?.login) && hasOwnMarker(c.body ?? '', marker, COMMENT_MARKER) ? i : last, -1);
+  return replies.slice(at + 1);
+}
 
 /**
- * Returns the comments of a thread after Manki's last reopen marker or `RAISED_MARKER`. Either ends every settlement
- * before it: a reopen opens the thread again, and a raise moves its finding to another thread.
+ * Returns the replies of a thread after Manki's last `RAISED_MARKER` reply. A raise moves the thread's finding to another
+ * thread, so no answer, settlement or record of Manki's before it speaks for this thread any more.
  */
+function sinceLastRaise<T extends { body?: string | null; author?: { login: string } | null }>(bot: BotIdentity, comments: readonly T[]): T[] {
+  return repliesAfter(bot, comments.slice(1), RAISED_MARKER);
+}
+
+/** Returns the replies of a thread after Manki's last reopen marker, within `sinceLastRaise`. A reopen ends every settlement before it. */
 function sinceLastReopen<T extends { body?: string | null; author?: { login: string } | null }>(bot: BotIdentity, comments: readonly T[]): T[] {
-  const replies = comments.slice(1);
-  const ends = (body: string) => hasOwnMarker(body, REOPENED_MARKER, COMMENT_MARKER) || hasOwnMarker(body, RAISED_MARKER, COMMENT_MARKER);
-  const reopened = replies.reduce((at, c, i) => isBotLogin(bot, c.author?.login) && ends(c.body ?? '') ? i : at, -1);
-  return replies.slice(reopened + 1);
+  return repliesAfter(bot, sinceLastRaise(bot, comments), REOPENED_MARKER);
 }
 
 const CLEAR_RECORD_OPENER = '<!-- manki-cleared-for:';

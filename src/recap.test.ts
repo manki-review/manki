@@ -1522,6 +1522,16 @@ describe('fetchRecapState', () => {
         const read = await fetchRecapState(withWriter(mockOctokit([answeredWith('T_BOT', files.bot, replies, people)], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }])), TEST_BOT, 'owner', 'repo', 1, 'author');
         expect([why, read.previousFindings.map(f => [f.status, f.decidedWithoutFix ?? false])]).toEqual([why, [['auto-resolved', without]]]);
       }
+      // A raise ends every answer before it too, so no repeat goes back to the thread as answered there, and no filed issue is listed from it.
+      const filed = '**Agreed.** Filed as #12 for later work.\n\n<!-- manki -->\n<!-- manki-tracked -->';
+      const raisedReply = `Raised to a blocker, continued in [this thread](https://github.com/o/r/pull/1#discussion_T2).\n\n<!-- manki -->\n${RAISED_MARKER}`;
+      for (const [why, replies, kept] of [
+        ['not raised', [filed, answer('Withdrawn')], ['**Withdrawn.** The caller checks it.', 12]],
+        ['raised', [filed, answer('Withdrawn'), raisedReply], [undefined, undefined]],
+      ] as Array<[string, string[], [string | undefined, number | undefined]]>) {
+        const read = await fetchRecapState(withWriter(mockOctokit([answeredWith('T_BOT', files.bot, replies)], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }])), TEST_BOT, 'owner', 'repo', 1, 'author');
+        expect([why, read.previousFindings.map(f => [f.answer, f.filedIssue])]).toEqual([why, [kept]]);
+      }
       // A dismiss command after Manki's answer cancels nothing, whoever sent it.
       const dismissedLater = answeredWith('T_BOT', files.bot, [answer('Withdrawn')]);
       dismissedLater.comments.nodes.push({ body: '@manki dismiss', author: { login: 'mallory' } });
