@@ -226,7 +226,7 @@ jest.mock('./github', () => ({
   updateProgressDashboard: jest.fn().mockResolvedValue(undefined),
   startLiveEdits: jest.requireActual('./github').startLiveEdits,
   LIVE_EDIT_MS: jest.requireActual('./github').LIVE_EDIT_MS,
-  dismissPreviousReviews: jest.fn().mockResolvedValue(0),
+  dismissPreviousReviews: jest.fn().mockResolvedValue({ dismissed: 0, failed: false }),
   postReview: jest.fn().mockResolvedValue({ id: 123, approvalHeld: false, warningsHeld: false }),
   formatFoundAgainReply: jest.fn().mockReturnValue('Found again.'),
   formatVariantReply: jest.fn().mockReturnValue('Another instance.'),
@@ -2434,7 +2434,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(ghUtils.fetchRepoContext).mockResolvedValue({ text: '', files: [] });
     jest.mocked(ghUtils.fetchFileContents).mockResolvedValue(new Map());
     jest.mocked(ghUtils.fetchLinkedIssues).mockResolvedValue([]);
-    jest.mocked(ghUtils.dismissPreviousReviews).mockResolvedValue(0);
+    jest.mocked(ghUtils.dismissPreviousReviews).mockResolvedValue({ dismissed: 0, failed: false });
     jest.mocked(ghUtils.updateProgressComment).mockResolvedValue(undefined);
     jest.mocked(ghUtils.updateProgressDashboard).mockResolvedValue(undefined);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -3215,7 +3215,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [file], excluded: [] });
     const warmupCLI = jest.fn().mockResolvedValue(undefined);
     jest.mocked(createLLMClient).mockImplementation(() => ({ sendMessage: jest.fn(), warmupCLI }));
-    if (notice) jest.mocked(ghUtils.dismissPreviousReviews).mockResolvedValueOnce(1);
+    if (notice) jest.mocked(ghUtils.dismissPreviousReviews).mockResolvedValueOnce({ dismissed: 1, failed: false });
 
     await runFullReview(baseArgs.owner, baseArgs.repo, baseArgs.prNumber, baseArgs.commitSha, baseArgs.baseRef, baseArgs.prContext, { forceReview });
 
@@ -3247,11 +3247,12 @@ describe('runFullReview orchestration', () => {
       { id: 71, body: '**Too big for automatic review** ...\n- `src/a.ts`: - [x] Review again is not offered\n\n<!-- manki -->\n<!-- manki-too-big -->', user: { login: 'manki-review[bot]' }, updated_at: '2026-11-07T10:00:00Z' },
       { id: 70, body: '**Too big for automatic review** ...\n\n<!-- manki -->\n<!-- manki-too-big -->\n\n---\nNot reviewed yet · head `abc123` · too big for automatic review\n- [x] Review again <!-- manki-box:again -->\n<!-- manki-settings -->', user: { login: 'manki-review[bot]' }, updated_at: '2026-11-07T09:00:00Z' },
     ] as Awaited<ReturnType<typeof ghUtils.fetchPRComments>>);
+    jest.mocked(ghUtils.dismissPreviousReviews).mockResolvedValueOnce({ dismissed: 1, failed: true });
 
     await callRunFullReview();
 
     expect(mockOctokitInstance.rest.issues.updateComment).toHaveBeenCalledWith(expect.objectContaining({ comment_id: 71, body: expect.stringContaining('9000 reviewable lines') }));
-    // With no approval to dismiss, the coordinator's record stays as it is.
+    // A dismissal that failed beside one that worked leaves an approval standing, so the coordinator's record stays.
     expect(authModule.reportPrState).not.toHaveBeenCalledWith('test-owner', 'test-repo', 42, { approval: null });
     expect(jest.mocked(mockOctokitInstance.rest.issues.createComment).mock.calls.filter(([c]) => (c as { body: string }).body.includes('**Too big'))).toEqual([]);
     jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([]);
@@ -3328,10 +3329,11 @@ describe('runFullReview orchestration', () => {
   });
 
   it.each([
-    ['a lockfile', { path: 'yarn.lock', changeType: 'modified' as const, hunks: [] }, '*.lock', []],
-    ['a committed `dist/` build', { path: 'dist/index.js', changeType: 'modified' as const, hunks: [] }, 'dist/**', []],
-    ['a binary', undefined, undefined, [{ path: 'gradle/wrapper/gradle-wrapper.jar', header: '' }]],
-  ])('never approves a PR that changes only %s, and runs the analyzers on it first', async (_label, file, matchedPattern, binarySkipped) => {
+    ['a lockfile', { path: 'yarn.lock', changeType: 'modified' as const, hunks: [] }, '*.lock', [], false],
+    ['a committed `dist/` build', { path: 'dist/index.js', changeType: 'modified' as const, hunks: [] }, 'dist/**', [], false],
+    // One approval GitHub refused to dismiss still stands, so the coordinator keeps its record.
+    ['a binary', undefined, undefined, [{ path: 'gradle/wrapper/gradle-wrapper.jar', header: '' }], true],
+  ])('never approves a PR that changes only %s, and runs the analyzers on it first', async (_label, file, matchedPattern, binarySkipped, refused) => {
     const signal = { tool: 'osv-scanner', ruleId: 'GHSA-1234', severity: 'error' as const, file: 'yarn.lock', line: 12, message: 'left-pad 1.0.0 is vulnerable', source: 'dependencies' as const };
     jest.mocked(staticSignalsModule.collectStaticSignals).mockResolvedValueOnce({ signals: file?.path === 'yarn.lock' ? [signal] : [] });
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: file ? [file] : [], totalAdditions: 10, totalDeletions: 5, binarySkipped });
@@ -3343,7 +3345,7 @@ describe('runFullReview orchestration', () => {
     // The failed run of the same head keeps its report, since this round posts no verdict.
     const failed = { id: 31, body: '🔴 **Review failed** boom\n\n<!-- manki -->\n\n---\nNot reviewed yet · head `abc123` · review failed\n- [ ] Review again <!-- manki-box:again -->\n<!-- manki-settings -->', user: { login: 'manki-review[bot]' }, updated_at: '2026-11-18T09:00:00Z' };
     jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([failed]);
-    jest.mocked(ghUtils.dismissPreviousReviews).mockResolvedValueOnce(1);
+    jest.mocked(ghUtils.dismissPreviousReviews).mockResolvedValueOnce({ dismissed: 1, failed: refused });
 
     try {
       await callRunFullReview();
@@ -3364,7 +3366,8 @@ describe('runFullReview orchestration', () => {
     const { diff: analyzed, fullDiff: changed } = jest.mocked(staticSignalsModule.collectStaticSignals).mock.calls[0][1];
     expect([analyzed, changed]).toEqual([expect.objectContaining({ files: file ? [file] : [], binarySkipped }), analyzed]);
     expect(jest.mocked(ghUtils.dismissPreviousReviews).mock.calls).toEqual([[expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42, 123, 'APPROVED']]);
-    expect(authModule.reportPrState).toHaveBeenCalledWith('test-owner', 'test-repo', 42, { approval: null });
+    if (refused) expect(authModule.reportPrState).not.toHaveBeenCalledWith('test-owner', 'test-repo', 42, { approval: null });
+    else expect(authModule.reportPrState).toHaveBeenCalledWith('test-owner', 'test-repo', 42, { approval: null });
     expect(mockChecksUpdate).toHaveBeenCalledWith(expect.objectContaining({ conclusion: 'action_required', output: expect.objectContaining({ title: 'Not reviewed' }) }));
     expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)![4].totalDurationMs).toEqual(expect.any(Number));
     // Metadata is what makes the progress comment read as complete rather than failed.

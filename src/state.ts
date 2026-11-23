@@ -133,9 +133,9 @@ function lastRaised(rounds: RoundContext[]): Map<string, number> {
 /**
  * Fetch all review threads `bot` started on a PR using GraphQL.
  * Returns threads with their resolution state and severity. `pending` is a round not posted yet, whose grades count too.
- * Without every round record each thread counts as blocking. `failIncomplete` asks for an error instead when a thread
- * could then still hold an approval. Any thread that is no pre-existing defect could, since a resolved one holds too
- * unless the records or a person with the role clear it.
+ * Without every round record each thread counts as blocking. `failIncomplete` asks for an error instead. With `holding`
+ * it errs only when a thread could then still hold an approval. Any thread that is no pre-existing defect could, since a
+ * resolved one holds too unless the records or a person with the role clear it. With `any` it errs whenever a thread is there.
  */
 async function fetchBotReviewThreads(
   octokit: Octokit,
@@ -144,7 +144,7 @@ async function fetchBotReviewThreads(
   repo: string,
   prNumber: number,
   pending?: RoundContext,
-  failIncomplete = false,
+  failIncomplete: false | 'holding' | 'any' = false,
 ): Promise<ReviewThread[]> {
   const threads = await fetchReviewThreadNodes<{
     id: string;
@@ -197,7 +197,7 @@ async function fetchBotReviewThreads(
   // The round records hold each thread's grade, which also decides who may clear a resolved thread.
   const records: Awaited<ReturnType<typeof fetchPriorRoundContexts>> = botThreads.length > 0 ? await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber) : { priorRounds: [] };
   const mayHold = (thread: typeof botThreads[number]): boolean => !parseFindingData(thread.comments.nodes[0]?.body ?? '')?.tags?.includes(PRE_EXISTING_TAG);
-  if (failIncomplete && 'priorRoundsIncomplete' in records && botThreads.some(mayHold)) throw new Error('Not every round record could be read, so the grades of the threads are unknown');
+  if (failIncomplete && 'priorRoundsIncomplete' in records && botThreads.some(t => failIncomplete === 'any' || mayHold(t))) throw new Error('Not every round record could be read, so the grades of the threads are unknown');
   const rounds = pending ? [...records.priorRounds, pending] : records.priorRounds;
   const grades = recordedThreadGrades(rounds);
   const raised = lastRaised(rounds);
@@ -490,7 +490,7 @@ async function fetchHeldWarnings(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number,
   prAuthorLogin: string | undefined, clearRole: AuthorClearRole | undefined, pending?: RoundContext, blocking = false,
 ): Promise<ReviewThread[]> {
-  const threads = await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber, pending, true);
+  const threads = await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber, pending, 'holding');
   const prAuthorRole = await overrideRole(octokit, owner, repo, threads, prAuthorLogin, clearRole);
   const warnings = await heldWarnings(octokit, owner, repo, threads, bot, prAuthorLogin, prAuthorRole, clearRole);
   return blocking ? [...new Set([...unclearedThreads(threads, bot, prAuthorLogin, prAuthorRole), ...warnings])] : warnings;
@@ -956,34 +956,45 @@ type ApprovalCheck = { approved: true; standing?: true } | { approved: false; wh
 
 // A dismissed approval no longer covers the head, so resolving the threads alone approves nothing.
 const WITHDRAWN_LINE = `A blocking thread is not cleared, so Manki withdrew its approval. ${NEXT_ROUND_LINE}`;
+const NOT_WITHDRAWN_LINE = `A blocking thread is not cleared, but Manki could not dismiss every approval it gave, so this check fails instead. ${NEXT_ROUND_LINE}`;
+const STILL_BLOCKED_LINE = `A blocking thread is not cleared, so this check no longer passes. ${NEXT_ROUND_LINE}`;
 
 /**
- * Dismisses Manki's approvals while a blocking thread is not cleared, as after a reopen. It then clears the approval
- * the coordinator recorded and fails the `Manki` check on the head, so a required check no longer passes. It never approves, so it also runs where `auto_approve` is
- * off and only a review round approves. Without every round record each thread counts as blocking, which proves no
- * blocker, so it then dismisses nothing.
+ * Dismisses Manki's approvals while a blocking thread is not cleared, as after a reopen. It then fails the `Manki` check
+ * on the head, so a required check no longer passes, and tries a failed check write once more. With no dismissal tried,
+ * it fails the check only when the newest one passed. Only when it dismissed one and no dismissal failed does it also
+ * clear the approval the coordinator recorded. It never approves, so it also runs where `auto_approve` is off and only
+ * a review round approves. Without every round record each thread counts as blocking, which proves no blocker, so it then
+ * dismisses nothing.
  */
 async function withdrawBlockedApproval(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, prAuthorLogin: string | undefined, clearRole: AuthorClearRole | undefined,
 ): Promise<void> {
   let threads: ReviewThread[];
   try {
-    threads = await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber, undefined, true);
+    threads = await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber, undefined, 'any');
   } catch (error) {
     core.warning(`Could not read the grades of every review thread, so no approval is withdrawn: ${error instanceof Error ? error.message : error}`);
     return;
   }
   const prAuthorRole = await overrideRole(octokit, owner, repo, threads, prAuthorLogin, clearRole);
   if (unclearedThreads(threads, bot, prAuthorLogin, prAuthorRole).length === 0) return;
-  if (await dismissPreviousReviews(octokit, bot, owner, repo, prNumber, undefined, 'APPROVED') === 0) return;
-  await reportPrState(owner, repo, prNumber, { approval: null });
-  try {
-    const { data: pr } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
-    await reportCheck(octokit, owner, repo, pr.head.sha, outcomeReport('ADDRESS_FIRST', WITHDRAWN_LINE));
-  } catch (error) {
-    assertWritesAllowed();
-    core.warning(`Withdrew Manki's approval, but could not read the head to fail its check: ${error instanceof Error ? error.message : error}`);
+  const { dismissed, failed } = await dismissPreviousReviews(octokit, bot, owner, repo, prNumber, undefined, 'APPROVED');
+  // An approval whose dismissal failed still stands, so the coordinator's record of it stays. The check fails anyway.
+  if (dismissed > 0 && !failed) await reportPrState(owner, repo, prNumber, { approval: null });
+  const line = failed ? NOT_WITHDRAWN_LINE : dismissed > 0 ? WITHDRAWN_LINE : STILL_BLOCKED_LINE;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const { data: pr } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
+      // With no dismissal tried, only a check that still passes needs to fail.
+      if (line === STILL_BLOCKED_LINE && !await newestCheckPassed(octokit, bot, owner, repo, pr.head.sha)) return;
+      if (await reportCheck(octokit, owner, repo, pr.head.sha, outcomeReport('ADDRESS_FIRST', line))) return;
+    } catch (error) {
+      assertWritesAllowed();
+      core.warning(`A blocking thread is not cleared, but Manki could not read the head to fail its check: ${error instanceof Error ? error.message : error}`);
+    }
   }
+  core.warning('A blocking thread is not cleared, but Manki could not fail its check, so a required check may pass until the next review round');
 }
 
 /** Post an approval review if all findings are resolved. */

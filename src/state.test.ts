@@ -20,7 +20,7 @@ jest.mock('./auth', () => ({
 
 jest.mock('./github', () => ({
   ...jest.requireActual('./github'),
-  dismissPreviousReviews: jest.fn().mockResolvedValue(0),
+  dismissPreviousReviews: jest.fn().mockResolvedValue({ dismissed: 0, failed: false }),
   postAutoApproveProgressComment: jest.fn().mockResolvedValue(12345),
   deleteAutoApproveProgressComment: jest.fn().mockResolvedValue(undefined),
   markProgressCommentFailed: jest.fn().mockResolvedValue(undefined),
@@ -1091,7 +1091,7 @@ describe('checkAndAutoApprove', () => {
       })}`;
       const approvals = [roundBody(roundThatPosted(HEAD, [])), autoApproval];
       for (const body of approvals) {
-        let checkRuns = { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) };
+        let checkRuns: { create: jest.Mock; update: jest.Mock; listForRef?: jest.Mock } = { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) };
         const setup = (threads: ReturnType<typeof thread>[]): Octokit => makeMockOctokit({ threads, prHeadSha: HEAD, mergeable: true, checks: checkRuns, existingReviews: [{ id: 7, body, state: 'APPROVED', commit_id: HEAD, user }] });
         // The check that runs after a reopen, with `auto_approve` on, and the one that runs with it off.
         const checks = [
@@ -1102,7 +1102,7 @@ describe('checkAndAutoApprove', () => {
           dismissPreviousReviews.mockClear();
           jest.mocked(authModule.reportPrState).mockClear();
           checkRuns = { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) };
-          dismissPreviousReviews.mockResolvedValueOnce(1);
+          dismissPreviousReviews.mockResolvedValueOnce({ dismissed: 1, failed: false });
           await check([thread('t1', 'blocker')]);
           expect(dismissPreviousReviews.mock.calls).toEqual([[expect.anything(), TEST_BOT, 'owner', 'repo', 1, undefined, 'APPROVED']]);
           // The coordinator no longer records the approval.
@@ -1111,33 +1111,68 @@ describe('checkAndAutoApprove', () => {
           expect(checkRuns.create.mock.calls).toEqual([[expect.objectContaining({
             name: 'Manki', head_sha: HEAD, status: 'completed', conclusion: 'failure', output: expect.objectContaining({ title: 'Changes requested', summary: expect.stringMatching(/^A blocking thread is not cleared, so Manki withdrew its approval\. The next review round decides\./) }),
           })]]);
-          // A dismissal GitHub refused, as under a ruleset, leaves the approval, its check and the coordinator's record as they are.
+          // A dismissal GitHub refused, as under a ruleset, leaves that approval and the coordinator's record of it. The check
+          // still fails, also when no dismissal worked.
           checkRuns = { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) };
           jest.mocked(authModule.reportPrState).mockClear();
+          dismissPreviousReviews.mockResolvedValueOnce({ dismissed: 1, failed: true });
           await check([thread('t1', 'blocker')]);
-          expect(checkRuns.create).not.toHaveBeenCalled();
+          expect(checkRuns.create.mock.calls).toEqual([[expect.objectContaining({
+            conclusion: 'failure', output: expect.objectContaining({ summary: expect.stringMatching(/^A blocking thread is not cleared, but Manki could not dismiss every approval it gave, so this check fails instead\./) }),
+          })]]);
+          expect(authModule.reportPrState).not.toHaveBeenCalled();
+          checkRuns = { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) };
+          dismissPreviousReviews.mockResolvedValueOnce({ dismissed: 0, failed: true });
+          await check([thread('t1', 'blocker')]);
+          expect(checkRuns.create.mock.calls).toEqual([[expect.objectContaining({ conclusion: 'failure' })]]);
           expect(authModule.reportPrState).not.toHaveBeenCalled();
           // A blocking thread someone allowed to clear it resolved, and an open warning thread, leave the approval to stand.
           dismissPreviousReviews.mockClear();
           await check([fixed('t1'), thread('t2', 'warning', undefined, { title: 'Retry never stops' })]);
           expect(dismissPreviousReviews).not.toHaveBeenCalled();
         }
-        // Without the round records every thread counts as blocking, which proves no blocker, so an open warning thread withdraws nothing.
+        // Without the round records every thread counts as blocking, which proves no blocker, so an open warning thread
+        // withdraws nothing, and neither does a thread of a pre-existing defect, which can hold no approval.
         jest.spyOn(core, 'warning').mockImplementation(() => {});
-        const unread = setup([thread('t2', 'warning', undefined, { title: 'Retry never stops' })]);
-        jest.mocked(unread.paginate).mockRejectedValueOnce(new Error('rate limited'));
-        await withdrawBlockedApproval(unread, TEST_BOT, 'owner', 'repo', 1, 'author', undefined);
-        expect(dismissPreviousReviews).not.toHaveBeenCalled();
-        // A head that cannot be read still leaves the approval withdrawn and the coordinator told, and only the check is skipped.
+        const preExisting = makeGraphqlFetchThreadNode({ id: 'pe', body: formatFindingComment({ severity: 'blocker', title: 'Old race', file: 'src/a.ts', line: 3, description: 'd', reviewers: [], tags: ['pre-existing'] }, TEST_LINKS) });
+        for (const threads of [[thread('t2', 'warning', undefined, { title: 'Retry never stops' })], [preExisting]]) {
+          const unread = setup(threads);
+          jest.mocked(unread.paginate).mockRejectedValueOnce(new Error('rate limited'));
+          await withdrawBlockedApproval(unread, TEST_BOT, 'owner', 'repo', 1, 'author', undefined);
+          expect(dismissPreviousReviews).not.toHaveBeenCalled();
+        }
+        // A head that cannot be read still leaves the approval withdrawn and the coordinator told, and only the check is
+        // skipped after a second try.
         checkRuns = { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) };
         jest.mocked(authModule.reportPrState).mockClear();
         const headless = setup([thread('t1', 'blocker')]);
         jest.mocked(headless.rest.pulls.get).mockRejectedValue(new Error('Not Found'));
-        dismissPreviousReviews.mockResolvedValueOnce(1);
+        dismissPreviousReviews.mockResolvedValueOnce({ dismissed: 1, failed: false });
         await withdrawBlockedApproval(headless, TEST_BOT, 'owner', 'repo', 1, 'author', undefined);
         expect(jest.mocked(authModule.reportPrState).mock.calls).toEqual([['owner', 'repo', 1, { approval: null }]]);
+        expect(headless.rest.pulls.get).toHaveBeenCalledTimes(2);
         expect(checkRuns.create).not.toHaveBeenCalled();
-        expect(core.warning).toHaveBeenLastCalledWith('Withdrew Manki\'s approval, but could not read the head to fail its check: Not Found');
+        expect(core.warning).toHaveBeenCalledWith('A blocking thread is not cleared, but Manki could not read the head to fail its check: Not Found');
+        expect(core.warning).toHaveBeenLastCalledWith('A blocking thread is not cleared, but Manki could not fail its check, so a required check may pass until the next review round');
+        // A check write that fails once is tried again, so the check still fails.
+        checkRuns = { create: jest.fn().mockRejectedValueOnce(new Error('Bad Gateway')).mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) };
+        dismissPreviousReviews.mockResolvedValueOnce({ dismissed: 1, failed: false });
+        await withdrawBlockedApproval(setup([thread('t1', 'blocker')]), TEST_BOT, 'owner', 'repo', 1, 'author', undefined);
+        expect(checkRuns.create.mock.calls.map(([c]) => c.conclusion)).toEqual(['failure', 'failure']);
+        // With no approval left to dismiss, as after a person dismissed it by hand, a check that still passes fails. One that
+        // does not pass, and checks that cannot be read, get no write.
+        const checkRun = (conclusion: string) => ({ id: 9, status: 'completed', conclusion, app: { slug: 'manki-review' } });
+        for (const [runs, fails] of [[[checkRun('success')], true], [[checkRun('failure')], false], [null, false]] as const) {
+          const listForRef = runs ? jest.fn().mockResolvedValue({ data: runs }) : jest.fn().mockRejectedValue(new Error('Forbidden'));
+          checkRuns = { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}), listForRef };
+          jest.mocked(authModule.reportPrState).mockClear();
+          await withdrawBlockedApproval(setup([thread('t1', 'blocker')]), TEST_BOT, 'owner', 'repo', 1, 'author', undefined);
+          expect(listForRef).toHaveBeenCalledWith(expect.objectContaining({ ref: HEAD, check_name: 'Manki' }));
+          expect(checkRuns.create.mock.calls).toEqual(fails ? [[expect.objectContaining({
+            head_sha: HEAD, conclusion: 'failure', output: expect.objectContaining({ summary: expect.stringMatching(/^A blocking thread is not cleared, so this check no longer passes\./) }),
+          })]] : []);
+          expect(authModule.reportPrState).not.toHaveBeenCalled();
+        }
       }
     });
   });
