@@ -1526,6 +1526,16 @@ describe('fetchRecapState', () => {
         }));
         expect(await placesOf([unsure])).toEqual([undefined]);
       }
+      // So does an answer that left a statement of the reply unchecked or dropped.
+      for (const left of [{ uncheckedStatements: 1 }, { droppedStatements: 1 }]) {
+        const partial = answer('Agreed').replace(formatReplyRecord({
+          kind: 'thread-reply', prNumber: 1, timestamp: '2026-11-18T10:00:00Z', mankiVersion: '7.7.0', usage: {}, decision: { outcome: 'Agreed', thread: 'resolves' },
+        }), formatReplyRecord({
+          kind: 'thread-reply', prNumber: 1, timestamp: '2026-11-18T10:00:00Z', mankiVersion: '7.7.0', usage: {}, decision: { outcome: 'Agreed', thread: 'resolves' },
+          statements: [{ status: 'confirmed', places: ['src/a.ts:40-42'] }], ...left,
+        }));
+        expect(await placesOf([partial])).toEqual([undefined]);
+      }
       expect(await placesOf([answer('Agreed')])).toEqual([undefined]);
       expect(await placesOf([`Finding dismissed by \`@alice\`, who has write access to this repository.\n\n<!-- manki -->\n${dismissRecordMarker('alice')}`], dismissed)).toEqual([undefined]);
       // A warning a writer dismissed carries Manki's record too, so a later round's repeat of it is dropped as waived.

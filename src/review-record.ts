@@ -78,11 +78,14 @@ export function settledReplyId(body: string): number | undefined {
 /**
  * Returns the lines of the PR that the settling answer in `body` cited for the statements it checked, each as
  * `path:line` or `path:start-end`, and leaves out a related repo's line. It returns nothing when the answer checked no
- * statement, or when one of its statements cites no line of the PR, such as one that rests on a search or on the PR
- * description, since a push anywhere can change what that statement rests on.
+ * statement, when it left a statement of the reply unchecked or dropped, or when one of its statements cites no line
+ * of the PR, such as one that rests on a search or on the PR description, since a push anywhere can change what that
+ * statement rests on.
  */
 export function settlingPlaces(body: string): string[] | undefined {
-  const own = (settlingRecord(body)?.statements ?? []).map(s => (s.places ?? []).filter(at => at.split(':').length === 2));
+  const record = settlingRecord(body);
+  if (record?.uncheckedStatements || record?.droppedStatements) return undefined;
+  const own = (record?.statements ?? []).map(s => (s.places ?? []).filter(at => at.split(':').length === 2));
   return own.length > 0 && own.every(places => places.length > 0) ? own.flat() : undefined;
 }
 
