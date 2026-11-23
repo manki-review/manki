@@ -656,6 +656,10 @@ describe('formatFindingComment', () => {
       expect(onMain(one)).toContain(`**${baseFinding.title}**\n\n${older}\n\n`);
       expect(onMain(one)).not.toContain('Already broken');
     }
+    // Several base lines in one file name the file once and link each line, and a line of another file keeps its own link.
+    const lineAt = (line: number) => links.linkAt!('base')('src/main.ts', line);
+    const spread = answering(blocking, { ...same('first-model'), base: ['src/main.ts:40', 'src/main.ts:52-54', 'src/main.ts:60', 'src/queue.ts:7'] });
+    expect(onMain(spread)).toContain(`at \`src/main.ts\` lines [40](${lineAt(40)}), [52-54](${links.linkAt!('base')('src/main.ts', 52, 54)}), and [60](${lineAt(60)}), and [\`src/queue.ts:7\`](${links.linkAt!('base')('src/queue.ts', 7)}). If that`);
     // A pre-existing security blocker on code the PR did not touch still blocks. Both checks say it was already broken,
     // and that a maintainer decides, never that it does not block, and the summary agrees.
     const stillBlocking = onMain({ ...confirmedBefore, severity: 'blocker', tags: ['pre-existing', 'security'] });
@@ -682,11 +686,11 @@ describe('formatFindingComment', () => {
     };
     const disproved = render(disprovedFinding);
     expect(render({ ...disprovedFinding, evidence: { checks: ['src/util.ts:3 marks it intended'], proof: [] } })).toContain('<summary>How this was checked: 1 place read, doubt found</summary>');
-    expect(disproved).toContain(`**Doubt found:** Manki found a reason this may not happen. That doubt alone does not remove the finding, so please check it yourself. A comment says it is intended. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}), [\`Makefile:7\`](${link('Makefile', 7)}).`);
+    expect(disproved).toContain(`**Doubt found:** Manki found a reason this may not happen. That doubt alone does not remove the finding, so please check it yourself. A comment says it is intended. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}) and [\`Makefile:7\`](${link('Makefile', 7)}).`);
     // An answer that the defect does not exist reads the same and links the same lines, whatever the premises of its check add up to.
     for (const outcome of ['unsettled', 'confirmed'] as const) {
       const noDefect: Finding = { ...disprovedFinding, refutation: { ...disprovedFinding.refutation!, outcome, defect: 'disproved', premises: [{ premise: 'A caller passes it', outcome, reason: 'r' }] } };
-      expect(render(noDefect)).toContain(`so please check it yourself. A comment says it is intended. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}), [\`Makefile:7\`](${link('Makefile', 7)}).`);
+      expect(render(noDefect)).toContain(`so please check it yourself. A comment says it is intended. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}) and [\`Makefile:7\`](${link('Makefile', 7)}).`);
       expect(render(noDefect)).toContain('**Doubt found:** Manki found a reason this may not happen');
     }
     // With `review.rules: warn` or `block`, a warning that breaks a confirmed rule outlives a disproof, and says why it stays.
@@ -6495,7 +6499,7 @@ describe('postReview non-blocking findings', () => {
     expect(advisory.body).toContain([
       '**Scope:** a judgment of the PR as a whole, not a defect in its code. It never holds the approval.',
       '',
-      '**Is this change useful?** Nothing calls the new `parseDate`, and `utils/dates.ts` already exports one. See [`src/a.ts:3`](https://github.com/owner/repo/blob/sha/src/a.ts#L3), [`src/a.ts:7-9`](https://github.com/owner/repo/blob/sha/src/a.ts#L7-L9).',
+      '**Is this change useful?** Nothing calls the new `parseDate`, and `utils/dates.ts` already exports one. See `src/a.ts` lines [3](https://github.com/owner/repo/blob/sha/src/a.ts#L3) and [7-9](https://github.com/owner/repo/blob/sha/src/a.ts#L7-L9).',
       '',
       '**Split into 2 PRs?** The change covers topics that each make sense on their own:',
       '',
@@ -6754,7 +6758,7 @@ describe('postReview non-blocking findings', () => {
     for (const evidence of ['src/a.ts:30', 'Checked in the code', 'How this was checked', 'Double-checked', 'related repository', 'src/a.ts#L18-L22']) expect(fold).not.toContain(evidence);
     // Its thread, as on a finding that holds the approval, keeps every base line and the checks.
     const thread = formatFindingComment(old, TEST_LINKS);
-    expect(thread).toContain('src/a.ts:30');
+    expect(thread).toMatch(/`src\/a\.ts` lines \[18\]\([^)]+\), \[30\]\([^)]+\), and \[40\]\([^)]+\)/);
     expect(thread).toContain('Double-checked');
   });
 });
