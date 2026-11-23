@@ -6369,6 +6369,10 @@ describe('postReview non-blocking findings', () => {
     const shared = buildResult(rows.map(f => (f.title === 'Test the empty list' ? { ...f, soleFinder: true } : f)));
     capNotes(shared, [], 4);
     expect(titles(shared.findings)).toEqual(['Document the limit', 'Reuse the parser', 'Test the empty list', 'Rename the flag']);
+    // A note the other finder's vote lowered from a warning comes first and stays, also past a limit of none.
+    const voted = buildResult(rows.map(f => (f.title === 'Rename the flag' ? { ...f, gradePath: [{ from: 'warning' as const, to: 'note' as const, by: 'other_finder' as const }] } : f)));
+    capNotes(voted, [], 0);
+    expect([titles(voted.findings), voted.unposted?.length]).toEqual([['Rename the flag'], 4]);
     // With fewer improvement notes than places, the style notes fill the rest in the judge's order.
     const styleFills = buildResult([...rows]);
     capNotes(styleFills, [], 4);

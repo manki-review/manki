@@ -15,7 +15,7 @@ import { parseProof, sameProblem, titlesMatch, truncateDiff } from './review';
 import { stringifyFindingFingerprint } from './finding-fingerprint';
 import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation, MAX_QUOTED_RANGE } from './static-signals';
 import { wrapUpNoted } from './tool-steps';
-import { DISPROVED_TAG, agreedOutcome, asAnswered, cellGrade, DiffFile, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, CheckProgress, CheckStatus, confirmsAll, confirmsCodePath, confirmsDefect, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isRareClaim, isSecurityFinding, isSweepName, isTriggerDoubt, leadText, OpenThread, OutsideBehavior, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, restsOnDrop, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, towardFinding, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof, wouldBlockIfTrue } from './types';
+import { DISPROVED_TAG, agreedOutcome, asAnswered, cellGrade, confirmedByCheck, DiffFile, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, CheckProgress, CheckStatus, confirmsAll, confirmsCodePath, confirmsDefect, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isRareClaim, isSecurityFinding, isSweepName, isTriggerDoubt, leadText, OpenThread, OutsideBehavior, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, restsOnDrop, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, towardFinding, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof, wouldBlockIfTrue } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -622,8 +622,8 @@ function doubtsToCheck(
  * the cited lines decide. A blocker posted as a warning for want of proof stays unproven until a check confirms it.
  */
 export function unprovenReason(finding: Finding): UnprovenReason | undefined {
+  if (confirmedByCheck(finding)) return undefined;
   const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r);
-  if (checks.some(check => confirmsDefect(asAnswered(check), finding))) return undefined;
   const lacksProof = citesNoProof(finding) || !!finding.tags?.some(tag => CHECKED_TAGS.includes(tag));
   const open = lacksProof || doubtsDefect(finding);
   if (checks.length > 0) return open ? 'unsettled_check' : undefined;

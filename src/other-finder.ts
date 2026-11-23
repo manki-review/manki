@@ -7,7 +7,7 @@ import { sanitizeForPromptEmbed } from './memory';
 import { fenceText } from './github';
 import { LLMClient, NotStartedError } from './providers';
 import { changeSection, citedChanges, locationFile, locationLines, MAX_PARALLEL_REFUTATIONS } from './refute';
-import { cellGrade, DISPROVED_TAG, Finding, FindingSeverity, gradedByRule, gradeStep, isDisprovedBlocker, isGradeCell, isSecurityFinding, OtherFinderVote, ParsedDiff, pendingGrade, RulesMode } from './types';
+import { cellGrade, confirmedByCheck, DISPROVED_TAG, Finding, FindingSeverity, gradedByRule, gradeStep, isDisprovedBlocker, isGradeCell, isSecurityFinding, OtherFinderVote, ParsedDiff, pendingGrade, RulesMode } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 
 // A safety net for a call without tools, which normally answers in well under a minute.
@@ -94,12 +94,12 @@ function holdsQuote(workspace: string, location: string, quote: string): boolean
 /**
  * Whether `finding` gets the other finder's vote. Two or more finders ran and one of them alone reported it
  * (`soleFinder`), and it is or may become a blocker or a warning. A security finding, a tool alert, a finding
- * `gradedByRule` under `rules` and one that `restates` an earlier thread get none.
+ * `gradedByRule` under `rules`, one a check `confirmedByCheck` and one that `restates` an earlier thread get none.
  */
 function getsVote(finding: Finding, restates: (finding: Finding) => boolean, rules?: RulesMode): boolean {
   const grade = pendingGrade(finding);
   const blocks = (severity: string | undefined) => severity === 'blocker' || severity === 'warning';
-  return !!finding.soleFinder && (blocks(finding.severity) || blocks(grade)) && !finding.toolSource && !isSecurityFinding(finding.tags, finding.reviewers)
+  return !!finding.soleFinder && finding.severity !== 'ignore' && (blocks(finding.severity) || blocks(grade)) && !confirmedByCheck(finding) && !finding.toolSource && !isSecurityFinding(finding.tags, finding.reviewers)
     && !gradedByRule(finding, rules) && !finding.threadId && !finding.answeredIn && finding.raisedIn === undefined && !restates(finding);
 }
 
@@ -152,15 +152,17 @@ export async function otherFinderVotes(findings: readonly Finding[], { workspace
  * Returns `finding` with its `vote`. A vote that declines lowers a blocker to a warning that `DISPROVED_TAG` guards, so
  * text in the code that steers the vote cannot also let the PR author clear it, and a warning to a note. A vote lowers a
  * finding at most one step below the grade of its cell, so a blocker cell the judge already held at a warning stays a
- * warning. A finding the refuter lowered from a blocker or that `gradedByRule` under `rules` after the vote was asked
- * keeps its grade and gets no vote.
+ * warning. A declined blocker keeps its cell as `judgeCell`, as a disproof does, so a later round does not restore it
+ * from the cell. A finding the refuter confirmed or lowered from a blocker, or that `gradedByRule` under `rules`, keeps
+ * its grade and gets no vote.
  */
 export function withVote(finding: Finding, vote: OtherFinderVote | undefined, rules?: RulesMode): Finding {
-  if (!vote || isDisprovedBlocker(finding) || finding.tags?.includes(DISPROVED_TAG) || gradedByRule(finding, rules)) return finding;
+  if (!vote || confirmedByCheck(finding) || isDisprovedBlocker(finding) || finding.tags?.includes(DISPROVED_TAG) || gradedByRule(finding, rules)) return finding;
   const voted = { ...finding, otherFinderVote: vote };
   if (!vote.declined) return voted;
   if (finding.severity === 'blocker') {
-    return { ...voted, ...gradeStep(finding, 'warning', 'other_finder', DECLINED_REASON.blocker), tags: [...(finding.tags ?? []), DISPROVED_TAG] };
+    const { cell, ...rest } = voted;
+    return { ...rest, ...gradeStep(finding, 'warning', 'other_finder', DECLINED_REASON.blocker), ...(cell && { judgeCell: cell }), tags: [...(finding.tags ?? []), DISPROVED_TAG] };
   }
   // A disproof keeps the cell it moved the finding off as `judgeCell`.
   const cell = finding.judgeCell ?? finding.cell;

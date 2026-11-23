@@ -15,7 +15,7 @@ import { issueBox, ISSUE_BOX_LABEL, messageBox, withMessageBoxes } from './issue
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import type { FixClaim, PreviousFinding } from './recap';
-import { AUTHOR_CLEAR_ROLES, REVERT_CAUGHT, AuthorClearRole, breaksRule, cellGrade, findingKey, isDisprovedBlocker, isGuardedFinding, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, overruledDisproof, gradedAbove, pendingGrade, SEVERITY_NAME, SEVERITY_ORDER, threadBlocks } from './types';
+import { AUTHOR_CLEAR_ROLES, REVERT_CAUGHT, AuthorClearRole, breaksRule, cellGrade, votedDown, findingKey, isDisprovedBlocker, isGuardedFinding, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, overruledDisproof, gradedAbove, pendingGrade, SEVERITY_NAME, SEVERITY_ORDER, threadBlocks } from './types';
 import { formatDuration, hiddenCharacters, ownMarker, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { compressReviewRecord, extractApprovalRecords, formatReviewRecord, hasOwnMarker, hasReviewRecord, smallerRecords } from './review-record';
 import { modelDisplayName } from './providers/model-registry';
@@ -2228,7 +2228,8 @@ function carriedBy(finding: Finding, matched: string | undefined): string | unde
 
 /**
  * Puts the notes of `result.findings` last and keeps the first `limit` of them. The others move to `result.unposted`,
- * marked `note_cap`. A note on a failure this PR fixes elsewhere (`fixedElsewhere`) comes first. Every note in the
+ * marked `note_cap`. A note the other finder's vote lowered from a warning (`votedDown`) comes first and is never capped.
+ * A note on a failure this PR fixes elsewhere (`fixedElsewhere`) follows. Every note in the
  * `style` row of the severity table follows every other note, so a style note takes only a slot no other note fills.
  * Within each group a `soleFinder` note follows the notes more than one finder or check reported, and then the notes keep
  * the judge's order. A note the judge did not rank follows the ranked ones, in the order returned. A tool alert is listed with the notes and counts toward no limit. A note an earlier thread carries is
@@ -2239,7 +2240,7 @@ function carriedBy(finding: Finding, matched: string | undefined): string | unde
 export function capNotes(result: ReviewResult, existingThreads: PreviousFinding[], limit = DEFAULT_NOTES): void {
   const listable = new Set(result.findings.filter(f => isListedNote(f) && !carriedBy(f, openThreadFor(f, existingThreads))));
   const caught = new Set([...listable].filter(f => f.category === 'testing' && f.revertGap === REVERT_CAUGHT && canLeaveOut(f)));
-  const group = (f: Finding): number => (f.fixedElsewhere ? -1 : f.cell?.row === 'style' ? 2 : f.category === 'testing' && !f.revertGap ? 1 : 0);
+  const group = (f: Finding): number => (votedDown(f) ? -2 : f.fixedElsewhere ? -1 : f.cell?.row === 'style' ? 2 : f.category === 'testing' && !f.revertGap ? 1 : 0);
   const rank = (f: Finding): number => f.noteRank ?? Number.MAX_SAFE_INTEGER;
   const ordered = [...listable].filter(f => !caught.has(f)).sort((a, b) => group(a) - group(b) || Number(!!a.soleFinder) - Number(!!b.soleFinder) || rank(a) - rank(b));
   const capped = new Set(ordered.filter(canLeaveOut).slice(limit));

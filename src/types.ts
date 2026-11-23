@@ -219,9 +219,17 @@ export function isSecurityFinding(tags: string[] | undefined, priorReviewers: Re
   return Boolean(tags?.includes(SECURITY_TAG)) || priorReviewers.includes(LEGACY_SECURITY_AGENT_NAME);
 }
 
-/** Whether a step that leaves out notes may leave the finding out of the review: only a note, and never a security finding or a tool alert. */
+/**
+ * Whether a step that leaves out notes may leave the finding out of the review: only a note, and never a security
+ * finding, a tool alert or a note the other finder's vote lowered from a warning (`votedDown`).
+ */
 export function canLeaveOut(f: Finding): boolean {
-  return isNote(f.severity) && !f.toolSource && !isSecurityFinding(f.tags, f.reviewers);
+  return isNote(f.severity) && !f.toolSource && !isSecurityFinding(f.tags, f.reviewers) && !votedDown(f);
+}
+
+/** Whether the other finder's vote lowered `f` to a note, which stays in the review so one vote never removes a warning. */
+export function votedDown(f: Pick<Finding, 'severity' | 'gradePath'>): boolean {
+  return isNote(f.severity) && !!f.gradePath?.some(step => step.by === 'other_finder' && step.to === 'note');
 }
 
 /**
@@ -1240,6 +1248,11 @@ function agreedOn(checks: readonly Refutation[]): RefutationOutcome {
  */
 export function confirmsDefect(check: Refutation, finding: Pick<Finding, 'doubts'>): boolean {
   return check.defect === 'confirmed' && openPremises(check, finding).length === 0;
+}
+
+/** Whether a check of `finding` `confirmsDefect` as the refuter answered it (`asAnswered`), whatever another check says. */
+export function confirmedByCheck(finding: Pick<Finding, 'refutation' | 'pairRefutation' | 'doubts'>): boolean {
+  return [finding.refutation, finding.pairRefutation].some(check => !!check && confirmsDefect(asAnswered(check), finding));
 }
 
 /** Returns the premises of `check` that leave the defect of `finding` open, as `confirmsDefect` reads them. */

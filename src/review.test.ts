@@ -4487,10 +4487,10 @@ describe('runReview', () => {
   it('asks a finder that did not report a blocker or warning one finder alone reported for its harm, and lowers it when the answer names no line the head holds', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'manki-vote-'));
     mkdirSync(join(workspace, 'src'));
-    writeFileSync(join(workspace, 'src', 'a.ts'), Array.from({ length: 14 }, (_, i) => `const line${i + 1} = ${i + 1};`).join('\n'));
+    writeFileSync(join(workspace, 'src', 'a.ts'), Array.from({ length: 15 }, (_, i) => `const line${i + 1} = ${i + 1};`).join('\n'));
     const titles = [
       'Backed blocker', 'Declined blocker', 'Declined warning', 'Misquoted warning', 'Backed warning', 'Security warning', 'Vote fails', 'Both finders found it', 'Restates a thread',
-      'Breaks a rule', 'Held blocker cell', 'Quote nearby', 'Unreadable file',
+      'Breaks a rule', 'Held blocker cell', 'Quote nearby', 'Unreadable file', 'Confirmed by a check',
     ];
     const reported = titles.map((title, i) => ({ severity: i < 2 ? 'blocker' : 'warning', title, file: 'src/a.ts', line: i + 1, description: `${title}.`, evidence: [`src/a.ts:${i + 1} shows it`], proof: [`src/a.ts:${i + 1}`] }));
     const declines = { harm: '', situation: '', line: 'none' };
@@ -4530,6 +4530,8 @@ describe('runReview', () => {
           summary: 'ok', findings: input.findings.map(f => ({
             ...f, ...(f.title !== 'Both finders found it' && { soleFinder: true }), ...(f.title === 'Security warning' && { tags: ['security'] }), ...(f.title === 'Restates a thread' && { threadId: 'T9' }),
             ...(f.title === 'Breaks a rule' && { rule }), ...(f.title === 'Held blocker cell' && { cell: { row: 'wrong' as const, column: 'normal' as const }, gradeIfConfirmed: 'blocker' as const }),
+            ...(f.title === 'Declined blocker' && { cell: { row: 'wrong' as const, column: 'normal' as const } }),
+            ...(f.title === 'Confirmed by a check' && { refutation: { outcome: 'confirmed' as const, defect: 'confirmed' as const, reason: 'It drifts.', files: ['src/a.ts'], codeDigest: 'abc' } }),
           })),
         };
       });
@@ -4538,8 +4540,8 @@ describe('runReview', () => {
     };
     try {
       const { result, asked } = await run();
-      // A security finding, one more than one finder reported, one that restates a thread and one a rule grades get no
-      // vote, and a failed call asks once more.
+      // A security finding, one more than one finder reported, one that restates a thread, one a rule grades and one a
+      // check confirmed get no vote, and a failed call asks once more.
       expect(asked.sort()).toEqual(['Backed blocker', 'Backed warning', 'Declined blocker', 'Declined warning', 'Held blocker cell', 'Misquoted warning', 'Quote nearby', 'Unreadable file', 'Vote fails', 'Vote fails']);
       const reporter = result.findings[0].reviewers[0];
       expect(result.findings.map(f => [f.title, f.severity, f.otherFinderVote?.declined, f.gradePath?.at(-1)?.reason])).toEqual([
@@ -4559,9 +4561,12 @@ describe('runReview', () => {
         ['Held blocker cell', 'warning', true, undefined],
         ['Quote nearby', 'warning', false, undefined],
         ['Unreadable file', 'warning', undefined, undefined],
+        ['Confirmed by a check', 'warning', undefined, undefined],
       ]);
       // A declined blocker's thread is guarded, so the PR author's answer alone does not clear it.
-      expect(result.findings.find(f => f.title === 'Declined blocker')?.tags).toContain(DISPROVED_TAG);
+      // Its cell moves to `judgeCell` in the record, so a later round does not restore the blocker from it.
+      const declinedBlocker = result.allJudgedFindings?.find(f => f.title === 'Declined blocker');
+      expect([declinedBlocker?.tags, declinedBlocker?.cell, declinedBlocker?.judgeCell]).toEqual([expect.arrayContaining([DISPROVED_TAG]), undefined, { row: 'wrong', column: 'normal' }]);
       // The other finder answered, never the one that reported it, and the record keeps its answer with the quoted line.
       expect(result.findings[0].otherFinderVote).toEqual({ finder: expect.not.stringMatching(reporter), harm: 'A total is wrong.', situation: 'Any export.', line: 'src/a.ts:1', quote: 'const line1 = 1;', declined: false });
       expect(result.llmCalls?.filter(c => c.stage === 'vote').length).toBe(10);

@@ -9,9 +9,12 @@ const backed: OtherFinderVote = { finder: 'Finder B', harm: 'A total is wrong.',
 
 describe('withVote', () => {
   it('lowers a declined blocker to a guarded warning and a declined warning to a note, and leaves alone a finding a refuter lowered or a rule grades', () => {
-    // A declined blocker is a warning only a fix or a maintainer clears, as one the refuters disproved.
-    const lowered = withVote(finding({ severity: 'blocker' }), declined);
+    // A declined blocker is a warning only a fix or a maintainer clears, as one the refuters disproved. Its cell moves to
+    // `judgeCell`, so a later round does not restore the blocker from it.
+    const cell = { row: 'wrong' as const, column: 'normal' as const };
+    const lowered = withVote(finding({ severity: 'blocker', cell }), declined);
     expect([lowered.severity, lowered.gradePath, lowered.otherFinderVote]).toEqual(['warning', [{ from: 'blocker', to: 'warning', by: 'other_finder', reason: 'the other finder would not block on it' }], declined]);
+    expect([lowered.cell, lowered.judgeCell]).toEqual([undefined, cell]);
     expect(isGuardedFinding(lowered.tags, lowered.reviewers)).toBe(true);
     expect(withVote(finding({ severity: 'blocker' }), backed)).toEqual(finding({ severity: 'blocker', otherFinderVote: backed }));
 
@@ -20,6 +23,9 @@ describe('withVote', () => {
     expect([note.severity, note.gradePath, note.unpostedReason]).toEqual(['note', [{ from: 'warning', to: 'note', by: 'other_finder', reason: 'the other finder named no harm in realistic use' }], undefined]);
     expect(withVote(finding({}), backed).severity).toBe('warning');
 
+    // A check with tools that confirmed the defect outweighs the vote.
+    const confirmed = finding({ refutation: { outcome: 'confirmed', defect: 'confirmed', reason: 'The total drifts.', files: ['src/a.ts'], codeDigest: 'abc' } });
+    expect(withVote(confirmed, declined)).toBe(confirmed);
     // A finding the refuter already lowered from a blocker took its step, whether its disproof guards it or not.
     const disproved = finding({ gradePath: [{ from: 'blocker', to: 'warning', by: 'refutation' }], tags: [DISPROVED_TAG] });
     expect(withVote(disproved, declined)).toBe(disproved);
