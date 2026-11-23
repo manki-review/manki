@@ -191,6 +191,7 @@ jest.mock('./review', () => ({
   ROUND_TIME_MS: jest.requireActual('./review').ROUND_TIME_MS,
   filesChangedByPush: jest.requireActual('./review').filesChangedByPush,
   carryBodyWarnings: jest.requireActual('./review').carryBodyWarnings,
+  citedPlaces: jest.requireActual('./review').citedPlaces,
   selectTeam: jest.fn().mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, model: 'claude-sonnet-5-5', effort: 'high', sentEffort: 'high', steps: 15 }], routing: { matched: ['internal'], classSource: 'triage', group: 'solo', groupSource: 'routing' }, triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false }),
 }));
 

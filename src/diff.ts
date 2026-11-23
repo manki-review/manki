@@ -741,17 +741,23 @@ function changedSincePrior(current: ParsedDiff, prior: ParsedDiff, interRound: P
 
 /**
  * Sets each finding's `origin`: `earlier` when it restates a finding an earlier round listed (`raisedIn`), whatever code
- * it sits on. Otherwise `new` when it sits within a few lines of code the PR changed since the change `prior` recorded,
- * or when it restates an earlier finding of a thread, which no earlier round missed. It is `reviewed` otherwise.
- * Without `prior`, every finding that restates none is new.
+ * it sits on. Otherwise `new` when it restates an earlier finding of a thread, which no earlier round missed, or when
+ * its line or a line it `cited` is within a few lines of code the PR changed since the change `prior` recorded. A push
+ * that changes the code a finding relies on can make an untouched line wrong. It is `reviewed` otherwise. Without
+ * `prior`, every finding that restates none is new.
  */
-export function tagFindingOrigins(findings: Finding[], diff: ParsedDiff, prior: ParsedDiff | undefined, interRound?: ParsedDiff): void {
+export function tagFindingOrigins(
+  findings: Finding[], diff: ParsedDiff, prior: ParsedDiff | undefined, interRound: ParsedDiff | undefined,
+  cited: (f: Finding) => ReadonlyArray<{ file: string; start: number; end: number }>,
+): void {
   const fresh = prior && changedSincePrior(diff, prior, interRound);
+  const nearFresh = (file: string, start: number, end: number) =>
+    (fresh?.get(file) ?? []).some(line => line >= start - NEW_CODE_WINDOW && line <= end + NEW_CODE_WINDOW);
   for (const finding of findings) {
-    const lines = fresh?.get(finding.file) ?? [];
     const restates = !!finding.sameAs || !!finding.answeredIn || (!!finding.threadId && !finding.variantOf);
     const isNew = !fresh || !finding.file || restates
-      || (finding.line > 0 ? lines.some(line => Math.abs(line - finding.line) <= NEW_CODE_WINDOW) : lines.length > 0);
+      || (finding.line > 0 ? nearFresh(finding.file, finding.line, finding.line) : fresh.has(finding.file))
+      || cited(finding).some(at => nearFresh(at.file, at.start, at.end));
     finding.origin = finding.raisedIn ? 'earlier' : isNew ? 'new' : 'reviewed';
   }
 }

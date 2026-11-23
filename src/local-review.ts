@@ -12,7 +12,7 @@ import { ApprovalHeld, brokenConfig, holdsApproval, buildRepoContext, cachedFile
 import { isParsedLockfile, LockfileDiff, lockfilesLast, MAX_LOCKFILE_BYTES, readLockfileChanges, withLockfiles } from './lockfile';
 import type { ProviderInputs } from './providers';
 import type { PreviousFinding } from './recap';
-import { carryBodyWarnings, ReviewProgress, runReview } from './review';
+import { carryBodyWarnings, citedPlaces, ReviewProgress, runReview } from './review';
 import { buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext } from './round-context';
 import { makeScratchDir } from './tool-install';
@@ -403,7 +403,7 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
     });
     if (result.reviewComplete) {
       addCodeContext(result.findings, withLockfiles(diff, lockfiles));
-      tagFindingOrigins(result.findings, withLockfiles(diff, lockfiles), followUp?.priorChange, followUp?.interRoundDiff ? parsePRDiff(followUp.interRoundDiff) : undefined);
+      tagFindingOrigins(result.findings, withLockfiles(diff, lockfiles), followUp?.priorChange, followUp?.interRoundDiff ? parsePRDiff(followUp.interRoundDiff) : undefined, citedPlaces);
       hideSeenNotes(result, followUp && withLockfiles(diff, lockfiles));
       capNotes(result, followUp?.previousFindings ?? [], config.review?.notes);
       if (followUp) await carryBodyWarnings(result, followUp.priorRounds, openRepoFiles(gitRepoFiles(repoRoot, head), config.closed_paths ?? [], true));
