@@ -532,7 +532,8 @@ async function reportReviewedCheck(target: RunTarget, prAuthorLogin: string | un
   // Only the review's own round record says that it held an approval. A request for changes that GitHub refused is a comment too.
   const record = review?.state === 'COMMENTED' ? parseContextBlocks([review], owner, repo, prNumber).rounds.at(0) : undefined;
   const heldReview = record?.meta.commitSha === commitSha && record.verdict === 'APPROVE' && !!record.approval?.held;
-  const verdict = heldReview ? 'APPROVE' : review && REVIEW_STATE_VERDICTS[review.state];
+  // A dismissed review found is a request for changes that a person dismissed, and its threads still decide the approval.
+  const verdict = heldReview ? 'APPROVE' : review && (review.state === 'DISMISSED' ? 'REQUEST_CHANGES' : REVIEW_STATE_VERDICTS[review.state]);
   if (!verdict) {
     core.info(`No review of ${shortSha} gives a verdict a check can report, leaving its check as it is`);
     return;
@@ -788,6 +789,13 @@ async function handleCommentTrigger(settingsTick = false, message?: TickedMessag
     const target: RunTarget = { octokit, bot, owner, repo, prNumber, commitSha: pr.head.sha, baseRef: pr.base.ref };
     const loaded = await loadEventConfig(octokit, owner, repo, pr.base.ref);
     await answerAlreadyReviewed(target, pr.user?.login, loaded, settings);
+    try {
+      // Threads cleared since the review, or a block a person dismissed, can leave nothing that holds the approval.
+      await runStateCheck(octokit, bot, owner, repo, prNumber, pr.user?.login, loaded);
+    } catch (error) {
+      assertWritesAllowed();
+      core.warning(`The approval check after the review command failed, so nothing was approved: ${error instanceof Error ? error.message : error}`);
+    }
     await reportReviewedCheck(target, pr.user?.login, loaded);
     return;
   }
@@ -2466,8 +2474,18 @@ async function handleReviewStateCheck(): Promise<void> {
   }
 
   const { owner, repo } = github.context.repo;
-  const prNumber = pr.number;
-  const { config, held } = await loadEventConfig(octokit, owner, repo, pr.base.ref);
+  await runStateCheck(octokit, bot, owner, repo, pr.number, pr.user?.login, await loadEventConfig(octokit, owner, repo, pr.base.ref));
+}
+
+/**
+ * Runs the approval check after a thread or review changed, with the base branch's config `loaded`. It reopens the
+ * guarded threads the PR author resolved, then approves when nothing holds, or with `auto_approve` off withdraws an
+ * approval a blocking thread no longer allows.
+ */
+async function runStateCheck(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, prAuthorLogin: string | undefined,
+  { config, held }: { config: ReviewConfig; held: boolean },
+): Promise<void> {
   // Without the config nothing says whether Manki may approve, or which role below `admin` lets the PR author clear a thread.
   if (held) {
     core.info('The base branch config could not be read or loaded — skipping the state check');
@@ -2475,12 +2493,12 @@ async function handleReviewStateCheck(): Promise<void> {
   }
 
   // A guarded thread the PR author resolved blocks with `auto_approve` off too, so it is reopened first.
-  const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, pr.user?.login, config.author_clear_role);
+  const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, prAuthorLogin, config.author_clear_role);
   await reopenAuthorResolvedThreads(octokit, recap);
 
   if (!config.auto_approve) {
     core.info('auto_approve is disabled — skipping state check');
-    await withdrawBlockedApproval(octokit, bot, owner, repo, prNumber, pr.user?.login, config.author_clear_role);
+    await withdrawBlockedApproval(octokit, bot, owner, repo, prNumber, prAuthorLogin, config.author_clear_role);
     return;
   }
 

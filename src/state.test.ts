@@ -2004,6 +2004,62 @@ describe('checkAndAutoApprove', () => {
     warnSpy.mockRestore();
   });
 
+  it('counts a request for changes on the head that a person dismissed as covering the head', async () => {
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const head = testSha('5ae');
+    const person = { login: 'maintainer', type: 'User' };
+    type Setup = { resolved?: boolean; commit?: string; heldForPerson?: boolean; timelineFails?: boolean; actor?: { login: string; type: string }; state?: string; pushed?: string; approvedAfter?: boolean; stands?: boolean; unlisted?: boolean };
+    // Round 1 requested changes on `commit` for one blocker thread, and `actor` dismissed that review, unless it `stands`.
+    // With `approvedAfter`, Manki then approved the head and a person dismissed that approval, which the timeline leaves out when `unlisted`.
+    const check = async (setup: Setup = {}) => {
+      warnSpy.mockClear();
+      const threads = [makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix --> fix', isResolved: setup.resolved ?? true })];
+      const commit = setup.commit ?? head;
+      const body = `${roundBody(roundThatPosted(commit, threads))}${setup.heldForPerson ? '\n\n<!-- manki-held-for-person -->' : ''}`;
+      const createReviewMock = jest.fn().mockResolvedValue({});
+      const octokit = makeMockOctokit({
+        threads, prHeadSha: head, createReviewFn: createReviewMock,
+        existingReviews: [
+          { id: 5, body, state: setup.stands ? 'CHANGES_REQUESTED' : 'DISMISSED', commit_id: commit, user: { login: 'manki-review[bot]', type: 'Bot' } },
+          ...setup.approvedAfter ? [{ id: 6, body: roundBody(roundThatPosted(commit, [])), state: 'DISMISSED', commit_id: commit, user: { login: 'manki-review[bot]', type: 'Bot' } }] : [],
+        ],
+      });
+      const dismissal = { actor: setup.actor ?? person, dismissed_review: { review_id: 5, state: setup.state ?? 'changes_requested', dismissal_commit_id: setup.pushed ?? null } };
+      const approvalDismissal = { actor: person, dismissed_review: { review_id: 6, state: 'approved', dismissal_commit_id: null } };
+      Object.assign(octokit.rest.issues, {
+        listEventsForTimeline: setup.timelineFails ? jest.fn().mockRejectedValue(new Error('API down')) : jest.fn().mockResolvedValue({ data: setup.unlisted ? [dismissal] : [dismissal, approvalDismissal] }),
+      });
+      const approved = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1, AUTO_REVIEW_OFF);
+      const covered = !warnSpy.mock.calls.some(([m]) => String(m).includes('manki has not reviewed HEAD'));
+      return { approved, posted: createReviewMock.mock.calls.map(([args]) => args.event), covered };
+    };
+
+    // A person set the block aside and resolved its thread, so the review still covers the head and the approval follows.
+    expect(await check()).toEqual({ approved: true, posted: ['APPROVE'], covered: true });
+    // A blocker thread still open holds it.
+    expect(await check({ resolved: false })).toEqual({ approved: false, posted: [], covered: true });
+    // So does a review that held its approval for a person.
+    expect(await check({ heldForPerson: true })).toEqual({ approved: false, posted: [], covered: true });
+    // A dismissal by Manki, by another app, of an approval, by a push, on an older commit, or one the timeline cannot show covers nothing.
+    // The newest verdict on the head decides, so a person's dismissal of a later approval leaves no review on the head, standing or not.
+    for (const setup of [
+      { approvedAfter: true },
+      { approvedAfter: true, stands: true },
+      // A dismissal the timeline does not show, or cannot show, leaves no review on the head either.
+      { approvedAfter: true, stands: true, unlisted: true },
+      { approvedAfter: true, stands: true, timelineFails: true },
+      { actor: { login: 'manki-review[bot]', type: 'Bot' } },
+      { actor: { login: 'other-app[bot]', type: 'Bot' } },
+      { state: 'approved' },
+      { pushed: head },
+      { commit: testSha('01d') },
+      { timelineFails: true },
+    ]) {
+      expect(await check(setup)).toEqual({ approved: false, posted: [], covered: false });
+    }
+    warnSpy.mockRestore();
+  });
+
   describe('stale-SHA guard', () => {
     let warningSpy: jest.SpyInstance;
 

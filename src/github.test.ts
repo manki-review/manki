@@ -6966,13 +6966,16 @@ describe('isApprovedOnCommit', () => {
 describe('hasBotReviewOnCommit', () => {
   type Octokit = ReturnType<typeof import('@actions/github').getOctokit>;
 
-  function makeMockOctokit(reviews: Array<{ body?: string | null; state: string; commit_id?: string; user?: { login?: string; type: string } }>) {
+  /** `dismissals` are the timeline's `review_dismissed` events. */
+  function makeMockOctokit(reviews: Array<{ id?: number; body?: string | null; state: string; commit_id?: string; user?: { login?: string; type: string } }>, dismissals: unknown[] = []) {
+    const listEventsForTimeline = {};
     return {
-      paginate: jest.fn().mockResolvedValue(namingCommit(reviews)),
+      paginate: jest.fn(async (method: unknown) => method === listEventsForTimeline ? dismissals : namingCommit(reviews)),
       rest: {
         pulls: {
           listReviews: {},
         },
+        issues: { listEventsForTimeline },
       },
     } as unknown as Octokit;
   }
@@ -6989,12 +6992,43 @@ describe('hasBotReviewOnCommit', () => {
     expect(await hasBotReviewOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, testSha('123'))).toBe(true);
   });
 
-  it('returns false when the only bot review on the SHA is DISMISSED', async () => {
-    const octokit = makeMockOctokit([
-      { body: `${BOT_MARKER}\nReview`, state: 'DISMISSED', commit_id: testSha('123'), user: { login: BOT_LOGIN, type: 'Bot' } },
-    ]);
+  it('counts a dismissed bot review on the SHA only when a person dismissed its request for changes', async () => {
+    const person = { login: 'maintainer', type: 'User' };
+    const reviewed = (dismissal: { actor?: { login: string; type: string }; state?: string; pushed?: string } | undefined) => hasBotReviewOnCommit(makeMockOctokit(
+      [{ id: 5, body: `${BOT_MARKER}\nReview`, state: 'DISMISSED', commit_id: testSha('123'), user: { login: BOT_LOGIN, type: 'Bot' } }],
+      dismissal ? [{ actor: dismissal.actor ?? person, dismissed_review: { review_id: 5, state: dismissal.state ?? 'changes_requested', dismissal_commit_id: dismissal.pushed ?? null } }] : [],
+    ), TEST_BOT, 'owner', 'repo', 1, testSha('123'));
 
+    expect(await reviewed({})).toBe(true);
+    expect(await reviewed(undefined)).toBe(false);
+    expect(await reviewed({ actor: { login: BOT_LOGIN, type: 'Bot' } })).toBe(false);
+    expect(await reviewed({ actor: { login: 'other-app[bot]', type: 'Bot' } })).toBe(false);
+    expect(await reviewed({ state: 'approved' })).toBe(false);
+    expect(await reviewed({ pushed: testSha('456') })).toBe(false);
+
+    // Only the newest verdict on the SHA decides, so an approval a person dismissed after the request for changes covers nothing.
+    const review = { body: `${BOT_MARKER}\nReview`, state: 'DISMISSED', commit_id: testSha('123'), user: { login: BOT_LOGIN, type: 'Bot' } };
+    const dismissal = (id: number, state: string) => ({ actor: person, dismissed_review: { review_id: id, state, dismissal_commit_id: null } });
+    const octokit = makeMockOctokit([{ id: 5, ...review }, { id: 6, ...review }], [dismissal(5, 'changes_requested'), dismissal(6, 'approved')]);
     expect(await hasBotReviewOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, testSha('123'))).toBe(false);
+    // So does a standing review before it.
+    const standing = makeMockOctokit([{ id: 5, ...review, state: 'COMMENTED' }, { id: 6, ...review }], [dismissal(6, 'approved')]);
+    expect(await hasBotReviewOnCommit(standing, TEST_BOT, 'owner', 'repo', 1, testSha('123'))).toBe(false);
+    // A dismissal by Manki keeps the standing review, while one the timeline does not show, or cannot show, leaves none.
+    const standingThen = (dismissals: unknown[]) => hasBotReviewOnCommit(makeMockOctokit([{ id: 5, ...review, state: 'COMMENTED' }, { id: 6, ...review }], dismissals), TEST_BOT, 'owner', 'repo', 1, testSha('123'));
+    expect(await standingThen([{ ...dismissal(6, 'approved'), actor: { login: BOT_LOGIN, type: 'Bot' } }])).toBe(true);
+    expect(await standingThen([])).toBe(false);
+    expect(await standingThen([{ ...dismissal(6, 'approved'), actor: null }])).toBe(false);
+    const unreadable = makeMockOctokit([{ id: 5, ...review, state: 'COMMENTED' }, { id: 6, ...review }]);
+    const listReviews = jest.mocked(unreadable.paginate).getMockImplementation();
+    jest.mocked(unreadable.paginate).mockImplementation((async (method: unknown, params: unknown) => {
+      if (method === unreadable.rest.issues.listEventsForTimeline) throw new Error('API down');
+      return listReviews?.(method as never, params as never);
+    }) as never);
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    expect(await hasBotReviewOnCommit(unreadable, TEST_BOT, 'owner', 'repo', 1, testSha('123'))).toBe(false);
+    expect(warnSpy).toHaveBeenCalledWith('Could not read who dismissed Manki\'s review, so no review of its commit counts: API down');
+    warnSpy.mockRestore();
   });
 
   it('returns false when the only bot review is on a different commit', async () => {
@@ -7043,11 +7077,11 @@ describe('hasBotReviewOnCommit', () => {
     expect(await hasBotReviewOnCommit(patOctokit, TEST_BOT, 'owner', 'repo', 1, testSha('123'))).toBe(false);
   });
 
-  it('returns true when a prior bot review is on the SHA and a later DISMISSED one is too', async () => {
+  it('returns true when a prior bot review is on the SHA and Manki dismissed a later one', async () => {
     const octokit = makeMockOctokit([
       { state: 'COMMENTED', commit_id: testSha('123'), body: `${BOT_MARKER}\nreview body`, user: { login: BOT_LOGIN, type: 'Bot' } },
-      { state: 'DISMISSED', commit_id: testSha('123'), body: `${BOT_MARKER}\nreview body`, user: { login: BOT_LOGIN, type: 'Bot' } },
-    ]);
+      { id: 6, state: 'DISMISSED', commit_id: testSha('123'), body: `${BOT_MARKER}\nreview body`, user: { login: BOT_LOGIN, type: 'Bot' } },
+    ], [{ actor: { login: BOT_LOGIN, type: 'Bot' }, dismissed_review: { review_id: 6, state: 'approved', dismissal_commit_id: null } }]);
 
     expect(await hasBotReviewOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, testSha('123'))).toBe(true);
   });

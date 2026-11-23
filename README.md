@@ -67,7 +67,7 @@ Changes to security-sensitive paths, CI or dependency files and data contracts a
 
 | Command | What it does |
 |---------|-------------|
-| `/manki review` | Review the head commit, unless Manki's newest review of it is complete. Then Manki replies that no round started, with a Review again box that reviews the commit again, and the settings block shows it as up to date |
+| `/manki review` | Review the head commit, unless Manki's newest review of it is complete. A request for changes that a person dismissed still counts as that review. Then Manki replies that no round started, with a Review again box that reviews the commit again, runs the approval check as resolving a thread does, and the settings block shows it as up to date |
 | `/manki explain [topic]` | Ask about the PR changes |
 | `/manki dismiss [finding]` | Dismiss a finding. In a Manki finding's thread it resolves the thread, or says in the thread why it stays open or keeps blocking. A dismissal never lifts a warning's hold on the approval, and the reply says what does. A named finding is stored as a suppression in memory when its text matches a finding Manki posted on the PR. Without either, Manki replies with how to use it |
 | `/manki remember <instruction>` | Teach it something for future reviews |
