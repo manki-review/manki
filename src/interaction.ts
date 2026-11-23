@@ -586,12 +586,6 @@ export async function handleReviewCommentReply(
       lookupFailed = true;
       return undefined;
     });
-    // A reply held behind a review would get a second verdict that can contradict the one that review already gave.
-    const roundReply = live?.roundReplies?.find(r => r.commit === head && Date.parse(r.at) > Date.parse(comment.created_at ?? ''));
-    if (roundReply) {
-      core.info(`Skipped the reply in thread ${live?.id}: the review of ${roundReply.commit.slice(0, 7)} already gave its verdict there at ${roundReply.at}, after the reply`);
-      return;
-    }
     // Only the live thread's id finds the rounds that judged it. A merged or closed PR has none, and nothing there reads
     // a "Fixed." again. On an open PR a thread that could not be found may have such a judgment, so no change counts.
     const rounds = live ? await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber) : undefined;
@@ -654,6 +648,9 @@ export async function handleReviewCommentReply(
     // a thread tied to no file, so that answer is "Unverified." and the thread hears who clears it.
     const leftOpen = outcome === 'Fixed' && (staysOpen || noted);
     const answer = leftOpen ? fixReviewNote(reply, filePath, evidenceFiles) : reply;
+    // The review never reads a reply on a thread that is not guarded, so a settling answer here replaces its open verdict.
+    const roundReply = outcome && live && !isGuarded(live) ? live.roundReplies?.find(r => r.commit === head && Date.parse(r.at) > Date.parse(comment.created_at ?? '')) : undefined;
+    const replaces = roundReply ? [`This answer reads your reply, which the review of \`${roundReply.commit.slice(0, 7)}\` above did not, so it replaces that review's verdict.`] : [];
     const settled = leftOpen && !filePath ? undefined : outcome;
 
     // The thread is resolved before the answer is posted, so the record names what happened to it. An answer that fails
@@ -687,7 +684,7 @@ export async function handleReviewCommentReply(
       // The checks never read as a verdict on the finding. A blocking thread that no other note covers says that it stays
       // open, and names a review as a way out only when a review can clear it.
       const checks = list ? [list, statementSummary(checked, blocks || !live), ...(blocks && !staysOpen && !noted ? [staysOpenNote(guard, !!filePath, config?.author_clear_role, live.isResolved)] : [])] : [];
-      const text = [answer, ...checks, ...notes];
+      const text = [answer, ...replaces, ...checks, ...notes];
       const markers = [
         BOT_MARKER, response.record(decision, statementChecks(checked), comment.id),
         ...(settled === 'Fixed' && head && !closed ? [fixedMarker(head)] : []),

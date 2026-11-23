@@ -100,7 +100,7 @@ interface ReviewThread {
   threadUrl?: string;
   /** The head commits on which a Manki reply in this thread confirmed the fix, from `fixedMarker`. */
   fixedOn?: string[];
-  /** When the review of each head commit gave its verdict on this thread in a reply, from `roundReplyMarker`. */
+  /** When the review of each head commit replied that this thread is not fixed, from `roundReplyMarker`. */
   roundReplies?: Array<{ commit: string; at: string }>;
 }
 

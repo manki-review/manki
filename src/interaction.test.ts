@@ -1526,11 +1526,15 @@ describe('handleReviewCommentReply', () => {
   });
 
   it.each([
-    ['a verdict the review of the head gave after the reply', '14:34:11', 'head', false, false],
-    ['a verdict given before the reply', '14:30:00', 'head', false, true],
-    ['a verdict the review of another head gave after the reply', '14:34:11', 'other', false, true],
-    ['a thread that could not be read', '14:34:11', 'head', true, true],
-  ])('answers a reply held behind a review in a thread with %s only when no verdict came after it', async (_case, verdictAt, verdictHead, readFails, answers) => {
+    ['a withdrawal after a verdict the review of the head gave', 'Withdrawn', '14:34:11', 'head', 'warning', false, true],
+    ['a withdrawal after a verdict given before the reply', 'Withdrawn', '14:30:00', 'head', 'warning', false, false],
+    ['a withdrawal after a verdict the review of another head gave', 'Withdrawn', '14:34:11', 'other', 'warning', false, false],
+    ['a withdrawal in a thread that could not be read', 'Withdrawn', '14:34:11', 'head', 'warning', true, false],
+    // An answer that settles nothing agrees with a review that found the thread open.
+    ['an unverified reply after a verdict the review of the head gave', 'Unverified', '14:34:11', 'head', 'warning', false, false],
+    // The review reads the reply in a guarded thread, so its verdict stands there.
+    ['a withdrawal in a blocker thread after a verdict the review of the head gave', 'Withdrawn', '14:34:11', 'head', 'blocker', false, false],
+  ] as const)('answers %s, and says only when it replaces that verdict', async (_case, outcome, verdictAt, verdictHead, kind, readFails, replaces) => {
     const head = 'a'.repeat(40);
     setContext({
       comment: { id: 1, body: 'Fixed in d2c4380.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'MEMBER', created_at: '2026-11-06T14:32:05Z' },
@@ -1538,17 +1542,18 @@ describe('handleReviewCommentReply', () => {
       sender: { login: 'someone' },
     });
     const octokit = createMockOctokit();
-    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { original_commit_id: POSTED_ON, user: MANKI_USER, body: findingComment('warning'), path: 'src/file.ts', line: 10 } });
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { original_commit_id: POSTED_ON, user: MANKI_USER, body: findingComment(kind), path: 'src/file.ts', line: 10 } });
     const client = createMockClient();
-    jest.mocked(client.sendMessage).mockResolvedValue({ content: structured('Withdrawn. The caller already checks for null at `src/file.ts:10`.') });
-    const thread = { id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: false, findingTitle: 'This', roundReplies: [{ commit: verdictHead === 'head' ? head : 'b'.repeat(40), at: `2026-11-06T${verdictAt}Z` }] };
+    jest.mocked(client.sendMessage).mockResolvedValue({ content: structured(`${outcome}. The caller already checks for null at \`src/file.ts:10\`.`) });
+    const thread = { id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: kind === 'blocker', findingTitle: 'This', roundReplies: [{ commit: verdictHead === 'head' ? head : 'b'.repeat(40), at: `2026-11-06T${verdictAt}Z` }] };
     if (readFails) jest.mocked(state.fetchBotReviewThreads).mockRejectedValueOnce(new Error('GraphQL timeout'));
     else jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([thread]);
 
     await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, undefined, CONFIG);
 
-    expect(jest.mocked(client.sendMessage).mock.calls.length).toBe(answers ? 1 : 0);
-    expect(jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.length).toBe(answers ? 1 : 0);
+    const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls[0][0].body as string;
+    expect(body.startsWith(`${outcome}.`)).toBe(true);
+    expect(body.includes('\n\nThis answer reads your reply, which the review of `aaaaaaa` above did not, so it replaces that review\'s verdict.')).toBe(replaces);
   });
 
   it('includes scoped PR diff context in the Claude prompt', async () => {

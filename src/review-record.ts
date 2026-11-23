@@ -95,7 +95,7 @@ export function fixedMarker(commitSha: string): string {
 
 export const ROUND_REPLY_OPENER = '<!-- manki-round-reply:';
 
-/** Marks the reply in which the review of `commitSha` gives its verdict on a thread. */
+/** Marks a reply in which the review of `commitSha` finds a thread not fixed. */
 export function roundReplyMarker(commitSha: string): string {
   return `${ROUND_REPLY_OPENER}${commitSha} -->`;
 }

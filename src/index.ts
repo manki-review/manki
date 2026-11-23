@@ -1740,7 +1740,7 @@ async function replyFixedThreads(run: ReviewRun, threads: OpenThread[]): Promise
     const sha = fixingCommit(thread);
     const reply = sha ? `Fixed in ${sha.slice(0, 7)}.` : `Fixed by the commits up to ${commitSha.slice(0, 7)}.`;
     try {
-      await replyToReviewThread(octokit, thread.threadId, reply, fixedMarker(commitSha), roundReplyMarker(commitSha));
+      await replyToReviewThread(octokit, thread.threadId, reply, fixedMarker(commitSha));
     } catch (error) {
       core.warning(`Failed to reply on resolved thread ${thread.threadId}: ${error}`);
     }

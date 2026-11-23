@@ -6807,7 +6807,7 @@ describe('runFullReview orchestration', () => {
     expect(mockGraphql.mock.calls.filter(([query]) => String(query).includes('addPullRequestReviewThreadReply')).map(([, vars]) => vars)).toEqual([
       ...openThreadReplies,
       ...(posted ? [
-        { threadId: 'PRRT_abc', body: 'Fixed in 1111111.\n\n<!-- manki -->\n<!-- manki-fixed:abc123 -->\n<!-- manki-round-reply:abc123 -->' },
+        { threadId: 'PRRT_abc', body: 'Fixed in 1111111.\n\n<!-- manki -->\n<!-- manki-fixed:abc123 -->' },
         { threadId: 'PRRT_def', body: 'Found again.\n\n<!-- manki -->\n<!-- manki-found-again -->\n<!-- manki-round-reply:abc123 -->' },
         { threadId: 'PRRT_pqr', body: 'Found again.\n\n<!-- manki -->\n<!-- manki-found-again -->\n<!-- manki-round-reply:abc123 -->' },
       ] : []),
