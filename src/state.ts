@@ -954,6 +954,25 @@ function heldForPerson(bot: BotIdentity, reviews: ReviewEntry[], headSha: string
  */
 type ApprovalCheck = { approved: true; standing?: true } | { approved: false; why: () => Promise<string>; answered?: true; held?: Exclude<ApprovalHeld, false> };
 
+/**
+ * Dismisses Manki's approvals while a blocking thread is not cleared, as after a reopen. It never approves, so it also
+ * runs where `auto_approve` is off and only a review round approves. Without every round record each thread counts as
+ * blocking, which proves no blocker, so it then dismisses nothing.
+ */
+async function withdrawBlockedApproval(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, prAuthorLogin: string | undefined, clearRole: AuthorClearRole | undefined,
+): Promise<void> {
+  let threads: ReviewThread[];
+  try {
+    threads = await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber, undefined, true);
+  } catch (error) {
+    core.warning(`Could not read the grades of every review thread, so no approval is withdrawn: ${error instanceof Error ? error.message : error}`);
+    return;
+  }
+  const prAuthorRole = await overrideRole(octokit, owner, repo, threads, prAuthorLogin, clearRole);
+  if (unclearedThreads(threads, bot, prAuthorLogin, prAuthorRole).length > 0) await dismissPreviousReviews(octokit, bot, owner, repo, prNumber, undefined, 'APPROVED');
+}
+
 /** Post an approval review if all findings are resolved. */
 async function checkAndAutoApprove(
   octokit: Octokit,
@@ -1051,6 +1070,7 @@ async function approveOrSayWhy(
 
   if (uncleared().length > 0) {
     core.info('Not all blocking findings resolved — skipping auto-approve');
+    await withdrawBlockedApproval(octokit, bot, owner, repo, prNumber, prAuthorLogin, clearRole);
     return withheld(why, false);
   }
 
@@ -1190,4 +1210,4 @@ async function approveOrSayWhy(
   return refusal ? heldBy(refusal) : { approved: true };
 }
 
-export { ApprovalCheck, PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, recordDismissal, approveOrSayWhy, authorClearLine, authorResolvedNote, autoReviewHalt, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, rolePhrase, resolveReviewThread, retireStaleNotices, unclearedThreads, unresolveReviewThread, warningHoldNote, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX, TRACKED_MARKER };
+export { ApprovalCheck, PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, recordDismissal, approveOrSayWhy, authorClearLine, authorResolvedNote, autoReviewHalt, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, rolePhrase, resolveReviewThread, retireStaleNotices, unclearedThreads, unresolveReviewThread, warningHoldNote, withdrawBlockedApproval, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX, TRACKED_MARKER };

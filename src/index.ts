@@ -103,7 +103,7 @@ import {
   wasEdited,
 } from './github';
 import type { ApprovalHeld, BotIdentity, LinkedIssue, StandingVerdict } from './github';
-import { announceSecurityOverrides, approveOrSayWhy, authorClearLine, autoReviewHalt, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, findUnchangedVerdict, fixedMarker, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
+import { announceSecurityOverrides, approveOrSayWhy, authorClearLine, autoReviewHalt, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, findUnchangedVerdict, fixedMarker, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread, withdrawBlockedApproval } from './state';
 import type { PauseState } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -2464,6 +2464,7 @@ async function handleReviewStateCheck(): Promise<void> {
 
   if (!config.auto_approve) {
     core.info('auto_approve is disabled — skipping state check');
+    await withdrawBlockedApproval(octokit, bot, owner, repo, prNumber, pr.user?.login, config.author_clear_role);
     return;
   }
 
@@ -2683,6 +2684,9 @@ async function handleReviewCommentInteraction(): Promise<void> {
     if (approved) {
       core.info(`PR #${prNumber} auto-approved after all findings resolved`);
     }
+  } else if (prNumber && !held && !eventPrClosed()) {
+    // The reply can reopen a blocking thread, which takes back an approval a round gave.
+    await withdrawBlockedApproval(octokit, bot, owner, repo, prNumber, payload.pull_request?.user?.login, config.author_clear_role);
   }
 }
 
