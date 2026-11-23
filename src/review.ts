@@ -2244,9 +2244,10 @@ export async function runReview(
   finalFindings = (await foldIntoEarlierFindings(finalFindings, earlier, earlierWrap?.client)).map(guard);
   if (stopped) return incompleteAfterJudge(stopped);
   // Without a second refuter, the judge's refuter alone may confirm the fix, since a confirmation only posts a warning that holds the approval.
-  ownFixed = await restatedAfterOwnFix(finalFindings, openThreadIndex, sortedPriorRounds, interRoundDiff === undefined ? undefined : pushChangedFiles, fixes => refutation
+  const findOwnFixes = (findings: Finding[]) => restatedAfterOwnFix(findings, openThreadIndex, sortedPriorRounds, interRoundDiff === undefined ? undefined : pushChangedFiles, fixes => refutation
     ? confirmPushedFixes(refutation.client, refutation.pair, fixes, parsePRDiff(interRoundDiff ?? ''), { workspace: refutation.workspace, related: refutation.related, diff: diffWithLockfiles, effort: judgeEffort }, true)
     : Promise.resolve(new Set()));
+  ownFixed = await findOwnFixes(finalFindings);
   finalFindings = finalFindings.map(f => capOwnFixRestatement(f, ownFixed));
   if (stopped) return incompleteAfterJudge(stopped);
   // A blocker folded into a thread raises that thread again, so the threads are graded once more over the folded findings.
@@ -2326,7 +2327,9 @@ export async function runReview(
       if (foldWrap?.getTotals().calls) logOutputTokens('LLM dedup of nearby findings', foldWrap.getTotals().usage);
       // The reader names only blockers, so each one would block if true: none is left out, and one nothing confirmed is marked.
       // A reader blocker takes the thread of a finding it absorbs, so the guard checks that link before the threads are graded.
-      const readerFindings = hideUnprovenWarnings(folded.blockers.map(guard).map(f => capOwnFixRestatement(f, ownFixed)).map(f => f.severity === 'warning' ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f), config.review?.rules, () => true).posted;
+      const foldedBlockers = folded.blockers.map(guard);
+      ownFixed = new Map([...ownFixed, ...await findOwnFixes(foldedBlockers.filter(f => !f.threadId || !ownFixed.has(f.threadId)))]);
+      const readerFindings = hideUnprovenWarnings(foldedBlockers.map(f => capOwnFixRestatement(f, ownFixed)).map(f => f.severity === 'warning' ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f), config.review?.rules, () => true).posted;
       finalFindings = [...folded.findings, ...readerFindings];
       threadEvaluations = gradeThreads(finalFindings);
       // A reader whose every blocker was a claimed build failure CI does not report leaves the change ready.
@@ -3619,9 +3622,10 @@ export const OWN_FIX_REASON = 'The push applies the fix this thread suggested, s
 
 /**
  * Returns the open threads where a blocker of `findings` restates the thread's own finding after the push applied the
- * fix that finding suggested, each with the description of the first such blocker. `confirm` checks the fix when the
- * push changed a file of the thread. A confirmation from an earlier round holds while the push changes none of them.
- * Without a known push (`pushChangedFiles`) nothing is lowered. A security finding, a tool alert, a guarded thread and a thread no blocker ever graded are never lowered this way.
+ * fix that finding suggested, each with the description of the first such blocker. A variant in another place restates
+ * nothing. `confirm` checks the fix when the push changed a file of the thread. A confirmation from an earlier round
+ * holds while the push changes none of them. Without a known push (`pushChangedFiles`) nothing is lowered. A security
+ * finding, a tool alert, a guarded thread and a thread no blocker ever graded are never lowered this way.
  */
 async function restatedAfterOwnFix(
   findings: readonly Finding[], openThreadIndex: Map<string, OpenThread>, priorRounds: readonly RoundContext[],
@@ -3629,7 +3633,7 @@ async function restatedAfterOwnFix(
 ): Promise<Map<string, string>> {
   if (!pushChangedFiles) return new Map();
   const restating = new Map<string, Finding[]>();
-  for (const f of findings) if (f.severity === 'blocker' && f.threadId) restating.set(f.threadId, [...(restating.get(f.threadId) ?? []), f]);
+  for (const f of findings) if (f.severity === 'blocker' && f.threadId && !f.variantOf) restating.set(f.threadId, [...(restating.get(f.threadId) ?? []), f]);
   const candidates = [...restating].flatMap(([threadId, blockers]) => {
     const thread = openThreadIndex.get(threadId);
     const fix = thread?.howToFix?.trim() || thread?.suggestedFix?.trim();
@@ -3637,9 +3641,10 @@ async function restatedAfterOwnFix(
     const lowerable = blockers.every(f => !f.toolSource && !isSecurityFinding(f.tags, f.reviewers));
     return thread?.file && fix && wasBlocker && lowerable && !thread.isSecurity && !thread.disprovedBlocker ? [{ thread, fix, remaining: blockers[0].description }] : [];
   });
-  const lastEvaluation = (threadId: string) => [...priorRounds].reverse().map(r => r.judge.threadEvaluations?.find(e => e.threadId === threadId)).find(e => !!e);
+  // Only an evaluation that set the thread's grade can end the cap, so a round that left the grade alone keeps it.
+  const lastGrading = (threadId: string) => [...priorRounds].reverse().map(r => r.judge.threadEvaluations?.find(e => e.threadId === threadId && e.grade)).find(e => !!e);
   const touched = candidates.filter(({ thread }) => pushTouchesThread(thread, pushChangedFiles));
-  const held = candidates.filter(({ thread }) => !pushTouchesThread(thread, pushChangedFiles) && lastEvaluation(thread.threadId)?.ownFix);
+  const held = candidates.filter(({ thread }) => !pushTouchesThread(thread, pushChangedFiles) && lastGrading(thread.threadId)?.ownFix);
   const confirmed = await confirm(touched.map(({ thread, fix }) => ({
     thread, files: [thread.file, ...(thread.evidenceFiles ?? [])].filter(file => pushChangedFiles.has(file)), title: `The fix suggested for "${thread.title}" is missing`,
     description: `An earlier review suggested this fix for the problem "${thread.title}": ${fix} The claim to check is that the push since the last review does not apply that fix, nor any option it offers. Disprove the claim only with lines the push added that apply the fix. Whether the problem itself is gone does not decide it.`,
@@ -3647,9 +3652,9 @@ async function restatedAfterOwnFix(
   return new Map([...held, ...touched.filter(({ thread }) => confirmed.has(thread.threadId))].map(({ thread, remaining }) => [thread.threadId, remaining]));
 }
 
-/** Returns `f` as a warning when it is a blocker on a thread of `ownFixed`, unless it is a security finding or a tool alert. Its cell stays as `judgeCell`, so a later round does not restate the blocker from it. */
+/** Returns `f` as a warning when it is a blocker on a thread of `ownFixed`, unless it is a variant in another place, a security finding or a tool alert. Its cell stays as `judgeCell`, so a later round does not restate the blocker from it. */
 function capOwnFixRestatement(f: Finding, ownFixed: ReadonlyMap<string, string>): Finding {
-  if (f.severity !== 'blocker' || !f.threadId || !ownFixed.has(f.threadId) || f.toolSource || isSecurityFinding(f.tags, f.reviewers)) return f;
+  if (f.severity !== 'blocker' || !f.threadId || f.variantOf || !ownFixed.has(f.threadId) || f.toolSource || isSecurityFinding(f.tags, f.reviewers)) return f;
   core.info(`Posting blocker "${f.title}" as a warning, since the push applies the fix its thread ${f.threadId} suggested`);
   const { cell, ...rest } = f;
   return { ...rest, ...gradeStep(f, 'warning', 'own_fix', OWN_FIX_REASON), ...(cell && { judgeCell: cell }) };

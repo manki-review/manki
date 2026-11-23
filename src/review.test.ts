@@ -5800,20 +5800,23 @@ describe('runReview', () => {
       const pushX = 'diff --git a/src/x.ts b/src/x.ts\n--- a/src/x.ts\n+++ b/src/x.ts\n@@ -10 +10,2 @@\n line10();\n+line11();\n';
       const pushY = 'diff --git a/src/y.ts b/src/y.ts\n--- a/src/y.ts\n+++ b/src/y.ts\n@@ -1 +1,2 @@\n guard();\n+if (bad) return;\n';
       const answer = (outcome: string, proof = ['src/x.ts:11']) => JSON.stringify({ outcome, reason: 'The warning now names the failed rewrite.', proof });
-      const clientsWith = (outcome: string, proof?: string[], pairOutcome?: string) => {
+      const clientsWith = (outcome: string, proof?: string[], pairOutcome?: string, verdict = READY_VERDICT) => {
         const clients = makeClients();
         Object.assign(clients.judge, { repoTools: true });
-        jest.mocked(clients.judge.sendMessage).mockImplementation(async (_system, _message, options) => (options?.repoTools ? { content: answer(outcome, proof), model: 'claude-opus-5-5' } : { content: READY_VERDICT }));
+        // Only the check of the fix gets `outcome`, so a refuter checking a finding itself confirms it.
+        jest.mocked(clients.judge.sendMessage).mockImplementation(async (_system, message, options) => (options?.repoTools
+          ? { content: message.includes('An earlier review suggested') ? answer(outcome, proof) : answer('confirmed', ['src/x.ts:10']), model: 'claude-opus-5-5' }
+          : { content: verdict }));
         const refuterPair = pairOutcome ? { repoTools: true, sendMessage: jest.fn().mockResolvedValue({ content: answer(pairOutcome), model: 'gpt-6.1-sol' }) } as unknown as LLMClient : undefined;
         return { ...clients, ...(refuterPair && { refuterPair }) };
       };
       const restated: Finding = { severity: 'blocker', title: 'Same bug, new words', file: 'src/x.ts', line: 10, description: 'A failed rewrite still leaves the record unsettled.', reviewers: ['r'], sameAs: 'src/x.ts:10:10:old-issue' };
       const fixedThread = makePriorOpenThread({ severity: 'blocker', howToFix: 'Say in the warning that the rewrite can fail.' });
-      const runWith = (clients: ReviewClients, { thread = fixedThread, finding = restated, push = pushX as string | null, prior = buildPriorRound(1, [makePriorWarningFinding({ severity: 'blocker' })]) } = {}) => {
-        mockedRunJudgeAgent.mockResolvedValue({ findings: [finding], summary: 'Still broken.', threadEvaluations: [{ threadId: 'T1', status: 'not_addressed', reason: 'Still there.' }] });
+      const runWith = (clients: ReviewClients, { thread = fixedThread, findings = [restated], push = pushX as string | null, priors = [buildPriorRound(1, [makePriorWarningFinding({ severity: 'blocker' })])] } = {}) => {
+        mockedRunJudgeAgent.mockResolvedValue({ findings, summary: 'Still broken.', threadEvaluations: [{ threadId: 'T1', status: 'not_addressed', reason: 'Still there.' }] });
         return runReview(clients, {
           config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true, workspace,
-          openThreads: [thread], previousFindings: [], priorRounds: [prior], interRoundDiff: push ?? undefined, headSha: 'sha2',
+          openThreads: [thread], previousFindings: [], priorRounds: priors, interRoundDiff: push ?? undefined, headSha: 'sha2',
         });
       };
       const capped = { threadId: 'T1', status: 'partly_addressed', reason: OWN_FIX_REASON, remaining: restated.description, grade: 'warning', ownFix: true };
@@ -5832,22 +5835,31 @@ describe('runReview', () => {
         [clientsWith('unsettled')], [clientsWith('disproved', ['src/x.ts:3'])], [clientsWith('disproved', undefined, 'unsettled')],
         [clientsWith('disproved'), { thread: makePriorOpenThread({ severity: 'blocker' }) }],
         [clientsWith('disproved'), { thread: { ...fixedThread, isSecurity: true } }],
-        [clientsWith('disproved'), { finding: { ...restated, tags: ['security'] } }],
-        [clientsWith('disproved'), { finding: { ...restated, toolSource: 'semgrep' } }],
+        [clientsWith('disproved'), { findings: [{ ...restated, tags: ['security'] }] }],
+        [clientsWith('disproved'), { findings: [{ ...restated, toolSource: 'semgrep' }] }],
+        // A variant of the thread's mistake in another place is not what the fix covered.
+        [clientsWith('disproved'), { findings: [{ ...restated, line: 3, sameAs: undefined, variantOf: 'src/x.ts:10:10:old-issue' }] }],
         [clientsWith('disproved'), { push: pushY }], [clientsWith('disproved'), { push: null }],
       ] as Array<[ReviewClients, Parameters<typeof runWith>[1]?]>) {
         const kept = await runWith(clients, options);
         expect([kept.outcome, kept.findings.map(f => f.severity)]).toEqual(['ADDRESS_FIRST', ['blocker']]);
       }
 
-      // A later round keeps the cap without a check while its push leaves the thread's files alone, and checks again after one that changes them.
+      // A later round keeps the cap without a check while its push leaves the thread's files alone, also after a round
+      // that left the thread's grade alone, and checks again after a push that changes them.
       const earlier = buildPriorRound(2, [makePriorWarningFinding({ severity: 'blocker' })]);
       earlier.judge.threadEvaluations = [capped as ThreadEvaluation];
+      const quiet = buildPriorRound(3, []);
+      quiet.judge.threadEvaluations = [{ threadId: 'T1', status: 'not_addressed', reason: 'Still there.' }];
       const loweredThread = { ...fixedThread, recordedGrade: 'warning' as const, peakGrade: 'blocker' as const };
       const held = clientsWith('unsettled');
-      const kept = await runWith(held, { thread: loweredThread, push: pushY, prior: earlier });
+      const kept = await runWith(held, { thread: loweredThread, push: pushY, priors: [earlier, quiet] });
       expect([kept.outcome, kept.findings[0].severity, jest.mocked(held.judge.sendMessage).mock.calls.some(([, message]) => message.includes('An earlier review suggested'))]).toEqual(['READY', 'warning', false]);
-      expect((await runWith(clientsWith('unsettled'), { thread: loweredThread, prior: earlier })).outcome).toBe('ADDRESS_FIRST');
+      expect((await runWith(clientsWith('unsettled'), { thread: loweredThread, priors: [earlier] })).outcome).toBe('ADDRESS_FIRST');
+      // A blocker only the verdict reader raises on the thread keeps the cap the same way.
+      const readerVerdict = JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: [{ file: 'src/x.ts', line: 10, title: 'Old issue', description: 'Still unsettled.' }], summary: 's', whatThisDoes: '', whatToTest: '' });
+      const read = await runWith(clientsWith('unsettled', undefined, undefined, readerVerdict), { thread: loweredThread, push: pushY, priors: [earlier], findings: [] });
+      expect([read.outcome, read.findings.map(f => [f.severity, f.threadId])]).toEqual(['READY', [['warning', 'T1']]]);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
