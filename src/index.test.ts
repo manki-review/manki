@@ -1672,6 +1672,10 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
       ['a run queued behind the review', 'APPROVED', true, 'success', 'Approved'],
       ['a review command', 'CHANGES_REQUESTED', false, 'failure', 'Changes requested'],
       ['a review command', 'APPROVED', true, 'success', 'Approved'],
+      // The only dismissed review found is a request for changes that a person dismissed.
+      ['Bot already reviewed commit', 'DISMISSED', false, 'failure', 'Changes requested'],
+      ['a run queued behind the review', 'DISMISSED', false, 'failure', 'Changes requested'],
+      ['a review command', 'DISMISSED', false, 'failure', 'Changes requested'],
     ] as const)('%s completes it with the verdict of the %s review found', async (exit, state, newest, conclusion, title) => {
       seed(exit, state, newest);
 

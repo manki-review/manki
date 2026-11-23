@@ -532,7 +532,8 @@ async function reportReviewedCheck(target: RunTarget, prAuthorLogin: string | un
   // Only the review's own round record says that it held an approval. A request for changes that GitHub refused is a comment too.
   const record = review?.state === 'COMMENTED' ? parseContextBlocks([review], owner, repo, prNumber).rounds.at(0) : undefined;
   const heldReview = record?.meta.commitSha === commitSha && record.verdict === 'APPROVE' && !!record.approval?.held;
-  const verdict = heldReview ? 'APPROVE' : review && REVIEW_STATE_VERDICTS[review.state];
+  // A dismissed review found is a request for changes that a person dismissed, and its threads still decide the approval.
+  const verdict = heldReview ? 'APPROVE' : review && (review.state === 'DISMISSED' ? 'REQUEST_CHANGES' : REVIEW_STATE_VERDICTS[review.state]);
   if (!verdict) {
     core.info(`No review of ${shortSha} gives a verdict a check can report, leaving its check as it is`);
     return;

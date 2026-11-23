@@ -7004,6 +7004,12 @@ describe('hasBotReviewOnCommit', () => {
     expect(await reviewed({ actor: { login: 'other-app[bot]', type: 'Bot' } })).toBe(false);
     expect(await reviewed({ state: 'approved' })).toBe(false);
     expect(await reviewed({ pushed: testSha('456') })).toBe(false);
+
+    // Only the newest verdict on the SHA decides, so an approval a person dismissed after the request for changes covers nothing.
+    const review = { body: `${BOT_MARKER}\nReview`, state: 'DISMISSED', commit_id: testSha('123'), user: { login: BOT_LOGIN, type: 'Bot' } };
+    const dismissal = (id: number, state: string) => ({ actor: person, dismissed_review: { review_id: id, state, dismissal_commit_id: null } });
+    const octokit = makeMockOctokit([{ id: 5, ...review }, { id: 6, ...review }], [dismissal(5, 'changes_requested'), dismissal(6, 'approved')]);
+    expect(await hasBotReviewOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, testSha('123'))).toBe(false);
   });
 
   it('returns false when the only bot review is on a different commit', async () => {

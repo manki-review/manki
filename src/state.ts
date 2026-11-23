@@ -649,13 +649,12 @@ function isBotReview(bot: BotIdentity, r: ReviewEntry): boolean {
   return !!r.body?.includes('<!-- manki') && isBotLogin(bot, r.user?.login);
 }
 
-/** Returns Manki's reviews that still stand: every one not dismissed, and one on `headSha` that `dismissedByPerson` lists. */
+/** Returns Manki's reviews that still stand: every one not dismissed, and the one on `headSha` that `dismissedByPerson` returns. */
 async function standingReviews(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string, reviews: ReviewEntry[],
 ): Promise<ReviewEntry[]> {
-  const dismissedOnHead = reviews.filter(r => isBotReview(bot, r) && r.state === 'DISMISSED' && reviewedCommit(r) === headSha && givesVerdict(r));
-  const setAside = await dismissedByPerson(octokit, bot, owner, repo, prNumber, dismissedOnHead);
-  return reviews.filter(r => isBotReview(bot, r) && (r.state !== 'DISMISSED' || setAside.has(r.id)));
+  const setAside = await dismissedByPerson(octokit, bot, owner, repo, prNumber, reviews.filter(r => isBotReview(bot, r) && reviewedCommit(r) === headSha));
+  return reviews.filter(r => isBotReview(bot, r) && (r.state !== 'DISMISSED' || r === setAside));
 }
 
 /**

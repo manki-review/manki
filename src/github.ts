@@ -4553,8 +4553,8 @@ async function findBotReviewOnCommit(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, commitSha: string,
 ): Promise<BotReviewSummary | undefined> {
   const onCommit = (await fetchBotReviews(octokit, bot, owner, repo, prNumber, true)).filter(r => r.commitId === commitSha);
-  const setAside = await dismissedByPerson(octokit, bot, owner, repo, prNumber, onCommit.filter(r => r.state === 'DISMISSED' && givesVerdict(r)));
-  const newest = onCommit.filter(r => r.state !== 'DISMISSED' || setAside.has(r.id)).at(-1);
+  const setAside = await dismissedByPerson(octokit, bot, owner, repo, prNumber, onCommit);
+  const newest = onCommit.filter(r => r.state !== 'DISMISSED' || r === setAside).at(-1);
   return newest && givesVerdict(newest) ? newest : undefined;
 }
 
@@ -4650,22 +4650,23 @@ async function fetchReviewDismissals(octokit: Octokit, owner: string, repo: stri
 }
 
 /**
- * Returns the ids of the requests for changes among Manki's `dismissed` reviews that a person dismissed. A person's
- * dismissal sets the block aside, but the review still covers its commit. A dismissed approval, and a dismissal by
- * Manki, a push or another app, are left out. So is every review when the timeline cannot be read.
+ * Returns the newest review with a verdict in `onCommit`, Manki's reviews of one commit oldest first, when it is
+ * a request for changes that a person dismissed. A person's dismissal sets the block aside, but the review still covers
+ * its commit. Any later verdict on the commit decides instead, so an approval a person dismissed after it covers nothing.
+ * A dismissed approval, and a dismissal by Manki, a push or another app, give `undefined`, and so does a timeline that
+ * cannot be read.
  */
-async function dismissedByPerson(
-  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, dismissed: { id: number }[],
-): Promise<Set<number>> {
-  if (dismissed.length === 0) return new Set();
-  const ids = new Set(dismissed.map(r => r.id));
+async function dismissedByPerson<T extends { id: number; state?: string; body?: string | null }>(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, onCommit: T[],
+): Promise<T | undefined> {
+  const newest = onCommit.filter(givesVerdict).at(-1);
+  if (newest?.state !== 'DISMISSED') return undefined;
   try {
-    return new Set((await fetchReviewDismissals(octokit, owner, repo, prNumber))
-      .filter(d => ids.has(d.reviewId) && d.state === 'changes_requested' && !d.dismissalCommitId && d.actor?.type === 'User' && !isBotLogin(bot, d.actor.login))
-      .map(d => d.reviewId));
+    const set = (await fetchReviewDismissals(octokit, owner, repo, prNumber)).find(d => d.reviewId === newest.id);
+    return set?.state === 'changes_requested' && !set.dismissalCommitId && set.actor?.type === 'User' && !isBotLogin(bot, set.actor.login) ? newest : undefined;
   } catch (error) {
     core.warning(`Could not read who dismissed Manki's review, so it counts as no review: ${error instanceof Error ? error.message : error}`);
-    return new Set();
+    return undefined;
   }
 }
 
