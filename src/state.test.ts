@@ -20,7 +20,7 @@ jest.mock('./auth', () => ({
 
 jest.mock('./github', () => ({
   ...jest.requireActual('./github'),
-  dismissPreviousReviews: jest.fn().mockResolvedValue({ dismissed: 0, failed: false }),
+  dismissPreviousReviews: jest.fn().mockResolvedValue({ dismissed: 0, failed: false, kept: 0 }),
   postAutoApproveProgressComment: jest.fn().mockResolvedValue(12345),
   deleteAutoApproveProgressComment: jest.fn().mockResolvedValue(undefined),
   markProgressCommentFailed: jest.fn().mockResolvedValue(undefined),
@@ -1102,7 +1102,7 @@ describe('checkAndAutoApprove', () => {
           dismissPreviousReviews.mockClear();
           jest.mocked(authModule.reportPrState).mockClear();
           checkRuns = { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) };
-          dismissPreviousReviews.mockResolvedValueOnce({ dismissed: 1, failed: false });
+          dismissPreviousReviews.mockResolvedValueOnce({ dismissed: 1, failed: false, kept: 0 });
           await check([thread('t1', 'blocker')]);
           expect(dismissPreviousReviews.mock.calls).toEqual([[expect.anything(), TEST_BOT, 'owner', 'repo', 1, undefined, 'APPROVED']]);
           // The coordinator no longer records the approval.
@@ -1115,14 +1115,14 @@ describe('checkAndAutoApprove', () => {
           // still fails, also when no dismissal worked.
           checkRuns = { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) };
           jest.mocked(authModule.reportPrState).mockClear();
-          dismissPreviousReviews.mockResolvedValueOnce({ dismissed: 1, failed: true });
+          dismissPreviousReviews.mockResolvedValueOnce({ dismissed: 1, failed: true, kept: 0 });
           await check([thread('t1', 'blocker')]);
           expect(checkRuns.create.mock.calls).toEqual([[expect.objectContaining({
             conclusion: 'failure', output: expect.objectContaining({ summary: expect.stringMatching(/^A blocking thread is not cleared, but Manki could not dismiss every approval it gave, so this check fails instead\./) }),
           })]]);
           expect(authModule.reportPrState).not.toHaveBeenCalled();
           checkRuns = { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) };
-          dismissPreviousReviews.mockResolvedValueOnce({ dismissed: 0, failed: true });
+          dismissPreviousReviews.mockResolvedValueOnce({ dismissed: 0, failed: true, kept: 0 });
           await check([thread('t1', 'blocker')]);
           expect(checkRuns.create.mock.calls).toEqual([[expect.objectContaining({ conclusion: 'failure' })]]);
           expect(authModule.reportPrState).not.toHaveBeenCalled();
@@ -1147,7 +1147,7 @@ describe('checkAndAutoApprove', () => {
         jest.mocked(authModule.reportPrState).mockClear();
         const headless = setup([thread('t1', 'blocker')]);
         jest.mocked(headless.rest.pulls.get).mockRejectedValue(new Error('Not Found'));
-        dismissPreviousReviews.mockResolvedValueOnce({ dismissed: 1, failed: false });
+        dismissPreviousReviews.mockResolvedValueOnce({ dismissed: 1, failed: false, kept: 0 });
         await withdrawBlockedApproval(headless, TEST_BOT, 'owner', 'repo', 1, 'author', undefined);
         expect(jest.mocked(authModule.reportPrState).mock.calls).toEqual([['owner', 'repo', 1, { approval: null }]]);
         expect(headless.rest.pulls.get).toHaveBeenCalledTimes(2);
@@ -1156,7 +1156,7 @@ describe('checkAndAutoApprove', () => {
         expect(core.warning).toHaveBeenLastCalledWith('A blocking thread is not cleared, but Manki could not fail its check, so a required check may pass until the next review round');
         // A check write that fails once is tried again, so the check still fails.
         checkRuns = { create: jest.fn().mockRejectedValueOnce(new Error('Bad Gateway')).mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) };
-        dismissPreviousReviews.mockResolvedValueOnce({ dismissed: 1, failed: false });
+        dismissPreviousReviews.mockResolvedValueOnce({ dismissed: 1, failed: false, kept: 0 });
         await withdrawBlockedApproval(setup([thread('t1', 'blocker')]), TEST_BOT, 'owner', 'repo', 1, 'author', undefined);
         expect(checkRuns.create.mock.calls.map(([c]) => c.conclusion)).toEqual(['failure', 'failure']);
         // With no approval left to dismiss, as after a person dismissed it by hand, a check that still passes fails. One that

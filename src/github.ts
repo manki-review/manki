@@ -1549,8 +1549,8 @@ export async function updateProgressDashboard(
  * Dismiss the bot's reviews in `state`, `CHANGES_REQUESTED` by default, on this PR, except `keepReviewId` and any
  * review on `keepCommit`. Call it only after the new review is posted, so a failed run leaves the merge
  * block in place. A failed dismissal only warns, since the new review already stands. Returns how many reviews it
- * dismissed, and `failed` when the listing or any dismissal failed, so a review it should dismiss may still stand. Throws
- * the abort reason once GitHub writes are stopped.
+ * dismissed, and `failed` when the listing or any dismissal failed, so a review it should dismiss may still stand. `kept`
+ * counts the reviews in `state` it left because they are on `keepCommit`. Throws the abort reason once GitHub writes are stopped.
  */
 export async function dismissPreviousReviews(
   octokit: Octokit,
@@ -1561,7 +1561,7 @@ export async function dismissPreviousReviews(
   keepReviewId?: number,
   state: 'CHANGES_REQUESTED' | 'APPROVED' = 'CHANGES_REQUESTED',
   keepCommit?: string,
-): Promise<{ dismissed: number; failed: boolean }> {
+): Promise<{ dismissed: number; failed: boolean; kept: number }> {
   assertWritesAllowed();
   let reviews;
   try {
@@ -1573,14 +1573,17 @@ export async function dismissPreviousReviews(
     });
   } catch (error) {
     core.warning(`Failed to dismiss previous reviews: ${error instanceof Error ? error.message : error}`);
-    return { dismissed: 0, failed: true };
+    return { dismissed: 0, failed: true, kept: 0 };
   }
   let dismissed = 0;
   let failed = false;
+  let kept = 0;
 
   for (const review of reviews) {
     const onKeptCommit = keepCommit !== undefined && reviewedCommit(review) === keepCommit;
-    if (review.id !== keepReviewId && !onKeptCommit && isBotUser(bot, review.user) && !!review.body && (review.body.includes(BOT_MARKER) || isAutoApproval(review.body)) && review.state === state) {
+    const ours = isBotUser(bot, review.user) && !!review.body && (review.body.includes(BOT_MARKER) || isAutoApproval(review.body)) && review.state === state;
+    if (ours && onKeptCommit) kept++;
+    if (review.id !== keepReviewId && !onKeptCommit && ours) {
       assertWritesAllowed();
       try {
         await octokit.rest.pulls.dismissReview({
@@ -1599,7 +1602,7 @@ export async function dismissPreviousReviews(
       }
     }
   }
-  return { dismissed, failed };
+  return { dismissed, failed, kept };
 }
 
 function countOf(count: number, singular: string, pluralForm = `${singular}s`): string {

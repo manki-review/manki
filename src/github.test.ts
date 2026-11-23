@@ -5124,7 +5124,7 @@ describe('dismissPreviousReviews', () => {
       rest: { pulls: { dismissReview: dismissMock } },
     } as unknown as Parameters<typeof dismissPreviousReviews>[0];
 
-    expect(await dismissPreviousReviews(mockOctokit, TEST_BOT, 'owner', 'repo', 1, 3, 'APPROVED', SHA_B)).toEqual({ dismissed: 4, failed: false });
+    expect(await dismissPreviousReviews(mockOctokit, TEST_BOT, 'owner', 'repo', 1, 3, 'APPROVED', SHA_B)).toEqual({ dismissed: 4, failed: false, kept: 2 });
     expect(dismissMock.mock.calls.map(([args]) => args.review_id)).toEqual([1, 4, 5, 6]);
   });
 
@@ -5162,7 +5162,7 @@ describe('dismissPreviousReviews', () => {
       },
     } as unknown as Parameters<typeof dismissPreviousReviews>[0];
 
-    await expect(dismissPreviousReviews(mockOctokit, TEST_BOT, 'owner', 'repo', 1, 4)).resolves.toEqual({ dismissed: 0, failed: true });
+    await expect(dismissPreviousReviews(mockOctokit, TEST_BOT, 'owner', 'repo', 1, 4)).resolves.toEqual({ dismissed: 0, failed: true, kept: 0 });
     expect(dismissMock).not.toHaveBeenCalled();
     expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to dismiss previous reviews: Server Error'));
     warningSpy.mockRestore();
@@ -5186,7 +5186,7 @@ describe('dismissPreviousReviews', () => {
     } as unknown as Parameters<typeof dismissPreviousReviews>[0];
 
     // A refused dismissal counts as none, and marks the result failed though the next one worked.
-    await expect(dismissPreviousReviews(mockOctokit, TEST_BOT, 'owner', 'repo', 1)).resolves.toEqual({ dismissed: 1, failed: true });
+    await expect(dismissPreviousReviews(mockOctokit, TEST_BOT, 'owner', 'repo', 1)).resolves.toEqual({ dismissed: 1, failed: true, kept: 0 });
     expect(warningSpy).toHaveBeenCalledWith('Could not dismiss the previous review #1, it still requests changes: Forbidden');
     warningSpy.mockRestore();
   });
