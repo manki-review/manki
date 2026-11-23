@@ -1634,7 +1634,8 @@ async function reviewRound(
 
 /**
  * Fails the run and posts the incomplete round as a COMMENT with its record. An earlier request for changes stays standing, while an
- * approval of an older commit is dismissed, since nothing approved the code since. Returns the report for the PR check.
+ * approval of an older commit is dismissed, since nothing approved the code since. Once no Manki approval stands, the
+ * coordinator's record of one is cleared too. Returns the report for the PR check.
  */
 async function postIncompleteRound(run: ReviewRun, result: ReviewResult, buildContext: () => RoundContext, reviewTimeMs: number): Promise<CheckReport> {
   const { octokit, bot, owner, repo, prNumber, commitSha, commentId, dashboard, diff } = run;
@@ -1643,7 +1644,8 @@ async function postIncompleteRound(run: ReviewRun, result: ReviewResult, buildCo
   core.setFailed(`Review incomplete: ${failureReason(result.summary)}`);
   result.verdict = 'COMMENT';
   const { id: reviewId } = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, buildContext(), reviewTimeMs, { noVerdict: true, rules: run.config.review?.rules, closedPaths: run.config.closed_paths });
-  await dismissPreviousReviews(octokit, bot, owner, repo, prNumber, reviewId, 'APPROVED', commitSha);
+  const { dismissed, failed, kept } = await dismissPreviousReviews(octokit, bot, owner, repo, prNumber, reviewId, 'APPROVED', commitSha);
+  if (dismissed > 0 && !failed && kept === 0) await reportPrState(owner, repo, prNumber, { approval: null });
   dashboard.phase = 'complete';
   await updateProgressComment(octokit, owner, repo, commentId, { ...dashboard, totalDurationMs: Date.now() - run.startTime }, undefined, progressSettings(run, run.progress, 'review incomplete'));
   return outcomeReport('INCOMPLETE', result.summary);

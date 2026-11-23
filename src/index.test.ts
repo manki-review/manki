@@ -226,7 +226,7 @@ jest.mock('./github', () => ({
   updateProgressDashboard: jest.fn().mockResolvedValue(undefined),
   startLiveEdits: jest.requireActual('./github').startLiveEdits,
   LIVE_EDIT_MS: jest.requireActual('./github').LIVE_EDIT_MS,
-  dismissPreviousReviews: jest.fn().mockResolvedValue({ dismissed: 0, failed: false }),
+  dismissPreviousReviews: jest.fn().mockResolvedValue({ dismissed: 0, failed: false, kept: 0 }),
   postReview: jest.fn().mockResolvedValue({ id: 123, approvalHeld: false, warningsHeld: false }),
   formatFoundAgainReply: jest.fn().mockReturnValue('Found again.'),
   formatVariantReply: jest.fn().mockReturnValue('Another instance.'),
@@ -2434,7 +2434,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(ghUtils.fetchRepoContext).mockResolvedValue({ text: '', files: [] });
     jest.mocked(ghUtils.fetchFileContents).mockResolvedValue(new Map());
     jest.mocked(ghUtils.fetchLinkedIssues).mockResolvedValue([]);
-    jest.mocked(ghUtils.dismissPreviousReviews).mockResolvedValue({ dismissed: 0, failed: false });
+    jest.mocked(ghUtils.dismissPreviousReviews).mockResolvedValue({ dismissed: 0, failed: false, kept: 0 });
     jest.mocked(ghUtils.updateProgressComment).mockResolvedValue(undefined);
     jest.mocked(ghUtils.updateProgressDashboard).mockResolvedValue(undefined);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -3215,7 +3215,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [file], excluded: [] });
     const warmupCLI = jest.fn().mockResolvedValue(undefined);
     jest.mocked(createLLMClient).mockImplementation(() => ({ sendMessage: jest.fn(), warmupCLI }));
-    if (notice) jest.mocked(ghUtils.dismissPreviousReviews).mockResolvedValueOnce({ dismissed: 1, failed: false });
+    if (notice) jest.mocked(ghUtils.dismissPreviousReviews).mockResolvedValueOnce({ dismissed: 1, failed: false, kept: 0 });
 
     await runFullReview(baseArgs.owner, baseArgs.repo, baseArgs.prNumber, baseArgs.commitSha, baseArgs.baseRef, baseArgs.prContext, { forceReview });
 
@@ -3247,7 +3247,7 @@ describe('runFullReview orchestration', () => {
       { id: 71, body: '**Too big for automatic review** ...\n- `src/a.ts`: - [x] Review again is not offered\n\n<!-- manki -->\n<!-- manki-too-big -->', user: { login: 'manki-review[bot]' }, updated_at: '2026-11-07T10:00:00Z' },
       { id: 70, body: '**Too big for automatic review** ...\n\n<!-- manki -->\n<!-- manki-too-big -->\n\n---\nNot reviewed yet · head `abc123` · too big for automatic review\n- [x] Review again <!-- manki-box:again -->\n<!-- manki-settings -->', user: { login: 'manki-review[bot]' }, updated_at: '2026-11-07T09:00:00Z' },
     ] as Awaited<ReturnType<typeof ghUtils.fetchPRComments>>);
-    jest.mocked(ghUtils.dismissPreviousReviews).mockResolvedValueOnce({ dismissed: 1, failed: true });
+    jest.mocked(ghUtils.dismissPreviousReviews).mockResolvedValueOnce({ dismissed: 1, failed: true, kept: 0 });
 
     await callRunFullReview();
 
@@ -3345,7 +3345,7 @@ describe('runFullReview orchestration', () => {
     // The failed run of the same head keeps its report, since this round posts no verdict.
     const failed = { id: 31, body: '🔴 **Review failed** boom\n\n<!-- manki -->\n\n---\nNot reviewed yet · head `abc123` · review failed\n- [ ] Review again <!-- manki-box:again -->\n<!-- manki-settings -->', user: { login: 'manki-review[bot]' }, updated_at: '2026-11-18T09:00:00Z' };
     jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([failed]);
-    jest.mocked(ghUtils.dismissPreviousReviews).mockResolvedValueOnce({ dismissed: 1, failed: refused });
+    jest.mocked(ghUtils.dismissPreviousReviews).mockResolvedValueOnce({ dismissed: 1, failed: refused, kept: 0 });
 
     try {
       await callRunFullReview();
@@ -4120,7 +4120,12 @@ describe('runFullReview orchestration', () => {
     }));
   });
 
-  it('posts COMMENT, dismisses only approvals of older commits, and skips post-review processing for an incomplete review', async () => {
+  // The coordinator's record goes only once no Manki approval stands, and an approval of the head stays.
+  it.each([
+    ['clears the coordinator\'s record of the approval it dismissed', { dismissed: 1, failed: false, kept: 0 }, true],
+    ['keeps the coordinator\'s record while an approval of the head stands', { dismissed: 1, failed: false, kept: 1 }, false],
+    ['keeps the coordinator\'s record when the reviews cannot be listed', { dismissed: 0, failed: true, kept: 0 }, false],
+  ])('posts COMMENT, dismisses only approvals of older commits, %s, and skips post-review processing for an incomplete review', async (_label, dismissal, cleared) => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
@@ -4135,6 +4140,7 @@ describe('runFullReview orchestration', () => {
       findings: [], highlights: [], reviewComplete: false,
       agentNames: ['general'],
     });
+    jest.mocked(ghUtils.dismissPreviousReviews).mockResolvedValueOnce(dismissal);
 
     await callRunFullReview();
 
@@ -4147,6 +4153,7 @@ describe('runFullReview orchestration', () => {
     expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith('Review incomplete: Review incomplete');
     expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)![4].totalDurationMs).toEqual(expect.any(Number));
     expect(jest.mocked(ghUtils.dismissPreviousReviews).mock.calls).toEqual([[expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42, 123, 'APPROVED', 'abc123']]);
+    expect(jest.mocked(authModule.reportPrState).mock.calls.filter(([, , , report]) => 'approval' in report)).toEqual(cleared ? [['test-owner', 'test-repo', 42, { approval: null }]] : []);
     // Should not call dedup since we return early
     expect(jest.mocked(recapModule.deduplicateFindings)).not.toHaveBeenCalled();
   });
