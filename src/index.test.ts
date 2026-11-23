@@ -487,7 +487,10 @@ describe('run', () => {
       { name: 'memory on, but its store does not open', memory: true, toMemory: false },
       { name: 'memory off', memory: false, toMemory: false },
       { name: 'no base commit in the payload', memory: true, toMemory: true, noBase: true },
-    ])('records the fix rate of a merged pull request: $name', async ({ memory, toMemory, noBase }) => {
+      // The default branch stands in for a base without a config file, but never for the base commit of the default branch itself.
+      { name: 'merged into the default branch', memory: true, toMemory: true, defaultBranch: 'main' },
+      { name: 'merged into a branch without a config file', memory: true, toMemory: true, defaultBranch: 'dev' },
+    ])('records the fix rate of a merged pull request: $name', async ({ memory, toMemory, noBase, defaultBranch }) => {
       const records = memory;
       const baseSha = noBase ? undefined : 'base-sha';
       // The merged branch holds the PR's own config, which lowered the role. The base commit from before the merge still says `maintain`.
@@ -503,6 +506,7 @@ describe('run', () => {
           action: 'closed',
           sender: { login: 'user' },
           pull_request: { number: 7, merged: true, merge_commit_sha: 'merged', head: { sha: 'head' }, base: { ref: 'main', sha: baseSha }, user: { login: 'author' } },
+          ...(defaultBranch && { repository: { default_branch: defaultBranch } }),
         },
       });
 
@@ -515,7 +519,8 @@ describe('run', () => {
         return;
       }
       // Without the base commit the role is unknown, so only an admin's override counts. The merged branch's own value is never used.
-      expect(readAt).toEqual(baseSha ? ['main', baseSha] : ['main']);
+      const fallback = defaultBranch === 'dev' ? ['dev'] : [];
+      expect(readAt).toEqual(baseSha ? ['main', ...fallback, baseSha, ...fallback] : ['main']);
       expect(fixRateModule.recordFixRate).toHaveBeenCalledWith(
         expect.anything(), TEST_BOT, 'test-owner', 'test-repo',
         { number: 7, headSha: 'head', mergedSha: 'merged', authorLogin: 'author', clearRole: baseSha ? 'maintain' : 'admin' },
@@ -2830,13 +2835,40 @@ describe('runFullReview orchestration', () => {
       expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
     });
 
-    it('reviews with the defaults and holds nothing when the base branch has no config file', async () => {
-      configFiles(null, async () => null);
+    const devConfig = 'max_diff_lines: 3000\nmodels:\n  second_refuter: gpt-5.5\nreview:\n  routing:\n    internal: full\n';
+    it.each([
+      ['the base branch is the default branch and has no config file', 'main', null, null, ['main'], undefined, 'builtin'],
+      ['the base branch has its own config file', 'dev', 'max_diff_lines: 2000\nreview:\n  notes: 1\n', devConfig, ['main'], undefined, 'base'],
+      ['the base branch has no config file and the default branch has one', 'dev', null, devConfig, ['main', 'dev'], undefined, 'default_branch'],
+      ['neither the base nor the default branch has a config file', 'dev', null, null, ['main', 'dev'], undefined, 'builtin'],
+      ['the base branch has no config file and the default branch\'s does not load', 'dev', null, 'max_diff_lines: 0\n', ['main', 'dev'], 'default_branch', 'default_branch_invalid'],
+      ['the event names no default branch', undefined, null, devConfig, ['main'], undefined, 'builtin'],
+    ] as const)('reviews with the right config when %s', async (_label, defaultBranch, base, dev, reads, configHold, configSource) => {
+      setContext({ payload: { repository: { default_branch: defaultBranch } } });
+      configFiles(null, async () => base);
+      jest.mocked(ghUtils.readConfigFile).mockImplementation(async (_o, _ow, _r, ref) => (ref === 'main' ? base : ref === 'dev' ? dev : null));
+      jest.mocked(reviewModule.runReview).mockResolvedValueOnce({
+        verdict: 'APPROVE', outcome: 'READY', summary: 's', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
+        routing: { class: 'internal', rank: 10, matched: ['internal'], classSource: 'triage', group: 'solo', groupSource: 'routing' },
+      });
 
-      await callRunFullReview();
+      try {
+        await callRunFullReview();
+      } finally {
+        setContext({});
+      }
 
-      expect(reviewedConfig()).toEqual(actualLoadConfig(undefined));
-      expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual(expect.objectContaining({ configHold: undefined }));
+      const expected = configSource === 'default_branch_invalid' ? actualFallbackConfig([]) : actualLoadConfig(configSource === 'base' ? base! : configSource === 'default_branch' ? dev! : undefined);
+      expect(reviewedConfig()).toEqual(expected);
+      // The PR's head is read first, and never stands in for a missing base config.
+      expect(jest.mocked(ghUtils.readConfigFile).mock.calls.map(call => call[3])).toEqual(['abc123', ...reads]);
+      expect(jest.mocked(ghUtils.postReview).mock.calls[0][7]?.routing?.configSource).toBe(configSource);
+      expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual(expect.objectContaining({ configHold }));
+      // A head without its own file edits no config the base branch lacks, such as the default branch's.
+      if (configSource !== 'base') expect(jest.mocked(core.info).mock.calls.map(([message]) => String(message))).not.toContainEqual(expect.stringContaining('This PR changes'));
+      if (configSource === 'default_branch_invalid') {
+        expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining('Could not load .manki.yml on the default branch, using the defaults and no approval'));
+      }
       expect(jest.mocked(ghUtils.markProgressCommentFailed)).not.toHaveBeenCalled();
       expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
     });
