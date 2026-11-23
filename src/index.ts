@@ -2684,6 +2684,9 @@ async function handleReviewCommentInteraction(): Promise<void> {
     if (approved) {
       core.info(`PR #${prNumber} auto-approved after all findings resolved`);
     }
+  } else if (prNumber && !held && !eventPrClosed()) {
+    // The reply can reopen a blocking thread, which takes back an approval a round gave.
+    await withdrawBlockedApproval(octokit, bot, owner, repo, prNumber, payload.pull_request?.user?.login, config.author_clear_role);
   }
 }
 

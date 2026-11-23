@@ -1091,7 +1091,7 @@ describe('checkAndAutoApprove', () => {
       })}`;
       const approvals = [roundBody(roundThatPosted(HEAD, [])), autoApproval];
       for (const body of approvals) {
-        const setup = (threads: ReturnType<typeof thread>[]) => makeMockOctokit({ threads, prHeadSha: HEAD, mergeable: true, existingReviews: [{ id: 7, body, state: 'APPROVED', commit_id: HEAD, user }] });
+        const setup = (threads: ReturnType<typeof thread>[]): Octokit => makeMockOctokit({ threads, prHeadSha: HEAD, mergeable: true, existingReviews: [{ id: 7, body, state: 'APPROVED', commit_id: HEAD, user }] });
         // The check that runs after a reopen, with `auto_approve` on, and the one that runs with it off.
         const checks = [
           async (threads: ReturnType<typeof thread>[]) => { await approveOrSayWhy(setup(threads), TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG); },
@@ -1106,6 +1106,12 @@ describe('checkAndAutoApprove', () => {
           await check([fixed('t1'), thread('t2', 'warning', undefined, { title: 'Retry never stops' })]);
           expect(dismissPreviousReviews).not.toHaveBeenCalled();
         }
+        // Without the round records every thread counts as blocking, which proves no blocker, so an open warning thread withdraws nothing.
+        jest.spyOn(core, 'warning').mockImplementation(() => {});
+        const unread = setup([thread('t2', 'warning', undefined, { title: 'Retry never stops' })]);
+        jest.mocked(unread.paginate).mockRejectedValueOnce(new Error('rate limited'));
+        await withdrawBlockedApproval(unread, TEST_BOT, 'owner', 'repo', 1, 'author', undefined);
+        expect(dismissPreviousReviews).not.toHaveBeenCalled();
       }
     });
   });

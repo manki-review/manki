@@ -956,12 +956,19 @@ type ApprovalCheck = { approved: true; standing?: true } | { approved: false; wh
 
 /**
  * Dismisses Manki's approvals while a blocking thread is not cleared, as after a reopen. It never approves, so it also
- * runs where `auto_approve` is off and only a review round approves.
+ * runs where `auto_approve` is off and only a review round approves. Without every round record each thread counts as
+ * blocking, which proves no blocker, so it then dismisses nothing.
  */
 async function withdrawBlockedApproval(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, prAuthorLogin: string | undefined, clearRole: AuthorClearRole | undefined,
 ): Promise<void> {
-  const threads = await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber);
+  let threads: ReviewThread[];
+  try {
+    threads = await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber, undefined, true);
+  } catch (error) {
+    core.warning(`Could not read the grades of every review thread, so no approval is withdrawn: ${error instanceof Error ? error.message : error}`);
+    return;
+  }
   const prAuthorRole = await overrideRole(octokit, owner, repo, threads, prAuthorLogin, clearRole);
   if (unclearedThreads(threads, bot, prAuthorLogin, prAuthorRole).length > 0) await dismissPreviousReviews(octokit, bot, owner, repo, prNumber, undefined, 'APPROVED');
 }
@@ -1063,8 +1070,7 @@ async function approveOrSayWhy(
 
   if (uncleared().length > 0) {
     core.info('Not all blocking findings resolved — skipping auto-approve');
-    // A blocking thread reopened after an approval takes that approval back, so it never stands beside an open blocker.
-    await dismissPreviousReviews(octokit, bot, owner, repo, prNumber, undefined, 'APPROVED');
+    await withdrawBlockedApproval(octokit, bot, owner, repo, prNumber, prAuthorLogin, clearRole);
     return withheld(why, false);
   }
 

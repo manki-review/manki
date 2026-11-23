@@ -2055,6 +2055,40 @@ describe('handleReviewCommentInteraction', () => {
     );
     expect(jest.mocked(interaction.handleReviewCommentReply)).not.toHaveBeenCalled();
   });
+
+  it('withdraws an approval beside a blocker after a reply with auto_approve off, and runs the approval check with it on', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) => (name === 'claude_code_oauth_token' ? 'oauth-tok' : ''));
+    const reply = (state = 'open') => setContext({
+      eventName: 'pull_request_review_comment',
+      payload: {
+        action: 'created',
+        comment: { body: 'Fixed in the last push.', user: { type: 'User' }, in_reply_to_id: 7 },
+        pull_request: { base: { ref: 'main' }, number: 42, state, user: { login: 'author' } },
+      },
+    });
+    const config = (autoApprove: boolean) => jest.mocked(configModule.loadConfig).mockReturnValue({
+      auto_review: true, auto_approve: autoApprove, author_clear_role: 'admin', max_diff_lines: 5000, exclude_paths: [], instructions: '', memory: { enabled: false, repo: '' },
+    });
+
+    config(false);
+    reply();
+    await handleReviewCommentInteraction();
+    expect(jest.mocked(interaction.handleReviewCommentReply)).toHaveBeenCalled();
+    expect(jest.mocked(stateModule.withdrawBlockedApproval)).toHaveBeenCalledWith(expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 42, 'author', 'admin');
+    expect(jest.mocked(stateModule.checkAndAutoApprove)).not.toHaveBeenCalled();
+
+    // On a merged or closed PR the reply dismisses no review.
+    jest.mocked(stateModule.withdrawBlockedApproval).mockClear();
+    reply('closed');
+    await handleReviewCommentInteraction();
+    expect(jest.mocked(stateModule.withdrawBlockedApproval)).not.toHaveBeenCalled();
+
+    config(true);
+    reply();
+    await handleReviewCommentInteraction();
+    expect(jest.mocked(stateModule.checkAndAutoApprove)).toHaveBeenCalledWith(expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 42, expect.objectContaining({ auto_approve: true }));
+    expect(jest.mocked(stateModule.withdrawBlockedApproval)).not.toHaveBeenCalled();
+  });
 });
 
 describe('handleReviewStateCheck', () => {
