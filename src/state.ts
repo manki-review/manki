@@ -4,7 +4,7 @@ import * as github from '@actions/github';
 import { assertWritesAllowed } from './abort';
 import { changeThreadThroughService, fetchPrState, reportPrState } from './auth';
 import { newestCheckPassed, outcomeReport, reportCheck } from './check-run';
-import { AFTER_PUSH_LINE, ApprovalHeld, approvalHoldBox, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, autoApproveHeadMarker, failedAutoApproveId, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchBlobShas, fetchInterRoundDiff, fetchPRComments, givesVerdict, HELD_FOR_PERSON_MARKER, inline, sanitizeMarkdown, fetchReviewThreadNodes, fetchStandingVerdict, MANKI_VERSION, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatReadyReport, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, authorClearRole, deleteAutoApproveProgressComment, reviewedCommit, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
+import { AFTER_PUSH_LINE, ApprovalHeld, approvalHoldBox, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, autoApproveHeadMarker, failedAutoApproveId, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchBlobShas, fetchInterRoundDiff, fetchPRComments, givesVerdict, HELD_FOR_PERSON_MARKER, inline, sanitizeMarkdown, fetchReviewDismissals, fetchReviewThreadNodes, fetchStandingVerdict, MANKI_VERSION, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatReadyReport, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, authorClearRole, deleteAutoApproveProgressComment, reviewedCommit, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
 import { ISSUE_BOX_LABEL, withMessageBoxes } from './issue-box';
 import { MessageBox, SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
@@ -650,17 +650,39 @@ function isBotReview(bot: BotIdentity, r: ReviewEntry): boolean {
 }
 
 /**
+ * Returns Manki's reviews that still stand: every one not dismissed, and a request for changes on `headSha` that a person
+ * dismissed. A person's dismissal sets the block aside, but the review still covers the commit and its record still
+ * names what it blocked on. A dismissed approval, and a dismissal by Manki, a push or another app, leave the review out.
+ * So does every dismissal when the timeline cannot be read.
+ */
+async function standingReviews(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string, reviews: ReviewEntry[],
+): Promise<ReviewEntry[]> {
+  const dismissedOnHead = reviews.filter(r => isBotReview(bot, r) && r.state === 'DISMISSED' && reviewedCommit(r) === headSha && givesVerdict(r));
+  let setAside = new Set<number>();
+  if (dismissedOnHead.length > 0) {
+    try {
+      const dismissals = await fetchReviewDismissals(octokit, owner, repo, prNumber);
+      setAside = new Set(dismissals.filter(d => d.state === 'changes_requested' && !d.dismissalCommitId && d.actor?.type === 'User' && !isBotLogin(bot, d.actor.login)).map(d => d.reviewId));
+    } catch (error) {
+      core.warning(`Could not read who dismissed Manki's review of the head, so it covers nothing: ${error instanceof Error ? error.message : error}`);
+    }
+  }
+  return reviews.filter(r => isBotReview(bot, r) && (r.state !== 'DISMISSED' || dismissedOnHead.includes(r) && setAside.has(r.id)));
+}
+
+/**
  * Returns the commit whose Manki review covers the head of `pr`, or `undefined` when none does. That is the head with a
- * verdict that is not dismissed, or the commit of the standing verdict when its PR diff equals the head's, as after a rebase.
+ * verdict among the `standing` reviews, or the commit of the standing verdict when its PR diff equals the head's, as after a rebase.
  */
 async function coveredCommit(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number,
-  pr: PullHead, reviews: ReviewEntry[],
+  pr: PullHead, standing: ReviewEntry[],
 ): Promise<string | undefined> {
-  if (reviews.some(r => isBotReview(bot, r) && r.state !== 'DISMISSED' && reviewedCommit(r) === pr.head.sha && givesVerdict(r))) return pr.head.sha;
-  const standing = await findUnchangedVerdict(octokit, bot, owner, repo, prNumber, pr.base.ref, pr.head.sha);
-  if (standing) core.info(`No change since the reviewed commit ${standing.commitSha.slice(0, 7)}, so its review covers ${pr.head.sha.slice(0, 7)}`);
-  return standing?.commitSha;
+  if (standing.some(r => reviewedCommit(r) === pr.head.sha && givesVerdict(r))) return pr.head.sha;
+  const unchanged = await findUnchangedVerdict(octokit, bot, owner, repo, prNumber, pr.base.ref, pr.head.sha);
+  if (unchanged) core.info(`No change since the reviewed commit ${unchanged.commitSha.slice(0, 7)}, so its review covers ${pr.head.sha.slice(0, 7)}`);
+  return unchanged?.commitSha;
 }
 
 /**
@@ -945,11 +967,13 @@ async function retireStaleNotices(
 
 const HELD_FOR_PERSON_LINE = 'Manki\'s review of the head holds its approval for a person and says why, such as files no model read. Resolving threads does not lift that. A person approves, or the next review round decides.';
 
-/** Whether the review that covers `headSha` holds its approval for a person: the latest one, or any on the head, as when a no-verdict round follows it. */
-function heldForPerson(bot: BotIdentity, reviews: ReviewEntry[], headSha: string): boolean {
-  const botReviews = reviews.filter(r => isBotReview(bot, r) && r.state !== 'DISMISSED');
+/**
+ * Whether the review that covers `headSha` holds its approval for a person: the latest of the `standing` reviews, or any
+ * on the head, as when a no-verdict round follows it.
+ */
+function heldForPerson(standing: ReviewEntry[], headSha: string): boolean {
   const held = (r?: ReviewEntry) => hasOwnMarker(r?.body ?? '', HELD_FOR_PERSON_MARKER);
-  return held(botReviews.at(-1)) || botReviews.some(r => reviewedCommit(r) === headSha && held(r));
+  return held(standing.at(-1)) || standing.some(r => reviewedCommit(r) === headSha && held(r));
 }
 
 /**
@@ -1067,7 +1091,8 @@ async function approveOrSayWhy(
    */
   const explain = async (role: AuthorClearRole | undefined): Promise<string> => {
     const reviews = await listReviews();
-    const covered = await coveredCommit(octokit, bot, owner, repo, prNumber, pr, reviews);
+    const standing = await standingReviews(octokit, bot, owner, repo, prNumber, pr.head.sha, reviews);
+    const covered = await coveredCommit(octokit, bot, owner, repo, prNumber, pr, standing);
     const block = covered ? blockOf(reviews, bot, covered, threads, owner, repo, prNumber) : undefined;
     const instead = block ? block.held && `${block.held}\n\n${NEXT_ROUND_LINE}` : unreviewedLine(pr.head.sha, await halt());
     const open = unclearedThreads(threads, bot, prAuthorLogin, role, block?.named);
@@ -1079,7 +1104,7 @@ async function approveOrSayWhy(
     return [
       lead && withMessageBoxes(lead, [!!instead && 'again']),
       warnings.length > 0 && warningThreadsLine(warnings, bot, clearRole),
-      covered && heldForPerson(bot, reviews, pr.head.sha) && HELD_FOR_PERSON_LINE,
+      covered && heldForPerson(standing, pr.head.sha) && HELD_FOR_PERSON_LINE,
       hold && withMessageBoxes(approvalHoldLine(hold, config?.auto_approve), [!(instead && holdBox === 'again') && holdBox]),
     ].filter((line): line is string => !!line).join('\n\n');
   };
@@ -1105,13 +1130,13 @@ async function approveOrSayWhy(
   }
 
   const reviews = await listReviews();
-  const botReviews = reviews.filter((r: ReviewEntry) => isBotReview(bot, r) && r.state !== 'DISMISSED');
-  const latestBotReview = botReviews[botReviews.length - 1];
+  const standing = await standingReviews(octokit, bot, owner, repo, prNumber, pr.head.sha, reviews);
+  const latestBotReview = standing.at(-1);
 
   // Stale-SHA gate: bail unless a Manki review covers the current HEAD. This covers
-  // every variant: stale prior review, a review that names no commit, all reviews DISMISSED, or
+  // every variant: stale prior review, a review that names no commit, all reviews dismissed other than by a person, or
   // no bot review at all.
-  const covered = await coveredCommit(octokit, bot, owner, repo, prNumber, pr, reviews);
+  const covered = await coveredCommit(octokit, bot, owner, repo, prNumber, pr, standing);
   if (!covered) {
     const staleSha =
       reviews.filter((r: ReviewEntry) => isBotReview(bot, r)).map(reviewedCommit).filter(sha => sha && sha !== pr.head.sha).at(-1) ?? 'unknown';
@@ -1145,7 +1170,7 @@ async function approveOrSayWhy(
   }
 
   const block = blockOf(reviews, bot, covered, threads, owner, repo, prNumber);
-  if (heldForPerson(bot, reviews, pr.head.sha)) {
+  if (heldForPerson(standing, pr.head.sha)) {
     core.info('The review that covers the head holds its approval for a person, such as for unread files — skipping auto-approve');
     return withheld(why, block.hold ?? false);
   }
