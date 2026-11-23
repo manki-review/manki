@@ -3802,7 +3802,7 @@ describe('runReview', () => {
       const round = await run('pre_existing', options);
       const [kept] = round.result.findings;
       expect([options, round.result.outcome, kept.severity, kept.tags?.filter(t => t !== 'security')]).toEqual([options, 'ADDRESS_FIRST', 'blocker', options.security ? [] : undefined]);
-      expect(formatFindingComment(kept, TEST_LINKS)).toContain('**Possibly older than this PR.** One check found the same problem on the base branch before this PR, at ');
+      expect(formatFindingComment(kept, TEST_LINKS)).toContain('**Possibly older than this PR.** One check found the same problem on the base branch at ');
     }
     // The re-indented line 4 has no place at the base, so two answers that compare the failure are enough, and one is not.
     const reindented = await run('pre_existing', { line: 4, baseProof: ['src/queue.ts:3'] });

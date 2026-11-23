@@ -103,7 +103,7 @@ function isDisprovedThread(body: string): boolean {
 
 /** Names the kind of a guarded thread, without an article, for the notes that say who clears it. */
 function guardedKind(t: { isSecurity?: boolean; disprovedBlocker?: boolean }): string {
-  return t.isSecurity ? 'security finding' : t.disprovedBlocker ? 'blocker that a check disproved' : 'blocking finding';
+  return t.isSecurity ? 'security finding' : t.disprovedBlocker ? 'finding a check lowered from a blocker' : 'blocking finding';
 }
 
 /** The severity in the marker of a Manki thread's first comment, or `unknown` for a thread from before the markers. */

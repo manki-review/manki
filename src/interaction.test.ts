@@ -1217,7 +1217,7 @@ describe('handleReviewCommentReply', () => {
       `Withdrawn. The caller already checks for null.\n\n${LISTED}\n\n${MAINTAINER}\n\nThis is a security finding, so the thread stays open until someone other than the PR author with write access closes it. A PR author can close it only with the \`maintain\` role or a higher one.`, undefined],
     // The thread of a disproved blocker is guarded as a security thread is, so only someone who may clear it clears it.
     ['the PR author hears that a disproved blocker stays open after "Withdrawn."', 'Withdrawn. The caller already checks for null.', CONFIRMED, 'pr-author', 'disproved',
-      `Withdrawn. The caller already checks for null.\n\n${LISTED}\n\n${MAINTAINER}\n\nThis is a blocker that a check disproved, so the thread stays open until someone other than the PR author with write access closes it. A PR author can close it only with the \`maintain\` role or a higher one.`, undefined],
+      `Withdrawn. The caller already checks for null.\n\n${LISTED}\n\n${MAINTAINER}\n\nThis is a finding a check lowered from a blocker, so the thread stays open until someone other than the PR author with write access closes it. A PR author can close it only with the \`maintain\` role or a higher one.`, undefined],
     ['a maintainer clears a disproved blocker with "Withdrawn."', 'Withdrawn. The caller already checks for null.', CONFIRMED, 'someone', 'disproved',
       `Withdrawn. The caller already checks for null.\n\n${LISTED}\n\n${CHECKED}`, 'INVALID'],
     ['a maintainer hears it after "Unverified." too', 'Unverified. A maintainer should confirm it.', CONFIRMED, 'someone', 'blocker',
@@ -2431,7 +2431,7 @@ describe('handleReviewCommentCommand', () => {
       return jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.map((call: unknown[]) => (call[0] as { body: string }).body);
     };
     expect(await dismiss('This warning holds the approval until it is fixed.')).toEqual([
-      'The thread is resolved, but a dismissal does not lift a warning\'s hold. This warning holds the approval until it is fixed. Reopen the thread before you resolve it by hand.\n\n<!-- manki -->',
+      'The thread is resolved, but a dismissal does not clear a warning. This warning holds the approval until it is fixed. Reopen the thread before you resolve it by hand.\n\n<!-- manki -->',
     ]);
     // A warning that holds nothing after the dismissal, such as one Manki already accepted a reply on, gets no note.
     expect(await dismiss(undefined)).toEqual([]);
@@ -2473,7 +2473,7 @@ describe('handleReviewCommentCommand', () => {
     expect(state.announceSecurityOverrides).not.toHaveBeenCalled();
     expect(jest.mocked(state.recordDismissal).mock.calls).toEqual(result === 'cleared' || result === 'failed' ? [[octokit, 'PRRT_this', 'someone', false, undefined]] : []);
     // A thread that stays resolved by the PR author still blocks, or holds the approval, so the dismissal says it did not work.
-    const what = { security: 'security finding', disproved: 'blocker that a check disproved' }[kind as string] ?? 'blocking finding';
+    const what = { security: 'security finding', disproved: 'finding a check lowered from a blocker' }[kind as string] ?? 'blocking finding';
     const keepsBlocking = `This is a ${what}, so resolving the thread does not clear it. It keeps ${kind === 'disproved' ? 'holding the approval' : 'blocking'} until someone other than the PR author with write access clears it. A PR author can clear it only with the \`maintain\` role or a higher one.`;
     const note = { failed: 'Could not resolve this thread. The run log has the reason.', refused: keepsBlocking, cleared: undefined, left: undefined }[result];
     expect(jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls).toEqual(
