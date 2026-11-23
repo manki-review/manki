@@ -1091,7 +1091,7 @@ describe('checkAndAutoApprove', () => {
       })}`;
       const approvals = [roundBody(roundThatPosted(HEAD, [])), autoApproval];
       for (const body of approvals) {
-        let checkRuns = { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) };
+        let checkRuns: { create: jest.Mock; update: jest.Mock; listForRef?: jest.Mock } = { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) };
         const setup = (threads: ReturnType<typeof thread>[]): Octokit => makeMockOctokit({ threads, prHeadSha: HEAD, mergeable: true, checks: checkRuns, existingReviews: [{ id: 7, body, state: 'APPROVED', commit_id: HEAD, user }] });
         // The check that runs after a reopen, with `auto_approve` on, and the one that runs with it off.
         const checks = [
@@ -1159,6 +1159,20 @@ describe('checkAndAutoApprove', () => {
         dismissPreviousReviews.mockResolvedValueOnce({ dismissed: 1, failed: false });
         await withdrawBlockedApproval(setup([thread('t1', 'blocker')]), TEST_BOT, 'owner', 'repo', 1, 'author', undefined);
         expect(checkRuns.create.mock.calls.map(([c]) => c.conclusion)).toEqual(['failure', 'failure']);
+        // With no approval left to dismiss, as after a person dismissed it by hand, a check that still passes fails. One that
+        // does not pass, and checks that cannot be read, get no write.
+        const checkRun = (conclusion: string) => ({ id: 9, status: 'completed', conclusion, app: { slug: 'manki-review' } });
+        for (const [runs, fails] of [[[checkRun('success')], true], [[checkRun('failure')], false], [null, false]] as const) {
+          const listForRef = runs ? jest.fn().mockResolvedValue({ data: runs }) : jest.fn().mockRejectedValue(new Error('Forbidden'));
+          checkRuns = { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}), listForRef };
+          jest.mocked(authModule.reportPrState).mockClear();
+          await withdrawBlockedApproval(setup([thread('t1', 'blocker')]), TEST_BOT, 'owner', 'repo', 1, 'author', undefined);
+          expect(listForRef).toHaveBeenCalledWith(expect.objectContaining({ ref: HEAD, check_name: 'Manki' }));
+          expect(checkRuns.create.mock.calls).toEqual(fails ? [[expect.objectContaining({
+            head_sha: HEAD, conclusion: 'failure', output: expect.objectContaining({ summary: expect.stringMatching(/^A blocking thread is not cleared, so this check no longer passes\./) }),
+          })]] : []);
+          expect(authModule.reportPrState).not.toHaveBeenCalled();
+        }
       }
     });
   });

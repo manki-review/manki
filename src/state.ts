@@ -957,11 +957,13 @@ type ApprovalCheck = { approved: true; standing?: true } | { approved: false; wh
 // A dismissed approval no longer covers the head, so resolving the threads alone approves nothing.
 const WITHDRAWN_LINE = `A blocking thread is not cleared, so Manki withdrew its approval. ${NEXT_ROUND_LINE}`;
 const NOT_WITHDRAWN_LINE = `A blocking thread is not cleared, but Manki could not dismiss every approval it gave, so this check fails instead. ${NEXT_ROUND_LINE}`;
+const STILL_BLOCKED_LINE = `A blocking thread is not cleared, so this check no longer passes. ${NEXT_ROUND_LINE}`;
 
 /**
- * Dismisses Manki's approvals while a blocking thread is not cleared, as after a reopen. Once it dismissed one, or a
- * dismissal failed, it fails the `Manki` check on the head, so a required check no longer passes, and tries a failed
- * check write once more. Only when every dismissal succeeded does it also clear the approval the coordinator recorded. It never approves, so it also runs where `auto_approve` is off and only
+ * Dismisses Manki's approvals while a blocking thread is not cleared, as after a reopen. It then fails the `Manki` check
+ * on the head, so a required check no longer passes, and tries a failed check write once more. With no dismissal tried,
+ * it fails the check only when the newest one passed. Only when it dismissed one and no dismissal failed does it also
+ * clear the approval the coordinator recorded. It never approves, so it also runs where `auto_approve` is off and only
  * a review round approves. Without every round record each thread counts as blocking, which proves no blocker, so it then
  * dismisses nothing.
  */
@@ -978,13 +980,15 @@ async function withdrawBlockedApproval(
   const prAuthorRole = await overrideRole(octokit, owner, repo, threads, prAuthorLogin, clearRole);
   if (unclearedThreads(threads, bot, prAuthorLogin, prAuthorRole).length === 0) return;
   const { dismissed, failed } = await dismissPreviousReviews(octokit, bot, owner, repo, prNumber, undefined, 'APPROVED');
-  if (dismissed === 0 && !failed) return;
   // An approval whose dismissal failed still stands, so the coordinator's record of it stays. The check fails anyway.
-  if (!failed) await reportPrState(owner, repo, prNumber, { approval: null });
+  if (dismissed > 0 && !failed) await reportPrState(owner, repo, prNumber, { approval: null });
+  const line = failed ? NOT_WITHDRAWN_LINE : dismissed > 0 ? WITHDRAWN_LINE : STILL_BLOCKED_LINE;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const { data: pr } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
-      if (await reportCheck(octokit, owner, repo, pr.head.sha, outcomeReport('ADDRESS_FIRST', failed ? NOT_WITHDRAWN_LINE : WITHDRAWN_LINE))) return;
+      // With no dismissal tried, only a check that still passes needs to fail.
+      if (line === STILL_BLOCKED_LINE && !await newestCheckPassed(octokit, bot, owner, repo, pr.head.sha)) return;
+      if (await reportCheck(octokit, owner, repo, pr.head.sha, outcomeReport('ADDRESS_FIRST', line))) return;
     } catch (error) {
       assertWritesAllowed();
       core.warning(`A blocking thread is not cleared, but Manki could not read the head to fail its check: ${error instanceof Error ? error.message : error}`);
