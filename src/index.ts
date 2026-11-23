@@ -777,6 +777,13 @@ async function handleCommentTrigger(settingsTick = false, message?: TickedMessag
     const target: RunTarget = { octokit, bot, owner, repo, prNumber, commitSha: pr.head.sha, baseRef: pr.base.ref };
     const loaded = await loadEventConfig(octokit, owner, repo, pr.base.ref);
     await answerAlreadyReviewed(target, pr.user?.login, loaded, settings);
+    try {
+      // Threads cleared since the review, or a block a person dismissed, can leave nothing that holds the approval.
+      await runStateCheck(octokit, bot, owner, repo, prNumber, pr.user?.login, loaded);
+    } catch (error) {
+      assertWritesAllowed();
+      core.warning(`The approval check after the review command failed, so nothing was approved: ${error instanceof Error ? error.message : error}`);
+    }
     await reportReviewedCheck(target, pr.user?.login, loaded);
     return;
   }

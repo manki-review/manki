@@ -1813,12 +1813,17 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
       expect(mockChecksCreate).not.toHaveBeenCalled();
     });
 
+    // A review command on a reviewed head, also one whose verdict a person dismissed, runs the approval check instead of a round.
     it.each([
-      ['reports the review found after an approval check that reported nothing', 'declines', 'failure'],
-      ['reports the review found after an approval check that failed', 'fails', 'failure'],
-      ['reports nothing more after an approval check that completed the waiting check', 'approves', 'success'],
-    ])('on a PR marked ready, %s', async (_label, check, conclusion) => {
-      seed('Bot already reviewed commit', 'CHANGES_REQUESTED', false);
+      ['on a PR marked ready', 'reports the review found after an approval check that reported nothing', 'declines', 'failure'],
+      ['on a PR marked ready', 'reports the review found after an approval check that failed', 'fails', 'failure'],
+      ['on a PR marked ready', 'reports nothing more after an approval check that completed the waiting check', 'approves', 'success'],
+      ['on a review command', 'reports the review found after an approval check that a blocking thread declined', 'declines', 'failure'],
+      ['on a review command', 'reports the review found after an approval check that failed', 'fails', 'failure'],
+      ['on a review command', 'reports nothing more after an approval check that approved', 'approves', 'success'],
+    ])('%s, %s, and runs no round', async (event, _label, check, conclusion) => {
+      const command = event === 'on a review command';
+      seed(command ? 'a review command' : 'Bot already reviewed commit', 'CHANGES_REQUESTED', false);
       jest.mocked(configModule.loadConfig).mockReturnValueOnce({ ...configModule.loadConfig(undefined), auto_approve: true });
       jest.mocked(stateModule.checkAndAutoApprove).mockImplementation(async octokit => {
         expect(mockChecksUpdate).not.toHaveBeenCalled();
@@ -1826,13 +1831,18 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
         if (check === 'approves') await reportCheck(octokit, 'test-owner', 'test-repo', head, { conclusion: 'success', title: 'Approved', summary: 'All blocking threads are resolved.' });
         return check === 'approves';
       });
+      const warningSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
 
-      const run = pullRequest('ready_for_review');
-      await (check === 'fails' ? expect(run).rejects.toThrow('Server Error') : run);
+      const run = command ? exits['a review command']() : pullRequest('ready_for_review');
+      // The command has answered already, so a failed approval check only warns.
+      await (check === 'fails' && !command ? expect(run).rejects.toThrow('Server Error') : run);
 
       expect(jest.mocked(stateModule.checkAndAutoApprove)).toHaveBeenCalledTimes(1);
       expect(mockChecksUpdate.mock.calls).toEqual([[expect.objectContaining({ check_run_id: 77, conclusion })]]);
       expect(jest.mocked(ghUtils.findBotReviewOnCommit).mock.calls.length).toBe(check === 'approves' ? 0 : 1);
+      expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
+      if (command && check === 'fails') expect(warningSpy).toHaveBeenCalledWith('The approval check after the review command failed, so nothing was approved: Server Error');
+      warningSpy.mockRestore();
     });
   });
 
