@@ -5857,6 +5857,9 @@ describe('applyCrossRoundSuppression', () => {
       for (const changed of [true, false]) {
         const after = applyCrossRoundSuppression([repeat], agreedPrior, { agreedCodeChanged: (id, f) => changed && id === 'TH1' && f.line === repeat.line });
         expect([changed, after.findings[0].severity]).toEqual([changed, changed ? 'note' : 'ignore']);
+        // A person who resolved the thread decided it whatever the push changed.
+        const resolved = applyCrossRoundSuppression([repeat], agreedPrior, { agreedCodeChanged: () => changed, resolvedThreadIds: new Set(['TH1']) });
+        expect(resolved.findings[0].severity).toBe('ignore');
       }
     }
   });

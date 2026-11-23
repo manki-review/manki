@@ -275,7 +275,7 @@ export interface JudgeInput {
    * alone. The judge may link a finding to theirs, so a restatement is dropped as a repeat of a settled thread.
    */
   settledThreadIds?: ReadonlySet<string>;
-  /** Whether the push certainly changed the code that the agreed thread `threadId` and `finding` cite, so an agreement drops no repeat. */
+  /** Whether the code that the agreed thread `threadId` and `finding` cite may have changed since the thread was raised, so an agreement drops no repeat. */
   agreedCodeChanged?: (threadId: string, finding: Finding) => boolean;
   /** IDs of the threads the PR author alone cannot clear. Only a prior with such a thread hides a security finding. */
   guardedThreadIds?: Set<string>;
@@ -2311,7 +2311,7 @@ export interface CrossRoundSuppressionOptions {
    * without GitHub thread resolution or explicit author agreement.
    */
   threadEvaluations?: ThreadEvaluation[];
-  /** `JudgeInput.agreedCodeChanged`. An agreed prior whose code the push changed drops no finding. */
+  /** `JudgeInput.agreedCodeChanged`. An agreed prior whose code may have changed drops no finding, unless a person resolved its thread. */
   agreedCodeChanged?: JudgeInput['agreedCodeChanged'];
 }
 
@@ -2382,7 +2382,7 @@ export function applyCrossRoundSuppression(
       if (isLockfileAlert(current.title) || isLockfileAlert(prior.title ?? '')) return prior.title === current.title;
       // Only the judge's link, or the same title on a nearby line, makes it the same finding.
       // A reworded or moved repeat of a resolved thread is left to the dedup model before the judge.
-      if (source === 'agree' && prior.threadId && agreedCodeChanged?.(prior.threadId, current)) return false;
+      if (source === 'agree' && prior.threadId && !resolvedThreadIds?.has(prior.threadId) && agreedCodeChanged?.(prior.threadId, current)) return false;
       return current.sameAs === stringifyFindingFingerprint(prior.fingerprint) || (prior.fingerprint.slug === slug
         && current.line >= prior.fingerprint.lineStart - LINE_WINDOW
         && current.line <= prior.fingerprint.lineEnd + LINE_WINDOW);
