@@ -3506,13 +3506,20 @@ function citedPlaceMayHaveChanged(p: PriorFinding, sortedPriorRounds: RoundConte
 }
 
 /**
- * Whether a push since round `round` may have changed one of `files`. Only the inter-round diffs prove a file unchanged:
- * this round's, and an empty one in the record of every round since. A missing record or an unknown diff counts as a change.
+ * Whether `interRoundDiff` holds every change since round `round`: it is known, and the record of every round since
+ * holds an empty inter-round diff. A missing record counts as another change.
+ */
+function onlyPushSince(round: number, sortedPriorRounds: RoundContext[], interRoundDiff: string | undefined): interRoundDiff is string {
+  const later = sortedPriorRounds.filter(r => r.meta.round > round);
+  return interRoundDiff !== undefined && later.every((r, i) => r.meta.round === round + i + 1 && r.judge.interRoundDiffState === 'empty');
+}
+
+/**
+ * Whether a push since round `round` may have changed one of `files`. Only the inter-round diffs prove a file unchanged,
+ * so a push `onlyPushSince` does not cover counts as a change.
  */
 function filesMayHaveChangedSince(round: number, files: readonly string[], sortedPriorRounds: RoundContext[], interRoundDiff: string | undefined): boolean {
-  if (interRoundDiff === undefined) return true;
-  const later = sortedPriorRounds.filter(r => r.meta.round > round);
-  if (!later.every((r, i) => r.meta.round === round + i + 1 && r.judge.interRoundDiffState === 'empty')) return true;
+  if (!onlyPushSince(round, sortedPriorRounds, interRoundDiff)) return true;
   const changed = filesChangedByPush(interRoundDiff);
   return files.some(file => changed.has(file));
 }
