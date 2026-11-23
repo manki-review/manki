@@ -27,7 +27,7 @@ import { fetchedRelatedRepos, relatedNames, repoTools } from './related-repos';
 import { citesChangedLine } from './reply-check';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim, relatedCitations } from './static-signals';
-import { bySecondReadsOnly, canLeaveOut, CELL_GRADES, CheckProgress, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, RefutationOutcome, restsOnDrop, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, fixThreadFiles, GradedCounts, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isGuardedFinding, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, REVERT_CAUGHT, RelatedRepoTools, restsOnUnstated, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, wouldBlockIfTrue, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, triggerDoubt, isTriggerDoubt, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, ruleGrade, RulesMode, RuleVerdict } from './types';
+import { bySecondReadsOnly, isSecondReadName, isSweepName, canLeaveOut, CELL_GRADES, CheckProgress, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, RefutationOutcome, restsOnDrop, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, fixThreadFiles, GradedCounts, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isGuardedFinding, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, REVERT_CAUGHT, RelatedRepoTools, restsOnUnstated, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, wouldBlockIfTrue, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, triggerDoubt, isTriggerDoubt, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, ruleGrade, RulesMode, RuleVerdict } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -254,7 +254,10 @@ export interface JudgeInput {
   prContext?: PrContext;
   linkedIssues?: LinkedIssue[];
   agentCount: number;
-  /** The names of the round's finders. A \`degraded\` warning that fewer than two of them reported gets \`doubtTrigger\`. */
+  /**
+   * The names of the round's finders. A \`degraded\` warning that fewer than two of them reported gets \`doubtTrigger\`,
+   * and a finding one of them alone reported is a \`soleFinder\` finding.
+   */
   finderNames?: readonly string[];
   isFollowUp?: boolean;
   openThreads?: OpenThread[];
@@ -1776,7 +1779,7 @@ export async function runJudgeAgent(
   const hiddenClaims = new Map(input.findings.flatMap((f, i) => (f.preExisting && !findings[i].preExisting ? [[findingKey(f), f.preExisting] as const] : [])));
   // A revert of a line the PR does not change undoes nothing of this change, so such a `revertGap` counts as none.
   const judged = judgeResult.findings.map(({ revertGap, ...j }) => (revertGap === REVERT_CAUGHT || (revertGap && citesChangedLine(revertGap, diff.files)) ? { ...j, revertGap } : j));
-  const mapped = mapJudgedToFindings(findings, judged, linkablePriorFindings(priorRounds, openThreads ?? input.evaluatedThreads?.openThreads, input.settledThreadIds), staysPreExisting, !!refutation)
+  const mapped = mapJudgedToFindings(findings, judged, linkablePriorFindings(priorRounds, openThreads ?? input.evaluatedThreads?.openThreads, input.settledThreadIds), staysPreExisting, !!refutation, input.finderNames)
     .map(f => (hiddenClaims.has(findingKey(f)) ? { ...f, preExisting: hiddenClaims.get(findingKey(f)) } : f))
     // The duplicates are folded and the rule has graded by here, so the drop sees the grade the finding ends with.
     .map(f => doubtUnprovenRule(applyOwnProposal(gradeConfirmedRule(f, config.review?.rules), provenanceMap), config.review?.rules))
@@ -1880,6 +1883,7 @@ function matchesInPrSuppression(finding: Finding, suppression: InPrSuppression):
  * duplicates, and then the copies `deduplicateFindings` merges by title and place. A `sameAs` or `variantOf` that names no entry of
  * `priorFindings` is ignored. Throws when a finding has no entry, so no grade is posted that the judge did not state.
  * A drop gets a `dropCheck` only with `dropsChecked`, set when a refuter checks the round, so no record shows a check that cannot run.
+ * A finding is `soleFinder` when two or more of `finderNames` ran and one of them alone reported it.
  */
 export function mapJudgedToFindings(
   original: Finding[],
@@ -1887,6 +1891,7 @@ export function mapJudgedToFindings(
   priorFindings: PriorFinding[] = [],
   staysPreExisting?: (copy: Finding) => boolean,
   dropsChecked = false,
+  finderNames: readonly string[] = [],
 ): Finding[] {
   const aligned = alignJudgedToFindings(original, judged);
   const roots = duplicateRoots(aligned);
@@ -1899,6 +1904,12 @@ export function mapJudgedToFindings(
     return byFinders.length > 0 ? byFinders : all;
   };
   const filedBlocker = (i: number): boolean => copies(i).every(f => finderGrade(f, 'lowest') === 'blocker');
+  // A second read saw every finder's findings and a sweep starts from a kept one, so neither reports a finding on its own.
+  // Any other check that reports the same finding counts as a second reporter.
+  const soleFinder = (i: number): boolean => {
+    const reporters = new Set(copies(i).flatMap(f => f.reviewers).filter(r => !isSecondReadName(r) && !isSweepName(r)));
+    return finderNames.length >= 2 && reporters.size === 1 && finderNames.some(name => reporters.has(name));
+  };
   // A drop is checked when any finder filed a copy as a blocker, whichever copy the merge keeps.
   const dropCheckable = (i: number): boolean => dropsChecked && copies(i).some(f => finderGrade(f) === 'blocker');
   const graded = original.map((o, i) => {
@@ -1906,7 +1917,8 @@ export function mapJudgedToFindings(
     const match = aligned[i];
     if (!match) throw new Error(`Finding ${i + 1} "${safeTruncate(o.title, 80)}" has no judge entry`);
     if (!match.preExisting) delete finding.preExisting;
-    Object.assign(finding, gradeByCell(o, match, filedBlocker(i), dropCheckable(i)));
+    Object.assign(finding, gradeByCell(o, match, filedBlocker(i), dropCheckable(i), soleFinder(i)));
+    if (soleFinder(i)) finding.soleFinder = true;
     if (finding.severity !== o.severity) finding.reviewerSeverity = o.severity;
     finding.judgeNotes = match.reasoning;
     if (match.security) finding.tags = addTag(finding.tags, SECURITY_TAG);
@@ -1940,15 +1952,17 @@ export function mapJudgedToFindings(
  * warning that only a refuter confirming every doubt can raise. It stays a warning then too when the judge stated `warning` as its
  * `gradeIfConfirmed`, which is read for no other finding. A doubt that only decides the cell counts only on a row where
  * `columnDecidesBlock`. A `consequence` premise counts only beside such a doubt on a blocker cell that can be held
- * down, when not every finder filed the finding as a blocker (`filedBlocker`) and the judge stated no `warning`. A finding that `isRareClaim`
+ * down, when not every finder filed the finding as a blocker (`filedBlocker`) or one finder alone reported it (`soleFinder`),
+ * and the judge stated no `warning`. A finding that `isRareClaim`
  * gets `REACH_DOUBT` and the grade of the `normal` column as its `gradeIfConfirmed`. So the refuter checks it, and it
  * has no `pendingGrade`: no answer raises it. A blocker cell the judge says has no realistic trigger (`rareTrigger`)
  * gets `triggerDoubt` as a `grade` doubt, unless it is a security finding, so it blocks only once a check confirms the trigger.
  * A blocker cell whose `grade` the judge states lower is held the same way when no other doubt holds it, not every
  * finder filed a blocker and it is no security finding. It gets `damageDoubt` as its consequence, unless the judge names
- * one, so only a check that confirms that damage gives the blocker. A tool alert takes its cell as stated, with no doubts.
+ * one, so only a check that confirms that damage gives the blocker. A blocker cell that is `soleFinder` is held the same
+ * way when no other doubt holds it, unless it is a security finding. A tool alert takes its cell as stated, with no doubts.
  */
-function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: named = [], security, securityClass, gradeIfConfirmed: judgeGrade, dropRestsOn, rareTrigger, trigger, grade: argued }: JudgedFinding, filedBlocker: boolean, dropCheckable: boolean): Partial<Pick<Finding, 'severity' | 'gradePath' | 'cell' | 'gradeIfConfirmed' | 'judgeIfConfirmed' | 'doubts'>> {
+function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: named = [], security, securityClass, gradeIfConfirmed: judgeGrade, dropRestsOn, rareTrigger, trigger, grade: argued }: JudgedFinding, filedBlocker: boolean, dropCheckable: boolean, soleFinder = false): Partial<Pick<Finding, 'severity' | 'gradePath' | 'cell' | 'gradeIfConfirmed' | 'judgeIfConfirmed' | 'doubts'>> {
   // A dropped finding keeps its doubts for the round record. The refuter checks it only for its `dropCheck`.
   if (row === 'none') return { ...gradeStep(o, 'ignore', 'judge'), ...(!o.toolSource && (dropCheck(o, named, dropRestsOn, dropCheckable, security) ?? (named.length > 0 && { doubts: named }))) };
   const isSecurity = !!security || !!o.tags?.includes(SECURITY_TAG);
@@ -1968,11 +1982,13 @@ function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: 
   const holding = named.filter(d => !d.consequence && !(rare && isTriggerDoubt(d)) && (d.decides === 'defect' || columnDecidesBlock(row) || heldClass));
   // A finding another doubt holds already keeps the path it had, so the judge's lower verdict only adds a hold.
   const lowerGrade = stated === 'blocker' && !isSecurity && !filedBlocker && !!argued && argued !== 'blocker' && holding.length === 0 && !rare;
-  // A consequence never holds a finding down alone. Beside no other doubt, on a blocker every finder filed or where no
-  // blocker is held, the finding is graded as if the judge had not named it.
-  const asksConsequence = (holding.length > 0 || rare || lowerGrade) && stated === 'blocker' && !isSecurity && judgeGrade !== 'warning' && !filedBlocker;
+  // Being reported by one finder of several is a doubt of its own, so it holds a blocker cell no other doubt holds.
+  const soleHeld = soleFinder && stated === 'blocker' && !isSecurity && holding.length === 0 && !rare;
+  // A consequence never holds a finding down alone. Beside no other doubt, on a blocker every finder filed and more than
+  // one reported, or where no blocker is held, the finding is graded as if the judge had not named it.
+  const asksConsequence = (holding.length > 0 || rare || lowerGrade || soleHeld) && stated === 'blocker' && !isSecurity && judgeGrade !== 'warning' && (!filedBlocker || soleFinder);
   const counted = named.filter(d => (d.consequence ? asksConsequence : holding.includes(d)));
-  const own = lowerGrade && !counted.some(d => d.consequence) ? [...counted, damageDoubt(row)] : counted;
+  const own = (lowerGrade || soleHeld) && !counted.some(d => d.consequence) ? [...counted, damageDoubt(row)] : counted;
   // A doubt the judge names can be about anything, so only `REACH_DOUBT` stands for the claim the `rare` column makes.
   const reached = checkedRare ? withReachDoubt(own) : own;
   const doubts = rare ? [...reached, { premise: (namedTrigger ?? triggerDoubt(trigger)).premise, decides: 'grade' as const }] : reached;
@@ -1981,8 +1997,9 @@ function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: 
   const heldDown = stated === 'blocker' && (!isSecurity || heldClass);
   // The judge's own `warning` says how serious the damage is, so a confirmed doubt raises no such finding. A security finding has no such answer.
   const gradeIfConfirmed = heldDown && !isSecurity && judgeGrade === 'warning' ? judgeGrade : cellGrade(row, checkedRare ? 'normal' : column);
-  const reason = rare ? 'the judge found no realistic trigger' : lowerGrade ? `the judge's reasoning concludes ${argued}` : undefined;
-  return { ...gradeStep(o, heldDown ? 'warning' : stated, 'judge', reason), cell, gradeIfConfirmed, ...(judgeGrade && { judgeIfConfirmed: judgeGrade }), doubts };
+  const sole = soleHeld || (asksConsequence && filedBlocker);
+  const reason = [rare && 'the judge found no realistic trigger', lowerGrade && `the judge's reasoning concludes ${argued}`, sole && 'only one of the finders reported it'].filter(Boolean).join(', and ');
+  return { ...gradeStep(o, heldDown ? 'warning' : stated, 'judge', reason || undefined), cell, gradeIfConfirmed, ...(judgeGrade && { judgeIfConfirmed: judgeGrade }), doubts };
 }
 
 /**

@@ -364,13 +364,14 @@ function raisedTo(finding: Finding, grade: FindingSeverity | undefined): Finding
 /**
  * Whether the pending blocker of `finding` needs a confirmed `consequence` premise. A doubt means the judge named the
  * cell for code it had not seen, and only a `consequence` premise asks the refuter how serious the damage is. So the
- * blocker is given on the other premises alone only when every finder that reported it filed one, on a security
- * finding, or when the finding `restates` an earlier blocker. A grade that a step after the judge's moved, such as a rule blocker, is left alone.
+ * blocker is given on the other premises alone only when every finder that reported it filed one and it is no
+ * `soleFinder` finding, on a security finding, or when the finding `restates` an earlier blocker. A grade that a step
+ * after the judge's moved, such as a rule blocker, is left alone.
  */
 function needsConsequence(finding: Finding, restates: boolean): boolean {
   const held = pendingGrade(finding) === 'blocker' && isGradeCell(finding.cell) && cellGrade(finding.cell.row, finding.cell.column) === 'blocker'
     && (finding.gradePath?.at(-1)?.by ?? 'judge') === 'judge';
-  return held && finderGrade(finding, 'lowest') !== 'blocker' && !restates && !isSecurityFinding(finding.tags, finding.reviewers);
+  return held && (finderGrade(finding, 'lowest') !== 'blocker' || !!finding.soleFinder) && !restates && !isSecurityFinding(finding.tags, finding.reviewers);
 }
 
 const namesConsequence = (finding: Pick<Finding, 'doubts'>): boolean => !!finding.doubts?.some(d => d.consequence);
