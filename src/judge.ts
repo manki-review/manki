@@ -337,6 +337,8 @@ export interface JudgedFinding {
   fixLeaves?: string;
   /** The sequence of events in normal use that sets off the failure, when the judge names one. */
   trigger?: string;
+  /** Whether the judge says the trigger of a finding on a blocker cell is not realistic, which grades it `warning` at most. */
+  rareTrigger?: boolean;
   /** Whether the finding claims the code fails to compile, type-check or pass its tests. */
   buildClaim?: boolean;
   category?: FindingCategory;
@@ -493,7 +495,7 @@ ${OUTSIDE_INPUT_RULE}
 
 A finding is a \`warning\` only when it passes tests 1, 2 and 4: this PR causes it, you can name the failure as "when X happens, Y goes wrong", and \`proof\` cites the lines that show it. Y is a consequence someone would notice in realistic use. A cost nobody would notice is a note: state the \`improvement\` row, or the \`style\` row when the point is only wording. Grade a finding a note on this ground only when its description names no consequence anyone would notice and the code shown confirms that the scale is small. The finding's own word on the scale is not enough. When the code shown does not show the scale or contradicts the finding, keep the warning.
 
-**A \`degraded\` warning needs a realistic trigger**, by the rule under the Severity Table below. On every finding you keep, put that sequence of events in \`trigger\`, as "when X happens". Leave \`trigger\` empty when the trigger is not realistic or you are unsure whether anyone would notice the failure. Manki records a \`degraded\` warning without a trigger in the round record and never posts it, so keep its row and never move it to the \`improvement\` row for this reason. On the \`severe\` and \`wrong\` rows a rare trigger changes nothing: state the cell as the table says.${toolsCheckFindings ? ' When two finders ran and fewer than two of them reported a `degraded` warning, Manki checks its trigger with tools and posts the warning only when the check confirms it.' : ''}
+**A \`degraded\` warning needs a realistic trigger**, by the rule under the Severity Table below. On every finding you keep, put that sequence of events in \`trigger\`, as "when X happens". Leave \`trigger\` empty when the trigger is not realistic or you are unsure whether anyone would notice the failure. Manki records a \`degraded\` warning without a trigger in the round record and never posts it, so keep its row and never move it to the \`improvement\` row for this reason. On the \`severe\` and \`wrong\` rows state the cell as the table says, and set \`rareTrigger\` to true when its trigger is not realistic by that rule. Manki then grades a \`blocker\` cell \`warning\` at most, unless the finding is a security defect. Set it only when the trigger needs such an event, never because a state looks unlikely: a state the code's own logic produces is the claim of the \`rare\` column.${toolsCheckFindings ? ' When two finders ran and fewer than two of them reported a `degraded` warning, Manki checks its trigger with tools and posts the warning only when the check confirms it.' : ''}
 
 Manki posts a warning only when it is proven. For one you cannot prove from the code shown${toolSteps > 0 ? ' or your tools' : ''}, follow When You Are Unsure.
 
@@ -703,6 +705,7 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
       "effort": "quick" | "moderate" | "larger",
       "fixLeaves": "",
       "trigger": "When X happens in normal use, or empty",
+      "rareTrigger": false,
       "reasoning": "Your verdict first, then 1-2 sentences on why",
       "proof": ["file:line of each line that shows the failure, for a blocker or a warning"]
     }
@@ -1467,6 +1470,7 @@ export function parseJudgeResponse(responseText: string, workspace: string | und
         ...(statedIfConfirmed && { gradeIfConfirmed: statedIfConfirmed }),
         ...(fixLeaves && { fixLeaves }),
         ...(trigger && { trigger }),
+        ...(f.rareTrigger === true && { rareTrigger: true }),
         ...(f.buildClaim === true && { buildClaim: true }),
         ...(category && { category }),
         ...(effort && { effort }),
@@ -1905,10 +1909,11 @@ export function mapJudgedToFindings(
  * `columnDecidesBlock`. A `consequence` premise counts only beside such a doubt on a blocker cell that can be held
  * down, when not every finder filed the finding as a blocker (`filedBlocker`) and the judge stated no `warning`. A finding that `isRareClaim`
  * gets `REACH_DOUBT` and the grade of the `normal` column as its `gradeIfConfirmed`. So the refuter checks it, and it
- * has no `pendingGrade`: no answer raises it. A tool
+ * has no `pendingGrade`: no answer raises it. A blocker cell the judge says has no realistic trigger (`rareTrigger`) is
+ * a warning with `warning` as its `gradeIfConfirmed`, doubted or not, unless it is a security finding. A tool
  * alert takes its cell as stated, with no doubts.
  */
-function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: named = [], security, securityClass, gradeIfConfirmed: judgeGrade, dropRestsOn }: JudgedFinding, filedBlocker: boolean, dropCheckable: boolean): Partial<Pick<Finding, 'severity' | 'gradePath' | 'cell' | 'gradeIfConfirmed' | 'judgeIfConfirmed' | 'doubts'>> {
+function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: named = [], security, securityClass, gradeIfConfirmed: judgeGrade, dropRestsOn, rareTrigger }: JudgedFinding, filedBlocker: boolean, dropCheckable: boolean): Partial<Pick<Finding, 'severity' | 'gradePath' | 'cell' | 'gradeIfConfirmed' | 'judgeIfConfirmed' | 'doubts'>> {
   // A dropped finding keeps its doubts for the round record. The refuter checks it only for its `dropCheck`.
   if (row === 'none') return { ...gradeStep(o, 'ignore', 'judge'), ...(!o.toolSource && (dropCheck(o, named, dropRestsOn, dropCheckable, security) ?? (named.length > 0 && { doubts: named }))) };
   const isSecurity = !!security || !!o.tags?.includes(SECURITY_TAG);
@@ -1922,18 +1927,22 @@ function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: 
   // Whether outside input reaches a cost or an edge case decides whether it is a security defect at all, so a `grade` doubt counts on any row.
   const heldClass = !!security && !!securityClass && DOUBT_HELD_CLASSES.includes(securityClass);
   const holding = named.filter(d => !d.consequence && (d.decides === 'defect' || columnDecidesBlock(row) || heldClass));
+  // A confirmation proves the defect, not that its trigger happens, so a rare trigger caps the grade whatever a check finds.
+  const rare = stated === 'blocker' && !isSecurity && !!rareTrigger;
+  const ifConfirmed = rare ? 'warning' : judgeGrade;
   // A consequence never holds a finding down alone. Beside no other doubt, on a blocker every finder filed or where no
   // blocker is held, the finding is graded as if the judge had not named it.
-  const asksConsequence = holding.length > 0 && stated === 'blocker' && !isSecurity && judgeGrade !== 'warning' && !filedBlocker;
+  const asksConsequence = holding.length > 0 && stated === 'blocker' && !isSecurity && ifConfirmed !== 'warning' && !filedBlocker;
   const counted = named.filter(d => (d.consequence ? asksConsequence : holding.includes(d)));
   // A doubt the judge names can be about anything, so only `REACH_DOUBT` stands for the claim the `rare` column makes.
   const doubts = checkedRare ? withReachDoubt(counted) : counted;
-  if (doubts.length === 0) return { ...gradeStep(o, stated, 'judge'), cell };
+  const reason = rare ? 'the judge found no realistic trigger' : undefined;
+  if (doubts.length === 0) return rare ? { ...gradeStep(o, 'warning', 'judge', reason), cell, gradeIfConfirmed: 'warning' } : { ...gradeStep(o, stated, 'judge'), cell };
   // A security blocker that rests on a cost or an edge case being reached is held down like any other finding.
   const heldDown = stated === 'blocker' && (!isSecurity || heldClass);
   // The judge's own `warning` says how serious the damage is, so a confirmed doubt raises no such finding. A security finding has no such answer.
-  const gradeIfConfirmed = heldDown && !isSecurity && judgeGrade === 'warning' ? judgeGrade : cellGrade(row, checkedRare ? 'normal' : column);
-  return { ...gradeStep(o, heldDown ? 'warning' : stated, 'judge'), cell, gradeIfConfirmed, ...(judgeGrade && { judgeIfConfirmed: judgeGrade }), doubts };
+  const gradeIfConfirmed = heldDown && !isSecurity && ifConfirmed === 'warning' ? ifConfirmed : cellGrade(row, checkedRare ? 'normal' : column);
+  return { ...gradeStep(o, heldDown ? 'warning' : stated, 'judge', reason), cell, gradeIfConfirmed, ...(judgeGrade && { judgeIfConfirmed: judgeGrade }), doubts };
 }
 
 /**

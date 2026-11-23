@@ -261,13 +261,13 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('- `warning`: state the cell all the same, list the fact in the code you could not settle in `doubts` with `decides` set to `defect`, and say it in `reasoning`. No tool check runs on this review, so Manki posts the warning only when `proof` cites the lines that show the failure.');
     expect(prompt).not.toMatch(/keep it, list|costs a single fix/);
     const warningTests = (p: string) => p.slice(p.indexOf('## Warning Tests'), p.indexOf('## Severity Table')).trim();
-    expect(warningTests(prompt)).toBe('## Warning Tests\n\nA finding is a `warning` only when it passes tests 1, 2 and 4: this PR causes it, you can name the failure as "when X happens, Y goes wrong", and `proof` cites the lines that show it. Y is a consequence someone would notice in realistic use. A cost nobody would notice is a note: state the `improvement` row, or the `style` row when the point is only wording. Grade a finding a note on this ground only when its description names no consequence anyone would notice and the code shown confirms that the scale is small. The finding\'s own word on the scale is not enough. When the code shown does not show the scale or contradicts the finding, keep the warning.\n\n**A `degraded` warning needs a realistic trigger**, by the rule under the Severity Table below. On every finding you keep, put that sequence of events in `trigger`, as "when X happens". Leave `trigger` empty when the trigger is not realistic or you are unsure whether anyone would notice the failure. Manki records a `degraded` warning without a trigger in the round record and never posts it, so keep its row and never move it to the `improvement` row for this reason. On the `severe` and `wrong` rows a rare trigger changes nothing: state the cell as the table says.\n\nManki posts a warning only when it is proven. For one you cannot prove from the code shown, follow When You Are Unsure.');
+    expect(warningTests(prompt)).toBe('## Warning Tests\n\nA finding is a `warning` only when it passes tests 1, 2 and 4: this PR causes it, you can name the failure as "when X happens, Y goes wrong", and `proof` cites the lines that show it. Y is a consequence someone would notice in realistic use. A cost nobody would notice is a note: state the `improvement` row, or the `style` row when the point is only wording. Grade a finding a note on this ground only when its description names no consequence anyone would notice and the code shown confirms that the scale is small. The finding\'s own word on the scale is not enough. When the code shown does not show the scale or contradicts the finding, keep the warning.\n\n**A `degraded` warning needs a realistic trigger**, by the rule under the Severity Table below. On every finding you keep, put that sequence of events in `trigger`, as "when X happens". Leave `trigger` empty when the trigger is not realistic or you are unsure whether anyone would notice the failure. Manki records a `degraded` warning without a trigger in the round record and never posts it, so keep its row and never move it to the `improvement` row for this reason. On the `severe` and `wrong` rows state the cell as the table says, and set `rareTrigger` to true when its trigger is not realistic by that rule. Manki then grades a `blocker` cell `warning` at most, unless the finding is a security defect. Set it only when the trigger needs such an event, never because a state looks unlikely: a state the code\'s own logic produces is the claim of the `rare` column.\n\nManki posts a warning only when it is proven. For one you cannot prove from the code shown, follow When You Are Unsure.');
     expect(prompt).toContain('"proof": ["file:line of each line that shows the failure, for a blocker or a warning"]');
     expect(prompt).not.toMatch(/confidence/i);
     const withTools = buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true, 8);
     expect(warningTests(withTools)).toContain('For one you cannot prove from the code shown or your tools, follow When You Are Unsure.');
     expect(warningTests(withTools)).toContain('When two finders ran and fewer than two of them reported a `degraded` warning, Manki checks its trigger with tools and posts the warning only when the check confirms it.');
-    expect(prompt).toContain('"trigger": "When X happens in normal use, or empty",');
+    expect(prompt).toContain('"trigger": "When X happens in normal use, or empty",\n      "rareTrigger": false,');
     expect(withTools).toContain('and say it in `reasoning`. Manki checks the premise with tools and posts the warning only when the check confirms it.\n');
     expect(withTools).not.toContain('No tool check runs on this review');
     expect(prompt).toContain('- `note`: drop it (`ignore`)');
@@ -359,6 +359,9 @@ describe('buildJudgeSystemPrompt', () => {
     const table = prompt.slice(prompt.indexOf('## Severity Table'), prompt.indexOf('## Never a Blocker'));
     expect(table).toContain('A state that callers, stored data or concurrent use of a public API can produce is not internal, however narrow the timing looks');
     expect(table).toContain('When you cannot name what in the code\'s own logic produces the state, the column is `normal`.');
+    // Odds no use meets, two failures that only keep a hold longer and a misuse no caller makes are no realistic trigger, and cap a blocker row at a warning.
+    expect(table).toContain('Such events include odds no real use meets, such as two randomly generated names colliding, and two failures in a row whose only effect is that a hold, a lock or a pending approval stays in place longer. They also include a public function called in a way no caller in the repository calls it');
+    expect(table).toContain('Without a realistic trigger it is a `warning` at most, unless it is a security defect.');
     expect(table).toContain('**The `rare` column is a claim, and Manki checks it.** On the `wrong` row it is all that keeps a finding from blocking, so Manki adds the doubt "Normal use or outside input can produce the state this failure needs" to every such finding. Do not list that doubt yourself. Name in `reasoning` the state and what in the code\'s own logic produces it.\n');
     // A promise in a doc and a wrong figure in a line of text are not the damage the top two rows name.
     expect(table).toContain('**The `severe` and `wrong` rows need the damage they name.** State one only when `reasoning` names that damage as the code itself causes it');
@@ -1323,6 +1326,11 @@ describe('parseJudgeResponse', () => {
       { id: 3, title: 'Covered again', row: 'degraded', reasoning: 'r', trigger: 3, duplicateOf: 2 },
     ] }), undefined).findings;
     expect(triggers.map(f => f.trigger)).toEqual(['When a user uploads a large file', undefined, undefined]);
+    // Only a literal `true` says the trigger is not realistic.
+    const rare = parseJudgeResponse(JSON.stringify({ summary: 's', findings: [
+      { id: 1, title: 'A', row: 'wrong', reasoning: 'r', rareTrigger: true }, { id: 2, title: 'B', row: 'wrong', reasoning: 'r', rareTrigger: 'true' }, { id: 3, title: 'C', row: 'wrong', reasoning: 'r' },
+    ] }), undefined).findings;
+    expect(rare.map(f => f.rareTrigger)).toEqual([true, undefined, undefined]);
     expect(mapJudgedToFindings([{ ...base, title: 'Upload unbounded' }, { ...base, title: 'Covered', line: 9 }, { ...base, title: 'Covered again', line: 9 }], triggers).map(f => f.trigger))
       .toEqual(['When a user uploads a large file', undefined]);
     const filled = parseJudgeResponse(JSON.stringify({ summary: 's', findings: [
@@ -4927,6 +4935,14 @@ describe('mapJudgedToFindings', () => {
       // Every other class, and a security finding the judge names no class for, keeps the blocker.
       ['Injection, warning if confirmed', {}, { row: 'severe', security: true, securityClass: 'injection', ...kept }, ['blocker', 'blocker', [doubt]]],
       ['Tagged security, exhaustion not marked', { tags: ['security'] }, { row: 'severe', securityClass: 'exhaustion', ...kept }, ['blocker', 'blocker', [doubt]]],
+      // A blocker cell without a realistic trigger is a warning that no confirmation raises, doubted or not, and needs no consequence.
+      ['Lost data, rare trigger', {}, { row: 'severe', rareTrigger: true, reasoning: 'r' }, ['warning', 'warning', undefined]],
+      ['Finder blocker, rare trigger', { severity: 'blocker' }, { row: 'wrong', rareTrigger: true, reasoning: 'r' }, ['warning', 'warning', undefined]],
+      ['Wrong result, rare trigger, consequence named', {}, { row: 'wrong', ...ifBlocker, rareTrigger: true, doubts: [doubt, harm] }, ['warning', 'warning', [doubt]]],
+      // A security finding and a tool alert keep their blocker, and a cell that gives no blocker has nothing to cap.
+      ['Marked security, rare trigger', {}, { row: 'severe', security: true, rareTrigger: true, reasoning: 'r' }, ['blocker', undefined, undefined]],
+      ['Tool alert, rare trigger', { toolSource: 'clippy' }, { row: 'wrong', rareTrigger: true, reasoning: 'r' }, ['blocker', undefined, undefined]],
+      ['Degraded, rare trigger', {}, { row: 'degraded', rareTrigger: true, reasoning: 'r' }, ['warning', undefined, undefined]],
     ];
     const lowered = mapJudgedToFindings(stated.map(([title, extra]) => proven(title, extra)), stated.map(([title, , entry], i) => ({ id: i + 1, title, ...entry })));
     expect(lowered.map(f => [f.title, f.severity, f.gradeIfConfirmed, f.doubts])).toEqual(stated.map(([title, , , expected]) => [title, ...expected]));
@@ -4934,8 +4950,11 @@ describe('mapJudgedToFindings', () => {
     expect(lowered.map(f => f.judgeIfConfirmed)).toEqual(stated.map(([, , entry, [, , doubts]]) => (doubts ? entry.gradeIfConfirmed : undefined)));
     expect(lowered.filter(f => f.judgeIfConfirmed === 'blocker').map(f => f.title)).toEqual([
       'Wrong result, blocker if confirmed', 'Lost data, consequence named', 'Wrong result, consequence named', 'Finder blocker, consequence named',
-      'Marked security, consequence named', 'Degraded, consequence named', 'Exhaustion, consequence named',
+      'Marked security, consequence named', 'Degraded, consequence named', 'Exhaustion, consequence named', 'Wrong result, rare trigger, consequence named',
     ]);
+    // The cap is the judge's step, with its reason, and the finding stays posted as one that would block if true.
+    const rare = lowered.find(f => f.title === 'Finder blocker, rare trigger')!;
+    expect([rare.gradePath, staysWarningIfConfirmed(rare)]).toEqual([[{ from: 'blocker', to: 'warning', by: 'judge', reason: 'the judge found no realistic trigger' }], true]);
     // The record keeps the cell beside the judge's answer, and only the `rare` column leaves a finding without a `pendingGrade`.
     // Such a finding is a warning to every later step, so `wouldBlockIfTrue` does not hold for it.
     expect(lowered.slice(0, 3).map(f => [f.cell, pendingGrade(f), staysWarningIfConfirmed(f), wouldBlockIfTrue(f)])).toEqual([
@@ -6529,9 +6548,15 @@ const GRADING_CASES = [
   'doubted-security-cost',
   'doubted-security-check-gap',
   'doubted-security-injection',
+  'rare-odds-collision',
+  'realistic-failure-loss',
+  'misuse-no-caller',
+  'misuse-real-caller',
+  'double-failure-hold',
+  'single-failure-approval',
 ] as const;
 
-const BLOCKER_CASES: readonly string[] = ['passes-all-tests', 'severe-on-internal-value', 'removed-guard', 'security-with-todo', 'library-resource-exhaustion', 'public-api-reachable', 'declared-gap', 'added-code-not-pre-existing', 'rare-claim-reachable', 'sibling-path-incomplete-fix', 'doc-promise-lost-data', 'doubted-security-injection'];
+const BLOCKER_CASES: readonly string[] = ['passes-all-tests', 'severe-on-internal-value', 'removed-guard', 'security-with-todo', 'library-resource-exhaustion', 'public-api-reachable', 'declared-gap', 'added-code-not-pre-existing', 'rare-claim-reachable', 'sibling-path-incomplete-fix', 'doc-promise-lost-data', 'doubted-security-injection', 'realistic-failure-loss', 'single-failure-approval'];
 
 interface GradingFixture {
   name: string;
@@ -6551,8 +6576,10 @@ interface GradingFixture {
   posted?: boolean;
 }
 
-/** Whether the review posts each trigger fixture: a rare window with a minor cost is recorded only, and a serious consequence or a common trigger is posted. */
-const POSTED: Readonly<Record<string, boolean>> = { 'rare-window-minor': false, 'rare-trigger-severe': true, 'noticed-common-slowdown': true };
+/** Whether the review posts each trigger fixture: a rare window with a minor cost or a call no caller makes is recorded only, and a serious consequence, a common trigger or a call a caller makes is posted. */
+const POSTED: Readonly<Record<string, boolean>> = {
+  'rare-window-minor': false, 'rare-trigger-severe': true, 'noticed-common-slowdown': true, 'misuse-no-caller': false, 'misuse-real-caller': true,
+};
 
 /** The grade each doubted fixture earns once its doubt holds: serious damage and a security defect block, and a wrong figure in a line of text does not. */
 const IF_CONFIRMED: Readonly<Record<string, GradingFixture['ifConfirmed']>> = {
@@ -6581,7 +6608,7 @@ function gradingPriorRounds({ finding, priorRound }: GradingFixture): RoundConte
 describe('judge grading fixture corpus', () => {
   const fixtures = loadFixtures<GradingFixture>('grading');
 
-  it('covers each blocker test failing alone, each never-a-blocker case, grade stability, the blocker edge cases, objections to an applied Manki fix, build claims, public API reachability, declared gaps, pre-existing claims on added lines, rare claims normal use reaches, fixes a sibling path lacks, claims a guard in the diff refutes, a warning the code shown proves or leaves open, a note the code shown proves or leaves open, a missing-test note that cites the test file, a finding on unseen code that does or does not earn a blocker once that code is confirmed, a cost nobody would notice beside a consequence someone would, a rare trigger with a minor or a serious consequence beside a common one, a removed guard whose only open question is how a model reads its output, a doc promise beside code whose own failure does or does not do serious damage, and a security finding on code the judge cannot see that a doubt holds down for a cost or a check gap but not for an injection, once each', () => {
+  it('covers each blocker test failing alone, each never-a-blocker case, grade stability, the blocker edge cases, objections to an applied Manki fix, build claims, public API reachability, declared gaps, pre-existing claims on added lines, rare claims normal use reaches, fixes a sibling path lacks, claims a guard in the diff refutes, a warning the code shown proves or leaves open, a note the code shown proves or leaves open, a missing-test note that cites the test file, a finding on unseen code that does or does not earn a blocker once that code is confirmed, a cost nobody would notice beside a consequence someone would, a rare trigger with a minor or a serious consequence beside a common one, a removed guard whose only open question is how a model reads its output, a doc promise beside code whose own failure does or does not do serious damage, a security finding on code the judge cannot see that a doubt holds down for a cost or a check gap but not for an injection, and a blocker or warning whose trigger needs odds no use meets, two failures that only keep a hold, or a call no caller makes, each beside a realistic one, once each', () => {
     expect(fixtures.map(f => f.case).sort()).toEqual([...GRADING_CASES].sort());
   });
 

@@ -1,0 +1,31 @@
+{
+  "name": "realistic-failure-loss",
+  "case": "realistic-failure-loss",
+  "allowed": [
+    "blocker"
+  ],
+  "finding": {
+    "title": "`Replace` deletes the stored file before the upload, so an upload that breaks off loses the user's file",
+    "file": "files/store.go",
+    "line": 17,
+    "description": "`Replace` deletes the old object first and then streams `body` into `Upload`. When the upload fails, such as when the client's connection drops while it streams the request body or the bucket returns an error, `Replace` returns the error with the old file already gone and no new one stored. The user's file is lost.",
+    "severity": "blocker",
+    "reviewers": [
+      "Correctness"
+    ],
+    "evidence": {
+      "checks": [
+        "files/store.go:14 streams the request body as the client sends it",
+        "files/store.go:17 deletes the old object first",
+        "files/store.go:20 uploads only after that"
+      ],
+      "proof": [
+        "files/store.go:14",
+        "files/store.go:17",
+        "files/store.go:20"
+      ]
+    },
+    "suggestedFix": "Upload to a temporary key first, and replace the old object only once the upload succeeded."
+  },
+  "prDiff": "diff --git a/files/store.go b/files/store.go\nnew file mode 100644\nindex 0000000..2222222\n--- /dev/null\n+++ b/files/store.go\n@@ -0,0 +1,21 @@\n+package files\n+\n+import (\n+\t\"context\"\n+\t\"io\"\n+)\n+\n+// Store keeps each user's files in an object storage bucket.\n+type Store struct {\n+\tbucket Bucket\n+}\n+\n+// Replace stores a new version of a user's file in place of the old one. The\n+// upload handler calls it with the request body as the client streams it.\n+func (s *Store) Replace(ctx context.Context, userID, name string, body io.Reader) error {\n+\tkey := userID + \"/\" + name\n+\tif err := s.bucket.Delete(ctx, key); err != nil {\n+\t\treturn err\n+\t}\n+\treturn s.bucket.Upload(ctx, key, body)\n+}\n"
+}

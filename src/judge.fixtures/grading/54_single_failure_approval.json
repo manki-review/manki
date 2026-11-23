@@ -1,0 +1,31 @@
+{
+  "name": "single-failure-approval",
+  "case": "single-failure-approval",
+  "allowed": [
+    "blocker"
+  ],
+  "finding": {
+    "title": "A failed blocker lookup approves a pull request with open blockers",
+    "file": "src/approve.ts",
+    "line": 12,
+    "description": "`blocking` starts as `false`, and when `listOpenBlockers` fails, such as on a rate limit or a server error, the catch only logs. `approveIfClear` then approves the pull request although blocking threads are open, so one failed API call lets an unreviewed change through.",
+    "severity": "blocker",
+    "reviewers": [
+      "Correctness"
+    ],
+    "evidence": {
+      "checks": [
+        "src/approve.ts:6 starts from `false`",
+        "src/approve.ts:10 swallows the failed lookup",
+        "src/approve.ts:12 approves"
+      ],
+      "proof": [
+        "src/approve.ts:6",
+        "src/approve.ts:10",
+        "src/approve.ts:12"
+      ]
+    },
+    "suggestedFix": "Return without approving when the lookup fails, so a failure keeps the pull request held."
+  },
+  "prDiff": "diff --git a/src/approve.ts b/src/approve.ts\nnew file mode 100644\nindex 0000000..2222222\n--- /dev/null\n+++ b/src/approve.ts\n@@ -0,0 +1,13 @@\n+import { Api } from './api';\n+import { log } from './log';\n+\n+/** Approves a pull request once no blocking thread is open on it. */\n+export async function approveIfClear(api: Api, pr: number): Promise<void> {\n+  let blocking = false;\n+  try {\n+    blocking = (await api.listOpenBlockers(pr)).length > 0;\n+  } catch (error) {\n+    log.warning(`Could not list the blockers of #${pr}: ${error}`);\n+  }\n+  if (!blocking) await api.approve(pr);\n+}\n"
+}

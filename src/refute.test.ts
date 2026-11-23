@@ -685,6 +685,9 @@ describe('refuteBlockers', () => {
     expect(message[1]).toContain("- **Premises the judge doubts**, to answer in order:\n  1. No caller bounds 'a'\n  2. Normal use or outside input can produce the state this failure needs");
     expect(message[0]).toContain('When the message lists premises the judge doubts, give two kinds of answer. Answer each premise in `premises`, one entry per premise in the order listed.');
     expect(message[0]).toContain('The top-level `outcome`, `reason` and `proof` then answer whether the defect itself exists: confirmed when the code does what the finding says is wrong once the state or input the finding names occurs, disproved when it does not, unsettled otherwise. Whether that state or input occurs, and how severe the result is, is for a premise to answer and never changes the top-level outcome.');
+    // A trigger premise is disproved by odds no use meets, by two failures that only keep a hold, and by a call no caller makes, which the refuter searches for.
+    expect(message[0]).toContain('Concurrent use of a public API confirms it only when a caller or the API\'s documentation shows that use.');
+    expect(message[0]).toContain('search for every caller with your tools: disprove the premise when none calls it that way and no outside input reaches that call');
     expect(message[0]).toContain('- A premise that normal use or outside input can produce a state is such a doubt about the state: the judge holds that only the code\'s own logic produces it. Confirm it when a caller, stored data, concurrent use of a public API or documented usage produces the state, and cite the lines of that path. Disprove it only when the code shows nothing but its own logic produces the state.');
     expect(client.calls.filter(([title]) => title === 'Premises not answered')).toHaveLength(2);
 
