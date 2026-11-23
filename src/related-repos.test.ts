@@ -560,12 +560,13 @@ describe('relatedRepoLoader', () => {
       rmSync(broken, { recursive: true, force: true });
     }
 
-    // More lockfiles than a round reads may lock another commit too, so none is read.
+    // More lockfiles than a round reads may lock another commit too, so none is read. The cap counts the lockfiles of
+    // workspace members as well, so no manifest is read past it.
     const lockfiles = Object.fromEntries(Array.from({ length: 51 }, (_, i) => [`crates/c${i}/Cargo.lock`, cargo([['dashcore', `git+https://github.com/dashpay/rust-dashcore#${a}`]])]));
-    const crowded = gitWorkspace({ 'README.md': 'App\n' }, lockfiles).root;
+    const crowded = gitWorkspace({ 'README.md': 'App\n' }, { ...lockfiles, 'Cargo.toml': '[workspace]\nmembers = ["crates/*"]\n', 'Cargo.lock': cargo([]) }).root;
     const capped = (await relatedRepoTools([dependency('dashpay/rust-dashcore')], crowded))!;
     try {
-      expect(capped.locks).toEqual({ 'dashpay/rust-dashcore': { unlocked: 'the checkout holds 51 lockfiles, more than the 50 a round reads' } });
+      expect(capped.locks).toEqual({ 'dashpay/rust-dashcore': { unlocked: 'the checkout holds 52 lockfiles, more than the 50 a round reads' } });
     } finally {
       rmSync(capped.stateDir, { recursive: true, force: true });
       rmSync(crowded, { recursive: true, force: true });

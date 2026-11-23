@@ -105,19 +105,22 @@ async function lockedRelatedRepos(repos: RelatedRepo[], workspace: string): Prom
   let unread: string | undefined;
   const tracked = await trackedFiles(workspace, [...LOCKFILE_NAMES, 'Cargo.toml'].map(name => `:(glob)**/${name}`));
   if (!tracked) unread = 'the lockfiles of the checkout could not be listed';
-  const ignored = ignoredMemberLockfiles((tracked ?? []).map(f => f.path), file => {
+  const lockfiles = (tracked ?? []).filter(f => !f.symlink && LOCKFILE_NAMES.includes(posix.basename(f.path))).map(f => f.path);
+  // A lockfile past the cap may lock another commit, so it counts as one that could not be read.
+  if (lockfiles.length > MAX_LOCKFILES) unread ??= `the checkout holds ${lockfiles.length} lockfiles, more than the ${MAX_LOCKFILES} a round reads`;
+  let budget = MAX_LOCKFILES_TOTAL_BYTES;
+  // The manifests that place a `Cargo.lock` in a workspace take their bytes from the lockfiles' budget.
+  const ignored = unread ? new Set<string>() : ignoredMemberLockfiles((tracked ?? []).map(f => f.path), file => {
     try {
       const stat = lstatSync(join(workspace, file));
-      return stat.isFile() && stat.size <= MAX_LOCKFILE_BYTES ? readFileSync(join(workspace, file), 'utf-8') : undefined;
+      if (!stat.isFile() || stat.size > MAX_LOCKFILE_BYTES || stat.size > budget) return undefined;
+      budget -= stat.size;
+      return readFileSync(join(workspace, file), 'utf-8');
     } catch {
       return undefined;
     }
   });
-  const files = (tracked ?? []).filter(f => !f.symlink && LOCKFILE_NAMES.includes(posix.basename(f.path)) && !ignored.has(f.path)).map(f => f.path);
-  // A lockfile past the cap may lock another commit, so it counts as one that could not be read.
-  if (files.length > MAX_LOCKFILES) unread ??= `the checkout holds ${files.length} lockfiles, more than the ${MAX_LOCKFILES} a round reads`;
-  let budget = MAX_LOCKFILES_TOTAL_BYTES;
-  for (const file of unread ? [] : files) {
+  for (const file of unread ? [] : lockfiles.filter(f => !ignored.has(f))) {
     let commits: Map<string, Set<string>>;
     try {
       const path = join(workspace, file);
