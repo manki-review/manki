@@ -966,7 +966,10 @@ function threadStatus(t: ReviewThread, settled: Settled | undefined): PreviousFi
  * Gives each prior-round finding without a `threadId` the ID of the Manki
  * thread posted for it. Round contexts are written before GitHub assigns
  * thread IDs, so the match goes by the thread marker's slug, the file, and the
- * nearest posted line. A prior left without a match was posted in the review
+ * nearest posted line. A thread fits an entry only when it is not graded below
+ * the entry and has the entry's guard. A thread belongs to the first entry the
+ * round record posted as a thread of its own (`posted: 'thread'`), so no later
+ * such entry takes it. A prior left without a match was posted in the review
  * body, not as a thread. Such a blocker then takes the thread of a blocker that
  * restates it, by `restatingThreads`.
  */
@@ -975,14 +978,18 @@ function attachPriorThreadIds(rounds: RoundContext[], previousFindings: Previous
   if (threads.length === 0) return rounds;
   // A thread graded below the entry was not its thread, so a blocker never lands on a suggestion thread on its spot.
   const fitting = (severity: FindingSeverity | 'ignore' | 'unknown') => threads.filter(t => severity === 'ignore' || severity === 'unknown' || !gradedAbove(severity, t));
+  const sameGuard = (entry: RoundContext['findings']['entries'][number], t: PreviousFinding) => entry.severity === 'ignore' || entry.severity === 'unknown'
+    || (!!t.isSecurity === isSecurityFinding(entry.tags, entry.reviewers ?? [entry.specialist]) && !!t.disprovedBlocker === !!entry.tags?.includes(DISPROVED_TAG));
+  const owned = new Set<string>();
   const attached = rounds.map(r => ({
     ...r,
     findings: {
       ...r.findings,
       entries: r.findings.entries.map(entry => {
-        if (entry.threadId) return entry;
-        const threadId = findPriorThreadId(entry.fingerprint, fitting(entry.severity));
-        return threadId ? { ...entry, threadId } : entry;
+        const own = entry.posted === 'thread';
+        const threadId = entry.threadId ?? findPriorThreadId(entry.fingerprint, fitting(entry.severity).filter(t => sameGuard(entry, t) && !(own && owned.has(t.threadId!))));
+        if (own && threadId) owned.add(threadId);
+        return threadId && !entry.threadId ? { ...entry, threadId } : entry;
       }),
     },
   }));
