@@ -1018,6 +1018,8 @@ export interface ReviewOptions {
   priorRoundsIncomplete?: boolean;
   prAuthorLogin?: string;
   interRoundDiff?: string;
+  /** Returns the diff of the PR from commit `base` to the head, or undefined when it cannot be read, as after a force push. */
+  changesSince?: (base: string) => Promise<string | undefined>;
   /** Commit under review. A prior blocker raised on another commit was followed by a push. */
   headSha?: string;
   /** The last automatic round the round cap allows. It ends `NOT_CONVERGING` unless it is `READY`. */
@@ -1841,6 +1843,7 @@ export async function runReview(
   let dedupUsage: LLMUsage | undefined;
   let dedupDurationMs: number | undefined;
   const duplicateMatches: RoundDedupDuplicateMatch[] = [];
+  const citedCode = citedCodeUnchanged(priorRounds ?? [], interRoundDiff, await diffsSinceRaised(previousFindings ?? [], priorRounds ?? [], interRoundDiff, options.changesSince));
   if (previousFindings && previousFindings.length > 0 && findingsForJudge.length > 0) {
     const changedSinceLastRound = interRoundDiff === undefined ? undefined : new Set(parsePRDiff(interRoundDiff).files.map(f => f.path));
     const { unique, duplicates } = deduplicateFindings(findingsForJudge, previousFindings, changedSinceLastRound);
@@ -1857,7 +1860,7 @@ export async function runReview(
     if (clients.dedup && findingsForJudge.length > 0) {
       const dedupStart = Date.now();
       const dedupWrap = lateUsage({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup');
-      const llmResult = await llmDeduplicateFindings(findingsForJudge, previousFindings, dedupWrap.client, restatesThreadAcrossFiles(priorRounds ?? []), threadMayHaveChanged(priorRounds ?? [], interRoundDiff));
+      const llmResult = await llmDeduplicateFindings(findingsForJudge, previousFindings, dedupWrap.client, restatesThreadAcrossFiles(priorRounds ?? []), threadMayHaveChanged(priorRounds ?? [], interRoundDiff, citedCode));
       if (stopped) return incomplete(stopped, { ...(openLeads.length > 0 && { openLeads }) });
       if (llmResult.duplicates.length > 0) {
         core.info(`LLM dedup removed ${llmResult.duplicates.length} findings matching earlier resolved ones before judge`);
@@ -1939,6 +1942,7 @@ export async function runReview(
       workspace: refutation.workspace, diff: diffWithLockfiles, excludedPaths: options.excludedPaths, related: refutation.related, effort: judgeEffort, pair: refutation.pair, skip, budget: refutation.originBudget, progress: refutation.originProgress,
     })
     : Promise.resolve(findings));
+  const threadById = new Map((previousFindings ?? []).flatMap(p => (p.threadId ? [[p.threadId, p] as const] : [])));
   const judgeInput: JudgeInput = {
     findings: findingsForJudge,
     diff: diffWithLockfiles,
@@ -1960,6 +1964,8 @@ export async function runReview(
     provenanceMap,
     interRoundDiff,
     resolvedThreadIds,
+    settledThreadIds: new Set((previousFindings ?? []).filter(p => !!p.answerPlaces && citedCode(p)).flatMap(p => p.threadId ? [p.threadId] : [])),
+    agreedCodeChanged: (threadId, f) => !!threadById.get(threadId) && !citedCode(threadById.get(threadId)!, f),
     guardedThreadIds,
     ...(related?.repos.length && { relatedRepos: related.repos }),
     ...(refutation && { refutation }),
@@ -2060,7 +2066,7 @@ export async function runReview(
       const changed = interRoundDiff === undefined ? undefined : new Set(parsePRDiff(interRoundDiff).files.map(f => f.path));
       const statics = deduplicateFindings(fresh, previousFindings, changed);
       const llm = dedupClient && statics.unique.length > 0
-        ? await llmDeduplicateFindings(statics.unique, previousFindings, dedupClient, restatesThreadAcrossFiles(priorRounds ?? []), threadMayHaveChanged(priorRounds ?? [], interRoundDiff))
+        ? await llmDeduplicateFindings(statics.unique, previousFindings, dedupClient, restatesThreadAcrossFiles(priorRounds ?? []), threadMayHaveChanged(priorRounds ?? [], interRoundDiff, citedCode))
         : { unique: statics.unique, duplicates: [] };
       for (const d of [...statics.duplicates, ...llm.duplicates]) duplicateMatches.push({ droppedTitle: d.finding.title, matchedTitle: d.matchedTitle, matchType: d.matchType });
       staticDedupCount += statics.duplicates.length;
@@ -2094,7 +2100,7 @@ export async function runReview(
   if (stopped) return incompleteAfterJudge(stopped);
   if (previousFindings && previousFindings.length > 0) {
     const threadByKey = new Map((priorRounds ?? []).flatMap(r => r.findings.entries).flatMap(e => e.threadId ? [[stringifyFindingFingerprint(e.fingerprint), e.threadId] as const] : []));
-    const restated = dropWaivedRestatements(finalFindings, previousFindings, key => threadByKey.get(key), threadMayHaveChanged(priorRounds ?? [], interRoundDiff));
+    const restated = dropWaivedRestatements(finalFindings, previousFindings, key => threadByKey.get(key), threadMayHaveChanged(priorRounds ?? [], interRoundDiff, citedCode));
     // Listed as drops but not counted in `llmDedupCount`, since the judge returned them and `allJudgedFindings` keeps them.
     for (const d of restated.duplicates) duplicateMatches.push({ droppedTitle: d.finding.title, matchedTitle: d.matchedTitle, matchType: d.matchType });
     finalFindings = restated.unique;
@@ -3506,21 +3512,33 @@ function citedPlaceMayHaveChanged(p: PriorFinding, sortedPriorRounds: RoundConte
 }
 
 /**
- * Whether a push since round `round` may have changed one of `files`. Only the inter-round diffs prove a file unchanged:
- * this round's, and an empty one in the record of every round since. A missing record or an unknown diff counts as a change.
+ * Whether `interRoundDiff` holds every change since round `round`: it is known, and the record of every round since
+ * holds an empty inter-round diff. A missing record counts as another change.
+ */
+function onlyPushSince(round: number, sortedPriorRounds: RoundContext[], interRoundDiff: string | undefined): interRoundDiff is string {
+  const later = sortedPriorRounds.filter(r => r.meta.round > round);
+  return interRoundDiff !== undefined && later.every((r, i) => r.meta.round === round + i + 1 && r.judge.interRoundDiffState === 'empty');
+}
+
+/**
+ * Whether a push since round `round` may have changed one of `files`. Only the inter-round diffs prove a file unchanged,
+ * so a push `onlyPushSince` does not cover counts as a change.
  */
 function filesMayHaveChangedSince(round: number, files: readonly string[], sortedPriorRounds: RoundContext[], interRoundDiff: string | undefined): boolean {
-  if (interRoundDiff === undefined) return true;
-  const later = sortedPriorRounds.filter(r => r.meta.round > round);
-  if (!later.every((r, i) => r.meta.round === round + i + 1 && r.judge.interRoundDiffState === 'empty')) return true;
+  if (!onlyPushSince(round, sortedPriorRounds, interRoundDiff)) return true;
   const changed = filesChangedByPush(interRoundDiff);
   return files.some(file => changed.has(file));
 }
 
 /** Returns the file `f` sits in and the files it cites in its proof or checks. */
 function citedFiles(f: { file: string; evidence?: FindingEvidence }): string[] {
+  return [f.file, ...citedLocations(f.evidence).map(at => at.file)].filter(Boolean);
+}
+
+/** Returns the locations `evidence` cites, in its proof and in its checks. */
+function citedLocations(evidence: FindingEvidence | undefined): Array<{ file: string; start: number; end: number }> {
   // `parseEvidence` already read these lines with the round's workspace, so no checkout is needed to read them again.
-  return [f.file, ...[...(f.evidence?.proof ?? []), ...parseProof(f.evidence?.checks, undefined)].flatMap(at => parseLocation(at)?.file ?? [])].filter(Boolean);
+  return [...(evidence?.proof ?? []), ...parseProof(evidence?.checks, undefined)].flatMap(at => parseLocation(at) ?? []);
 }
 
 /**
@@ -4033,17 +4051,75 @@ function restatesThreadAcrossFiles(priorRounds: RoundContext[]): (prev: Previous
 /**
  * Returns a test of whether a push since the earlier thread `prev` was first raised may have changed its file, a file
  * its findings cited, or a file `f` cites, by `filesMayHaveChangedSince`. A thread no round recorded, or one tied to no
- * file, counts as changed.
+ * file, counts as changed. For a repeat of a thread Manki settled by agreeing with an answer, `unchanged` decides
+ * instead, line by line.
  */
-function threadMayHaveChanged(priorRounds: RoundContext[], interRoundDiff: string | undefined): (prev: PreviousFinding, f: Finding) => boolean {
+function threadMayHaveChanged(priorRounds: RoundContext[], interRoundDiff: string | undefined, unchanged: ReturnType<typeof citedCodeUnchanged>): (prev: PreviousFinding, f: Finding) => boolean {
   const sorted = [...priorRounds].sort((a, b) => a.meta.round - b.meta.round);
   return (prev, f) => {
+    if (prev.answerPlaces) return !unchanged(prev, f);
     const recorded = sorted.flatMap(r => r.findings.entries.filter(e => !!prev.threadId && e.threadId === prev.threadId).map(entry => ({ entry, round: r.meta.round })));
     const first = recorded[0]?.round;
     if (first === undefined || !prev.file) return true;
     const files = [prev.file, ...(prev.evidenceFiles ?? []), ...recorded.flatMap(({ entry }) => citedFiles({ file: entry.fingerprint.file, evidence: entry.evidence })), ...citedFiles(f)];
     return filesMayHaveChangedSince(first, files, sorted, interRoundDiff);
   };
+}
+
+/** How many lines after the last cited line of a file a hunk of the push must start to leave the cited code alone. */
+const CITED_CODE_MARGIN = 10;
+
+/**
+ * Returns a test of whether the code behind the earlier thread `prev` is certainly unchanged since the round that raised
+ * it: the thread's lines, the lines its round entries cite, and the lines Manki's answer cited (`answerPlaces`). That
+ * holds only when every hunk since, in a file with a cited line, starts more than `CITED_CODE_MARGIN` lines after the
+ * last of them, before and after, so no cited line moved either. With a repeat `f`, its line and the lines it cites count
+ * as cited too. A file cited without a line, such as one of `evidenceFiles`, a renamed file and a change GitHub shows no
+ * hunk for count as changed by any hunk. The hunks are those of `interRoundDiff` when it is the only change since
+ * (`onlyPushSince`), or else `sinceRaised` for the commit of that round. A diff that could not be read, a detached
+ * thread, and a thread whose round records left out its findings' evidence or could not all be read count as changed.
+ */
+function citedCodeUnchanged(priorRounds: RoundContext[], interRoundDiff: string | undefined, sinceRaised: ReadonlyMap<string, string | undefined>): (prev: PreviousFinding, f?: Finding) => boolean {
+  const sorted = [...priorRounds].sort((a, b) => a.meta.round - b.meta.round);
+  const parsed = new Map<string, ParsedDiff>();
+  return (prev, f) => {
+    if (!prev.threadId || !prev.file || prev.detached || prev.gradeUnknown) return false;
+    const rounds = sorted.filter(r => r.findings.entries.some(e => e.threadId === prev.threadId));
+    if (rounds.length === 0 || rounds.some(r => r.meta.omitted?.includes('findings.entries.evidence'))) return false;
+    const recorded = rounds.flatMap(r => r.findings.entries.filter(e => e.threadId === prev.threadId));
+    const diff = onlyPushSince(rounds[0].meta.round, sorted, interRoundDiff) ? interRoundDiff : sinceRaised.get(rounds[0].meta.commitSha);
+    if (diff === undefined) return false;
+    const push = parsed.get(diff) ?? parsed.set(diff, parsePRDiff(diff)).get(diff)!;
+    const at = (file: string, line: number) => ({ file, end: line > 0 ? line : Infinity });
+    const threadLines = [prev.line, prev.originalLine, prev.findingLine].filter((line): line is number => !!line && line > 0);
+    const cited = [
+      ...(threadLines.length > 0 ? threadLines : [0]).map(line => at(prev.file, line)),
+      ...(prev.evidenceFiles ?? []).map(file => at(file, 0)),
+      ...recorded.flatMap(entry => [at(entry.fingerprint.file, entry.fingerprint.lineEnd), ...citedLocations(entry.evidence)]),
+      ...(prev.answerPlaces ?? []).flatMap(place => parseLocation(place) ?? []),
+      ...(f ? [at(f.file, f.line), ...citedLocations(f.evidence)] : []),
+    ];
+    // A file listed without lines, such as one whose patch GitHub left out, changed somewhere.
+    const files = [...push.files, ...(push.binarySkipped ?? []).map(b => ({ path: b.path, oldPath: undefined, hunks: [] as DiffHunk[] }))];
+    return files.every(file => {
+      const last = Math.max(...cited.filter(at => at.file === file.path || at.file === file.oldPath).map(at => at.end));
+      if (last === -Infinity) return true;
+      const clear = (start: number) => start > last + CITED_CODE_MARGIN;
+      return !file.oldPath && file.hunks.length > 0 && file.hunks.every(h => clear(h.oldStart) && clear(h.newStart));
+    });
+  };
+}
+
+/**
+ * Returns the diff of the PR since the round that first recorded each thread an agreement or an answer settled, by that
+ * round's commit, for each such thread whose code `interRoundDiff` alone cannot show. A diff that could not be read is
+ * undefined.
+ */
+async function diffsSinceRaised(previousFindings: PreviousFinding[], priorRounds: RoundContext[], interRoundDiff: string | undefined, changesSince: ReviewOptions['changesSince']): Promise<Map<string, string | undefined>> {
+  const sorted = [...priorRounds].sort((a, b) => a.meta.round - b.meta.round);
+  const commits = new Set(previousFindings.filter(p => p.replyAgreed || p.answerPlaces).flatMap(p => sorted.find(r => r.findings.entries.some(e => !!p.threadId && e.threadId === p.threadId)) ?? [])
+    .filter(r => !onlyPushSince(r.meta.round, sorted, interRoundDiff)).map(r => r.meta.commitSha));
+  return new Map(await Promise.all([...commits].map(async sha => [sha, await changesSince?.(sha)] as const)));
 }
 
 /** Whether `a` and `b` may name one defect in other words, so the dedup model is asked: they sit near each other in one file, or share a cited line in any file. */

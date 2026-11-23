@@ -5869,6 +5869,70 @@ describe('runReview', () => {
     }
   });
 
+  it('drops a restatement the judge links to a thread Manki settled by agreeing only while the push leaves the cited code alone', async () => {
+    const restated: Finding = { severity: 'warning', title: 'Cleanup can ban an address', file: 'src/x.ts', line: 11, description: 'd', reviewers: ['r'], sameAs: 'src/x.ts:10:10:old-issue', evidence: { checks: [], proof: ['src/x.ts:11'] } };
+    const settled: PreviousFinding = {
+      title: 'Old issue', file: 'src/x.ts', line: 10, severity: 'warning', status: 'auto-resolved', threadId: 'T1', decidedWithoutFix: true,
+      answer: 'Agreed. The ban is intended.', answerPlaces: ['src/x.ts:40-42', 'src/y.ts:5'],
+    };
+    const push = (file: string, line: number) => `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -${line} +${line} @@\n-a\n+b\n`;
+    let changedFor: ((threadId: string, finding: Finding) => boolean) | undefined;
+    let changesSince: ((base: string) => Promise<string | undefined>) | undefined;
+    const run = async (interRoundDiff: string | undefined, thread = settled, judged = restated, priorRounds = [buildPriorRound(1, [makePriorWarningFinding()])]) => {
+      mockedRunJudgeAgent.mockClear();
+      mockedRunJudgeAgent.mockResolvedValue({ findings: [judged], summary: 's', threadEvaluations: [] });
+      const result = await runReview(makeClients(JSON.stringify([{ severity: 'warning', title: restated.title, file: 'src/x.ts', line: 11, description: 'd' }])), {
+        config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true,
+        openThreads: [], previousFindings: [thread], priorRounds, interRoundDiff, headSha: 'sha2', changesSince,
+      });
+      changedFor = mockedRunJudgeAgent.mock.calls[0][2].agreedCodeChanged;
+      return [[...mockedRunJudgeAgent.mock.calls[0][2].settledThreadIds ?? []], result.findings.map(f => f.title)];
+    };
+
+    // A push whose hunks all start more than 10 lines after the last line the thread, its finding and Manki's answer cite leaves the reason standing.
+    expect(await run(push('src/x.ts', 60))).toEqual([['T1'], []]);
+    expect(await run(push('src/z.ts', 1))).toEqual([['T1'], []]);
+    // A hunk near the repeat's own line, or a line it cites, may hold a failure the thread never named, so the judge's grade stands.
+    const far = { ...restated, line: 200 };
+    expect(await run(push('src/x.ts', 205), settled, far)).toEqual([['T1'], [far.title]]);
+    expect(await run(push('src/y.ts', 105), settled, { ...far, evidence: { checks: [], proof: ['src/y.ts:100'] } })).toEqual([['T1'], [far.title]]);
+    expect(await run(push('src/x.ts', 300), settled, far)).toEqual([['T1'], []]);
+    // The ratchet and the in-PR suppression keep an agreed repeat only when the push certainly changed the code it cites,
+    // a thread without an answer by the thread's own lines. A thread the round does not know keeps their drop.
+    expect([changedFor!('T1', far), changedFor!('T1', { ...far, line: 295 }), changedFor!('T9', far)]).toEqual([false, true, false]);
+    await run(push('src/x.ts', 15), { ...settled, answerPlaces: undefined });
+    expect(changedFor!('T1', restated)).toBe(true);
+    // When the push is not the only change since the thread was raised, the diff since that round's commit decides. Only
+    // a diff that cannot be read counts as a change.
+    const pushedBetween = [buildPriorRound(1, [makePriorWarningFinding()]), buildPriorRound(2, [])];
+    const asked: string[] = [];
+    for (const [since, kept] of [[push('src/x.ts', 300), false], [push('src/x.ts', 20), true], [undefined, true]] as const) {
+      changesSince = async base => (asked.push(base), since);
+      expect(await run(push('src/x.ts', 600), settled, restated, pushedBetween)).toEqual([kept ? [] : ['T1'], kept ? [restated.title] : []]);
+      expect(changedFor!('T1', restated)).toBe(kept);
+    }
+    expect(asked).toEqual(['sha1', 'sha1', 'sha1']);
+    changesSince = undefined;
+    await run(undefined);
+    expect(changedFor!('T1', far)).toBe(true);
+    expect(await run(push('src/y.ts', 105), settled, { ...far, evidence: { checks: ['`src/y.ts:100` reads the ban.'], proof: ['src/x.ts:200'] } })).toEqual([['T1'], [far.title]]);
+    // A file cited without a line, the thread's own on a whole-file thread or one of its `evidenceFiles`, changes with any hunk.
+    expect(await run(push('src/x.ts', 600), { ...settled, line: 0 })).toEqual([[], [restated.title]]);
+    expect(await run(push('src/e.ts', 600), { ...settled, evidenceFiles: ['src/e.ts'] })).toEqual([[], [restated.title]]);
+    // A round record cut to fit without its findings' evidence, or a record that could not be read, may hide a cited line.
+    const cut = { ...buildPriorRound(1, [makePriorWarningFinding()]), meta: { ...buildPriorRound(1, []).meta, omitted: ['findings.entries.evidence'] } };
+    expect(await run(push('src/x.ts', 60), settled, restated, [cut])).toEqual([[], [restated.title]]);
+    expect(await run(push('src/x.ts', 60), { ...settled, gradeUnknown: true })).toEqual([[], [restated.title]]);
+    // A hunk near a line the answer cited, in any of its files, an unknown push, a renamed file, and a waiver that is no
+    // answer (no `answerPlaces`) keep the finding, which the judge then grades on its own.
+    const noLines = 'diff --git a/src/x.ts b/src/x.ts\nindex 1111111..2222222 100644\n--- a/src/x.ts\n+++ b/src/x.ts\n';
+    expect(await run(noLines)).toEqual([[], [restated.title]]);
+    const renamed = 'diff --git a/src/x.ts b/src/w.ts\nsimilarity index 90%\nrename from src/x.ts\nrename to src/w.ts\n--- a/src/x.ts\n+++ b/src/w.ts\n@@ -90 +90 @@\n-a\n+b\n';
+    for (const [diff, thread] of [[push('src/x.ts', 50)], [push('src/y.ts', 12)], [undefined], [renamed], [push('src/x.ts', 60), { ...settled, answerPlaces: undefined }]] as Array<[string | undefined, PreviousFinding?]>) {
+      expect([diff, await run(diff, thread)]).toEqual([diff, [[], [restated.title]]]);
+    }
+  });
+
   it('points a finding that restates an earlier finding still open at it, and a variant at its open thread', async () => {
     const prior = buildPriorRound(1, [
       makePriorWarningFinding({ title: 'Retry never ends', fingerprint: { file: 'src/x.ts', lineStart: 10, lineEnd: 10, slug: 'retry-never-ends' } }),
@@ -6855,6 +6919,9 @@ describe('runReview', () => {
       expect([thread.status, await afterPush(thread, push('src/b.ts'))]).toEqual([thread.status, [[cache], [wallet, log]]]);
       for (const unsure of [push('src/lib.ts'), undefined]) expect([thread.status, await afterPush(thread, unsure)]).toEqual([thread.status, [[], [wallet, cache, log]]]);
     }
+    // For a thread settled by an answer that cited lines, a push near one of them counts in any file, the answer's own included.
+    const cites = { ...threads[1], answerPlaces: ['src/caller.ts:1'] };
+    expect(await afterPush(cites, push('src/caller.ts'))).toEqual([[], [wallet, cache, log]]);
 
     // Finders that leave less than 30 seconds start no dedup call, and the round ends incomplete before the judge. Its
     // record keeps what the static dedup dropped before that call.

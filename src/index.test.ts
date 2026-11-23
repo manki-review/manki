@@ -3051,10 +3051,10 @@ describe('runFullReview orchestration', () => {
         count: call[7]!.findings.count,
         originsWithoutPrior: call[7]!.findings.originsWithoutPrior,
       }));
-      // The notes the review lists follow the other findings.
+      // The notes the review lists follow the other findings. One tied to an earlier thread was raised there, so no round missed it.
       expect(later.posted).toEqual([
         ['Warning', 'reviewed'], ['Warning listed before', 'earlier'], ['Blocker', 'reviewed'], ['Security note', 'reviewed'],
-        ['In a thread', 'reviewed'], ['Answered', 'reviewed'], ['Old reviewer', 'reviewed'], ['Tool alert', 'reviewed'], ['Outside the diff', 'reviewed'], ['Also outside', 'reviewed'],
+        ['In a thread', 'new'], ['Answered', 'new'], ['Old reviewer', 'reviewed'], ['Tool alert', 'reviewed'], ['Outside the diff', 'reviewed'], ['Also outside', 'reviewed'],
       ]);
       expect(later.unposted).toEqual([['Rename', 'note', 'reviewed', 'reviewed_code'], ['Listed before', 'note', 'earlier', 'listed_earlier']]);
       expect(later.count).toBe(10);
@@ -3069,7 +3069,8 @@ describe('runFullReview orchestration', () => {
       ]);
       expect(unknown.posted.every(([title, origin]) => origin === (title === 'Warning listed before' ? 'earlier' : 'new'))).toBe(true);
       expect(unknown.unposted).toEqual([['Listed before', 'note', 'earlier', 'listed_earlier']]);
-      expect(unmoved.posted).toEqual(unknown.posted.map(([title, origin]) => [title, origin === 'new' ? 'reviewed' : origin]));
+      const threaded = new Set(['In a thread', 'Answered']);
+      expect(unmoved.posted).toEqual(unknown.posted.map(([title, origin]) => [title, origin === 'new' && !threaded.has(title!) ? 'reviewed' : origin]));
       expect(unmoved.unposted).toEqual([['Listed before', 'note', 'earlier', 'listed_earlier']]);
       // The record says when the origins were tagged without the PR's change at the last reviewed commit.
       expect([later, again, unknown, unmoved].map(round => round.originsWithoutPrior)).toEqual([undefined, true, true, undefined]);

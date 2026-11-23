@@ -6,7 +6,7 @@ import { BOX_ANCHOR, filedIssueOf } from './issue-box';
 import { currentFindingLine, findPriorThreadId, stringifyFindingFingerprint } from './finding-fingerprint';
 import { extractJSON } from './json';
 import { isLockfileAlert } from './lockfile';
-import { extractReviewRecords, FIXED_MARKER_OPENER, hasOwnMarker, hasReviewRecord, settledReplyId, settlingDecision } from './review-record';
+import { extractReviewRecords, FIXED_MARKER_OPENER, hasOwnMarker, hasReviewRecord, settledReplyId, settlingDecision, settlingPlaces } from './review-record';
 import { AuthorClearRole, DISPROVED_TAG, AuthorReplyClass, EarlierAttempt, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, migrateStoredSeverities, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_ORDER, SEVERITY_TOKEN_PATTERN, threadBlocks, gradedAbove, isGuardedFinding, isSecurityFinding } from './types';
 import { COMMENT_MARKER, escapeRegExp, ownMarker } from './utils';
 
@@ -452,6 +452,11 @@ interface PreviousFinding extends FindingMetadata {
    * allows. That resolve still holds, no reply of Manki's accepted or confirmed a fix, and no round's judge found it fixed.
    */
   decidedWithoutFix?: boolean;
+  /**
+   * For a thread `decidedWithoutFix` by Manki's answer that accepted no fix, the lines of the PR that answer cited, set
+   * only when each statement it checked cites one (`settlingPlaces`).
+   */
+  answerPlaces?: string[];
   threadId?: string;
   threadUrl?: string;
   /** Slug from the thread's `<!-- manki:<severity>:<slug> -->` marker. */
@@ -520,6 +525,7 @@ function collectInPrSuppressions(
     const entry: InPrSuppression = {
       fingerprint: fingerprintFinding(pf.title, pf.file, lineStart, lineEnd),
       reason,
+      ...(pf.threadId && { threadId: pf.threadId }),
       ...(isGuarded(pf) && { guarded: true }),
       severity: pf.severity,
       ...(pf.recordedGrade && { recordedGrade: pf.recordedGrade }),
@@ -727,6 +733,7 @@ async function fetchRecapState(
     const securityOverride = settled === 'override' ? securityOverrideOf(t, prAuthorLogin, prAuthorRole) : undefined;
     const replierMayClear = authorCannotClear(t) && mayClearSecurityThread(facts.writerReplyLogin, bot, prAuthorLogin);
     const status = threadStatus(t, settled);
+    const decided = !!t.settlement && !t.settlement.fixAnswered && !everAddressed.has(t.threadId) && waivedNow(t, t.settlement, securityOverride, bot, prAuthorLogin);
     return {
       title: t.findingTitle,
       file: t.file,
@@ -738,7 +745,7 @@ async function fetchRecapState(
       ...(t.gradeUnknown && { gradeUnknown: true }),
       status,
       ...(facts.addressed && status !== 'open' && status !== 'replied' && { fixed: true }),
-      ...(t.settlement && !t.settlement.fixAnswered && !everAddressed.has(t.threadId) && waivedNow(t, t.settlement, securityOverride, bot, prAuthorLogin) && { decidedWithoutFix: true }),
+      ...(decided && { decidedWithoutFix: true, ...(t.settlement!.answerPlaces && { answerPlaces: t.settlement!.answerPlaces }) }),
       threadId: t.threadId,
       threadUrl: t.threadUrl,
       ...(t.markerSlug && { markerSlug: t.markerSlug }),
@@ -843,6 +850,8 @@ interface Settlement {
    * accepted, or `override`, its record of the PR author's clearing with a role.
    */
   latestWaiver?: 'answer' | 'dismiss' | 'override';
+  /** For an `answer` waiver, the lines of the PR that answer cited. */
+  answerPlaces?: string[];
 }
 
 /**
@@ -852,13 +861,17 @@ interface Settlement {
 function settlement(bot: BotIdentity, comments: ThreadCommentNode[]): Settlement {
   const own = (c: ThreadCommentNode) => isBotLogin(bot, c.author?.login);
   const fix = (body: string) => settlingDecision(body)?.outcome === 'Fixed' || ownMarker(body, FIXED_MARKER_OPENER, COMMENT_MARKER) !== undefined;
-  const latest = sinceLastReopen(bot, comments).filter(own).map(c => c.body ?? '').flatMap((body): Array<'fix' | 'answer' | 'dismiss' | 'override'> => {
+  const kind = (body: string): Array<'fix' | 'answer' | 'dismiss' | 'override'> => {
     if (fix(body)) return ['fix'];
     if (settlingDecision(body)) return ['answer'];
     if (ownMarker(body, DISMISS_RECORD_OPENER, COMMENT_MARKER) !== undefined) return ['dismiss'];
     return ownMarker(body, SECURITY_OVERRIDE_OPENER, COMMENT_MARKER) !== undefined ? ['override'] : [];
-  }).at(-1);
-  return { fixAnswered: comments.slice(1).some(c => own(c) && fix(c.body ?? '')), ...(latest && latest !== 'fix' && { latestWaiver: latest }) };
+  };
+  const [latest, body] = sinceLastReopen(bot, comments).filter(own).map(c => c.body ?? '').flatMap(b => kind(b).map(k => [k, b] as const)).at(-1) ?? [];
+  return {
+    fixAnswered: comments.slice(1).some(c => own(c) && fix(c.body ?? '')), ...(latest && latest !== 'fix' && { latestWaiver: latest }),
+    ...(latest === 'answer' && { answerPlaces: settlingPlaces(body!) }),
+  };
 }
 
 /**
@@ -1389,7 +1402,7 @@ function deduplicateFindings(
       unique.push(resemblingFixed(finding, matched.prev));
     } else if (matched) {
       duplicates.push({ finding, matchedTitle: matched.prev.title, matchType: matched.matchType });
-    } else if (answeredMatch && changedFiles && !changedFiles.has(finding.file)) {
+    } else if (answeredMatch && !answeredMatch.prev.answerPlaces && changedFiles && !changedFiles.has(finding.file)) {
       core.info(`Dedup: "${finding.title}" repeats answered "${answeredMatch.prev.title}" on a file unchanged since the last round`);
       duplicates.push({ finding, matchedTitle: answeredMatch.prev.title, matchType: answeredMatch.matchType });
     } else if (answeredMatch) {

@@ -475,17 +475,22 @@ export async function fetchInterRoundDiff(
   }
 }
 
+/** The most files GitHub lists for a comparison. It says nothing when it leaves more out. */
+const MAX_COMPARE_FILES = 300;
+
 /**
- * Returns the unified diff of `files` from `base` to `head`, when `head` descends from `base`. Returns `undefined` when it
- * does not, as after a force push, or when the comparison fails. A file GitHub leaves out of a long comparison is missing.
+ * Returns the unified diff of `files`, or of every file without them, from `base` to `head`, when `head` descends from `base`. Returns `undefined` when it
+ * does not, as after a force push, or when the comparison fails. A file GitHub leaves out of a long comparison is missing
+ * from the diff of `files`. The diff of every file is `undefined` then, since a file left out would read as unchanged.
  */
-export async function fetchChangesSince(octokit: Octokit, owner: string, repo: string, base: string, head: string, files: readonly string[]): Promise<string | undefined> {
+export async function fetchChangesSince(octokit: Octokit, owner: string, repo: string, base: string, head: string, files?: readonly string[]): Promise<string | undefined> {
   if (base === head) return '';
   try {
     const { data } = await octokit.rest.repos.compareCommits({ owner, repo, base, head });
     if (data.status !== 'ahead' && data.status !== 'identical') return undefined;
+    if (!files && (data.files?.length ?? 0) >= MAX_COMPARE_FILES) return undefined;
     // A file renamed since keeps its old name only in `previous_filename`.
-    return listedFilesDiff((data.files ?? []).filter(f => files.includes(f.filename) || (!!f.previous_filename && files.includes(f.previous_filename))));
+    return listedFilesDiff((data.files ?? []).filter(f => !files || files.includes(f.filename) || (!!f.previous_filename && files.includes(f.previous_filename))));
   } catch (error) {
     core.warning(`Failed to compare ${base} with ${head}: ${error}`);
     return undefined;

@@ -81,6 +81,8 @@ describe('deduplicateFindings', () => {
     const toJudge = [{ ...findings[0], answeredIn: { threadId: 'T1', answer: 'Withdrawn. `id` is checked first.', grade: { severity: answered.severity } } }];
     expect(deduplicateFindings(findings, [answered], new Set(['src/foo.ts'])).unique).toEqual(toJudge);
     expect(deduplicateFindings(findings, [answered]).unique).toEqual(toJudge);
+    // An answer that cited lines may rest on another file the push changed, so its repeat goes to the judge, where the lines are checked.
+    expect(deduplicateFindings(findings, [{ ...answered, answerPlaces: ['src/caller.ts:30'] }], new Set(['src/caller.ts'])).unique).toEqual(toJudge);
     expect(deduplicateFindings(findings, [{ ...answered, line: 0, originalLine: 41 }]).unique).toEqual(toJudge);
     expect(deduplicateFindings(findings, [{ ...answered, originalLine: 10 }]).unique).toEqual(toJudge);
     expect(deduplicateFindings(findings, [{ ...answered, answer: undefined }], new Set()).unique).toEqual(findings);
@@ -1506,6 +1508,38 @@ describe('fetchRecapState', () => {
       dismissedLater.comments.nodes.push({ body: '@manki dismiss', author: { login: 'mallory' } });
       const afterDismiss = await fetchRecapState(withWriter(mockOctokit([dismissedLater], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }])), TEST_BOT, 'owner', 'repo', 1, 'author');
       expect(afterDismiss.previousFindings.map(f => f.decidedWithoutFix ?? false)).toEqual([true]);
+      // A waiver by Manki's answer keeps the lines of the PR the answer cited, without those of a related repo. Any other waiver cites none.
+      const cited = answer('Agreed').replace(formatReplyRecord({
+        kind: 'thread-reply', prNumber: 1, timestamp: '2026-11-18T10:00:00Z', mankiVersion: '7.7.0', usage: {}, decision: { outcome: 'Agreed', thread: 'resolves' },
+      }), formatReplyRecord({
+        kind: 'thread-reply', prNumber: 1, timestamp: '2026-11-18T10:00:00Z', mankiVersion: '7.7.0', usage: {}, decision: { outcome: 'Agreed', thread: 'resolves' },
+        statements: [{ status: 'confirmed', places: ['src/a.ts:40-42', 'org/lib:src/b.ts:7'] }, { status: 'confirmed', places: ['src/c.ts:5'] }],
+      }));
+      const placesOf = async (replies: string[], people?: Array<[string, string]>) =>
+        (await fetchRecapState(withWriter(mockOctokit([answeredWith('T_BOT', files.bot, replies, people)], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }])), TEST_BOT, 'owner', 'repo', 1, 'author')).previousFindings.map(f => f.answerPlaces);
+      expect(await placesOf([cited])).toEqual([['src/a.ts:40-42', 'src/c.ts:5']]);
+      // A statement that rests on a search, the PR description or a related repo alone cites no line of the PR, so a push anywhere may change it.
+      for (const statement of [{ status: 'confirmed' as const, places: [], searched: 'pr' }, { status: 'confirmed' as const, description: 'held' as const }, { status: 'confirmed' as const, places: ['org/lib:src/b.ts:7'] }]) {
+        const unsure = answer('Agreed').replace(formatReplyRecord({
+          kind: 'thread-reply', prNumber: 1, timestamp: '2026-11-18T10:00:00Z', mankiVersion: '7.7.0', usage: {}, decision: { outcome: 'Agreed', thread: 'resolves' },
+        }), formatReplyRecord({
+          kind: 'thread-reply', prNumber: 1, timestamp: '2026-11-18T10:00:00Z', mankiVersion: '7.7.0', usage: {}, decision: { outcome: 'Agreed', thread: 'resolves' },
+          statements: [{ status: 'confirmed', places: ['src/a.ts:40-42'] }, statement],
+        }));
+        expect(await placesOf([unsure])).toEqual([undefined]);
+      }
+      // So does an answer that left a statement of the reply unchecked or dropped.
+      for (const left of [{ uncheckedStatements: 1 }, { droppedStatements: 1 }]) {
+        const partial = answer('Agreed').replace(formatReplyRecord({
+          kind: 'thread-reply', prNumber: 1, timestamp: '2026-11-18T10:00:00Z', mankiVersion: '7.7.0', usage: {}, decision: { outcome: 'Agreed', thread: 'resolves' },
+        }), formatReplyRecord({
+          kind: 'thread-reply', prNumber: 1, timestamp: '2026-11-18T10:00:00Z', mankiVersion: '7.7.0', usage: {}, decision: { outcome: 'Agreed', thread: 'resolves' },
+          statements: [{ status: 'confirmed', places: ['src/a.ts:40-42'] }], ...left,
+        }));
+        expect(await placesOf([partial])).toEqual([undefined]);
+      }
+      expect(await placesOf([answer('Agreed')])).toEqual([undefined]);
+      expect(await placesOf([`Finding dismissed by \`@alice\`, who has write access to this repository.\n\n<!-- manki -->\n${dismissRecordMarker('alice')}`], dismissed)).toEqual([undefined]);
       // A warning a writer dismissed carries Manki's record too, so a later round's repeat of it is dropped as waived.
       const dismissedWarning = makeThread({
         id: 'T_WARN', isResolved: true, resolvedBy: { login: BOT_LOGIN }, path: files.bot, line: 10,
