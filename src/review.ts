@@ -1939,6 +1939,7 @@ export async function runReview(
       workspace: refutation.workspace, diff: diffWithLockfiles, excludedPaths: options.excludedPaths, related: refutation.related, effort: judgeEffort, pair: refutation.pair, skip, budget: refutation.originBudget, progress: refutation.originProgress,
     })
     : Promise.resolve(findings));
+  const settledCode = settledCodeUnchanged(priorRounds ?? [], interRoundDiff);
   const judgeInput: JudgeInput = {
     findings: findingsForJudge,
     diff: diffWithLockfiles,
@@ -1960,6 +1961,7 @@ export async function runReview(
     provenanceMap,
     interRoundDiff,
     resolvedThreadIds,
+    settledThreadIds: new Set((previousFindings ?? []).filter(p => settledCode(p)).flatMap(p => p.threadId ? [p.threadId] : [])),
     guardedThreadIds,
     ...(related?.repos.length && { relatedRepos: related.repos }),
     ...(refutation && { refutation }),
@@ -4040,16 +4042,53 @@ function restatesThreadAcrossFiles(priorRounds: RoundContext[]): (prev: Previous
 /**
  * Returns a test of whether a push since the earlier thread `prev` was first raised may have changed its file, a file
  * its findings cited, or a file `f` cites, by `filesMayHaveChangedSince`. A thread no round recorded, or one tied to no
- * file, counts as changed.
+ * file, counts as changed. For a repeat in the file of a thread Manki settled by agreeing with an answer,
+ * `settledCodeUnchanged` decides instead, line by line.
  */
 function threadMayHaveChanged(priorRounds: RoundContext[], interRoundDiff: string | undefined): (prev: PreviousFinding, f: Finding) => boolean {
   const sorted = [...priorRounds].sort((a, b) => a.meta.round - b.meta.round);
+  const unchanged = settledCodeUnchanged(priorRounds, interRoundDiff);
   return (prev, f) => {
+    if (f.file === prev.file && prev.answerPlaces) return !unchanged(prev, f);
     const recorded = sorted.flatMap(r => r.findings.entries.filter(e => !!prev.threadId && e.threadId === prev.threadId).map(entry => ({ entry, round: r.meta.round })));
     const first = recorded[0]?.round;
     if (first === undefined || !prev.file) return true;
     const files = [prev.file, ...(prev.evidenceFiles ?? []), ...recorded.flatMap(({ entry }) => citedFiles({ file: entry.fingerprint.file, evidence: entry.evidence })), ...citedFiles(f)];
     return filesMayHaveChangedSince(first, files, sorted, interRoundDiff);
+  };
+}
+
+/** How many lines after the last cited line of a file a hunk of the push must start to leave the cited code alone. */
+const CITED_CODE_MARGIN = 10;
+
+/**
+ * Returns a test of whether the push certainly left alone the code behind a thread Manki settled by agreeing with an
+ * answer (`answerPlaces`): the thread's lines, the lines its round entries cite, and the lines the answer cited. It holds
+ * only when the push is the only change since the thread was raised (`onlyPushSince`), and every hunk of the push in a
+ * file with a cited line starts more than `CITED_CODE_MARGIN` lines after the last of them, before and after the push,
+ * so no cited line moved either. With a repeat `f`, its line and the lines it cites count as cited too. A renamed file,
+ * a change GitHub shows no hunk for, and a detached thread count as changed.
+ */
+function settledCodeUnchanged(priorRounds: RoundContext[], interRoundDiff: string | undefined): (prev: PreviousFinding, f?: Finding) => boolean {
+  const sorted = [...priorRounds].sort((a, b) => a.meta.round - b.meta.round);
+  const push = interRoundDiff === undefined ? undefined : parsePRDiff(interRoundDiff);
+  return (prev, f) => {
+    if (!push || !prev.threadId || !prev.answerPlaces || !prev.file || prev.detached) return false;
+    const recorded = sorted.flatMap(r => r.findings.entries.filter(e => e.threadId === prev.threadId).map(entry => ({ entry, round: r.meta.round })));
+    const first = recorded[0]?.round;
+    if (first === undefined || !onlyPushSince(first, sorted, interRoundDiff)) return false;
+    const cited = [
+      ...[prev.line, prev.originalLine, prev.findingLine].flatMap(line => line ? [{ file: prev.file, end: line }] : []),
+      ...recorded.flatMap(({ entry }) => [entry.fingerprint, ...(entry.evidence?.proof ?? []).flatMap(at => parseLocation(at) ?? [])]
+        .map(at => 'lineEnd' in at ? { file: at.file, end: at.lineEnd } : at)),
+      ...[...prev.answerPlaces, ...(f ? [`${f.file}:${f.line}`, ...(f.evidence?.proof ?? [])] : [])].flatMap(at => parseLocation(at) ?? []),
+    ];
+    return push.files.every(file => {
+      const last = Math.max(...cited.filter(at => at.file === file.path || at.file === file.oldPath).map(at => at.end));
+      if (last === -Infinity) return true;
+      const clear = (start: number) => start > last + CITED_CODE_MARGIN;
+      return !file.oldPath && file.hunks.length > 0 && file.hunks.every(h => clear(h.oldStart) && clear(h.newStart));
+    });
   };
 }
 

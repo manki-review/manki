@@ -75,6 +75,11 @@ export function settledReplyId(body: string): number | undefined {
   return typeof answers === 'number' ? answers : undefined;
 }
 
+/** Returns the lines of the PR that the settling answer in `body` cited for the statements it checked, each as `path:line` or `path:start-end`. A related repo's line is left out. */
+export function settlingPlaces(body: string): string[] {
+  return (settlingRecord(body)?.statements ?? []).flatMap(s => s.places ?? []).filter(at => at.split(':').length === 2);
+}
+
 function settlingRecord(body: string): (Partial<ReplyRecord> & { decision: ReplyDecision }) | undefined {
   const [text] = extractReplyRecords(body);
   if (!text) return undefined;

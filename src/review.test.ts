@@ -5869,6 +5869,39 @@ describe('runReview', () => {
     }
   });
 
+  it('drops a restatement the judge links to a thread Manki settled by agreeing only while the push leaves the cited code alone', async () => {
+    const restated: Finding = { severity: 'warning', title: 'Cleanup can ban an address', file: 'src/x.ts', line: 11, description: 'd', reviewers: ['r'], sameAs: 'src/x.ts:10:10:old-issue', evidence: { checks: [], proof: ['src/x.ts:11'] } };
+    const settled: PreviousFinding = {
+      title: 'Old issue', file: 'src/x.ts', line: 10, severity: 'warning', status: 'auto-resolved', threadId: 'T1', decidedWithoutFix: true,
+      answer: 'Agreed. The ban is intended.', answerPlaces: ['src/x.ts:40-42', 'src/y.ts:5'],
+    };
+    const push = (file: string, line: number) => `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -${line} +${line} @@\n-a\n+b\n`;
+    const run = async (interRoundDiff: string | undefined, thread = settled, judged = restated) => {
+      mockedRunJudgeAgent.mockClear();
+      mockedRunJudgeAgent.mockResolvedValue({ findings: [judged], summary: 's', threadEvaluations: [] });
+      const result = await runReview(makeClients(JSON.stringify([{ severity: 'warning', title: restated.title, file: 'src/x.ts', line: 11, description: 'd' }])), {
+        config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true,
+        openThreads: [], previousFindings: [thread], priorRounds: [buildPriorRound(1, [makePriorWarningFinding()])], interRoundDiff, headSha: 'sha2',
+      });
+      return [[...mockedRunJudgeAgent.mock.calls[0][2].settledThreadIds ?? []], result.findings.map(f => f.title)];
+    };
+
+    // A push whose hunks all start more than 10 lines after the last line the thread, its finding and Manki's answer cite leaves the reason standing.
+    expect(await run(push('src/x.ts', 60))).toEqual([['T1'], []]);
+    expect(await run(push('src/z.ts', 1))).toEqual([['T1'], []]);
+    // A hunk near the repeat's own line, or a line it cites, may hold a failure the thread never named, so the judge's grade stands.
+    const far = { ...restated, line: 200 };
+    expect(await run(push('src/x.ts', 205), settled, far)).toEqual([['T1'], [far.title]]);
+    expect(await run(push('src/y.ts', 105), settled, { ...far, evidence: { checks: [], proof: ['src/y.ts:100'] } })).toEqual([['T1'], [far.title]]);
+    expect(await run(push('src/x.ts', 300), settled, far)).toEqual([['T1'], []]);
+    // A hunk near a line the answer cited, in any of its files, an unknown push, a renamed file, and a waiver that is no
+    // answer (no `answerPlaces`) keep the finding, which the judge then grades on its own.
+    const renamed = 'diff --git a/src/x.ts b/src/w.ts\nsimilarity index 90%\nrename from src/x.ts\nrename to src/w.ts\n--- a/src/x.ts\n+++ b/src/w.ts\n@@ -90 +90 @@\n-a\n+b\n';
+    for (const [diff, thread] of [[push('src/x.ts', 50)], [push('src/y.ts', 12)], [undefined], [renamed], [push('src/x.ts', 60), { ...settled, answerPlaces: undefined }]] as Array<[string | undefined, PreviousFinding?]>) {
+      expect([diff, await run(diff, thread)]).toEqual([diff, [[], [restated.title]]]);
+    }
+  });
+
   it('points a finding that restates an earlier finding still open at it, and a variant at its open thread', async () => {
     const prior = buildPriorRound(1, [
       makePriorWarningFinding({ title: 'Retry never ends', fingerprint: { file: 'src/x.ts', lineStart: 10, lineEnd: 10, slug: 'retry-never-ends' } }),

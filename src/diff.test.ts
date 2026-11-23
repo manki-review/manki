@@ -748,6 +748,10 @@ describe('tagFindingOrigins', () => {
     const restated = { ...finding('src/a.ts', 13), raisedIn: 1 };
     expect(tag([restated, { ...finding('src/a.ts', 18), raisedIn: 2 }], current, prior)).toEqual(['earlier', 'earlier']);
     expect(tag([restated], current)).toEqual(['earlier']);
+    // A finding linked to an earlier thread's finding was not missed by the round that raised it, so it never reads as
+    // reviewed code. A variant of a thread is another failure and is tagged by its code.
+    const linked = [{ ...finding('src/a.ts', 18), sameAs: 'src/a.ts:18:18:old' }, { ...finding('src/a.ts', 18), threadId: 'T1' }, { ...finding('src/a.ts', 18), threadId: 'T1', variantOf: 'T1' }];
+    expect(tag(linked, current, prior)).toEqual(['new', 'new', 'reviewed']);
   });
 
   it('tags a finding new near code removed or restored since: a base line the PR removed or put back, or a line it added before and dropped or moved', () => {

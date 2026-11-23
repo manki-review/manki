@@ -1506,6 +1506,17 @@ describe('fetchRecapState', () => {
       dismissedLater.comments.nodes.push({ body: '@manki dismiss', author: { login: 'mallory' } });
       const afterDismiss = await fetchRecapState(withWriter(mockOctokit([dismissedLater], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }])), TEST_BOT, 'owner', 'repo', 1, 'author');
       expect(afterDismiss.previousFindings.map(f => f.decidedWithoutFix ?? false)).toEqual([true]);
+      // A waiver by Manki's answer keeps the lines of the PR the answer cited, without those of a related repo. Any other waiver cites none.
+      const cited = answer('Agreed').replace(formatReplyRecord({
+        kind: 'thread-reply', prNumber: 1, timestamp: '2026-11-18T10:00:00Z', mankiVersion: '7.7.0', usage: {}, decision: { outcome: 'Agreed', thread: 'resolves' },
+      }), formatReplyRecord({
+        kind: 'thread-reply', prNumber: 1, timestamp: '2026-11-18T10:00:00Z', mankiVersion: '7.7.0', usage: {}, decision: { outcome: 'Agreed', thread: 'resolves' },
+        statements: [{ status: 'confirmed', places: ['src/a.ts:40-42', 'org/lib:src/b.ts:7'] }, { status: 'confirmed', places: ['src/c.ts:5'] }],
+      }));
+      const placesOf = async (replies: string[], people?: Array<[string, string]>) =>
+        (await fetchRecapState(withWriter(mockOctokit([answeredWith('T_BOT', files.bot, replies, people)], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }])), TEST_BOT, 'owner', 'repo', 1, 'author')).previousFindings.map(f => f.answerPlaces);
+      expect(await placesOf([cited])).toEqual([['src/a.ts:40-42', 'src/c.ts:5']]);
+      expect(await placesOf([`Finding dismissed by \`@alice\`, who has write access to this repository.\n\n<!-- manki -->\n${dismissRecordMarker('alice')}`], dismissed)).toEqual([undefined]);
       // A warning a writer dismissed carries Manki's record too, so a later round's repeat of it is dropped as waived.
       const dismissedWarning = makeThread({
         id: 'T_WARN', isResolved: true, resolvedBy: { login: BOT_LOGIN }, path: files.bot, line: 10,
