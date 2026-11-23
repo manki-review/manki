@@ -448,8 +448,12 @@ interface GradeRoute {
   gradePath?: Array<Omit<GradeStep, 'reason'>>;
   /** How many doubts of each `decides` kind the judge named, and how many of the `grade` ones are a `consequence`. */
   doubts?: Partial<Record<Doubt['decides'] | 'consequence', number>>;
-  /** With `relatedLines`, the lines of related repos the check cited, and `prLines`, the lines of the PR's repository beside them. Both are left out of a check that cited no related line. */
-  refutation?: Pick<Refutation, 'outcome' | 'defect' | 'stepsUsedUp'> & { relatedLines?: number; prLines?: number };
+  /**
+   * With `relatedLines`, the lines of related repos the check cited, and `prLines`, the lines of the PR's repository beside
+   * them. Both are left out of a check that cited no related line. `outside` counts the confirmations of the defect and
+   * the premises that rest on outside behavior, by whether a cited line states it, and is left out of a check with none.
+   */
+  refutation?: Pick<Refutation, 'outcome' | 'defect' | 'stepsUsedUp'> & { relatedLines?: number; prLines?: number; outside?: { stated: number; unstated: number } };
   checkStatus?: CheckStatus;
   /** Set on a finding the verdict reader named. */
   byReader?: true;
@@ -910,6 +914,11 @@ function threadOutcomes(benchCase: BenchCase, review: LocalReview): ThreadOutcom
   });
 }
 
+function outsideCounts(check: Refutation): { outside?: { stated: number; unstated: number } } {
+  const answers = [check.outside, ...(check.premises ?? []).map(p => p.outside)].filter(o => !!o);
+  return answers.length > 0 ? { outside: { stated: answers.filter(o => o.stated).length, unstated: answers.filter(o => !o.stated).length } } : {};
+}
+
 /** Returns how `f` got its grade, without any text of the finding. */
 function gradeRoute(f: Finding): GradeRoute {
   const { cell, gradeIfConfirmed, judgeIfConfirmed, gradePath, doubts = [], refutation, checkStatus } = f;
@@ -926,6 +935,7 @@ function gradeRoute(f: Finding): GradeRoute {
     ...(refutation && { refutation: {
       outcome: refutation.outcome, ...(refutation.defect && { defect: refutation.defect }), ...(refutation.stepsUsedUp && { stepsUsedUp: refutation.stepsUsedUp }),
       ...(refutation.relatedProof?.length && { relatedLines: refutation.relatedProof.length, prLines: refutation.proof?.length ?? 0 }),
+      ...outsideCounts(refutation),
     } }),
     ...(checkStatus && { checkStatus }),
     ...(f.reviewers.includes(VERDICT_READER_NAME) && { byReader: true as const }),

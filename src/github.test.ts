@@ -129,6 +129,13 @@ describe('formatFindingComment', () => {
     expect(render({ ...cited, evidence: undefined, pairRefutation: { ...refutation, outcome: 'disproved', defect: 'disproved', premises: [] } })).toContain(plain);
     expect(open).toContain(`**${baseFinding.title}**\n\n_Manki confirmed the code path but could not check: The caller passes \`null\` here when the cache is cold._\n\n`);
     expect(parseFindingFromComment(open)?.description).toBe(baseFinding.description);
+    // A confirmation of the defect stored unsettled, since no line states the outside behavior it rests on, names that
+    // behavior. A premise about code it left open comes first, and a stated behavior is no open point.
+    const behavior = 'The package manager rejects a lockfile older than the manifest.';
+    const unstated: Refutation = { ...refutation, outcome: 'unsettled', defect: 'unsettled', outside: { behavior, stated: false }, premises: [] };
+    expect(render({ ...cited, refutation: unstated })).toContain(`**${baseFinding.title}**\n\n_Manki confirmed the code path but could not check: ${behavior}_\n\n`);
+    expect(render({ ...cited, refutation: { ...unstated, premises: refutation.premises } })).toContain('could not check: The caller passes `null` here when the cache is cold._');
+    expect(render({ ...cited, refutation: { ...unstated, outside: { behavior, stated: true } } })).toContain(plain);
     // A PR that adds the note's first word gets it highlighted, and the note is still skipped when read back.
     const highlighted = highlightCode(open, new Set(['_Manki']));
     expect(highlighted).toContain('`_Manki` confirmed the code path');
