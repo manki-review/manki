@@ -1264,8 +1264,8 @@ export const UNPOSTED_REASONS = {
   memory_suppression: 'hidden by a memory suppression',
   static_signal_match: 'a CI tool reports the same line',
   no_trigger: 'it names no trigger that happens in realistic use',
-  unsettled_check: 'a tool check could not confirm it',
-  not_checked: 'nothing proves it and no tool check ran on it',
+  unsettled_check: 'a check of the code could not confirm it',
+  not_checked: 'nothing proves it, and no check of the code ran on it',
   no_proof: 'it cites no lines that prove it',
 } as const;
 export type UnpostedReason = keyof typeof UNPOSTED_REASONS;

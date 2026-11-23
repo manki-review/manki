@@ -762,7 +762,7 @@ describe('checkAndAutoApprove', () => {
     /** The body of a review whose round approved and held its approval for a person, with `hold` in its record. */
     const heldForPerson = (hold: 'unread' | 'config') => `${roundBody({ ...roundThatPosted(HEAD, []), approval: { held: hold } })}\n\n<!-- manki-held-for-person -->`;
     const HELD_FOR_PERSON = 'Manki\'s review of the head holds its approval for a person and says why, such as files no model read. Resolving threads does not lift that. A person approves, or the next review round decides.';
-    const DRAFT = '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `/manki check`, and Manki approves or says what holds the approval.';
+    const DRAFT = '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. If the latest commit has no review yet, Manki reviews it first when automatic review runs on this PR. If nothing happens, as for a PR from a fork or while automatic review is off or paused, comment `/manki check`, and Manki approves or says what holds the approval.';
     const GONE_WARNING = 'The record of Manki\'s review of `bead000` names a thread that does not exist for 1 warning, so resolving threads cannot lift its hold on the approval:\n- Retry never stops (`src/lock.ts`)';
 
     it.each<[string, string, ReturnType<typeof thread>[], true | string, 'warnings'?]>([
@@ -1017,8 +1017,8 @@ describe('checkAndAutoApprove', () => {
     });
 
     it.each<[string, Parameters<typeof makeMockOctokit>[0], string | { approved: true; standing: true }, { auto_approve: boolean }?, ('draft' | 'warnings' | 'conflict' | 'unread' | 'config')?]>([
-      ['a draft', { draft: true }, '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `/manki check`, and Manki approves or says what holds the approval.' + CHECK_BOX, undefined, 'draft'],
-      ['a draft with `auto_approve` off, where marking it ready approves nothing', { draft: true }, '**Approval held:** this PR is a draft. Mark it ready for review, then tick the review box in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.' + AGAIN_BOX, { auto_approve: false }, 'draft'],
+      ['a draft', { draft: true }, '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. If the latest commit has no review yet, Manki reviews it first when automatic review runs on this PR. If nothing happens, as for a PR from a fork or while automatic review is off or paused, comment `/manki check`, and Manki approves or says what holds the approval.' + CHECK_BOX, undefined, 'draft'],
+      ['a draft with `auto_approve` off, where marking it ready approves nothing', { draft: true }, '**Approval held:** this PR is a draft. Mark it ready for review, then tick the review box in the settings block. `auto_approve` is off, so Manki approves only at the end of a review round, when nothing holds the approval.' + AGAIN_BOX, { auto_approve: false }, 'draft'],
       // The title comes from the model, so its links must not reach the comment.
       ['an open blocking thread', { threads: [makeGraphqlFetchThreadNode({ url: 'https://github.com/o/r/pull/1#r1', body: `<!-- manki:blocker:x --> **Blocker**\n\n<!-- manki-finding: ${JSON.stringify({ title: 'Null deref in [`parse`](https://example.com)' })} -->` })] },
         `1 thread blocks the approval:\n- [Null deref in \`parse\`](https://github.com/o/r/pull/1#r1)\n\n${FOLLOWS}`],
@@ -1042,7 +1042,7 @@ describe('checkAndAutoApprove', () => {
         NOT_REVIEWED_YET + AGAIN_BOX],
       // The box sits under the sentence that names the review, and a hold line that names the same step adds no second one.
       ['a draft head no review covers, with `auto_approve` off', { draft: true, existingReviews: [{ id: 7, body: roundBody(blockingRound(testSha('01d'))), state: 'CHANGES_REQUESTED', commit_id: testSha('01d'), user }] },
-        `${NOT_REVIEWED_YET}${AGAIN_BOX}\n\n**Approval held:** this PR is a draft. Mark it ready for review, then tick the review box in the settings block. \`auto_approve\` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.`, { auto_approve: false }, 'draft'],
+        `${NOT_REVIEWED_YET}${AGAIN_BOX}\n\n**Approval held:** this PR is a draft. Mark it ready for review, then tick the review box in the settings block. \`auto_approve\` is off, so Manki approves only at the end of a review round, when nothing holds the approval.`, { auto_approve: false }, 'draft'],
       ['an approval that already stands', { existingReviews: [{ id: 7, body: roundBody(roundThatPosted(HEAD, [])), state: 'APPROVED', commit_id: HEAD, user }] }, { approved: true, standing: true }],
       // An open blocking or warning thread declines beside an approval that stands.
       ['an open blocking thread beside an approval that stands', { threads: [thread('t1', 'blocker')], existingReviews: [{ id: 7, body: roundBody(roundThatPosted(HEAD, [])), state: 'APPROVED', commit_id: HEAD, user }] },
@@ -1148,13 +1148,13 @@ describe('checkAndAutoApprove', () => {
 
     expect(await holdApproval(octokit, TEST_BOT, 'owner', 'repo', 1, testSha('9'))).toMatchObject({ reason: 'draft', posted: true });
     expect(createCommentMock.mock.calls.map(([c]) => c.body)).toEqual([
-      `**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment \`/manki check\`, and Manki approves or says what holds the approval.${CHECK_BOX}\n\n<!-- manki-approval-held:9000000000000000000000000000000000000000 -->`,
+      `**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. If the latest commit has no review yet, Manki reviews it first when automatic review runs on this PR. If nothing happens, as for a PR from a fork or while automatic review is off or paused, comment \`/manki check\`, and Manki approves or says what holds the approval.${CHECK_BOX}\n\n<!-- manki-approval-held:9000000000000000000000000000000000000000 -->`,
     ]);
     // With `auto_approve` off the notice promises no approval for marking the PR ready.
     createCommentMock.mockClear();
     expect(await holdApproval(octokit, TEST_BOT, 'owner', 'repo', 1, testSha('8'), false, false)).toMatchObject({ reason: 'draft', posted: true });
     expect(createCommentMock.mock.calls.map(([c]) => c.body)).toEqual([
-      `**Approval held:** this PR is a draft. Mark it ready for review, then tick the review box in the settings block. \`auto_approve\` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.${AGAIN_BOX}\n\n<!-- manki-approval-held:8000000000000000000000000000000000000000 -->`,
+      `**Approval held:** this PR is a draft. Mark it ready for review, then tick the review box in the settings block. \`auto_approve\` is off, so Manki approves only at the end of a review round, when nothing holds the approval.${AGAIN_BOX}\n\n<!-- manki-approval-held:8000000000000000000000000000000000000000 -->`,
     ]);
     expect(await holdApproval(makeMockOctokit({ mergeable: true }), TEST_BOT, 'owner', 'repo', 1, testSha('9'))).toBe(false);
     const unreadable = makeMockOctokit({ mergeable: true });

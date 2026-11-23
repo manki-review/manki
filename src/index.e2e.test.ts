@@ -535,8 +535,8 @@ function reviewCommand(command = '/manki review'): Promise<void> {
 }
 
 const SLASH_HINT = 'Next time, write `/manki` instead of `@manki`. `@manki` is the login of an unrelated GitHub user, who gets a notification each time.';
-const DRAFT_HOLD = '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `/manki check`, and Manki approves or says what holds the approval.';
-const DRAFT_HOLD_WITHOUT_AUTO_APPROVE = '**Approval held:** this PR is a draft. Mark it ready for review, then tick the review box in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.';
+const DRAFT_HOLD = '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. If the latest commit has no review yet, Manki reviews it first when automatic review runs on this PR. If nothing happens, as for a PR from a fork or while automatic review is off or paused, comment `/manki check`, and Manki approves or says what holds the approval.';
+const DRAFT_HOLD_WITHOUT_AUTO_APPROVE = '**Approval held:** this PR is a draft. Mark it ready for review, then tick the review box in the settings block. `auto_approve` is off, so Manki approves only at the end of a review round, when nothing holds the approval.';
 const REOPENED = 'Reopened. A blocking finding needs a maintainer or a fix: the PR author cannot resolve it.';
 /** What a "Fixed." on the blocker thread says about the push a review needs to confirm the fix. */
 const FIX_NEEDS_PUSH = 'A review confirms the fix only after a push changes the thread\'s file `src/math.ts`.';
@@ -817,7 +817,7 @@ describe('runFullReview end to end', () => {
 
     const progress = mockGitHub.comments.find(c => c.body.startsWith('✅ **Review complete**'))!.body;
     expect(progress).not.toContain('Not finished checking');
-    expect(postedReviews()[0].body).toContain(`<summary>Checked and left out: 1 finding</summary>\n\n#### Not finished checking · 1 lead\n\n- **Cache may go stale** · [\`src/math.ts:2\`](https://github.com/${OWNER}/${REPO}/blob/${HEAD_SHA}/src/math.ts#L2)\n\n</details>`);
+    expect(postedReviews()[0].body).toContain(`<summary>Checked and left out: 1 finding</summary>\n\n#### Not finished checking · 1 possible problem\n\n- **Cache may go stale** · [\`src/math.ts:2\`](https://github.com/${OWNER}/${REPO}/blob/${HEAD_SHA}/src/math.ts#L2)\n\n</details>`);
     expect(progress).toContain('Dropped: "Sum may overflow" (ignore)');
     // The listed lead never reached the judge, so it is no duplicate the judge merged.
     const record = mockGitHub.roundContext(postedReviews()[0]);

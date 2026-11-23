@@ -310,7 +310,7 @@ export async function fetchApprovalHold(octokit: Octokit, owner: string, repo: s
 /** Returns the line that says a round requests changes because the round records of `reviews` could not be read while a thread is open. */
 export function unreadRecordsLine(reviews: readonly string[]): string {
   const named = reviews.map((url, i) => `[review ${i + 1}](${url})`).join(', ');
-  return `**Approval withheld:** an earlier review record could not be read${named ? ` (${named})` : ''}, so Manki cannot tell how serious the open threads are and does not approve while one is open. Once a maintainer has checked and resolved them, the next review can approve.`;
+  return `**Approval withheld:** Manki could not read its record of an earlier review${named ? ` (${named})` : ''}, so it cannot tell how serious the open threads are. It does not approve while one is open. Once a maintainer has checked and resolved them, the next review can approve.`;
 }
 
 /** Returns the judge's summary of a round an unread round record kept from approving, labelled as no reason it blocks. */
@@ -320,7 +320,7 @@ export function withheldSummary(summary: string): string {
 }
 
 /** Ends a line that sends someone to the review box while `auto_approve` is off. */
-const ROUND_APPROVES_LINE = '`auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.';
+const ROUND_APPROVES_LINE = '`auto_approve` is off, so Manki approves only at the end of a review round, when nothing holds the approval.';
 
 /** Ends a line that tells someone to push for a review. A push starts none while automatic review is off or paused. */
 export const AFTER_PUSH_LINE = 'If the push starts no review, as while automatic review is off or paused, comment `/manki review`.';
@@ -345,7 +345,7 @@ function holdLine(hold: ApprovalHold, autoApprove: boolean): { line: string; box
     if (!autoApprove) return { line: `**Approval held:** this PR is a draft. Mark it ready for review, then tick the review box in the settings block. ${ROUND_APPROVES_LINE}`, box: 'again' };
     // "Nothing else" covers only what the PR shows, such as an open thread or a conflict. For every other case, in which
     // nothing follows, the check command names the reason.
-    return { line: '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `/manki check`, and Manki approves or says what holds the approval.', box: 'check' };
+    return { line: '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. If the latest commit has no review yet, Manki reviews it first when automatic review runs on this PR. If nothing happens, as for a PR from a fork or while automatic review is off or paused, comment `/manki check`, and Manki approves or says what holds the approval.', box: 'check' };
   }
   if (hold.reason === 'config') {
     return {
@@ -375,7 +375,7 @@ function holdLine(hold: ApprovalHold, autoApprove: boolean): { line: string; box
     const explain = 'reply in its thread with a reason Manki accepts';
     const ways = guarded === threaded ? 'or have a maintainer resolve its thread'
       : unthreaded > 0 ? `or ${explain}` : `${explain}, or tick \`${ISSUE_BOX_LABEL}\` to track it for later`;
-    const mixed = guarded > 0 && guarded < threaded ? ' A security warning, or a blocker a check disproved, needs a fix or a maintainer to resolve its thread.' : '';
+    const mixed = guarded > 0 && guarded < threaded ? ' A security warning, or a warning a check lowered from a blocker, needs a fix or a maintainer to resolve its thread.' : '';
     const line = `${lead}, ${ways}.${mixed}${unthreaded > 0 ? ` ${unthreaded} of them ${noThread(unthreaded)}` : ''}`;
     return autoApprove ? { line } : { line: `${line} Once every warning is handled, tick the review box in the settings block. ${ROUND_APPROVES_LINE}`, box: 'again' };
   }
@@ -1036,8 +1036,8 @@ function beforeJudge(data: DashboardData): string {
   const leads = data.openLeadCount ?? 0;
   return ([
     [data.toolAlertCount ?? 0, 'tool alert added', 'tool alerts added'],
-    [data.carriedLeadCount ?? 0, 'lead carried over from the last round', 'leads carried over from the last round'],
-    [leads, 'lead not finished checking', 'leads not finished checking'],
+    [data.carriedLeadCount ?? 0, 'possible problem carried over from the last round', 'possible problems carried over from the last round'],
+    [leads, 'possible problem not finished checking', 'possible problems not finished checking'],
     [repeats, 'dropped as a repeat of an earlier resolved finding', 'dropped as repeats of earlier resolved findings'],
   ] as const).filter(([count]) => count > 0).map(([count, singular, plural]) => countOf(count, singular, plural)).join(', ');
 }
@@ -1082,7 +1082,7 @@ const RECORD_ONLY_NAMES: Record<RecordOnlyReason, string> = {
   unsettled_check: 'no proof',
   not_checked: 'no proof',
   no_proof: 'no proof',
-  refutation: 'disproved by the refuter',
+  refutation: 'disproved by a check of the code',
   in_pr_suppression: 'suppressed in this PR',
   resolved_thread: 'matches a resolved thread',
   ratchet: 'matches an earlier round',
@@ -1105,10 +1105,10 @@ function postedLines(data: DashboardData, posted: Record<string, number>): strin
     `**Posted:** ${countOf(Object.values(posted).reduce((n, count) => n + count, 0), 'finding')}`,
     grades && `${INDENT}${grades}`,
     data.addedAfterJudgeCount ? `${INDENT}added after the judge: ${countOf(data.addedAfterJudgeCount, 'finding')}` : '',
-    recordOnly && `${INDENT}round record only: ${recordOnly}`,
-    data.unsettledLeadCount ? `${INDENT}not finished checking: ${countOf(data.unsettledLeadCount, 'lead')}` : '',
+    recordOnly && `${INDENT}not posted: ${recordOnly}`,
+    data.unsettledLeadCount ? `${INDENT}not finished checking: ${countOf(data.unsettledLeadCount, 'possible problem')}` : '',
     data.repeatCount ? `${INDENT}left out as repeats of other findings: ${data.repeatCount}` : '',
-    throttled > 0 ? `${INDENT}suppressed: ${countOf(throttled, 'test-only suggestion')} (round ≥2 throttle)` : '',
+    throttled > 0 ? `${INDENT}left out: ${countOf(throttled, 'suggestion')} on test files, which Manki posts only in the first round` : '',
   ].filter(line => line);
 }
 
@@ -1861,10 +1861,10 @@ function baseNote(finding: Finding, links?: CodeLinks, oneLine = false): string 
     return at ? [linkedRange(at, linkTo)] : [];
   }).slice(0, oneLine ? 1 : undefined).join(', ');
   const branch = links?.baseBranch ? inlineCode(links.baseBranch) : 'the base branch';
-  if (security) return `**Already broken before this PR.** Two checks found the same problem on ${branch} at ${lines}. It still blocks because it is a security finding, so a maintainer decides.`;
+  if (security) return `**Already broken before this PR.** Two checks found the same problem on ${branch} at ${lines}. It is a security finding, so it stays until it is fixed or a maintainer clears it.`;
   return stopped
     ? `**Already broken before this PR.** Two checks found the same problem on ${branch} at ${lines}, so it doesn't block this PR.`
-    : `**Possibly older than this PR.** One check found the same problem on ${branch} before this PR, at ${lines}. If that's right, a maintainer can dismiss this thread.`;
+    : `**Possibly older than this PR.** One check found the same problem on ${branch} at ${lines}. If that is right, a maintainer can dismiss the finding.`;
 }
 
 /** Returns the line that says this PR fixes the failure of `finding` at its `fixedElsewhere` line, linked when `links` can. */
@@ -1990,8 +1990,8 @@ function formatFindingSection(heading: string, folds: string[], intro?: string, 
 function formatCarriedWarnings(carried: FindingFingerprintEntry[]): string | null {
   const lines = carried.map(e => `${formatTraceEntry({ file: e.fingerprint.file, line: e.currentLine ?? 0, title: e.title ?? '' })} (round ${e.raisedIn})`);
   return formatFindingSection(`Earlier warnings, not fixed · ${formatSeverityCounts(carried)}`, lines.length > 0 ? [lines.join('\n')] : [], carried.length === 1
-    ? 'An earlier round listed it, and this round neither raised it again nor found it fixed, so it stays listed. It doesn\'t block.'
-    : 'An earlier round listed these, and this round neither raised them again nor found them fixed, so they stay listed. None of them blocks.', '###');
+    ? 'An earlier round listed it, and this round did not find it fixed, so it stays listed. It doesn\'t block.'
+    : 'An earlier round listed these, and this round did not find them fixed, so they stay listed. None of them blocks.', '###');
 }
 
 /** Returns the section for the holding warnings that got no thread, which says what clears them, or null when there are none. */
@@ -2025,8 +2025,8 @@ function originGroups(findings: Finding[], followUp: boolean): Array<[string, Fi
         : `Round ${round} listed these, and this round finds them again.`];
     }),
     [MISSED_EARLIER, missed, missed.length === 1
-      ? 'It sits on lines an earlier round already reviewed, so it doesn\'t block this PR.'
-      : 'These sit on lines an earlier round already reviewed, so none of them block this PR.'],
+      ? 'An earlier round reviewed these lines and did not raise it. It does not block or hold the approval.'
+      : 'An earlier round reviewed these lines and did not raise them. None of them blocks or holds the approval.'],
     ['Pre-existing', preExisting, preExisting.length === 1
       ? 'This PR did not cause it, so it doesn\'t block: it is on lines the PR did not change, or the code fails the same way without the PR.'
       : 'This PR did not cause these, so none of them block: each is on lines the PR did not change, or the code fails the same way without the PR.'],
@@ -2067,7 +2067,7 @@ function markLeftOut(trailer: string, body: FittedBody, room: number, trailerFor
 
 /** The line that ends a review body which left out `count` findings for lack of room. */
 function leftOutForRoom(count: number): string {
-  return `<sub>${countOf(count, 'finding')} ${count === 1 ? 'is' : 'are'} left out of this review for lack of room. The round record keeps ${count === 1 ? 'it' : 'them'}.</sub>`;
+  return `<sub>${countOf(count, 'finding')} ${count === 1 ? 'is' : 'are'} left out of this review for lack of room. Manki's record of this review keeps ${count === 1 ? 'it' : 'them'}.</sub>`;
 }
 
 /**
@@ -2213,9 +2213,9 @@ function formatLeftOut(result: ReviewResult, disproved: DisprovedFinding[], link
   const unproven = (result.unposted ?? []).flatMap(f => f.unpostedReason && leftOutUnproven(f) ? [because(f, UNPOSTED_REASONS[f.unpostedReason])] : []);
   const leads = (result.openLeads ?? []).map((f): LeftOutEntry => ({ ...f, reason: f.leadSince ? `Open since round ${f.leadSince}.` : undefined }));
   const kinds = [
-    { heading: 'Disproved by a tool check', noun: 'finding', short: 'disproved', entries: disproved },
+    { heading: 'Disproved by a check of the code', noun: 'finding', short: 'disproved', entries: disproved },
     { heading: 'Not proven, so not listed', noun: 'warning', short: 'unproven', entries: unproven },
-    { heading: 'Not finished checking', noun: 'lead', short: 'not finished', entries: leads },
+    { heading: 'Not finished checking', noun: 'possible problem', short: 'not finished', entries: leads },
   ].filter(kind => kind.entries.length > 0);
   if (kinds.length === 0) return null;
   const total = kinds.reduce((sum, kind) => sum + kind.entries.length, 0);
@@ -3503,11 +3503,11 @@ const REFUTATION_PART: Record<RefutationOutcome, { label: string; text: string }
   confirmed: { label: 'Double-checked', text: 'Manki tried to disprove this by reading the code and could not.' },
   unsettled: { label: 'Not settled', text: 'Manki tried to disprove this by reading the code and could not decide.' },
   // A posted disproved finding is a blocker, a security finding, one a second check confirmed, one `isDisprovedBlocker` names or one that `gradedByRule`, since a disproof drops any other.
-  disproved: { label: 'Doubt found', text: 'Manki found a reason this may not happen, but a disproof alone never clears a blocker or a security finding, so please check it yourself.' },
+  disproved: { label: 'Doubt found', text: 'Manki found a reason this may not happen. That doubt alone does not remove the finding, so please check it yourself.' },
 };
 const DISPROVED_TEXT = 'Manki found a reason this may not happen, so this does not block. Please check it yourself.';
 const DISPROVED_PAIR_TEXT = 'Manki found a reason this may not happen, and a second check on another model agreed, so this does not block. Please check it yourself.';
-const OVERRULED_DISPROOF_TEXT = 'The finding stays, since Manki confirmed that it breaks the repository rule. This check disagrees about the damage or about the defect itself.';
+const OVERRULED_DISPROOF_TEXT = 'This check disagrees about the damage or the defect. The finding stays because Manki confirmed that it breaks a rule of this repository.';
 const PAIR_REFUTATION_LABEL = 'Second check, on another model';
 
 /** Opens the fold under a finding comment, so reading the comment back stops its description there. */

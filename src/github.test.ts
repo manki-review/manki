@@ -643,7 +643,7 @@ describe('formatFindingComment', () => {
     };
     const answering = (finding: Finding, ...answers: OriginAnswer[]): Finding => ({ ...finding, originCheck: { lineChanged: false, answers } });
     const broken = `**Already broken before this PR.** Two checks found the same problem on \`main\` at [\`src/main.ts:40\`](${baseLink}), so it doesn't block this PR.`;
-    const older = `**Possibly older than this PR.** One check found the same problem on \`main\` before this PR, at [\`src/main.ts:40\`](${baseLink}). If that's right, a maintainer can dismiss this thread.`;
+    const older = `**Possibly older than this PR.** One check found the same problem on \`main\` at [\`src/main.ts:40\`](${baseLink}). If that is right, a maintainer can dismiss the finding.`;
     expect(baseLink).toContain('/blob/base/');
     expect(onMain(confirmedBefore)).toContain(`**${baseFinding.title}**\n\n${broken}\n\n`);
     expect(onMain(confirmedBefore)).toContain('double-checked, same before this PR</summary>');
@@ -659,7 +659,7 @@ describe('formatFindingComment', () => {
     // A pre-existing security blocker on code the PR did not touch still blocks. Both checks say it was already broken,
     // and that a maintainer decides, never that it does not block, and the summary agrees.
     const stillBlocking = onMain({ ...confirmedBefore, severity: 'blocker', tags: ['pre-existing', 'security'] });
-    expect(stillBlocking).toContain(`**${baseFinding.title}**\n\n**Already broken before this PR.** Two checks found the same problem on \`main\` at [\`src/main.ts:40\`](${baseLink}). It still blocks because it is a security finding, so a maintainer decides.\n\n`);
+    expect(stillBlocking).toContain(`**${baseFinding.title}**\n\n**Already broken before this PR.** Two checks found the same problem on \`main\` at [\`src/main.ts:40\`](${baseLink}). It is a security finding, so it stays until it is fixed or a maintainer clears it.\n\n`);
     expect(stillBlocking).not.toMatch(/Possibly older|doesn't block/);
     expect(stillBlocking).toContain('double-checked, same before this PR</summary>');
     expect(parseFindingFromComment(stillBlocking).description).toBe(baseFinding.description);
@@ -682,7 +682,7 @@ describe('formatFindingComment', () => {
     };
     const disproved = render(disprovedFinding);
     expect(render({ ...disprovedFinding, evidence: { checks: ['src/util.ts:3 marks it intended'], proof: [] } })).toContain('<summary>How this was checked: 1 place read, doubt found</summary>');
-    expect(disproved).toContain(`**Doubt found:** Manki found a reason this may not happen, but a disproof alone never clears a blocker or a security finding, so please check it yourself. A comment says it is intended. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}), [\`Makefile:7\`](${link('Makefile', 7)}).`);
+    expect(disproved).toContain(`**Doubt found:** Manki found a reason this may not happen. That doubt alone does not remove the finding, so please check it yourself. A comment says it is intended. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}), [\`Makefile:7\`](${link('Makefile', 7)}).`);
     // An answer that the defect does not exist reads the same and links the same lines, whatever the premises of its check add up to.
     for (const outcome of ['unsettled', 'confirmed'] as const) {
       const noDefect: Finding = { ...disprovedFinding, refutation: { ...disprovedFinding.refutation!, outcome, defect: 'disproved', premises: [{ premise: 'A caller passes it', outcome, reason: 'r' }] } };
@@ -691,26 +691,26 @@ describe('formatFindingComment', () => {
     }
     // With `review.rules: warn` or `block`, a warning that breaks a confirmed rule outlives a disproof, and says why it stays.
     const ruled = (finding: Finding, rules: 'warn' | 'block' = 'warn'): string => formatFindingComment(finding, { ...links, rules });
-    const keptByRule = '**Doubt found**\nThe finding stays, since Manki confirmed that it breaks the repository rule. This check disagrees about the damage or about the defect itself. A comment says it is intended.';
+    const keptByRule = '**Doubt found**\nThis check disagrees about the damage or the defect. The finding stays because Manki confirmed that it breaks a rule of this repository. A comment says it is intended.';
     for (const rules of ['warn', 'block'] as const) {
       expect(ruled({ ...disprovedFinding, tags: [], rule: { file: 'AGENTS.md', quote: 'Every change needs a test.', verdict: 'confirmed' } }, rules)).toContain(keptByRule);
     }
     // With `auto`, the default, the rule keeps nothing, so a security finding the disproof leaves says why it stays like any other.
-    expect(render({ ...disprovedFinding, rule: { file: 'AGENTS.md', quote: 'Every change needs a test.', verdict: 'confirmed' } })).toContain('**Doubt found**\nManki found a reason this may not happen, but a disproof alone never clears a blocker or a security finding');
+    expect(render({ ...disprovedFinding, rule: { file: 'AGENTS.md', quote: 'Every change needs a test.', verdict: 'confirmed' } })).toContain('**Doubt found**\nManki found a reason this may not happen. That doubt alone does not remove the finding');
     // It also outlives a check's answer that the defect does not exist, with the same sentence, which holds whatever the check's reason says.
     const ruleWarning: Finding = { ...disprovedFinding, tags: [], rule: { file: 'AGENTS.md', quote: 'Every change needs a test.', verdict: 'confirmed' } };
     expect(ruled({ ...ruleWarning, refutation: { ...disprovedFinding.refutation!, defect: 'disproved' } })).toContain(keptByRule);
     // A rule the judge did not confirm keeps no finding, so its check reads like any other disproof.
-    expect(ruled({ ...ruleWarning, rule: { ...ruleWarning.rule!, verdict: 'unproven' } })).toContain('Manki found a reason this may not happen, but a disproof alone');
+    expect(ruled({ ...ruleWarning, rule: { ...ruleWarning.rule!, verdict: 'unproven' } })).toContain('Manki found a reason this may not happen. That doubt alone');
     // The check that disproved it says why the finding stays, also when it is the second one.
     const unsettled = { outcome: 'unsettled' as const, reason: 'The caller is generated.', files: ['src/main.ts'], codeDigest: 'abc' };
     const keptBySecond = ruled({ ...ruleWarning, refutation: unsettled, pairRefutation: disprovedFinding.refutation });
     expect(keptBySecond).toContain('**Not settled**\nManki tried to disprove this by reading the code and could not decide. The caller is generated.');
-    expect(keptBySecond).toContain('**Second check, on another model**\nThe finding stays, since Manki confirmed that it breaks the repository rule. This check disagrees about the damage or about the defect itself. A comment says it is intended.');
+    expect(keptBySecond).toContain('**Second check, on another model**\nThis check disagrees about the damage or the defect. The finding stays because Manki confirmed that it breaks a rule of this repository. A comment says it is intended.');
     // A check that confirmed a premise settles the disproof of the other, so nothing was dropped and no check says the rule kept it.
     const backed = { outcome: 'unsettled' as const, reason: 'One premise holds.', premises: [{ premise: 'A caller passes it', outcome: 'confirmed' as const, reason: 'r' }], files: ['src/main.ts'], codeDigest: 'abc' };
     expect(ruled({ ...ruleWarning, pairRefutation: backed })).not.toContain('The finding stays');
-    expect(ruled({ ...ruleWarning, pairRefutation: backed })).toContain('**Doubt found**\nManki found a reason this may not happen, but a disproof alone');
+    expect(ruled({ ...ruleWarning, pairRefutation: backed })).toContain('**Doubt found**\nManki found a reason this may not happen. That doubt alone');
     expect(render({ ...baseFinding, refutation: { outcome: 'unsettled', reason: 'The caller is generated.', files: ['src/main.ts'], codeDigest: 'abc' } }))
       .toContain('\n<!-- manki-checks -->\n**Not settled:** Manki tried to disprove this by reading the code and could not decide. The caller is generated.\n');
 
@@ -1893,7 +1893,7 @@ describe('postReview with context', () => {
     const missing = many.filter(f => !shown.includes(f.title)).map(f => f.title);
     expect(missing.length).toBeGreaterThan(0);
     expect(missing).toEqual(Array.from({ length: missing.length }, (_, i) => `Old bug ${40 - missing.length + i}`));
-    expect(cut).toContain(`${missing.length} findings are left out of this review for lack of room. The round record keeps them.`);
+    expect(cut).toContain(`${missing.length} findings are left out of this review for lack of room. Manki's record of this review keeps them.`);
     // The record keeps the findings left out as in the record only, and the shown ones as in the body.
     const [record] = extractReviewRecords(cut).records.map(r => JSON.parse(r) as RoundContext);
     expect(record.findings.entries.filter(e => e.posted === 'record').map(e => e.title)).toEqual(missing);
@@ -2155,7 +2155,7 @@ describe('postReview body lead', () => {
     expect(lastBody().split('\n\n')[1]).toBe('**Still open from earlier reviews:**\n- `src/c.ts:42`: On the file\n- `src/c.ts:32`: On a fallback line\n- `src/c.ts:7`: Outdated');
     // With `auto_approve` off an answer runs no approval check, so the line names the review box.
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: [earlier('Old retry')], autoApprove: false });
-    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **1 warning to address.** Fix it, reply in its thread with a reason Manki accepts, or tick `Create an issue for this` to track it for later. Once every warning is handled, tick the review box in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.');
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **1 warning to address.** Fix it, reply in its thread with a reason Manki accepts, or tick `Create an issue for this` to track it for later. Once every warning is handled, tick the review box in the settings block. `auto_approve` is off, so Manki approves only at the end of a review round, when nothing holds the approval.');
     expect(lastBody().split('\n\n')[1]).toBe(listed('Old retry'));
     // The line names the review box, so the head carries it.
     expect(lastBody().split('\n\n')[2]).toBe('<!-- manki-issue-box -->\n- [ ] Review again <!-- manki-box:again -->');
@@ -2176,7 +2176,7 @@ describe('postReview body lead', () => {
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: [earlier('Lost update', { disprovedBlocker: true })] });
     expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('⚠️ **1 warning to address.** Fix it, or have a maintainer resolve its thread. Manki approves once every warning is handled.');
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: [earlier('Old retry'), earlier('Token in URL', { isSecurity: true })], autoApprove: false });
-    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('⚠️ **2 warnings to address.** Fix each one, reply in its thread with a reason Manki accepts, or tick `Create an issue for this` to track it for later. A security warning, or a blocker a check disproved, needs a fix or a maintainer to resolve its thread. Once every warning is handled, tick the review box in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.');
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('⚠️ **2 warnings to address.** Fix each one, reply in its thread with a reason Manki accepts, or tick `Create an issue for this` to track it for later. A security warning, or a warning a check lowered from a blocker, needs a fix or a maintainer to resolve its thread. Once every warning is handled, tick the review box in the settings block. `auto_approve` is off, so Manki approves only at the end of a review round, when nothing holds the approval.');
     expect(lastBody().split('\n\n')[1]).toBe(listed('Old retry', 'Token in URL'));
     // Warning threads that could not be read hold the approval too, in both wordings.
     const unread = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: 'unread' });
@@ -2185,7 +2185,7 @@ describe('postReview body lead', () => {
     expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on the warning threads.** Manki could not read them, so it does not approve yet. Comment `/manki check`, and Manki approves or says what holds the approval.');
     expect(lastBody().split('\n\n')[1]).toBe('<!-- manki-issue-box -->\n- [ ] Check approval <!-- manki-box:check -->');
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: 'unread', autoApprove: false });
-    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on the warning threads.** Manki could not read them, so it does not approve yet. Tick the review box in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.');
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on the warning threads.** Manki could not read them, so it does not approve yet. Tick the review box in the settings block. `auto_approve` is off, so Manki approves only at the end of a review round, when nothing holds the approval.');
     // A config hold comes first with a line of its own, and the verdict line still says the warnings hold.
     const config = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: [earlier('Old retry'), earlier('Old cache')], configHold: 'base' });
     expect([config.approvalHeld, config.warningsHeld]).toEqual(['config', true]);
@@ -2226,7 +2226,7 @@ describe('postReview body lead', () => {
     // The warning without a thread is in its own section, so only the earlier thread is listed under the line.
     expect(lastBody().split('\n\n')[1]).toBe(listed('Old retry'));
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, findings: [warning('Nowhere', 0, { file: '' })] }, { files: [], totalAdditions: 0, totalDeletions: 0 }, undefined, undefined, { openWarnings: [earlier('Token in URL', { isSecurity: true })], autoApprove: false });
-    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **2 warnings to address.** Fix each one, or have a maintainer resolve its thread. 1 of them has no thread and holds until a later review round no longer finds it. Once every warning is handled, tick the review box in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.');
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **2 warnings to address.** Fix each one, or have a maintainer resolve its thread. 1 of them has no thread and holds until a later review round no longer finds it. Once every warning is handled, tick the review box in the settings block. `auto_approve` is off, so Manki approves only at the end of a review round, when nothing holds the approval.');
     // A blocker still requests changes.
     const blocked = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', findings: [blocker, warning('Retry never stops', 3)] }, diff, undefined, undefined, { openWarnings: [earlier('Old retry')] });
     expect([mockCreateReview.mock.calls.at(-1)![0].event, blocked.approvalHeld]).toEqual(['REQUEST_CHANGES', false]);
@@ -2247,13 +2247,13 @@ describe('postReview body lead', () => {
     expect([event, approvalHeld]).toEqual(['COMMENT', 'draft']);
     // The head ends with the box of the step the hold line names.
     const withBox = (box: string) => approved.body.replace('\n\n**What this does:**', `\n\n<!-- manki-issue-box -->\n- [ ] ${box}\n\n**What this does:**`);
-    expect(body).toBe(`**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment \`/manki check\`, and Manki approves or says what holds the approval.\n\n${withBox('Check approval <!-- manki-box:check -->')}`);
+    expect(body).toBe(`**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. If the latest commit has no review yet, Manki reviews it first when automatic review runs on this PR. If nothing happens, as for a PR from a fork or while automatic review is off or paused, comment \`/manki check\`, and Manki approves or says what holds the approval.\n\n${withBox('Check approval <!-- manki-box:check -->')}`);
 
     // With `auto_approve` off, marking the PR ready approves nothing, so the line names the review box and no check command.
     mockGet.mockResolvedValueOnce({ data: { draft: true, mergeable: true, mergeable_state: 'clean', base: { ref: 'main' } } });
     mockCreateReview.mockClear();
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { autoApprove: false });
-    expect((mockCreateReview.mock.calls[0][0] as { body: string }).body).toBe(`**Approval held:** this PR is a draft. Mark it ready for review, then tick the review box in the settings block. \`auto_approve\` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.\n\n${withBox('Review again <!-- manki-box:again -->')}`);
+    expect((mockCreateReview.mock.calls[0][0] as { body: string }).body).toBe(`**Approval held:** this PR is a draft. Mark it ready for review, then tick the review box in the settings block. \`auto_approve\` is off, so Manki approves only at the end of a review round, when nothing holds the approval.\n\n${withBox('Review again <!-- manki-box:again -->')}`);
   });
 
   it('holds the approval of a READY round as a COMMENT when the base branch config or the PR\'s own changed copy did not load, shows a draft beside it, names a config hold on a request for changes too, and leads a request for changes with why when an earlier record could not be read', async () => {
@@ -2276,7 +2276,7 @@ describe('postReview body lead', () => {
     expect(drafted.approvalHeld).toBe('config');
     expect(draftBody.split('\n\n').slice(0, 3)).toEqual([
       '**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.',
-      '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `/manki check`, and Manki approves or says what holds the approval.',
+      '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. If the latest commit has no review yet, Manki reviews it first when automatic review runs on this PR. If nothing happens, as for a PR from a fork or while automatic review is off or paused, comment `/manki check`, and Manki approves or says what holds the approval.',
       approved.body.split('\n\n')[0],
     ]);
 
@@ -2300,9 +2300,9 @@ describe('postReview body lead', () => {
     expect([held.event, records.approvalHeld]).toEqual(['REQUEST_CHANGES', false]);
     expect(held.body.startsWith(`${unreadRecordsLine([url])}\n\n**Summary:** Nothing blocks merge.\n\n---\n\n**Still open from earlier reviews:**\n- \`src/a.ts:3\`: Stale cache`)).toBe(true);
     expect(held.body).not.toMatch(/Changes requested|What blocks|blocker/);
-    expect(unreadRecordsLine([url])).toBe(`**Approval withheld:** an earlier review record could not be read ([review 1](${url})), so Manki cannot tell how serious the open threads are and does not approve while one is open. Once a maintainer has checked and resolved them, the next review can approve.`);
+    expect(unreadRecordsLine([url])).toBe(`**Approval withheld:** Manki could not read its record of an earlier review ([review 1](${url})), so it cannot tell how serious the open threads are. It does not approve while one is open. Once a maintainer has checked and resolved them, the next review can approve.`);
     // When the reviews could not even be listed, the line names none.
-    expect(unreadRecordsLine([])).toBe('**Approval withheld:** an earlier review record could not be read, so Manki cannot tell how serious the open threads are and does not approve while one is open. Once a maintainer has checked and resolved them, the next review can approve.');
+    expect(unreadRecordsLine([])).toBe('**Approval withheld:** Manki could not read its record of an earlier review, so it cannot tell how serious the open threads are. It does not approve while one is open. Once a maintainer has checked and resolved them, the next review can approve.');
   });
 
   it('names why memory was skipped and the fix under the lead, and keeps the approval', async () => {
@@ -3706,7 +3706,7 @@ describe('buildDashboard', () => {
       }, lines(
         planner, '', ...reviewDone, sideDone, '', '**Judge** (3m 58s)', '> graded 8 findings: 5 kept · 3 dropped', '> dropped, as the finders filed them: 1 blocker · 2 warnings',
         '> refuter: 3 checked · 1 confirmed · 1 disproved · 1 unsettled', '> origin checks: 3 checked · 1 older than this PR', '> verdict reader: read the diff (47s)', '',
-        '**Posted:** 3 findings', '> 2 warnings · 1 suggestion', '> round record only: 1 older than this PR · 1 disproved by the refuter',
+        '**Posted:** 3 findings', '> 2 warnings · 1 suggestion', '> not posted: 1 older than this PR · 1 disproved by a check of the code',
       )],
     ];
     for (const [second, data, expected] of steps) expect(buildDashboard(data, second * 1000)).toBe(expected);
@@ -3851,7 +3851,7 @@ describe('buildDashboard', () => {
       .toContain(`${INDENT}grading 10 findings (2 dropped as repeats of earlier resolved findings)`);
     // The findings the round adds before the judge are named too, so the count graded adds up.
     expect(buildDashboard({ ...data, toolAlertCount: 1, carriedLeadCount: 2, openLeadCount: 1, staticDedupCount: 1, llmDedupCount: 0 }))
-      .toContain(`${INDENT}grading 10 findings (1 tool alert added, 2 leads carried over from the last round, 1 lead not finished checking, 1 dropped as a repeat of an earlier resolved finding)`);
+      .toContain(`${INDENT}grading 10 findings (1 tool alert added, 2 possible problems carried over from the last round, 1 possible problem not finished checking, 1 dropped as a repeat of an earlier resolved finding)`);
     // A round with nothing to judge shows the judge as skipped while it runs and once it is done, never as pending.
     for (const phase of ['reviewed', 'complete'] as const) {
       const skipped = buildDashboard({ ...data, phase, rawFindingCount: 1, judgeInputCount: 0, staticDedupCount: 1, llmDedupCount: 0, judgeSkipped: true });
@@ -3941,7 +3941,7 @@ describe('buildDashboard', () => {
     expect(everything).toContain(lines('> ✅ Second reads: 1 of 1 done, 1 finding (40s)', ''));
     expect(everything).toContain(lines(
       '**Judge** (2m 59s)',
-      '> before the judge: 1 tool alert added, 1 lead carried over from the last round, 1 lead not finished checking, 1 dropped as a repeat of an earlier resolved finding',
+      '> before the judge: 1 tool alert added, 1 possible problem carried over from the last round, 1 possible problem not finished checking, 1 dropped as a repeat of an earlier resolved finding',
       '> graded 4 findings: 2 kept · 1 dropped · 1 merged',
       '> dropped, as the finders filed them: 1 suggestion',
       '> sweeps: 1 of 1 done, 2 findings (30s)',
@@ -3950,7 +3950,7 @@ describe('buildDashboard', () => {
       '**Posted:** 2 findings',
       '> 1 blocker · 1 warning',
       '> added after the judge: 1 finding',
-      '> round record only: 1 no proof',
+      '> not posted: 1 no proof',
     ));
   });
 
@@ -4133,9 +4133,9 @@ describe('buildDashboard', () => {
     // Reasons with one name are counted together, in a fixed order.
     expect(buildDashboard(data)).toContain([
       '**Posted:** 0 findings',
-      `${INDENT}round record only: 2 suppressed by memory · 1 no realistic trigger · 2 no proof`,
-      `${INDENT}not finished checking: 1 lead`,
-      `${INDENT}suppressed: 7 test-only suggestions (round ≥2 throttle)`,
+      `${INDENT}not posted: 2 suppressed by memory · 1 no realistic trigger · 2 no proof`,
+      `${INDENT}not finished checking: 1 possible problem`,
+      `${INDENT}left out: 7 suggestions on test files, which Manki posts only in the first round`,
     ].join('\n'));
     expect(buildDashboard({ ...data, recordOnly: {}, unsettledLeadCount: 0, testNitSuppressedCount: 0, repeatCount: 1 })).toContain(`**Posted:** 0 findings\n${INDENT}left out as repeats of other findings: 1`);
   });
@@ -4503,7 +4503,7 @@ describe('updateProgressComment', () => {
     expect(body).toContain('- Kept: "Null dereference" (blocker): "Valid bug"');
     expect(body).toContain('- Dropped: "Style nitpick" (ignore): "Intentional pattern"');
     expect(body).toContain('- Not listed, on code an earlier round reviewed: "Rename" (suggestion): "Clearer"');
-    expect(body).toContain('- Not listed, a tool check could not confirm it: "Slow path" (warning): "May be slow"');
+    expect(body).toContain('- Not listed, a check of the code could not confirm it: "Slow path" (warning): "May be slow"');
   });
 
   it('does not render recap section in metadata', async () => {
@@ -6192,7 +6192,7 @@ describe('postReview non-blocking findings', () => {
       '<details>',
       '<summary>Checked and left out: 6 findings (1 disproved, 3 unproven, 2 not finished)</summary>',
       '',
-      '#### Disproved by a tool check · 1 finding',
+      '#### Disproved by a check of the code · 1 finding',
       '',
       `- **Overflow** · ${link(2, 'src/m.ts')}`,
       '  Checked at src/api.ts:3. Both inputs are bounded.',
@@ -6200,13 +6200,13 @@ describe('postReview non-blocking findings', () => {
       '#### Not proven, so not listed · 3 warnings',
       '',
       `- **Unsettled** · ${link(15)}`,
-      '  A tool check could not confirm it.',
+      '  A check of the code could not confirm it.',
       `- **Unchecked** · ${link(16)}`,
-      '  Nothing proves it and no tool check ran on it.',
+      '  Nothing proves it, and no check of the code ran on it.',
       `- **Uncited** · ${link(17)}`,
       '  It cites no lines that prove it.',
       '',
-      '#### Not finished checking · 2 leads',
+      '#### Not finished checking · 2 possible problems',
       '',
       `- **Token may not read it** · ${link(3)}`,
       '  Open since round 2.',
@@ -6222,7 +6222,7 @@ describe('postReview non-blocking findings', () => {
 
     // One kind needs no split, and a kind with no entries has no heading.
     const one = await bodyOf({}, [overflow]);
-    expect(one).toContain(`<summary>Checked and left out: 1 finding</summary>\n\n#### Disproved by a tool check · 1 finding\n\n- **Overflow** · ${link(2, 'src/m.ts')}\n  Checked at src/api.ts:3. Both inputs are bounded.\n\n${log}\n\n</details>`);
+    expect(one).toContain(`<summary>Checked and left out: 1 finding</summary>\n\n#### Disproved by a check of the code · 1 finding\n\n- **Overflow** · ${link(2, 'src/m.ts')}\n  Checked at src/api.ts:3. Both inputs are bounded.\n\n${log}\n\n</details>`);
     expect(one).not.toMatch(/Not proven|Not finished/);
     expect(await bodyOf({ unposted: unproven.slice(0, 1), openLeads: leads.slice(0, 1) })).toContain('<summary>Checked and left out: 2 findings (1 unproven, 1 not finished)</summary>');
     // The judge never saw a lead that was only listed, so a fold of leads names no log.
@@ -6235,7 +6235,7 @@ describe('postReview non-blocking findings', () => {
     // Each kind lists its first ten. A reason ends at its second sentence, or its first when two pass 300 characters.
     const many = Array.from({ length: 12 }, (_, i) => ({ title: `Finding ${i}`, file: 'src/`a`.ts', line: i + 1, reason: `${'Long reason. '.repeat(i === 0 ? 1 : 0)}${'x'.repeat(290)}. More than fits here.` }));
     const long = await bodyOf({}, [...many, { title: 'No file', file: '', line: 0, reason: `${'y'.repeat(400)}. More.` }]);
-    expect(long).toContain(`#### Disproved by a tool check · 13 findings\n\n- **Finding 0** · [\`src/'a'.ts:1\`](https://github.com/owner/repo/blob/abc1234/src/%60a%60.ts#L1)\n  Long reason.\n- **Finding 1** · `);
+    expect(long).toContain(`#### Disproved by a check of the code · 13 findings\n\n- **Finding 0** · [\`src/'a'.ts:1\`](https://github.com/owner/repo/blob/abc1234/src/%60a%60.ts#L1)\n  Long reason.\n- **Finding 1** · `);
     expect(long).toContain(`#L2)\n  ${'x'.repeat(290)}.\n- **Finding 2**`);
     expect(long).toMatch(/- \*\*Finding 9\*\* [^\n]+\n {2}x+\.\n\n<sub>and 3 more<\/sub>\n\n<sub>The progress comment/);
     expect(await bodyOf({}, [{ title: 'No file', file: '', line: 0, reason: `${'y'.repeat(400)}. More.` }])).toContain(`- **No file**\n  ${'y'.repeat(300)}...\n\n`);
@@ -6595,7 +6595,7 @@ describe('postReview non-blocking findings', () => {
     expect(review.body).not.toContain('Old code off the diff');
     // Each origin gets its section with exact counts, and the sections follow each other under rules. A security note on
     // reviewed code stays listed.
-    expect(review.body).toContain('### Missed by an earlier review · 2 suggestions\n\nThese sit on lines an earlier round already reviewed, so none of them block this PR.\n\n<details>\n<summary>\u2728 <b>Untouched file</b><br><sub><b>Suggestion, not blocking</b> · <a ');
+    expect(review.body).toContain('### Missed by an earlier review · 2 suggestions\n\nAn earlier round reviewed these lines and did not raise them. None of them blocks or holds the approval.\n\n<details>\n<summary>\u2728 <b>Untouched file</b><br><sub><b>Suggestion, not blocking</b> · <a ');
     expect(review.body).toContain('<summary>\u2728 <b>Untouched file</b><br><sub><b>Suggestion, not blocking</b> · <a href="https://github.com/owner/repo/blob/sha/src/b.ts#L3"><code>src/b.ts:3</code></a>');
     expect(review.body).toContain('<summary>\u2728 <b>Token logged on old code</b>');
     expect(review.body).not.toContain('On old code</b>');
@@ -6618,7 +6618,7 @@ describe('postReview non-blocking findings', () => {
     const counted = counting.createReview.mock.calls[0][0].body as string;
     // Both late warnings have a thread, so both hold the approval. The pre-existing ones never do.
     expect(counted).toMatch(/^\u26A0\uFE0F \*\*2 warnings to address\.\*\* Fix each one, reply in its thread with a reason Manki accepts, or tick `Create an issue for this` to track it for later\. Manki approves once every warning is handled\./u);
-    expect(counted).toContain('### Missed by an earlier review · 1 suggestion\n\nIt sits on lines an earlier round already reviewed, so it doesn\'t block this PR.');
+    expect(counted).toContain('### Missed by an earlier review · 1 suggestion\n\nAn earlier round reviewed these lines and did not raise it. It does not block or hold the approval.');
     expect(counted).toContain('### Pre-existing · 2 warnings\n\nThis PR did not cause these, so none of them block: each is on lines the PR did not change, or the code fails the same way without the PR.');
     // With every late warning in a thread, the body has no section for them.
     const threaded = makeOctokit();
@@ -6699,9 +6699,9 @@ describe('postReview non-blocking findings', () => {
     const several = await carriedBody([carriedEntry('Retry never ends', 10, 1, 12), carriedEntry('Queue has no `limit`', 7, 2)]);
     // A carried warning no round raised again never holds the approval.
     expect(several).toMatch(/^\u2705 \*\*Approved\.\*\* 2 warnings and 1 suggestion, none of which block\./u);
-    expect(several).toContain('### Earlier warnings, not fixed · 2 warnings\n\nAn earlier round listed these, and this round neither raised them again nor found them fixed, so they stay listed. None of them blocks.\n\n- `src/a.ts:12`: Retry never ends (round 1)\n- `src/a.ts`: Queue has no `limit` (round 2)\n\n');
+    expect(several).toContain('### Earlier warnings, not fixed · 2 warnings\n\nAn earlier round listed these, and this round did not find them fixed, so they stay listed. None of them blocks.\n\n- `src/a.ts:12`: Retry never ends (round 1)\n- `src/a.ts`: Queue has no `limit` (round 2)\n\n');
     expect(several.indexOf('### Found this round')).toBeLessThan(several.indexOf('### Earlier warnings, not fixed'));
-    expect(await carriedBody([carriedEntry('Retry never ends', 10, 1, 10)])).toContain('### Earlier warnings, not fixed · 1 warning\n\nAn earlier round listed it, and this round neither raised it again nor found it fixed, so it stays listed. It doesn\'t block.\n\n- `src/a.ts:10`: Retry never ends (round 1)');
+    expect(await carriedBody([carriedEntry('Retry never ends', 10, 1, 10)])).toContain('### Earlier warnings, not fixed · 1 warning\n\nAn earlier round listed it, and this round did not find it fixed, so it stays listed. It doesn\'t block.\n\n- `src/a.ts:10`: Retry never ends (round 1)');
     expect(await carriedBody(undefined)).not.toContain('Earlier warnings');
     // The record keeps a hash of the line a warning listed only in the body points at, with the lines around it, and how
     // many places of its file read the same, and the warning's description for a later judge. A line the file does not have gives none.
