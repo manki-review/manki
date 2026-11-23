@@ -6,7 +6,7 @@ import * as core from '@actions/core';
 
 import { parsePRDiff } from './diff';
 import { LLMClient, SendMessageOptions } from './providers';
-import { checkStatus, confirmPushedFixes, disprovedTrigger, lacksTrigger, needsProof, PushedFix, RefuteOptions, refuteBlockers, unprovenReason } from './refute';
+import { checkStatus, confirmPushedFixes, disprovedTrigger, lacksTrigger, needsProof, PushedFix, RefuteOptions, refuteBlockers, unpostedForTrigger, unprovenReason } from './refute';
 import { repoToolsPrompt } from './providers/cli-utils';
 import { parseFindings } from './review';
 import { agreedOutcome, disproof, Finding, OpenThread, outcomeOf, ParsedDiff, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, RulesMode, staysWarningIfConfirmed, triggerDoubt, wouldBlockIfTrue } from './types';
@@ -529,7 +529,7 @@ describe('refuteBlockers', () => {
     expect(result.map(f => needsProof(f))).toEqual([false, false, false]);
   });
 
-  it('gives a blocker the judge capped for a rare trigger back only when a check confirms the trigger, whatever it says about the defect', async () => {
+  it('gives a blocker the judge capped for a rare trigger back only when a check confirms the trigger, whatever it says about the defect, and posts it only until a check disproves the trigger', async () => {
     const trigger = { ...triggerDoubt('When two reports get the same random name'), decides: 'grade' as const };
     const capped = {
       severity: 'warning' as const, gradeIfConfirmed: 'blocker' as const, cell: { row: 'severe' as const, column: 'normal' as const }, doubts: [trigger],
@@ -542,11 +542,20 @@ describe('refuteBlockers', () => {
       'Trigger disproved': { ...defect, premises: [{ outcome: 'disproved', reason: 'The name has 128 random bits.', proof: ['src/math.ts:1'] }] },
     };
     const result = await refuteBlockers(fakeClient(replies), Object.keys(replies).map(title => finding(title, capped)), { workspace, diff });
-    expect(result.map(f => [f.title, f.severity, f.refutation?.outcome])).toEqual([
-      ['Trigger confirmed', 'blocker', 'confirmed'],
-      ['Trigger unsettled', 'warning', 'unsettled'],
-      ['Trigger disproved', 'warning', 'unsettled'],
+    // The warning would block if its trigger held, so it stays posted until a check disproves the trigger, though that check confirmed the defect.
+    expect(result.map(f => [f.title, f.severity, f.refutation?.outcome, disprovedTrigger(f), unpostedForTrigger(f)])).toEqual([
+      ['Trigger confirmed', 'blocker', 'confirmed', false, false],
+      ['Trigger unsettled', 'warning', 'unsettled', false, false],
+      ['Trigger disproved', 'warning', 'unsettled', true, true],
     ]);
+    // One check disproved the defect and left the trigger open, and the other disproved the trigger. No check confirmed it, so the warning is not posted.
+    const premise = (outcome: RefutationOutcome) => ({ premise: trigger.premise, decides: 'grade' as const, outcome, reason: 'r' });
+    const check = (defectOutcome: RefutationOutcome, trigger: RefutationOutcome): Refutation => ({ outcome: 'unsettled', defect: defectOutcome, reason: 'r', files: [], codeDigest: 'abc', premises: [premise(trigger)] });
+    const split = finding('Checks split', { ...capped, refutation: check('disproved', 'unsettled'), pairRefutation: check('confirmed', 'disproved') });
+    // A check that confirms the trigger keeps it posted, whatever the other check says. So does a security finding with a disproved trigger.
+    const disputed = finding('Checks disagree', { ...split, refutation: check('disproved', 'confirmed') });
+    const security = finding('Security', { ...split, tags: ['security'] });
+    expect([split, disputed, security].map(f => [disprovedTrigger(f), unpostedForTrigger(f) && needsProof(f)])).toEqual([[true, true], [false, false], [true, false]]);
   });
 
   it('checks each premise the judge doubts on its own, raises a finding with a blocker cell only when every premise is confirmed and every finder filed a blocker or the check confirmed the defect and its consequence, and never raises or moves one in the `rare` column', async () => {
@@ -1271,14 +1280,18 @@ describe('refuteBlockers', () => {
       ['No trigger, confirmed', 'warning', true, false, undefined, 'confirmed'],
       ['No trigger, disproved', 'warning', true, true, 'unsettled_check', 'unconfirmed'],
     ]);
-    // Without a check, a `degraded` warning lacks a trigger only when the judge named none. No other row and no other grade needs one.
+    // Without a check, a warning lacks a trigger when the judge named none, on any row. A note or a finding the judge placed in no cell never does.
+    // A warning that is serious if true stays posted until a check disproves its trigger.
+    const wrongNormal = { row: 'wrong' as const, column: 'normal' as const };
     expect([
       finding('No trigger', { severity: 'warning', cell: degraded }),
       finding('Named trigger', { severity: 'warning', cell: degraded, trigger }),
       finding('Rare wrong result', { severity: 'warning', cell: { row: 'wrong', column: 'rare' } }),
+      finding('Wrong result held down', { severity: 'warning', cell: wrongNormal, gradeIfConfirmed: 'blocker' }),
+      finding('Wrong result the judge keeps at a warning', { severity: 'warning', cell: wrongNormal, gradeIfConfirmed: 'warning' }),
       finding('Degraded note', { severity: 'note', cell: { row: 'degraded', column: 'rare' } }),
       finding('No cell', { severity: 'warning' }),
-    ].map(lacksTrigger)).toEqual([true, false, false, false, false]);
+    ].map(f => [lacksTrigger(f), unpostedForTrigger(f)])).toEqual([[true, true], [false, false], [true, false], [true, false], [true, false], [false, false], [false, false]]);
   });
 
   it('takes no check for a warning a later step leaves out, such as a pre-existing one, and checks the rest in order inside the same limit', async () => {

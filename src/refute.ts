@@ -15,7 +15,7 @@ import { parseProof, sameProblem, titlesMatch, truncateDiff } from './review';
 import { stringifyFindingFingerprint } from './finding-fingerprint';
 import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation, MAX_QUOTED_RANGE } from './static-signals';
 import { wrapUpNoted } from './tool-steps';
-import { DISPROVED_TAG, agreedOutcome, cellGrade, DiffFile, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, CheckProgress, CheckStatus, confirmsAll, confirmsCodePath, confirmsDefect, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, isSweepName, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, restsOnDrop, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, towardFinding, triggerDoubt, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof } from './types';
+import { DISPROVED_TAG, agreedOutcome, cellGrade, DiffFile, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, CheckProgress, CheckStatus, confirmsAll, confirmsCodePath, confirmsDefect, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isRareClaim, isSecurityFinding, isSweepName, isTriggerDoubt, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, restsOnDrop, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, towardFinding, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof, wouldBlockIfTrue } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -586,20 +586,29 @@ export function unprovenReason(finding: Finding): UnprovenReason | undefined {
 }
 
 /**
- * Whether the warning `finding` on the `degraded` row has no realistic trigger: the judge named none, or a check
- * `disprovedTrigger`. A finding on any other row is posted however rare its trigger, since its consequence is serious.
- * Its blocker cell waits for a check of the trigger when the judge marked it `rareTrigger`, as `gradeByCell` sets it.
+ * Whether the warning `finding` has no realistic trigger: the judge named none, or a check `disprovedTrigger`. Only a
+ * finding the judge placed in a cell of the table has one to name. A blocker cell the judge marked `rareTrigger` waits
+ * for a check of the trigger, as `gradeByCell` sets it.
  */
 export function lacksTrigger(finding: Finding): boolean {
-  if (finding.severity !== 'warning' || finding.cell?.row !== 'degraded') return false;
+  if (finding.severity !== 'warning' || !isGradeCell(finding.cell)) return false;
   return !finding.trigger || disprovedTrigger(finding);
 }
 
-/** Whether a check disproved the `triggerDoubt` of `finding` and no check confirmed the defect. */
+/** Whether a check disproved the trigger premise of `finding` (`isTriggerDoubt`) and no check confirmed it. */
 export function disprovedTrigger(finding: Finding): boolean {
-  const { premise } = triggerDoubt(finding.trigger);
-  const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r);
-  return !checks.some(check => confirmsDefect(check, finding)) && checks.some(check => !!check.premises?.some(p => p.premise === premise && p.outcome === 'disproved'));
+  const answers = [finding.refutation, finding.pairRefutation].flatMap(check => check?.premises?.filter(isTriggerDoubt) ?? []);
+  return answers.some(p => p.outcome === 'disproved') && !answers.some(p => p.outcome === 'confirmed');
+}
+
+/**
+ * Whether the review keeps the warning `finding` in the round record only, since it `lacksTrigger`. A finding that is
+ * serious if true stays posted until a check `disprovedTrigger`: one that `wouldBlock`, one that
+ * `staysWarningIfConfirmed`, since its cell gives a blocker, and one that `isRareClaim`.
+ */
+export function unpostedForTrigger(finding: Finding, wouldBlock = wouldBlockIfTrue): boolean {
+  if (!lacksTrigger(finding)) return false;
+  return disprovedTrigger(finding) || !(wouldBlock(finding) || staysWarningIfConfirmed(finding) || isRareClaim(finding.cell));
 }
 
 /**

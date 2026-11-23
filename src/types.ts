@@ -1040,7 +1040,7 @@ export function triggerDoubt(trigger: string | undefined): Doubt {
 const TRIGGER_PREMISE = 'This trigger happens in realistic use: ';
 
 /** Whether `doubt` is a premise `triggerDoubt` words, such as one a later judge names again from an earlier round. */
-export function isTriggerDoubt(doubt: Doubt): boolean {
+export function isTriggerDoubt(doubt: Pick<Doubt, 'premise'>): boolean {
   return doubt.premise.startsWith(TRIGGER_PREMISE);
 }
 
