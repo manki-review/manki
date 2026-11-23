@@ -328,7 +328,9 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('lines this PR adds, changes or removes, in any of its commits, or those changes cause it. A defect in lines this PR adds is its own, even when the bad state those lines mishandle existed before, so it is never "not a regression". Removing a check, a lock or a guard causes the defect it let through.');
     // The defect a PR fixes in one path and leaves in a sibling path is the PR's own, in test 1 and under Pre-existing Findings.
     expect(prompt).toContain('When this PR fixes a defect in one path, the same defect in a sibling path it leaves alone is part of the change, since the fix is incomplete: a PR that adds an auth check to `POST /items` but leaves `PUT /items/:id` open ships the open route as its own defect. State its cell like any defect of this PR, and cite the line of the fix in `proof` beside the sibling\'s own line.');
-    expect(prompt).toContain('only when the diff shows this PR neither causes nor exposes the defect. A defect in lines this PR adds is never pre-existing. Neither is the defect this PR fixes in one path and leaves in a sibling path: that fix is incomplete, so the defect is part of the change.');
+    // A sibling in a file the PR does not change is code it did not touch, even when the PR fixes the same defect elsewhere.
+    expect(prompt).toContain('cite the line of the fix in `proof` beside the sibling\'s own line. This holds only for a sibling path in a file this PR changes. A fix in another file does not make the same defect in a file this PR does not change part of the change. Any other code the PR did not touch and does not affect is never a finding: mark it `ignore`, even when the problem is real.');
+    expect(prompt).toContain('only when the diff shows this PR neither causes nor exposes the defect. A defect in lines this PR adds is never pre-existing. Neither is the defect this PR fixes in one path and leaves in a sibling path in a file it changes: that fix is incomplete, so the defect is part of the change.');
     // The grade the judge states is the one the PR would own, and only the checks settle the base.
     expect(prompt).toContain('State the cell the finding earns as if this PR had caused it, and never lower it because you think the code before this PR already had the defect.');
     expect(prompt).toContain('Whether the code before this PR fails the same way is for Manki\'s checks with tools to settle.');
@@ -350,6 +352,10 @@ describe('buildJudgeSystemPrompt', () => {
     expect(table).toContain('A state that callers, stored data or concurrent use of a public API can produce is not internal, however narrow the timing looks');
     expect(table).toContain('When you cannot name what in the code\'s own logic produces the state, the column is `normal`.');
     expect(table).toContain('**The `rare` column is a claim, and Manki checks it.** On the `wrong` row it is all that keeps a finding from blocking, so Manki adds the doubt "Normal use or outside input can produce the state this failure needs" to every such finding. Do not list that doubt yourself. Name in `reasoning` the state and what in the code\'s own logic produces it.\n');
+    // A promise in a doc and a wrong figure in a line of text are not the damage the top two rows name.
+    expect(table).toContain('**The `severe` and `wrong` rows need the damage they name.** State one only when `reasoning` names that damage as the code itself causes it');
+    expect(table).toContain('A doc or comment that promises behaviour the code does not have is no broken public contract, since a broken public contract is one that existing callers or files already rely on and that this PR changes.');
+    expect(table).toContain('is the `degraded` row when the content it describes and every value the code returns, stores or sends are right. A figure that is itself the result, such as an invoice total, a balance or a value returned to a caller, stays on the `wrong` row.');
     expect(table).toContain('**"Not worse than before" is no cell.** A defect in lines this PR adds is graded by its cell, even when the old code failed the same way or the bad state existed before. Never state a lower row, the `rare` column or `ignore` because the change is "not a regression".');
     expect(table).toContain('A rule below that gives a finding a grade names the row to state: `degraded` in the `normal` column for `warning`, and for `note` the `improvement` row, or the `style` row when the point is only wording, formatting, naming or docs.');
     expect(table).toContain('Manki grades a `blocker` cell with an open doubt as a `warning`.');
@@ -6489,9 +6495,11 @@ const GRADING_CASES = [
   'rare-trigger-severe',
   'noticed-common-slowdown',
   'cut-list-note',
+  'doc-promise-only',
+  'doc-promise-lost-data',
 ] as const;
 
-const BLOCKER_CASES: readonly string[] = ['passes-all-tests', 'severe-on-internal-value', 'removed-guard', 'security-with-todo', 'library-resource-exhaustion', 'public-api-reachable', 'declared-gap', 'added-code-not-pre-existing', 'rare-claim-reachable', 'sibling-path-incomplete-fix'];
+const BLOCKER_CASES: readonly string[] = ['passes-all-tests', 'severe-on-internal-value', 'removed-guard', 'security-with-todo', 'library-resource-exhaustion', 'public-api-reachable', 'declared-gap', 'added-code-not-pre-existing', 'rare-claim-reachable', 'sibling-path-incomplete-fix', 'doc-promise-lost-data'];
 
 interface GradingFixture {
   name: string;
@@ -6540,7 +6548,7 @@ function gradingPriorRounds({ finding, priorRound }: GradingFixture): RoundConte
 describe('judge grading fixture corpus', () => {
   const fixtures = loadFixtures<GradingFixture>('grading');
 
-  it('covers each blocker test failing alone, each never-a-blocker case, grade stability, the blocker edge cases, objections to an applied Manki fix, build claims, public API reachability, declared gaps, pre-existing claims on added lines, rare claims normal use reaches, fixes a sibling path lacks, claims a guard in the diff refutes, a warning the code shown proves or leaves open, a note the code shown proves or leaves open, a missing-test note that cites the test file, a finding on unseen code that does or does not earn a blocker once that code is confirmed, a cost nobody would notice beside a consequence someone would, a rare trigger with a minor or a serious consequence beside a common one, and a removed guard whose only open question is how a model reads its output, once each', () => {
+  it('covers each blocker test failing alone, each never-a-blocker case, grade stability, the blocker edge cases, objections to an applied Manki fix, build claims, public API reachability, declared gaps, pre-existing claims on added lines, rare claims normal use reaches, fixes a sibling path lacks, claims a guard in the diff refutes, a warning the code shown proves or leaves open, a note the code shown proves or leaves open, a missing-test note that cites the test file, a finding on unseen code that does or does not earn a blocker once that code is confirmed, a cost nobody would notice beside a consequence someone would, a rare trigger with a minor or a serious consequence beside a common one, a removed guard whose only open question is how a model reads its output, and a doc promise beside code whose own failure does or does not do serious damage, once each', () => {
     expect(fixtures.map(f => f.case).sort()).toEqual([...GRADING_CASES].sort());
   });
 

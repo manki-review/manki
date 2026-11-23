@@ -1,0 +1,19 @@
+{
+  "name": "doc-promise-only",
+  "case": "doc-promise-only",
+  "allowed": [
+    "warning",
+    "note"
+  ],
+  "finding": {
+    "title": "`write_cache` is not atomic, contrary to its docstring",
+    "file": "cache/store.py",
+    "line": 8,
+    "description": "The docstring promises that `write_cache` atomically replaces the cache file, but `open(path, \"w\")` truncates the file and `json.dump` writes it in place. A build that reads the cache while another writes it, or a write cut off by a crash, sees a partial file. Callers rely on the documented contract, which the code breaks.",
+    "severity": "blocker",
+    "reviewers": [
+      "Correctness"
+    ]
+  },
+  "prDiff": "diff --git a/cache/store.py b/cache/store.py\nindex 1111111..2222222 100644\n--- a/cache/store.py\n+++ b/cache/store.py\n@@ -1,3 +1,18 @@\n import json\n \n CACHE_PATH = \"build/.deps-cache.json\"\n+\n+\n+def write_cache(path, entries):\n+    \"\"\"Atomically replaces the cache file at `path` with `entries`.\"\"\"\n+    with open(path, \"w\") as f:\n+        json.dump(entries, f)\n+\n+\n+def read_cache(path):\n+    \"\"\"Returns the cached entries, or None when the cache is missing or unreadable, so the caller rebuilds it.\"\"\"\n+    try:\n+        with open(path) as f:\n+            return json.load(f)\n+    except (OSError, ValueError):\n+        return None\n"
+}
