@@ -1331,6 +1331,13 @@ describe('parseJudgeResponse', () => {
       { id: 4, title: 'D', row: 'improvement', reasoning: 'r', category: 'testing', revertGap: ' Caught ' },
     ] }), '/work').findings;
     expect(gaps.map(f => f.revertGap)).toEqual(['src/a.ts:12-14', undefined, undefined, 'caught']);
+    // A merged copy's location fills a survivor without one, and `caught` stays only when every copy states it, so a merge never drops a note one copy keeps.
+    const note = { severity: 'note' as const, file: 'src/a.ts', line: 12, description: 'd', reviewers: ['r'] };
+    const merge = (...stated: Array<string | undefined>) => mapJudgedToFindings(stated.map((_, i) => ({ ...note, title: `Copy ${i + 1}` })), stated.map((revertGap, i) => ({
+      id: i + 1, title: `Copy ${i + 1}`, row: 'improvement' as const, reasoning: 'r', category: 'testing' as const, ...(revertGap && { revertGap }), ...(i > 0 && { duplicateOf: 1 }),
+    }))).map(f => f.revertGap);
+    expect([merge(undefined, 'src/a.ts:12'), merge('caught', 'src/a.ts:12'), merge('caught', 'caught'), merge('caught', 'caught', undefined), merge('caught', undefined)])
+      .toEqual([['src/a.ts:12'], ['src/a.ts:12'], ['caught'], [undefined], [undefined]]);
     const base = { severity: 'warning' as const, file: 'src/upload.ts', line: 3, description: 'd', reviewers: ['r'] };
     const mapped = mapJudgedToFindings([{ ...base, title: 'Upload unbounded', howToFix: 'Check the size.' }, { ...base, title: 'Covered', line: 9 }], leaves);
     expect(mapped.map(f => f.howToFix)).toEqual(['Check the size. This fix leaves part of the problem: The upload still has no timeout.', undefined]);
@@ -6781,7 +6788,8 @@ describe('judge note order fixture corpus', () => {
     const posted = review.findings.map(f => f.title);
     if (fixture.revertGap) expect(posted).toContain(fixture.revertGap);
     if (fixture.testMethod) {
-      expect(result.findings.find(f => f.title === fixture.testMethod)).toMatchObject({ category: 'testing', revertGap: undefined });
+      const method = result.findings.find(f => f.title === fixture.testMethod);
+      expect([method?.category, method?.revertGap]).toEqual(['testing', undefined]);
       expect(posted.indexOf(fixture.testMethod)).toBeGreaterThan(posted.indexOf(fixture.revertGap ?? ''));
     }
     if (fixture.caught) expect(posted).not.toContain(fixture.caught);

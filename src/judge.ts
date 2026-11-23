@@ -2258,11 +2258,23 @@ export function foldInto(survivor: Finding, copy: Finding, staysPreExisting?: (c
   survivor.threadId ??= copy.threadId;
   survivor.howToFix ??= copy.howToFix;
   survivor.trigger ??= copy.trigger;
+  const revertGap = mergedRevertGap(survivor, copy);
+  if (revertGap) survivor.revertGap = revertGap;
+  else delete survivor.revertGap;
   Object.assign(survivor, mergedRule(survivor, copy));
   // Every merged copy must pass the pre-existing checks on its own, or the merged finding is not pre-existing.
   if (!copy.preExisting || (staysPreExisting && !staysPreExisting(copy))) delete survivor.preExisting;
   const evidence = mergeEvidence(survivor.evidence, copy.evidence);
   if (evidence) survivor.evidence = evidence;
+}
+
+/**
+ * Returns the `revertGap` of `survivor` once `copy` merges into it: a location either one names, or `REVERT_CAUGHT` only
+ * when both state it, since a test that catches what one copy claims says nothing about the other.
+ */
+function mergedRevertGap(survivor: Finding, copy: Finding): string | undefined {
+  const located = [survivor.revertGap, copy.revertGap].find(gap => gap && gap !== REVERT_CAUGHT);
+  return located ?? (survivor.revertGap === REVERT_CAUGHT && copy.revertGap === REVERT_CAUGHT ? REVERT_CAUGHT : undefined);
 }
 
 /** Returns the prior-round fix that the code under `finding` applies, if any. */
