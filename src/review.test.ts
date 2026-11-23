@@ -5955,6 +5955,7 @@ describe('runReview', () => {
     const cites = [{ ...round, findings: { ...round.findings, entries: round.findings.entries.map(e => ({ ...e, evidence: { checks: ['`purgeExpired` is never called.'], proof: [] } })) } }];
     expect(await run(push('src/x.ts', 12), deferred, restated, cites, { items: [issue] })).toEqual([['T1'], []]);
     expect(await run(undefined, { ...deferred, description: 'Nothing runs `purgeExpired`.' }, restated, undefined, { items: [issue] })).toEqual([['T1'], []]);
+    expect(await run(push('src/x.ts', 12), deferred, restated, cites, { items: [], tracking: [issue] })).toEqual([['T1'], []]);
     // It is posted once the issue closed, which leaves it out of the related work, when someone without write access
     // opened it, when it names none of the cited code, when the answer named another issue, or without related work.
     for (const work of [{ items: [] }, { items: [{ ...issue, byWriter: undefined }] }, { items: [{ ...issue, excerpt: 'Make it smaller.' }] }, { items: [{ ...issue, number: 13 }] }, undefined]) {

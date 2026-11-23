@@ -457,7 +457,7 @@ interface PreviousFinding extends FindingMetadata {
    * only when each statement it checked cites one (`settlingPlaces`).
    */
   answerPlaces?: string[];
-  /** For a thread `decidedWithoutFix` by Manki's answer that accepted no fix, the issues and PRs that answer names as `#N`. */
+  /** For a thread `decidedWithoutFix` by Manki's `Agreed` answer, the issues and PRs that answer names as `#N`. */
   trackingIssues?: number[];
   threadId?: string;
   threadUrl?: string;
@@ -858,7 +858,7 @@ interface Settlement {
   latestWaiver?: 'answer' | 'dismiss' | 'override';
   /** For an `answer` waiver, the lines of the PR that answer cited. */
   answerPlaces?: string[];
-  /** For an `answer` waiver, the issues and PRs of `repo` that answer names, other than the PR itself. */
+  /** For an `answer` waiver that agreed, the issues and PRs of `repo` that answer names, other than the PR itself. */
   trackingIssues?: number[];
 }
 
@@ -876,7 +876,7 @@ function settlement(bot: BotIdentity, comments: ThreadCommentNode[], repo: strin
     return ownMarker(body, SECURITY_OVERRIDE_OPENER, COMMENT_MARKER) !== undefined ? ['override'] : [];
   };
   const [latest, body] = sinceLastReopen(bot, comments).filter(own).map(c => c.body ?? '').flatMap(b => kind(b).map(k => [k, b] as const)).at(-1) ?? [];
-  const named = latest === 'answer' ? namedPullRequests(body!.split('\n\n<!--')[0], repo).filter(n => n !== prNumber) : [];
+  const named = latest === 'answer' && settlingDecision(body!)?.outcome === 'Agreed' ? namedPullRequests(body!.split('\n\n<!--')[0], repo).filter(n => n !== prNumber) : [];
   return {
     fixAnswered: comments.slice(1).some(c => own(c) && fix(c.body ?? '')), ...(latest && latest !== 'fix' && { latestWaiver: latest }),
     ...(latest === 'answer' && { answerPlaces: settlingPlaces(body!) }),

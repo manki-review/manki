@@ -4068,12 +4068,12 @@ function threadMayHaveChanged(priorRounds: RoundContext[], interRoundDiff: strin
 
 /**
  * Returns the threads Manki settled by agreeing with an answer that names a tracking issue, while that issue still
- * verifies: an open issue of `work` that a person with write access opened and that names the code the thread's
+ * verifies: an open issue of `work`, listed or tracking, that a person with write access opened and that names the code the thread's
  * finding cites (`namesCitedCode` with `codeOnly`), with the code the evidence of its round entries cites. A file
  * alone names no code here, and a lowercase name counts when both write it in a code span.
  */
 function deferredThreadIds(previousFindings: PreviousFinding[], priorRounds: RoundContext[], work: RelatedWork | undefined): Set<string> {
-  const issues = (work?.items ?? []).filter(item => item.kind === 'issue' && item.byWriter);
+  const issues = [...(work?.items ?? []), ...(work?.tracking ?? [])].filter(item => item.kind === 'issue' && item.byWriter);
   const entries = priorRounds.flatMap(r => r.findings.entries);
   return new Set(previousFindings.flatMap(p => {
     if (!p.decidedWithoutFix || !p.threadId || !p.trackingIssues) return [];

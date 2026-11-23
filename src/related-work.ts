@@ -67,9 +67,9 @@ interface RelatedWorkTarget {
 }
 
 /**
- * Lists the open PRs that change a file this PR changes, most shared files first, the open issues a search for the
- * declared names and the title's words finds, without the issues the body links, and each of `trackingIssues` that
- * is an open issue. A list that fails, or that is
+ * Lists the open PRs that change a file this PR changes, most shared files first, and the open issues a search for
+ * the declared names and the title's words finds, without the issues the body links. Each of `trackingIssues` that
+ * is an open issue goes to `tracking` instead. A list that fails, or that is
  * not done within `LOOKUP_TIMEOUT_MS`, is left out and named in `skipped`. Each item a person with write access
  * opened is marked `byWriter`, within the same deadline. A permission that cannot be read in time marks none.
  */
@@ -88,7 +88,8 @@ export async function findRelatedWork(octokit: Octokit, target: RelatedWorkTarge
   const lists = [findOverlappingPrs(octokit, target, request), searchIssues(octokit, target, request), fetchTrackingIssues(octokit, target, request)];
   const [prs, issues, tracking] = await Promise.allSettled(lists.map(list => Promise.race([list, deadline])));
   const found = [...(prs.status === 'fulfilled' ? prs.value : []), ...(issues.status === 'fulfilled' ? issues.value : [])];
-  const items = [...found, ...(tracking.status === 'fulfilled' ? tracking.value : []).filter(t => !found.some(item => item.kind === 'issue' && item.number === t.number))];
+  const tracked = tracking.status === 'fulfilled' ? tracking.value : [];
+  const items = [...found, ...tracked];
   // `hasWriteAccess` takes no signal, so a lookup still running at the deadline is left behind and counts as no access.
   const byWriter = await Promise.all(items.map(item => !!item.author && Promise.race([hasWriteAccess(octokit, target.owner, target.repo, item.author), deadline]).catch(() => false)));
   clearTimeout(timer);
@@ -98,8 +99,10 @@ export async function findRelatedWork(octokit: Octokit, target: RelatedWorkTarge
     ...(tracking.status === 'rejected' ? [`tracking issues: ${skipReason(tracking.reason)}`] : []),
   ];
   for (const reason of skipped) core.warning(`Related work skips the ${reason}`);
+  const marked = items.map((item, i) => (byWriter[i] ? { ...item, byWriter: true as const } : item));
   return {
-    items: items.map((item, i) => (byWriter[i] ? { ...item, byWriter: true as const } : item)),
+    items: marked.slice(0, found.length),
+    ...(tracked.length > 0 && { tracking: marked.slice(found.length) }),
     ...(skipped.length > 0 && { skipped }),
   };
 }
@@ -147,13 +150,11 @@ async function searchIssues(octokit: Octokit, { owner, repo, title, body, diff }
 }
 
 /**
- * Returns each of the first `MAX_TRACKING_ISSUES` of `trackingIssues` that is an open issue, without the issues the
- * body links. A number GitHub does not find, such as one of a deleted issue, is left out. Any other failed read fails
- * the list.
+ * Returns each of the first `MAX_TRACKING_ISSUES` of `trackingIssues` that is an open issue. A number GitHub does not
+ * find, such as one of a deleted issue, is left out. Any other failed read fails the list.
  */
-async function fetchTrackingIssues(octokit: Octokit, { owner, repo, body, trackingIssues = [] }: RelatedWorkTarget, request: LookupRequest): Promise<RelatedItem[]> {
-  const linked = linkedIssueNumbers(body);
-  const numbers = [...new Set(trackingIssues)].filter(n => !linked.has(n)).slice(0, MAX_TRACKING_ISSUES);
+async function fetchTrackingIssues(octokit: Octokit, { owner, repo, trackingIssues = [] }: RelatedWorkTarget, request: LookupRequest): Promise<RelatedItem[]> {
+  const numbers = [...new Set(trackingIssues)].slice(0, MAX_TRACKING_ISSUES);
   const missing = (error: unknown) => {
     const status = (error as { status?: number })?.status;
     if (status === 404 || status === 410) return undefined;

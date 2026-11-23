@@ -1547,6 +1547,8 @@ describe('fetchRecapState', () => {
       expect((await settledOf([tracked])).map(f => f.trackingIssues)).toEqual([[1487]]);
       expect((await settledOf([answer('Agreed').replace('<!-- manki -->', '<!-- manki --> #77')])).map(f => f.trackingIssues)).toEqual([undefined]);
       expect((await settledOf([tracked, answer('Agreed')])).map(f => f.trackingIssues)).toEqual([undefined]);
+      // Only an answer that agreed defers. A withdrawal that names an issue in passing defers nothing.
+      expect((await settledOf([answer('Withdrawn').replace('The caller checks it.', 'As in #1487, the caller checks it.')])).map(f => f.trackingIssues)).toEqual([undefined]);
       // A warning a writer dismissed carries Manki's record too, so a later round's repeat of it is dropped as waived.
       const dismissedWarning = makeThread({
         id: 'T_WARN', isResolved: true, resolvedBy: { login: BOT_LOGIN }, path: files.bot, line: 10,

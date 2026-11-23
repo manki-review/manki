@@ -106,9 +106,9 @@ describe('findRelatedWork', () => {
     expect(marked.items.map(i => [i.number, i.author, i.byWriter])).toEqual([
       [50, 'maintainer', true], [51, 'reader', undefined], [52, 'helper[bot]', undefined], [53, undefined, undefined], [60, 'admin', true], [61, 'stranger', undefined],
     ]);
-    // An issue Manki's answer named as tracking a deferred fix is read by its number and listed when it is open, once,
-    // whoever opened it. A closed issue, a PR, an issue the body links and a number GitHub does not find are left out,
-    // and none of them takes the place of a later number.
+    // An issue Manki's answer named as tracking a deferred fix is read by its number and kept apart in `tracking` when it
+    // is open, whoever opened it and whether the body links it, so it is never classified or listed. A closed issue, a PR
+    // and a number GitHub does not find are left out, and none of them takes the place of a later number.
     const tracking = makeOctokit([], [{ number: 60, title: 'Tracked defect', body: 'b', user: { login: 'admin' } }], { admin: 'admin', maintainer: 'write' }, [
       { number: 60, title: 'Tracked defect', body: 'b', state: 'open', user: { login: 'admin' } },
       { number: 62, title: 'Bound the table', body: 'Reclaim `entries`.', state: 'open', user: { login: 'maintainer' } },
@@ -118,9 +118,10 @@ describe('findRelatedWork', () => {
       { number: 40, title: 'Linked already', body: 'b', state: 'open', user: { login: 'admin' } },
     ]);
     const deferred = await findRelatedWork(tracking.octokit, target(diff, { trackingIssues: [60, 62, 62, 63, 64, 65, 40, 99] }));
-    expect(deferred.items.map(i => [i.number, i.byWriter])).toEqual([[60, true], [62, true], [63, undefined]]);
-    expect(deferred.items[1]).toMatchObject({ kind: 'issue', title: 'Bound the table', excerpt: 'Reclaim `entries`.', author: 'maintainer' });
-    expect(tracking.get.mock.calls.map(([args]) => args.issue_number)).toEqual([60, 62, 63, 64, 65, 99]);
+    expect(deferred.items.map(i => [i.number, i.byWriter])).toEqual([[60, true]]);
+    expect(deferred.tracking?.map(i => [i.number, i.byWriter])).toEqual([[60, true], [62, true], [63, undefined], [40, true]]);
+    expect(deferred.tracking?.[1]).toMatchObject({ kind: 'issue', title: 'Bound the table', excerpt: 'Reclaim `entries`.', author: 'maintainer' });
+    expect(tracking.get.mock.calls.map(([args]) => args.issue_number)).toEqual([60, 62, 63, 64, 65, 40, 99]);
     expect(deferred.skipped).toBeUndefined();
 
     // A body keeps the comment starts that nothing closes, and is read once however many of them it holds.
