@@ -1056,6 +1056,17 @@ export function withReachDoubt(doubts: readonly Doubt[] = []): Doubt[] {
   return [...doubts.filter(d => d.premise !== REACH_DOUBT.premise), REACH_DOUBT];
 }
 
+/**
+ * How a program outside the code the refuter reads behaves, such as an external tool, a package manager, a runtime or a
+ * remote service, as a confirmation the refuter gave rests on it.
+ */
+export interface OutsideBehavior {
+  /** The behavior, in the refuter's words. */
+  behavior: string;
+  /** Whether a cited line of a file the refuter can read states it. A confirmation that rests on an unstated behavior is stored `unsettled`. */
+  stated: boolean;
+}
+
 /** How a refuter answered one premise the judge doubts. */
 export interface PremiseCheck {
   premise: string;
@@ -1067,6 +1078,8 @@ export interface PremiseCheck {
    * or a peer behaves. Its `outcome` is then `unsettled` for every grade, doubt and hold. Only `confirmsCodePath` reads it.
    */
   outsideCode?: true;
+  /** Set on a confirmation that rests on outside behavior. A `drop` premise, whose confirmation counts against the finding, keeps its outcome. */
+  outside?: OutsideBehavior;
   reason: string;
   proof?: string[];
   /** The lines of related repos that decide it, as `owner/name:path:line`. They can confirm, and never count toward a disproof. */
@@ -1108,6 +1121,8 @@ export interface Refutation {
   outcome: RefutationOutcome;
   /** The refuter's own answer whether the defect exists, whatever it found about the premises. A record from before this was stored has none. */
   defect?: RefutationOutcome;
+  /** Set when the refuter confirmed the defect resting on outside behavior. */
+  outside?: OutsideBehavior;
   /** What decided it, in one or two sentences. */
   reason: string;
   /** The general rule of the language, a library or a protocol that the finding relies on, as the refuter named it. */
@@ -1152,12 +1167,35 @@ export function outcomeOf(check: Pick<Refutation, 'outcome' | 'defect'>): Refuta
   return check.defect === 'disproved' ? 'disproved' : check.outcome;
 }
 
+/** Whether the refuter confirmed `answer` resting on outside behavior no cited line states, so it is stored `unsettled`. */
+export const restsOnUnstated = (answer: { outside?: OutsideBehavior }): boolean => answer.outside?.stated === false;
+
+/**
+ * Returns `check` as the refuter answered it, with each confirmation that `restsOnUnstated` confirmed again. A step that
+ * lowers, drops or hides a finding reads this, so such a confirmation still stands against a disproof, only never raises
+ * a grade or shows the finding as confirmed.
+ */
+export function asAnswered(check: Refutation): Refutation {
+  if (!restsOnUnstated(check) && !check.premises?.some(restsOnUnstated)) return check;
+  const premises = check.premises?.map(p => (restsOnUnstated(p) ? { ...p, outcome: 'confirmed' as const } : p));
+  const defect = restsOnUnstated(check) ? 'confirmed' : check.defect;
+  // Only a confirmation was stored unsettled, so an outcome confirms again only when every answer it adds up from does.
+  const confirms = premises ? premises.every(p => towardFinding(p) === 'confirmed') : defect === 'confirmed';
+  return { ...check, outcome: check.outcome === 'unsettled' && confirms ? 'confirmed' : check.outcome, ...(defect && { defect }), ...(premises && { premises }) };
+}
+
 /**
  * Returns the `outcome` that `checks` agree on, which decides whether a grade is restored and whether a blocker is
  * lowered. An unsettled check abstains, and a confirmation against a disproof settles nothing. So no check confirms
  * beside one that disproves, be it the finding, the defect or a premise that only decides the grade, read by `towardFinding`.
+ * Checks agree on a disproof only when they also do `asAnswered`.
  */
 export function agreedOutcome(checks: readonly Refutation[]): RefutationOutcome {
+  const outcome = agreedOn(checks);
+  return outcome === 'disproved' && agreedOn(checks.map(asAnswered)) !== 'disproved' ? 'unsettled' : outcome;
+}
+
+function agreedOn(checks: readonly Refutation[]): RefutationOutcome {
   const votes = new Set(checks.map(r => r.outcome).filter(o => o !== 'unsettled'));
   if (votes.size !== 1) return 'unsettled';
   const [outcome] = votes;
@@ -1189,15 +1227,17 @@ export function confirmsCodePath(check: Refutation, finding: Pick<Finding, 'doub
 }
 
 /**
- * Returns the first premise about code that a check which confirmed the defect of `finding` left unsettled. Returns none
- * when a check disproved the finding. A check that also disproved a premise the defect rests on contradicts itself, so
- * it names none either.
+ * Returns the first point a check which confirmed the code path of `finding` left open: a premise about code it left
+ * unsettled, or else the outside behavior its confirmation of the defect rested on with no line stating it. Returns
+ * none when a check disproved the finding. A check that also disproved a premise the defect rests on contradicts
+ * itself, so it names none either.
  */
 export function openCodePremise(finding: Pick<Finding, 'doubts' | 'refutation' | 'pairRefutation'>): string | undefined {
   const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r);
   if (checks.some(check => outcomeOf(check) === 'disproved')) return undefined;
-  const open = checks.filter(check => check.defect === 'confirmed').map(check => openPremises(check, finding));
-  return open.filter(premises => premises.every(p => p.outcome === 'unsettled')).flat().find(p => !p.outsideCode)?.premise;
+  const codePath = checks.filter(check => asAnswered(check).defect === 'confirmed' && openPremises(check, finding).every(p => p.outcome === 'unsettled'));
+  return codePath.flatMap(check => openPremises(check, finding)).find(p => !p.outsideCode)?.premise
+    ?? codePath.find(restsOnUnstated)?.outside?.behavior;
 }
 
 /** Whether `answer` shows the failure at the base, with lines the code found at the base `commit`. */
@@ -1250,11 +1290,11 @@ export function confirmsAll(checks: readonly Refutation[]): boolean {
 /**
  * Returns the refutation that disproves `finding`, by `outcomeOf`: in a premise the defect rests on, or in its answer
  * whether the defect exists. Returns none when another check backs the finding, since a confirmation against a
- * disproof settles nothing. A check backs it when it does not disprove it and confirmed the defect or, by `towardFinding`,
- * one of the premises.
+ * disproof settles nothing. A check backs it when, `asAnswered`, it does not disprove it and confirmed the defect or, by
+ * `towardFinding`, one of the premises.
  */
 export function disproof(finding: Pick<Finding, 'refutation' | 'pairRefutation'>): Refutation | undefined {
-  const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r);
+  const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r).map(asAnswered);
   const backs = (check: Refutation): boolean => outcomeOf(check) !== 'disproved' && (check.defect === 'confirmed' || !!check.premises?.some(p => towardFinding(p) === 'confirmed'));
   return checks.some(backs) ? undefined : checks.find(check => outcomeOf(check) === 'disproved');
 }

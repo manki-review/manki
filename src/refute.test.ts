@@ -812,6 +812,59 @@ describe('refuteBlockers', () => {
     // A premise about code the check left open still leaves the finding unconfirmed beside one no code can show.
     const [mixed] = await refuteBlockers(fakeClient({ [opened[0].title]: { ...confirmed('src/math.ts:2'), premises: [{ outcome: 'unsettled', reason }, { outcome: 'outside_code', reason }] } }), [finding(opened[0].title, { ...withHarm, doubts: [exists, { premise: 'A peer sends it', decides: 'defect' }] })], { workspace, diff });
     expect([mixed.severity, checkStatus(mixed)]).toEqual(['warning', 'unconfirmed']);
+
+    // A confirmation that rests on how a program outside the code behaves counts only with a cited line that states it.
+    // Without one it is stored unsettled: it raises nothing and shows nothing as confirmed, yet keeps the finding shown.
+    const behavior = 'The package manager rejects a lockfile older than the manifest.';
+    const raisable = { ...held, reviewerSeverity: 'blocker' as const, ...byJudge('blocker') };
+    const outsideReplies = {
+      'Code premise': { ...confirmed('src/math.ts:2'), premises: [confirmed('src/math.ts:2')] },
+      'Empty outside behavior': { ...confirmed('src/math.ts:2'), outside: { behavior: ' ', stated_in: [] }, premises: [{ ...confirmed('src/math.ts:2'), outside: {} }] },
+      // A reply that copies the answer form's example behavior names none either. The example's line states nothing, so a
+      // real behavior cited only with it is unstated.
+      'Copied outside example': {
+        ...confirmed('src/math.ts:2'), outside: { behavior: 'The outside behaviour the confirmation rests on, in one sentence', stated_in: ['file:line'] },
+        premises: [confirmed('src/math.ts:2')],
+      },
+      'Behavior stated only by the example line': { ...confirmed('src/math.ts:2'), outside: { behavior, stated_in: ['file:line'] } },
+      'Premise on a stated behavior': { ...confirmed('src/math.ts:2'), premises: [{ ...confirmed('src/math.ts:2'), outside: { behavior, stated_in: ['README.md:1'] } }] },
+      'Premise on an unstated behavior': { ...confirmed('src/math.ts:2'), premises: [{ ...confirmed('src/math.ts:2'), outside: { behavior, stated_in: [] } }] },
+      'Defect on an unstated behavior': { ...confirmed('src/math.ts:2'), outside: { behavior, stated_in: ['docs/missing.md:1'] }, premises: [confirmed('src/math.ts:2')] },
+      'Capped blocker on an unstated behavior': { ...confirmed('src/math.ts:2'), outside: { behavior } },
+      'Lead on an unstated behavior': { ...confirmed('src/math.ts:2'), outside: { behavior } },
+    };
+    const outsideFindings = [
+      ...['Code premise', 'Empty outside behavior', 'Copied outside example', 'Premise on a stated behavior', 'Premise on an unstated behavior', 'Defect on an unstated behavior'].map(title => finding(title, raisable)),
+      finding('Capped blocker on an unstated behavior', { severity: 'warning', tags: ['unproven-blocker'] }),
+      finding('Lead on an unstated behavior', { severity: 'warning', notChecked: true, lead: { checked: 'read src/math.ts:2', left: 'find the callers' } }),
+      finding('Behavior stated only by the example line', { severity: 'warning', tags: ['unproven-blocker'] }),
+    ];
+    const outsideResult = await refuteBlockers(fakeClient(outsideReplies), outsideFindings, { workspace, diff });
+    expect(outsideResult.map(f => [f.title, f.severity, f.refutation?.outcome, f.refutation?.defect, f.refutation?.premises?.[0]?.outcome, checkStatus(f), unprovenReason(f)])).toEqual([
+      ['Code premise', 'blocker', 'confirmed', 'confirmed', 'confirmed', 'confirmed', undefined],
+      // An `outside` that names no behavior marks nothing, so the confirmation stands.
+      ['Empty outside behavior', 'blocker', 'confirmed', 'confirmed', 'confirmed', 'confirmed', undefined],
+      ['Copied outside example', 'blocker', 'confirmed', 'confirmed', 'confirmed', 'confirmed', undefined],
+      ['Premise on a stated behavior', 'blocker', 'confirmed', 'confirmed', 'confirmed', 'confirmed', undefined],
+      ['Premise on an unstated behavior', 'warning', 'unsettled', 'confirmed', 'unsettled', 'unconfirmed', undefined],
+      // Premises the code confirmed do not raise a finding whose defect rests on an unstated behavior.
+      ['Defect on an unstated behavior', 'warning', 'unsettled', 'unsettled', 'confirmed', 'unconfirmed', undefined],
+      ['Capped blocker on an unstated behavior', 'warning', 'unsettled', 'unsettled', undefined, 'unconfirmed', undefined],
+      ['Lead on an unstated behavior', 'warning', 'unsettled', 'unsettled', undefined, 'unconfirmed', undefined],
+      ['Behavior stated only by the example line', 'warning', 'unsettled', 'unsettled', undefined, 'unconfirmed', undefined],
+    ]);
+    // The check finished the lead, so it is posted at its grade and not listed as unfinished.
+    expect([outsideResult.at(-2)?.lead, outsideResult.at(-2)?.notChecked]).toEqual([undefined, undefined]);
+    expect(outsideResult.at(-1)?.refutation?.outside).toEqual({ behavior, stated: false });
+    for (const { refutation } of outsideResult.slice(0, 3)) expect([refutation, ...refutation!.premises!].some(answer => !!answer && 'outside' in answer)).toBe(false);
+    // The stating line joins the premise's proof, and the record keeps whether a line stated the behavior.
+    expect(outsideResult[3].refutation?.premises?.[0]).toMatchObject({ outside: { behavior, stated: true }, proof: ['src/math.ts:2', 'README.md:1'] });
+    expect(outsideResult[4].refutation?.premises?.[0]).toMatchObject({ outside: { behavior, stated: false }, proof: ['src/math.ts:2'] });
+    expect(outsideResult[5].refutation).toMatchObject({ outside: { behavior, stated: false }, proof: ['src/math.ts:2'] });
+    // Such a confirmation still stands against a disproof, so the second check neither lowers nor drops the finding.
+    const disproving = fakeClient({ [outsideFindings[4].title]: { outcome: 'disproved', reason: 'Bounded.', proof: ['src/math.ts:1'], premises: [{ outcome: 'disproved', reason: 'Bounded.', proof: ['src/math.ts:1'] }] } }, 'other');
+    const againstDisproof = await refuteBlockers(fakeClient(outsideReplies, 'first'), [outsideFindings[4], finding(outsideFindings[4].title, { ...raisable, severity: 'blocker', gradePath: undefined })], { workspace, diff, pair: disproving });
+    expect(againstDisproof.map(f => [f.severity, agreedOutcome([f.refutation!, f.pairRefutation!]), disproof(f)])).toEqual([['warning', 'unsettled', undefined], ['blocker', 'unsettled', undefined]]);
   });
 
   it('checks the premise a blocker the judge dropped rests on, and grades it by the stated cell only when a check disproves that premise', async () => {
@@ -1284,6 +1337,12 @@ describe('refuteBlockers', () => {
       ['No trigger, confirmed', 'warning', true, false, undefined, 'confirmed'],
       ['No trigger, disproved', 'warning', true, true, 'unsettled_check', 'unconfirmed'],
     ]);
+    // A trigger confirmed on outside behavior no line states settles nothing, yet still stands against a disproof of it.
+    const outsideTrigger = { ...answer('confirmed'), outside: { behavior: 'The platform retries the save.' } };
+    const [unstated] = await refuteRound(fakeClient({ 'Trigger confirmed': { ...answer('confirmed'), premises: [outsideTrigger] } }, 'first'), [withTrigger('Trigger confirmed')], {
+      workspace, diff, pair: fakeClient({ 'Trigger confirmed': { ...answer('confirmed'), premises: [answer('disproved')] } }, 'other'),
+    });
+    expect([unstated.refutation?.premises?.[0].outcome, lacksTrigger(unstated), disprovedTrigger(unstated), checkStatus(unstated)]).toEqual(['unsettled', false, false, 'unconfirmed']);
     // Without a check, a warning lacks a trigger when the judge named none, on any row. A note or a finding the judge placed in no cell never does.
     // A warning that is serious if true stays posted until a check disproves its trigger.
     const wrongNormal = { row: 'wrong' as const, column: 'normal' as const };
@@ -1382,6 +1441,10 @@ describe('refuteBlockers', () => {
     expect(system).toContain("- No code read can settle how a person, a model, a peer or the network will behave at run time, or what code out of your reach does: code that is not in the checkout, the PR's base, a related repo or a dependency source you can read. When the message says no answer raises the finding's grade, answer any other premise that states such behaviour on its code part only: the input the code passes, the check it makes or leaves out, and the path it takes. Confirm it when the code shows that part holds, and never answer it unsettled or outside_code only because the behaviour itself cannot be read. Without that line a confirmation can raise the grade, so answer such a premise outside_code unless the code alone settles it.");
     expect(system).toContain("- **outside_code**: for a premise only, when it depends on something no code in reach can show, as above. It needs no `proof`. It never decides the finding's grade, so answer the code part of the finding as before.");
     expect(system).toContain('"premises": [{"outcome": "disproved" | "confirmed" | "unsettled" | "outside_code"');
+    // A confirmation about how a program outside the readable code behaves names that behaviour and the lines that state it.
+    expect(system).toContain('- Reading code cannot show how a program outside the code you can read behaves when it runs this code or reads its files: an external tool or command line program, a package manager, a runtime or platform, or a remote service. The rules of the language itself are no such behaviour. Never confirm such behaviour from what you know of the program.');
+    expect(system).toContain('Leave `stated_in` empty when no line you read states it. The confirmation then counts as unsettled, so it never raises the finding\'s grade.');
+    expect(system.match(/"outside": \{"behavior": "The outside behaviour the confirmation rests on, in one sentence", "stated_in": \["file:line"\]\}/g)).toHaveLength(2);
     expect(system).not.toContain('an intent the code states');
     expect([result.severity, result.refutation?.outcome, result.refutation?.rule]).toEqual(['ignore', 'disproved', rule]);
     expect(result.judgeNotes).toBe(`Refutation disproved: src/account.ts:3 reads \`account.email\` after the same early return, and it builds. Rule checked: ${rule}`);
@@ -1735,13 +1798,18 @@ describe('refuteBlockers', () => {
       workspace, priorRounds: rounds({ refutation: premise('unsettled'), cell: { row: 'wrong', column: 'rare' }, doubts: [REACH_DOUBT] }), diff,
     });
     expect([lowered.severity, lowered.doubts, lowered.cell]).toEqual(['blocker', undefined, { row: 'wrong', column: 'normal' }]);
-    // A check that confirmed the defect and disproved a premise the defect rests on settled nothing, also as a record stored as a disproof.
+    // A check that confirmed the defect and disproved a premise the defect rests on settled nothing, also as a record
+    // stored as a disproof, and also when its confirmation rests on outside behavior no line states, stored unsettled.
     const exists = [{ premise: 'No caller bounds `a`', decides: 'defect' as const }];
-    for (const outcome of ['unsettled', 'disproved']) {
+    const contradictions: Record<string, unknown>[] = [
+      { ...premise('disproved'), defect: 'confirmed' }, { ...premise('disproved'), outcome: 'disproved', defect: 'confirmed' },
+      { ...premise('disproved'), defect: 'unsettled', outside: { behavior: 'The package manager rejects a stale lockfile.', stated: false } },
+    ];
+    for (const refutation of contradictions) {
       const [contradicted] = await refuteBlockers(client, [finding('Sum overflows', { severity: 'warning', line: 4, cell: stated })], {
-        workspace, priorRounds: rounds({ doubts: exists, refutation: { ...premise('disproved'), outcome, defect: 'confirmed' } }), diff,
+        workspace, priorRounds: rounds({ doubts: exists, refutation }), diff,
       });
-      expect([outcome, contradicted.gradeIfConfirmed, contradicted.doubts]).toEqual([outcome, 'blocker', exists]);
+      expect([refutation, contradicted.gradeIfConfirmed, contradicted.doubts]).toEqual([refutation, 'blocker', exists]);
     }
     // A blocker that rests on its consequence rises only when every check confirms the defect and every premise. So a
     // check that left the defect open, or a second check that left the consequence open, settled nothing.

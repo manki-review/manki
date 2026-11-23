@@ -27,7 +27,7 @@ import { fetchedRelatedRepos, relatedNames, repoTools } from './related-repos';
 import { citesChangedLine } from './reply-check';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim, relatedCitations } from './static-signals';
-import { bySecondReadsOnly, canLeaveOut, CELL_GRADES, CheckProgress, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, RefutationOutcome, restsOnDrop, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, fixThreadFiles, GradedCounts, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isGuardedFinding, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, REVERT_CAUGHT, RelatedRepoTools, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, wouldBlockIfTrue, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, triggerDoubt, isTriggerDoubt, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, ruleGrade, RulesMode, RuleVerdict } from './types';
+import { bySecondReadsOnly, canLeaveOut, CELL_GRADES, CheckProgress, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, RefutationOutcome, restsOnDrop, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, fixThreadFiles, GradedCounts, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isGuardedFinding, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, REVERT_CAUGHT, RelatedRepoTools, restsOnUnstated, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, wouldBlockIfTrue, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, triggerDoubt, isTriggerDoubt, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, ruleGrade, RulesMode, RuleVerdict } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -1366,9 +1366,12 @@ function oneOf<K extends string>(allowed: Readonly<Record<K, string>>, value: un
 
 /** Returns how the refuters answered premise `i`: the settled answer they agree on, `split` when they differ, else whatever they said. */
 function premiseCheck(refutations: Array<Refutation | undefined>, i: number): string {
-  const answers = refutations.flatMap(r => r?.premises?.[i]?.outcome ?? []);
-  const settled = new Set(answers.filter(o => o !== 'unsettled'));
-  return settled.size > 1 ? 'split' : [...settled][0] ?? answers[0] ?? 'not checked';
+  const answers = refutations.flatMap(r => r?.premises?.[i] ?? []);
+  const settled = new Set(answers.map(p => p.outcome).filter(o => o !== 'unsettled'));
+  if (settled.size > 1) return 'split';
+  const [agreed] = settled;
+  // A confirmation stored unsettled for want of a line stating outside behavior still stands against a disproof.
+  return agreed === 'disproved' && answers.some(restsOnUnstated) ? 'unsettled' : agreed ?? answers[0]?.outcome ?? 'not checked';
 }
 
 /** Returns a row or column word of the severity table as the judge wrote it, without its case or outer spaces. */

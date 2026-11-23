@@ -485,11 +485,15 @@ describe('scoreRun', () => {
       // A finder that reports it too makes it a finder's blocker.
       blocker('Claimed', { reviewers: ['Claim check 2', 'Claim check 4'] }),
       blocker('Claimed and found', { reviewers: ['Claim check 1', 'Reviewer'] }),
-      // A check that ended unsettled keeps whether its call used all its steps. Each kind of step that reported it is named once, in pipeline order.
+      // A check that ended unsettled keeps whether its call used all its steps, and how many of its confirmations rest on
+      // outside behavior a line states. Each kind of step that reported it is named once, in pipeline order.
       makeFinding({
         title: 'Lowered', toolSource: 'clippy',
         reviewers: [SCOPE_READER_NAME, 'clippy', 'Sweep 2', 'Consumer check: Api', 'Reference check: read', 'Pattern check: helper', 'Sibling code: Codec::decode', 'Sibling field: len vs cap', 'Second read 1', 'Reviewer', 'reviewer'],
-        gradePath: [step('blocker', 'warning', 'pre_existing')], checkStatus: 'unconfirmed', refutation: { ...refutation, outcome: 'unsettled', defect: 'unsettled', stepsUsedUp: 'yes' },
+        gradePath: [step('blocker', 'warning', 'pre_existing')], checkStatus: 'unconfirmed', refutation: {
+          ...refutation, outcome: 'unsettled', defect: 'unsettled', stepsUsedUp: 'yes', outside: { behavior: 'b', stated: false },
+          premises: [{ premise: 'p', outcome: 'confirmed', outside: { behavior: 'b', stated: true }, reason: 'r' }, { premise: 'q', outcome: 'unsettled', reason: 'r' }],
+        },
       }),
       // No finder filed it as a blocker, and the check confirmed the defect and the consequence the judge named.
       blocker('Consequence', {
@@ -527,7 +531,7 @@ describe('scoreRun', () => {
       { finderGrade: 'blocker', byClaimCheck: true, raisedBy: ['claim'] },
       { finderGrade: 'blocker', raisedBy: ['finder', 'claim'] },
       {
-        finderGrade: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'pre_existing' }], refutation: { outcome: 'unsettled', defect: 'unsettled', stepsUsedUp: 'yes' }, checkStatus: 'unconfirmed',
+        finderGrade: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'pre_existing' }], refutation: { outcome: 'unsettled', defect: 'unsettled', stepsUsedUp: 'yes', outside: { stated: 1, unstated: 1 } }, checkStatus: 'unconfirmed',
         raisedBy: ['finder', 'second_read', 'comparison', 'pattern', 'related', 'sweep', 'tool', 'scope'],
       },
       {
