@@ -253,6 +253,11 @@ describe('linkTrackingIssues', () => {
     // A later answer for the same finding still counts once the first one names none of its code.
     const linked = await linkTrackingIssues(answering([{ finding: 1, candidate: 1 }, { finding: 1, candidate: 2 }]), [dropped], { items: [epic, fix] });
     expect(linked[0].trackedIn).toEqual({ kind: 'issue', number: 1500 });
+
+    // A plain word in a code span names no code, and a name counts only whole: `a.ts` is not in `data.ts`.
+    const nullable = finding('Returns `null` on a miss', { description: 'The lookup returns `null`.' });
+    const unrelated: RelatedItem = { kind: 'issue', number: 1600, title: 'Make data.ts nullable', excerpt: 'Return null instead of throwing.', byWriter: true };
+    expect((await linkTrackingIssues(answering([{ finding: 1, candidate: 1 }]), [nullable], { items: [unrelated] }))[0].trackedIn).toBeUndefined();
   });
 
   it('links nothing when the call fails, and makes no call without an item a writer opened', async () => {

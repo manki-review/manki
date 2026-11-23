@@ -7,6 +7,7 @@ import { extractJSON } from './json';
 import type { LLMClient } from './providers';
 import { declaredNames } from './symbol-uses';
 import type { Finding, ParsedDiff, PrContext, RelatedItem, RelatedRelation, RelatedWork } from './types';
+import { escapeRegExp } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -243,17 +244,20 @@ function buildTrackingMessage(findings: readonly Finding[], items: readonly Rela
   return `## Findings\n\n${listed.join('\n\n')}\n\n## Candidates\n\n${candidates.join('\n\n')}`;
 }
 
-/** Returns the file `finding` cites, its file name, and each name in a code span of its title or description. */
+/**
+ * Returns the file `finding` cites, its file name, and each name in a code span of its title or description. A plain
+ * lowercase word such as `null` or `error` is prose too, so it names no code.
+ */
 function citedCode(finding: Finding): string[] {
   const spans = [...`${finding.title}\n${finding.description}`.matchAll(/`([^`\n]+)`/g)].map(m => m[1]);
   const names = spans.flatMap(span => span.match(/[A-Za-z_$][\w$./-]{2,}/g) ?? []);
-  return [finding.file, finding.file.split('/').pop() ?? '', ...names].filter(name => name.length >= 3);
+  return [finding.file, finding.file.split('/').pop() ?? '', ...names].filter(name => name.length >= 3 && !/^[a-z]+$/.test(name));
 }
 
-/** Whether the title or excerpt of `item` names the file or the code that `finding` cites. */
+/** Whether the title or excerpt of `item` names the file or the code that `finding` cites, as a whole name: `a.ts` is not in `data.ts`. */
 function namesCitedCode(item: RelatedItem, finding: Finding): boolean {
   const text = `${item.title}\n${item.excerpt}`;
-  return citedCode(finding).some(name => text.includes(name));
+  return citedCode(finding).some(name => new RegExp(`(?<![\\w$.-])${escapeRegExp(name)}(?![\\w$])`).test(text));
 }
 
 /**
