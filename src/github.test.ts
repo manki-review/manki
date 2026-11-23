@@ -4680,6 +4680,10 @@ describe('fetchInterRoundDiff', () => {
     // A file renamed since the commit is found by its old name.
     const renamed = [{ filename: 'src/moved.ts', previous_filename: 'src/a.ts', status: 'renamed', patch }, files[1]];
     expect(await since(jest.fn().mockResolvedValue({ data: { status: 'ahead', files: renamed } }))).toBe(listedFilesDiff([renamed[0]]));
+    // Without names it gives every file, unless the list may be cut at GitHub's 300 files, where a file left out would read as unchanged.
+    expect(await fetchChangesSince(makeOctokit(ahead), 'owner', 'repo', 'posted', 'head')).toBe(listedFilesDiff(files));
+    const many = Array.from({ length: 300 }, (_, i) => ({ ...files[1], filename: `src/f${i}.ts` }));
+    expect(await fetchChangesSince(makeOctokit(jest.fn().mockResolvedValue({ data: { status: 'ahead', files: many } })), 'owner', 'repo', 'posted', 'head')).toBeUndefined();
     expect(ahead).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', base: 'posted', head: 'head' });
     expect(await since(jest.fn().mockResolvedValue({ data: { status: 'diverged', files } }))).toBeUndefined();
     expect(await since(jest.fn().mockRejectedValue(new Error('Server Error')))).toBeUndefined();
