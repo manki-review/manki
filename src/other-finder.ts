@@ -7,7 +7,7 @@ import { sanitizeForPromptEmbed } from './memory';
 import { fenceText } from './github';
 import { LLMClient, NotStartedError } from './providers';
 import { changeSection, citedChanges, locationFile, locationLines, MAX_PARALLEL_REFUTATIONS } from './refute';
-import { Finding, gradeStep, isSecurityFinding, OtherFinderVote, ParsedDiff, pendingGrade } from './types';
+import { cellGrade, Finding, gradedByRule, gradeStep, isGradeCell, isSecurityFinding, OtherFinderVote, ParsedDiff, pendingGrade, RulesMode } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 
 // A safety net for a call without tools, which normally answers in well under a minute.
@@ -84,14 +84,14 @@ function holdsQuote(workspace: string, location: string, quote: string): boolean
 
 /**
  * Whether `finding` gets the other finder's vote. Two or more finders ran and one of them alone reported it
- * (`soleFinder`), and it is or may become a blocker or a warning. A security finding, a tool alert and a finding that
- * `restates` an earlier thread get none.
+ * (`soleFinder`), and it is or may become a blocker or a warning. A security finding, a tool alert, a finding
+ * `gradedByRule` under `rules` and one that `restates` an earlier thread get none.
  */
-function getsVote(finding: Finding, restates: (finding: Finding) => boolean): boolean {
+function getsVote(finding: Finding, restates: (finding: Finding) => boolean, rules?: RulesMode): boolean {
   const grade = pendingGrade(finding);
   const blocks = (severity: string | undefined) => severity === 'blocker' || severity === 'warning';
   return !!finding.soleFinder && (blocks(finding.severity) || blocks(grade)) && !finding.toolSource && !isSecurityFinding(finding.tags, finding.reviewers)
-    && !finding.threadId && !finding.answeredIn && finding.raisedIn === undefined && !restates(finding);
+    && !gradedByRule(finding, rules) && !finding.threadId && !finding.answeredIn && finding.raisedIn === undefined && !restates(finding);
 }
 
 export interface VoteOptions {
@@ -102,6 +102,7 @@ export interface VoteOptions {
   finders: ReadonlyArray<{ name: string; client: LLMClient }>;
   /** Whether `finding` restates a finding of an earlier round, which keeps its own path. */
   restates: (finding: Finding) => boolean;
+  rules?: RulesMode;
 }
 
 /**
@@ -111,9 +112,9 @@ export interface VoteOptions {
  * one whose quoted code the head does not hold there. A call that fails, never starts or answers twice in a form that
  * does not parse gives no vote.
  */
-export async function otherFinderVotes(findings: readonly Finding[], { workspace, diff, finders, restates }: VoteOptions): Promise<Array<OtherFinderVote | undefined>> {
+export async function otherFinderVotes(findings: readonly Finding[], { workspace, diff, finders, restates, rules }: VoteOptions): Promise<Array<OtherFinderVote | undefined>> {
   return mapWithConcurrency([...findings], MAX_PARALLEL_REFUTATIONS, async finding => {
-    const other = getsVote(finding, restates) ? finders.find(f => !finding.reviewers.includes(f.name)) : undefined;
+    const other = getsVote(finding, restates, rules) ? finders.find(f => !finding.reviewers.includes(f.name)) : undefined;
     if (!other) return undefined;
     try {
       const raw = await sendWithParseRetry(
@@ -135,12 +136,14 @@ export async function otherFinderVotes(findings: readonly Finding[], { workspace
 
 /**
  * Returns `finding` with its `vote`. A vote that declines lowers a blocker to a warning. A warning it declines is
- * returned with `other_finder_declined` as its `unpostedReason`, for the round record only. Any other grade is kept.
+ * returned with `other_finder_declined` as its `unpostedReason`, for the round record only. A vote lowers a finding at
+ * most one step below the grade of its cell, so a blocker cell the judge already held at a warning stays posted.
  */
 export function withVote(finding: Finding, vote: OtherFinderVote | undefined): Finding {
   if (!vote) return finding;
   const voted = { ...finding, otherFinderVote: vote };
   if (!vote.declined) return voted;
   if (finding.severity === 'blocker') return { ...voted, ...gradeStep(finding, 'warning', 'other_finder', DECLINED_BLOCKER_REASON) };
-  return finding.severity === 'warning' ? { ...voted, unpostedReason: 'other_finder_declined' } : voted;
+  const blockerCell = isGradeCell(finding.cell) && cellGrade(finding.cell.row, finding.cell.column) === 'blocker';
+  return finding.severity === 'warning' && !blockerCell ? { ...voted, unpostedReason: 'other_finder_declined' } : voted;
 }

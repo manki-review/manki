@@ -4487,38 +4487,56 @@ describe('runReview', () => {
   it('asks a finder that did not report a blocker or warning one finder alone reported for its harm, and lowers it when the answer names no line the head holds', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'manki-vote-'));
     mkdirSync(join(workspace, 'src'));
-    writeFileSync(join(workspace, 'src', 'a.ts'), Array.from({ length: 10 }, (_, i) => `const line${i + 1} = ${i + 1};`).join('\n'));
-    const titles = ['Backed blocker', 'Declined blocker', 'Declined warning', 'Misquoted warning', 'Backed warning', 'Security warning', 'Vote fails', 'Both finders found it', 'Restates a thread'];
+    writeFileSync(join(workspace, 'src', 'a.ts'), Array.from({ length: 12 }, (_, i) => `const line${i + 1} = ${i + 1};`).join('\n'));
+    const titles = [
+      'Backed blocker', 'Declined blocker', 'Declined warning', 'Misquoted warning', 'Backed warning', 'Security warning', 'Vote fails', 'Both finders found it', 'Restates a thread',
+      'Breaks a rule', 'Held blocker cell',
+    ];
     const reported = titles.map((title, i) => ({ severity: i < 2 ? 'blocker' : 'warning', title, file: 'src/a.ts', line: i + 1, description: `${title}.`, evidence: [`src/a.ts:${i + 1} shows it`], proof: [`src/a.ts:${i + 1}`] }));
+    const declines = { harm: '', situation: '', line: 'none' };
     const answers: Record<string, unknown> = {
       'Backed blocker': { harm: 'A total is wrong.', situation: 'Any export.', line: 'src/a.ts:1', quote: 'const line1 = 1;' },
-      'Declined blocker': { harm: '', situation: '', line: 'none' },
-      'Declined warning': { harm: '', situation: '', line: 'none' },
+      'Declined blocker': declines,
+      'Declined warning': declines,
       // The head holds other code on that line, so the answer names no harm it can show.
       'Misquoted warning': { harm: 'A total is wrong.', situation: 'Any export.', line: 'src/a.ts:4', quote: 'const total = 0;' },
       'Backed warning': { harm: 'A total is wrong.', situation: 'Any export.', line: 'src/a.ts:5', quote: 'line5 = 5' },
       'Vote fails': 'not json',
+      'Held blocker cell': declines,
     };
-    const asked: string[] = [];
-    const clients = makeClients();
-    let finderCalls = 0;
-    jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string, user: string) => {
-      if (system.startsWith('You test a claim')) {
-        const title = titles.find(t => user.includes(`## Claim: ${t}\n`))!;
-        asked.push(title);
-        const answer = answers[title];
-        return { content: typeof answer === 'string' ? answer : JSON.stringify(answer) };
-      }
-      return { content: finderCalls++ === 0 ? JSON.stringify(reported) : '[]' };
-    });
-    // The judge marks each finding only the first finder reported, as `mapJudgedToFindings` does.
-    mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => ({
-      summary: 'ok', findings: input.findings.map(f => ({ ...f, ...(f.title !== 'Both finders found it' && { soleFinder: true }), ...(f.title === 'Security warning' && { tags: ['security'] }), ...(f.title === 'Restates a thread' && { threadId: 'T9' }) })),
-    }));
+    const rule = { file: 'AGENTS.md', quote: 'Every export is logged.', verdict: 'confirmed' as const };
+    /** Runs the round, and calls `afterJudge` once the judge answered. */
+    const run = async (afterJudge = (): void => undefined) => {
+      const asked: string[] = [];
+      const clients = makeClients();
+      let finderCalls = 0;
+      jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string, user: string) => {
+        if (system.startsWith('You test a claim')) {
+          const title = titles.find(t => user.includes(`## Claim: ${t}\n`))!;
+          asked.push(title);
+          const answer = answers[title];
+          return { content: typeof answer === 'string' ? answer : JSON.stringify(answer) };
+        }
+        return { content: finderCalls++ === 0 ? JSON.stringify(reported) : '[]' };
+      });
+      // The judge marks each finding only the first finder reported, as `mapJudgedToFindings` does.
+      mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => {
+        afterJudge();
+        return {
+          summary: 'ok', findings: input.findings.map(f => ({
+            ...f, ...(f.title !== 'Both finders found it' && { soleFinder: true }), ...(f.title === 'Security warning' && { tags: ['security'] }), ...(f.title === 'Restates a thread' && { threadId: 'T9' }),
+            ...(f.title === 'Breaks a rule' && { rule }), ...(f.title === 'Held blocker cell' && { cell: { row: 'wrong' as const, column: 'normal' as const }, gradeIfConfirmed: 'blocker' as const }),
+          })),
+        };
+      });
+      const result = await runReview(clients, { config: makeConfig({ review: { rules: 'warn' } }), diff: diffChanging('src/a.ts'), rawDiff: 'raw diff', repoContext: '', workspace, deadline: Date.now() + 20 * 60_000 });
+      return { result, asked };
+    };
     try {
-      const result = await runReview(clients, { config: makeConfig(), diff: diffChanging('src/a.ts'), rawDiff: 'raw diff', repoContext: '', workspace });
-      // A security finding, one more than one finder reported and one that restates a thread get no vote, and a failed call asks once more.
-      expect(asked.sort()).toEqual(['Backed blocker', 'Backed warning', 'Declined blocker', 'Declined warning', 'Misquoted warning', 'Vote fails', 'Vote fails']);
+      const { result, asked } = await run();
+      // A security finding, one more than one finder reported, one that restates a thread and one a rule grades get no
+      // vote, and a failed call asks once more.
+      expect(asked.sort()).toEqual(['Backed blocker', 'Backed warning', 'Declined blocker', 'Declined warning', 'Held blocker cell', 'Misquoted warning', 'Vote fails', 'Vote fails']);
       const reporter = result.findings[0].reviewers[0];
       expect(result.findings.map(f => [f.title, f.severity, f.otherFinderVote?.declined, f.gradePath?.at(-1)?.reason])).toEqual([
         ['Backed blocker', 'blocker', false, undefined],
@@ -4529,14 +4547,30 @@ describe('runReview', () => {
         ['Vote fails', 'warning', undefined, undefined],
         ['Both finders found it', 'warning', undefined, undefined],
         ['Restates a thread', 'warning', undefined, undefined],
+        ['Breaks a rule', 'warning', undefined, undefined],
+        // A vote lowers a finding one step below its cell at most, so a blocker cell held at a warning stays posted.
+        ['Held blocker cell', 'warning', true, undefined],
       ]);
       // The other finder answered, never the one that reported it, and the record keeps its answer with the quoted line.
       expect(result.findings[0].otherFinderVote).toEqual({ finder: expect.not.stringMatching(reporter), harm: 'A total is wrong.', situation: 'Any export.', line: 'src/a.ts:1', quote: 'const line1 = 1;', declined: false });
-      expect(result.llmCalls?.filter(c => c.stage === 'vote').length).toBe(7);
+      expect(result.llmCalls?.filter(c => c.stage === 'vote').length).toBe(8);
       // A warning the other finder declines is kept in the round record only.
       expect(result.unposted?.map(f => [f.title, f.unpostedReason, f.otherFinderVote?.line])).toEqual([
         ['Declined warning', 'other_finder_declined', undefined], ['Misquoted warning', 'other_finder_declined', 'src/a.ts:4'],
       ]);
+
+      // A vote without the time to start is skipped, and the round goes on without it.
+      const start = Date.now();
+      const clock = jest.spyOn(Date, 'now').mockImplementation(() => start);
+      try {
+        const late = await run(() => clock.mockImplementation(() => start + 20 * 60_000 - 90_000));
+        expect(late.asked).toEqual([]);
+        expect(late.result.reviewComplete).toBe(true);
+        expect(late.result.findings.map(f => [f.title, f.severity, f.otherFinderVote])).toContainEqual(['Declined blocker', 'blocker', undefined]);
+        expect(late.result.notStarted).toContainEqual(expect.objectContaining({ kind: 'call', stage: 'vote', reason: expect.stringContaining('a vote call starts with') }));
+      } finally {
+        clock.mockRestore();
+      }
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }

@@ -1088,14 +1088,16 @@ export async function runReview(
   let stopped: string | undefined;
   // Aborted with `stopped`, so the late calls still running stop.
   const stopLate = new AbortController();
-  // Records `call` as not started and returns `stopped`, when the round has less time left than the call starts with.
-  const noTimeFor = (call: Pick<RoundNotStarted, 'stage' | 'agent'>): string | undefined => {
+  // Records `call` as not started and returns why, when the round has less time left than the call starts with. Only a
+  // call that `endsRound` sets `stopped`, since the round cannot do without it.
+  const noTimeFor = (call: Pick<RoundNotStarted, 'stage' | 'agent'>, endsRound = true): string | undefined => {
     if (stopped) return stopped;
     const leftMs = deadline === undefined ? Infinity : deadline - Date.now();
     const minMs = call.stage === 'dedup' ? MIN_DEDUP_MS : MIN_JUDGE_MS;
     if (leftMs >= minMs) return undefined;
     const reason = `the round has ${formatDuration(Math.max(0, leftMs))} left, less than the ${formatDuration(minMs)} a ${lateCallName(call)} starts with`;
     skip({ kind: 'call', ...call, reason });
+    if (!endsRound) return reason;
     stopped = `A ${lateCallName(call)} was not started, since ${reason}. ${retryHint(automaticRetry)}`;
     stopLate.abort();
     return stopped;
@@ -1130,13 +1132,13 @@ export async function runReview(
   // A call `noTimeFor` stops throws a `NotStartedError` before any wrapper records it. So does a call still running then,
   // whatever it returns, so no stage reads its answer. Each stage takes that error as a failed call without a warning, and
   // the round ends incomplete once that stage is done, so its record keeps what the round produced before.
-  const startsInTime = (client: LLMClient, call: Pick<RoundNotStarted, 'stage' | 'agent'>): LLMClient => {
+  const startsInTime = (client: LLMClient, call: Pick<RoundNotStarted, 'stage' | 'agent'>, endsRound = true): LLMClient => {
     // Without a deadline no call is stopped.
     const stoppable = deadline === undefined ? client : withSignal(client, stopLate.signal);
     return {
       ...stoppable,
       sendMessage: async (...args) => {
-        const late = noTimeFor(call);
+        const late = noTimeFor(call, endsRound);
         if (late) throw new NotStartedError(late);
         const reply = await stoppable.sendMessage(...args).catch((error: unknown) => {
           throw stopped ? new NotStartedError(stopped) : error;
@@ -1146,8 +1148,8 @@ export async function runReview(
       },
     };
   };
-  const lateFallback = (stageClient: StageClient, stage: RoundModelFallback['stage'], agent?: string): LLMClient =>
-    startsInTime(withFallback(stageClient, stage, agent), { stage, ...(agent && { agent }) });
+  const lateFallback = (stageClient: StageClient, stage: RoundModelFallback['stage'], agent?: string, endsRound = true): LLMClient =>
+    startsInTime(withFallback(stageClient, stage, agent), { stage, ...(agent && { agent }) }, endsRound);
   // A refused call adds nothing to the usage totals, so it counts as no attempt.
   const lateUsage = (stageClient: StageClient, stage: RoundModelFallback['stage']): ReturnType<typeof wrapClientForUsage> => {
     const wrap = wrapClientForUsage(withFallback(stageClient, stage));
@@ -2131,8 +2133,9 @@ export async function runReview(
     }) : judged,
     originsOf(judged, finding => unchangedCheck(finding) === 'pre_existing'),
     workspace ? otherFinderVotes(judged, {
-      workspace, diff: diffWithLockfiles, restates: finding => restatesEarlier(earlierForChecks, finding),
-      finders: team.finders.map(f => ({ name: f.name, client: lateFallback(pickReviewerClient(clients, f.model), 'vote', f.name) })),
+      workspace, diff: diffWithLockfiles, restates: finding => restatesEarlier(earlierForChecks, finding), rules: config.review?.rules,
+      // A vote only ever lowers a grade, so one without the time to start is skipped and the round goes on.
+      finders: team.finders.map(f => ({ name: f.name, client: lateFallback(pickReviewerClient(clients, f.model), 'vote', f.name, false) })),
     }) : judged.map(() => undefined),
   ]);
   const checked = withOrigins(refuted, origins).map((f, i) => withVote(f, votes[i]));
