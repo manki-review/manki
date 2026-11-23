@@ -351,6 +351,8 @@ describe('refuteBlockers', () => {
       // Never lowered, whatever the refuters say.
       ['Security raise', { ...raised(), tags: ['security'] }],
       ['Tool alert', { ...raised(), toolSource: 'eslint' }],
+      ['Security tool alert', { ...raised(), toolSource: 'zizmor', tags: ['security'] }],
+      ['Tool alert on a security rule', { ...raised(), toolSource: 'CodeQL', securityAlert: true }],
       ['Open lead', { ...raised(), notChecked: true, lead: { checked: 'read src/math.ts:2', left: 'find the callers' } }],
       ['In a blocking thread', { ...raised(), threadId: 'T1' }],
       ['Answered in a blocking thread', { ...raised(), answeredIn: { threadId: 'T1', answer: 'Fixed.', grade: { severity: 'blocker' } } }],
@@ -374,7 +376,8 @@ describe('refuteBlockers', () => {
     // Pins the two message lines the prompt's paragraph on open leads depends on: it tells the refuter to start with
     // what is left to check.
     expect(first.messages.find(([, user]) => user.includes(': Open lead\n'))?.[1]).toContain('- **Checked so far**: read src/math.ts:2\n- **Left to check**: find the callers');
-    const toWarning = ['Merged finder blocker', 'Split finder blocker', 'Finder blocker', 'Second fails', 'Second unusable', 'Raised by a check'];
+    // Two refuters on different models disproved the tool alert, so it is posted as a guarded warning, never at the grade the tool gave.
+    const toWarning = ['Merged finder blocker', 'Split finder blocker', 'Finder blocker', 'Second fails', 'Second unusable', 'Tool alert', 'Raised by a check'];
     expect(result.map(f => [f.title, f.severity])).toEqual([
       ['Judge raise', 'warning'], ['Same as an earlier warning', 'warning'], ['Highest finder grade', 'warning'], ['Breaks a rule', 'note'],
       ...cases.slice(4).map(([title]) => [title, title === 'Note raise' ? 'note' : toWarning.includes(title) ? 'warning' : 'blocker']),
@@ -408,6 +411,14 @@ describe('refuteBlockers', () => {
     for (const pairModel of ['claude-opus-5-5', undefined]) {
       expect((await run(fakeClient(replies, pairModel), cases.slice(-1)))[0].severity).toBe('warning');
     }
+    // A tool alert needs two disproofs on two known models, so one refuter, one model or an unnamed model keeps it blocking.
+    const toolAlert = cases.filter(([title]) => title === 'Tool alert');
+    for (const pairModel of ['claude-opus-5-5', undefined]) {
+      expect((await run(fakeClient(replies, pairModel), toolAlert))[0].severity).toBe('blocker');
+    }
+    expect((await run(fakeClient({ 'Tool alert': new Error('CLI crashed') }, 'gpt-6.1-sol'), toolAlert))[0].severity).toBe('blocker');
+    expect((await run(fakeClient({ 'Tool alert': { outcome: 'unsettled', reason: 'Could not tell.' } }, 'gpt-6.1-sol'), toolAlert))[0].severity).toBe('blocker');
+    expect(result.find(f => f.title === 'Tool alert')!.gradePath?.at(-1)).toEqual({ from: 'blocker', to: 'warning', by: 'refutation', reason: 'both refuters disproved it' });
     // A later step folds a finding with the title of an open thread that blocks nearby into it, so it stays a blocker
     // there. Another blocker thread in its file is another defect, so the finding is lowered.
     expect((await run(fakeClient(replies, 'gpt-6.1-sol'), judgeRaise, blocking('src/math.ts', 'Judge raise')))[0].severity).toBe('blocker');

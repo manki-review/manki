@@ -849,6 +849,20 @@ describe('toolAlertFindings', () => {
       signal({ tool: 'tsc', ruleId: '', line: 3, message: '' }),
       signal({ tool: 'ast-grep', ruleId: 'python-none-equality', severity: 'note', line: 5, message: 'Compare with `None` using `is`', source: 'ast_grep' }),
     ]);
+    // Every result of a security source is marked, whatever its rule id. Any other source is marked by its tool or rule id.
+    const bySource = toolAlertFindings([
+      signal({ tool: 'osv-scanner', ruleId: 'RUSTSEC-2024-0001', message: 'tokio: data race', source: 'dependencies' }),
+      signal({ tool: 'gitleaks', ruleId: 'generic-api-key', message: 'Generic API key', source: 'secrets' }),
+      signal({ tool: 'Manki', ruleId: 'hidden-characters', message: 'U+202E on an added line', source: 'hidden_characters' }),
+      signal({ tool: 'Manki', ruleId: 'new-package-source', message: 'left-pad comes from another registry', source: 'lockfile' }),
+      signal({ tool: 'zizmor', ruleId: 'template-injection', message: 'Expression in a run step', source: 'zizmor' }),
+      signal({ tool: 'zizmor', ruleId: 'dangerous-triggers', message: 'pull_request_target', source: 'zizmor' }),
+      signal({ tool: 'actionlint', ruleId: 'expression', message: 'Unknown property', source: 'actionlint' }),
+      signal({ tool: 'shellcheck', ruleId: 'SC2086', message: 'Double quote to prevent globbing', source: 'shellcheck' }),
+    ]);
+    expect(bySource.map(f => [f.toolSource, f.securityAlert ?? false])).toEqual([
+      ['osv-scanner', true], ['gitleaks', true], ['Manki', true], ['Manki', true], ['zizmor', true], ['zizmor', false], ['actionlint', false], ['shellcheck', false],
+    ]);
 
     expect(findings.map(f => f.title)).toEqual([
       'js/sql-injection: Query built from user input',
@@ -867,9 +881,14 @@ describe('toolAlertFindings', () => {
     expect(findings[0]).toEqual({
       severity: 'warning', title: 'js/sql-injection: Query built from user input', file: 'src/app.ts', line: 2,
       description: 'Query built from user input', reviewers: ['CodeQL'], toolSource: 'CodeQL',
-      toolEvidence: { status: 'confirmed', note: 'CodeQL reports this result.' },
+      toolEvidence: { status: 'confirmed', note: 'CodeQL reports this result.' }, securityAlert: true,
     });
     expect(findings.map(f => f.severity)).toEqual(['warning', 'note', 'blocker', 'note', 'note', 'blocker', 'warning', 'note', 'warning', 'blocker', 'note']);
+    // A tool, rule or dependency review that names a security problem marks the alert, so no disproof lowers it.
+    expect(findings.filter(f => f.securityAlert).map(f => f.title)).toEqual([
+      'js/sql-injection: Query built from user input', 'B602 shell injection: subprocess with shell=True', 'GHSA-1234: lodash@4.17.0: prototype pollution',
+      'CKV_AWS_20: S3 bucket is public', 'js/tainted-format-string: Format string from user input',
+    ]);
   });
 });
 

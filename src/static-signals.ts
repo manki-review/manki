@@ -451,11 +451,20 @@ export function toolAlertFindings(signals: StaticSignal[]): Finding[] {
     reviewers: [s.tool],
     toolSource: s.tool,
     toolEvidence: { status: 'confirmed', note: `${s.tool} reports this result.` },
+    ...(isSecuritySignal(s) && { securityAlert: true }),
   }));
 }
 
+/** Sources whose every result is a security problem: a vulnerable package, a leaked secret, hidden characters or a supply chain change. */
+const SECURITY_SOURCES: ReadonlySet<StaticSignalSource> = new Set(['dependency_review', 'dependencies', 'secrets', 'hidden_characters', 'lockfile']);
+
+/** Whether `signal` names a security problem: by its source, or for any other source by its tool or rule id. */
+function isSecuritySignal(signal: StaticSignal): boolean {
+  return SECURITY_SOURCES.has(signal.source) || SECURITY_RULE.test(signal.tool) || SECURITY_RULE.test(signal.ruleId);
+}
+
 function isTriagedSignal(signal: StaticSignal): boolean {
-  if (signal.source === 'dependency_review' || SECURITY_RULE.test(signal.tool) || SECURITY_RULE.test(signal.ruleId)) return true;
+  if (isSecuritySignal(signal)) return true;
   // The rule id names the problem. A job name such as `lint-format` says nothing about each result it reports.
   if (STYLE_RULE.test(signal.ruleId || signal.tool)) return false;
   return signal.source !== 'checks' || signal.severity === 'error';
