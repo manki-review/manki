@@ -41,7 +41,7 @@ export const GRADE_DEFINITIONS = `- **blocker**: a defect that does serious dama
 - **note**: an optional improvement, never a defect. The code works today but could be better, or the point is cosmetic, such as wording, formatting or naming. Nobody would notice it in realistic use, for example an extra pass over a small input. When you cannot tell whether anyone would notice a real problem, it is a warning. A warning that is only a cost also names its realistic trigger, by the rule under the Severity Table.
 - **ignore**: not a real issue: a false positive, a matter of preference, a misunderstanding of the code or an intended pattern.`;
 
-const ROW_MEANINGS: Readonly<Record<CellRow, string>> = {
+export const ROW_MEANINGS: Readonly<Record<CellRow, string>> = {
   severe: 'lost or corrupted data, security, memory safety or undefined behaviour, a broken public contract',
   wrong: 'a wrong result, a crash, a hang or resource exhaustion',
   degraded: 'the right result, with a cost someone would notice in realistic use, such as a slowdown users feel or a lost error cause',

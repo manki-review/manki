@@ -20,7 +20,7 @@ import { dynamicFence, fenceText, LinkedIssue, titleToSlug } from './github';
 import { jsonOnlyReply, safeTruncate, sendWithParseRetry } from './utils';
 import { sanitize, titleOverlapType } from './recap';
 import { FINDER_TOOLS_TIMEOUT_MS, guardedThreadStaysOpen, determineOutcome, earlierFindings, fencePrText, filesChangedByPush, parseProof, postedWhenPreExisting, restatesEarlier, sameProblem, truncateDiff } from './review';
-import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
+import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, ROW_MEANINGS, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge, stringifyFindingFingerprint } from './finding-fingerprint';
 import { MAX_DOUBT_CHECKS, MAX_RELATED_PROOF, needsProof, refuteBlockers, unpostedForTrigger } from './refute';
 import { fetchedRelatedRepos, relatedNames, repoTools } from './related-repos';
@@ -317,6 +317,8 @@ export interface JudgedFinding {
   /** The column the judge states, `normal` when it names none. */
   column?: CellColumn;
   reasoning: string;
+  /** The grade the judge's reasoning concludes. Only one below a `blocker` cell changes a grade. */
+  grade?: FindingSeverity;
   /** Number of the earlier "Finding N" this one repeats. */
   duplicateOf?: number;
   /** Number of the prior finding "PN" this finding names again. */
@@ -476,7 +478,7 @@ Bad examples (do NOT write like this):
 
 ${GRADE_DEFINITIONS}
 
-You do not return a grade. For each finding you state its cell of the Severity Table below, as \`row\` and \`column\`, and Manki works out the grade from that cell. The one grade you state yourself is the \`gradeIfConfirmed\` of a finding you doubt, by When You Are Unsure. To mark a finding \`ignore\`, set \`row\` to \`ignore\`. State what actually goes wrong in the code, never how confidently the finding is worded.
+For each finding you state its cell of the Severity Table below, as \`row\` and \`column\`, and Manki works out the grade from that cell. The grades you state yourself are \`grade\`, the verdict your \`reasoning\` concludes, and the \`gradeIfConfirmed\` of a finding you doubt, by When You Are Unsure. To mark a finding \`ignore\`, set \`row\` to \`ignore\`. State what actually goes wrong in the code, never how confidently the finding is worded.
 
 ${VERIFY_CLAIMS_RULE} Grade Stability and the rules on earlier answers below still decide when an earlier grade or answer stands. An earlier grade is still no evidence about the code itself. A reviewer's finding is a claim too, but one the code shown cannot settle is graded by Code You Cannot See and When You Are Unsure, never dropped because a model made it.
 
@@ -586,7 +588,7 @@ With \`gradeIfConfirmed\` \`blocker\`, also list in \`doubts\` the consequence t
 
 When you mark a finding \`ignore\` because of how code outside the diff behaves, such as other code already checking a value, every caller passing a safe one or a lock taken elsewhere, fill \`dropRestsOn\`, also when you read or cite that code. Set its \`premise\` to the fact your drop needs, in general form, as a fact the code can confirm or disprove: "every caller of \`writeRecord\` holds \`storeLock\`", not "the store is locked elsewhere". Set its \`row\` and \`column\` to the cell the finding earns if that premise is false. Leave \`dropRestsOn\` empty when the diff itself shows the reason for the drop, and on every finding you keep.${toolsCheckFindings ? ' On a finding a reviewer filed as a `blocker`, Manki checks the premise with tools. The finding is graded by that cell only when the check disproves the premise, and otherwise it stays dropped.' : ''}
 
-Start \`reasoning\` with your verdict, the grade the cell gives or \`ignore\`, then the facts behind it. For a blocker, name the failure and cite the proving lines (e.g., "blocker. When a request omits \`page\`, \`listItems\` at src/api.ts:42 divides by zero and the handler returns 500 for every default listing.").
+Start \`reasoning\` with your verdict, the grade your reasoning concludes or \`ignore\`, then the facts behind it, and set \`grade\` to that verdict. The cell stays your answer from the Severity Table, so state it by the table even when your reasoning concludes a lower grade. A verdict below a \`blocker\` cell is a doubt about how serious or lasting the damage is: Manki may hold the finding at a \`warning\` until a check with tools confirms that damage. For a blocker, name the failure and cite the proving lines (e.g., "blocker. When a request omits \`page\`, \`listItems\` at src/api.ts:42 divides by zero and the handler returns 500 for every default listing.").
 
 ## Worked Examples
 
@@ -721,6 +723,7 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
       "trigger": "When X happens in normal use, or empty",
       "rareTrigger": false,
       "reasoning": "Your verdict first, then 1-2 sentences on why",
+      "grade": "blocker" | "warning" | "note" | "ignore",
       "proof": ["file:line of each line that shows the failure, for a blocker or a warning"]
     }
   ],
@@ -1467,12 +1470,14 @@ export function parseJudgeResponse(responseText: string, workspace: string | und
       const trigger = typeof f.trigger === 'string' ? f.trigger.trim().slice(0, MAX_DOUBT_CHARS) : '';
       const dropRestsOn = row === 'none' ? parseDropRestsOn(f.dropRestsOn) : undefined;
       const statedIfConfirmed = (['blocker', 'warning'] as const).find(grade => grade === tableWord(f.gradeIfConfirmed));
+      const grade = SEVERITY_ORDER.find(g => g === tableWord(f.grade));
       return [{
         ...(id !== undefined && { id }),
         title,
         row,
         ...(tableWord(f.column) === 'rare' && { column: 'rare' as const }),
         reasoning: String(f.reasoning || ''),
+        ...(grade && { grade }),
         ...(duplicateOf && { duplicateOf }),
         ...(sameAs !== undefined && { sameAs }),
         ...(variantOf !== undefined && { variantOf }),
@@ -1935,10 +1940,12 @@ export function mapJudgedToFindings(
  * down, when not every finder filed the finding as a blocker (`filedBlocker`) and the judge stated no `warning`. A finding that `isRareClaim`
  * gets `REACH_DOUBT` and the grade of the `normal` column as its `gradeIfConfirmed`. So the refuter checks it, and it
  * has no `pendingGrade`: no answer raises it. A blocker cell the judge says has no realistic trigger (`rareTrigger`)
- * gets `triggerDoubt` as a `grade` doubt, unless it is a security finding, so it blocks only once a check confirms the trigger. A tool
- * alert takes its cell as stated, with no doubts.
+ * gets `triggerDoubt` as a `grade` doubt, unless it is a security finding, so it blocks only once a check confirms the trigger.
+ * A blocker cell whose `grade` the judge states lower is held the same way when no other doubt holds it, not every
+ * finder filed a blocker and it is no security finding. It gets `damageDoubt` as its consequence, unless the judge names
+ * one, so only a check that confirms that damage gives the blocker. A tool alert takes its cell as stated, with no doubts.
  */
-function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: named = [], security, securityClass, gradeIfConfirmed: judgeGrade, dropRestsOn, rareTrigger, trigger }: JudgedFinding, filedBlocker: boolean, dropCheckable: boolean): Partial<Pick<Finding, 'severity' | 'gradePath' | 'cell' | 'gradeIfConfirmed' | 'judgeIfConfirmed' | 'doubts'>> {
+function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: named = [], security, securityClass, gradeIfConfirmed: judgeGrade, dropRestsOn, rareTrigger, trigger, grade: argued }: JudgedFinding, filedBlocker: boolean, dropCheckable: boolean): Partial<Pick<Finding, 'severity' | 'gradePath' | 'cell' | 'gradeIfConfirmed' | 'judgeIfConfirmed' | 'doubts'>> {
   // A dropped finding keeps its doubts for the round record. The refuter checks it only for its `dropCheck`.
   if (row === 'none') return { ...gradeStep(o, 'ignore', 'judge'), ...(!o.toolSource && (dropCheck(o, named, dropRestsOn, dropCheckable, security) ?? (named.length > 0 && { doubts: named }))) };
   const isSecurity = !!security || !!o.tags?.includes(SECURITY_TAG);
@@ -1956,19 +1963,32 @@ function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: 
   const namedTrigger = named.find(isTriggerDoubt);
   const rare = stated === 'blocker' && !isSecurity && (!!rareTrigger || !!namedTrigger);
   const holding = named.filter(d => !d.consequence && !(rare && isTriggerDoubt(d)) && (d.decides === 'defect' || columnDecidesBlock(row) || heldClass));
+  // A finding another doubt holds already keeps the path it had, so the judge's lower verdict only adds a hold.
+  const lowerGrade = stated === 'blocker' && !isSecurity && !filedBlocker && !!argued && argued !== 'blocker' && holding.length === 0 && !rare;
   // A consequence never holds a finding down alone. Beside no other doubt, on a blocker every finder filed or where no
   // blocker is held, the finding is graded as if the judge had not named it.
-  const asksConsequence = (holding.length > 0 || rare) && stated === 'blocker' && !isSecurity && judgeGrade !== 'warning' && !filedBlocker;
+  const asksConsequence = (holding.length > 0 || rare || lowerGrade) && stated === 'blocker' && !isSecurity && judgeGrade !== 'warning' && !filedBlocker;
   const counted = named.filter(d => (d.consequence ? asksConsequence : holding.includes(d)));
+  const own = lowerGrade && !counted.some(d => d.consequence) ? [...counted, damageDoubt(row)] : counted;
   // A doubt the judge names can be about anything, so only `REACH_DOUBT` stands for the claim the `rare` column makes.
-  const reached = checkedRare ? withReachDoubt(counted) : counted;
+  const reached = checkedRare ? withReachDoubt(own) : own;
   const doubts = rare ? [...reached, { premise: (namedTrigger ?? triggerDoubt(trigger)).premise, decides: 'grade' as const }] : reached;
   if (doubts.length === 0) return { ...gradeStep(o, stated, 'judge'), cell };
   // A security blocker that rests on a cost or an edge case being reached is held down like any other finding.
   const heldDown = stated === 'blocker' && (!isSecurity || heldClass);
   // The judge's own `warning` says how serious the damage is, so a confirmed doubt raises no such finding. A security finding has no such answer.
   const gradeIfConfirmed = heldDown && !isSecurity && judgeGrade === 'warning' ? judgeGrade : cellGrade(row, checkedRare ? 'normal' : column);
-  return { ...gradeStep(o, heldDown ? 'warning' : stated, 'judge', rare ? 'the judge found no realistic trigger' : undefined), cell, gradeIfConfirmed, ...(judgeGrade && { judgeIfConfirmed: judgeGrade }), doubts };
+  const reason = rare ? 'the judge found no realistic trigger' : lowerGrade ? `the judge's reasoning concludes ${argued}` : undefined;
+  return { ...gradeStep(o, heldDown ? 'warning' : stated, 'judge', reason), cell, gradeIfConfirmed, ...(judgeGrade && { judgeIfConfirmed: judgeGrade }), doubts };
+}
+
+/**
+ * Returns the premise that the failure does the damage `row` names and that the damage lasts, as the consequence a
+ * blocker on that row needs. A judge that concludes a lower grade than its cell usually doubts how lasting the damage is.
+ */
+function damageDoubt(row: CellRow): Doubt {
+  const premise = `Once the failure happens, it does the damage of the \`${row}\` row (${ROW_MEANINGS[row]}), and normal operation, such as a retry, a rescan, a restart or a later sync, does not undo that damage`;
+  return { premise, decides: 'grade', consequence: true };
 }
 
 /**

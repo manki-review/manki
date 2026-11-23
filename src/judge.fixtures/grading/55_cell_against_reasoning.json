@@ -1,0 +1,37 @@
+{
+  "name": "cell-against-reasoning",
+  "case": "cell-against-reasoning",
+  "allowed": [
+    "warning"
+  ],
+  "finding": {
+    "title": "When a block confirms a known transaction, an account backfilled there leaves out outputs past its address window",
+    "file": "wallet/scanner.py",
+    "line": 10,
+    "description": "`extend_until_settled` runs only when `is_new`. When a block confirms a transaction the wallet already saw in the mempool, an account that matches it only now is backfilled at line 16 from the match taken before its address window is extended. `mark_used` extends the window afterwards and never matches the transaction again, so an output to an address past the old window is missing from that account's balance until a rescan delivers the block again.",
+    "severity": "warning",
+    "reviewers": [
+      "Correctness"
+    ],
+    "evidence": {
+      "checks": [
+        "wallet/scanner.py:10 runs `extend_until_settled` only under `if is_new:`",
+        "wallet/scanner.py:16 backfills a known transaction with the match taken before the extension",
+        "wallet/scanner.py:19 extends the windows only after the records are made"
+      ],
+      "proof": [
+        "wallet/scanner.py:10",
+        "wallet/scanner.py:16",
+        "wallet/scanner.py:19"
+      ]
+    },
+    "suggestedFix": "Run `extend_until_settled` before the loop for a known transaction too, so a backfilled record holds every output the extended window reveals."
+  },
+  "prDiff": "diff --git a/wallet/scanner.py b/wallet/scanner.py\nnew file mode 100644\nindex 0000000..2222222\n--- /dev/null\n+++ b/wallet/scanner.py\n@@ -0,0 +1,20 @@\n+def apply_block(wallet, block):\n+    \"\"\"Records each transaction of `block` that pays an address of the wallet's accounts.\n+\n+    A transaction the wallet saw in the mempool is known already. A rescan delivers every\n+    block again from the wallet's birth height.\n+    \"\"\"\n+    for tx in block.transactions:\n+        is_new = tx.txid not in wallet.known\n+        matches = wallet.match(tx)\n+        if is_new:\n+            matches = wallet.extend_until_settled(tx, matches)\n+        for account, outputs in matches.items():\n+            if is_new:\n+                account.record(tx, outputs, height=block.height)\n+            elif not account.has(tx.txid):\n+                account.backfill(tx, outputs, height=block.height)\n+            else:\n+                account.confirm(tx.txid, block.height)\n+        wallet.mark_used(matches)\n+        wallet.known.add(tx.txid)\n",
+  "priorRound": {
+    "commitSha": "priorsha",
+    "severity": "warning",
+    "title": "When a block confirms a known transaction, an account backfilled there leaves out outputs past its address window"
+  },
+  "interRoundDiff": "diff --git a/README.md b/README.md\nindex 1111111..2222222 100644\n--- a/README.md\n+++ b/README.md\n@@ -1,1 +1,2 @@\n # wallet\n+Block scanning for watch-only accounts.\n"
+}
