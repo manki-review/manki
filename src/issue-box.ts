@@ -121,13 +121,13 @@ export function filedIssueMarker(id: string): string {
   return `${FILED_ISSUE_OPENER}${id} -->`;
 }
 
-/** Returns Manki's reply in the thread of a finding it filed as issue `issue`. */
+/** Returns Manki's reply in the thread of a finding it filed as issue `issue`. A model's answer is posted as a plain `Agreed.`, so only this reply opens in bold. */
 export function filedIssueReply(issue: number): string {
-  return `Agreed. Filed as #${issue} for later work.`;
+  return `**Agreed.** Filed as #${issue} for later work.`;
 }
 
 /** Returns the issue a `filedIssueReply` names, or undefined for any other answer. */
 export function filedIssueOf(answer: string): number | undefined {
-  const match = answer.match(/^Agreed\. Filed as #(\d+) for later work\./);
+  const match = answer.match(/^\*\*Agreed\.\*\* Filed as #(\d+) for later work\./);
   return match ? Number(match[1]) : undefined;
 }

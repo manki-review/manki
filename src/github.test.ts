@@ -6417,7 +6417,9 @@ describe('postReview non-blocking findings', () => {
       thread('Retry has no limit', { suggestedFix: 'Cap the retries.', threadUrl: 'https://github.com/owner/repo/pull/1#discussion_r1' }),
       // GitHub reports a file-level thread on line 1, and the line names the line of its finding.
       thread('Human closed', { status: 'resolved', answer: '**Agreed.** Later.', howToFix: 'Add a retry limit', line: 1, originalLine: 1, findingLine: 12 }),
-      thread('Filed one', { answer: 'Agreed. Filed as #12 for later work.', threadUrl: 'https://github.com/owner/repo/pull/1#discussion_r3' }),
+      thread('Filed one', { answer: '**Agreed.** Filed as #12 for later work.', threadUrl: 'https://github.com/owner/repo/pull/1#discussion_r3' }),
+      // The reply model's answer is posted as a plain "Agreed.", so its words never name a filed issue.
+      thread('Model wrote filed', { answer: 'Agreed. Filed as #7 for later work.' }),
       thread('Still open', { status: 'open' }),
       thread('Fixed since', { status: 'resolved', fixed: true }),
       thread('Withdrawn one', { answer: 'Withdrawn. Fine.' }),
@@ -6429,10 +6431,11 @@ describe('postReview non-blocking findings', () => {
     const { body } = createReview.mock.calls[0][0];
     expect(getContent).not.toHaveBeenCalledWith(expect.objectContaining({ path: 'src/b.ts' }));
     expect(body).toContain([
-      '#### \u{1F4CC} 3 follow-ups agreed for later\n\n<sub>Agreed in their threads as later work. None of them blocks.</sub>\n',
+      '#### \u{1F4CC} 4 follow-ups agreed for later\n\n<sub>Agreed in their threads as later work. None of them blocks.</sub>\n',
       '- `src/b.ts:9`: Retry has no limit ([view thread](https://github.com/owner/repo/pull/1#discussion_r1))',
       '- `src/b.ts:12`: Human closed',
-      '- `src/b.ts:9`: Filed one ([view thread](https://github.com/owner/repo/pull/1#discussion_r3)) (tracked in #12)\n',
+      '- `src/b.ts:9`: Filed one ([view thread](https://github.com/owner/repo/pull/1#discussion_r3)) (tracked in #12)',
+      '- `src/b.ts:9`: Model wrote filed\n',
     ].join('\n'));
     for (const text of ['Retries forever.', 'Cap the retries.', 'Add a retry limit', 'blob/sha/src/b.ts']) expect(body).not.toContain(text);
     for (const title of ['Still open', 'Fixed since', 'Withdrawn one', 'Agreed then kept', 'No marker', 'Agreed suggestion']) expect(body).not.toContain(title);

@@ -1429,7 +1429,7 @@ describe('checkAndAutoApprove', () => {
     const answer = (text: string, decision?: ReplyDecision, createdAt?: string) => reply(manki, answerBody(text, decision), undefined, createdAt);
     const accepted = (outcome: ReplyDecision['outcome'] = 'Agreed', thread: ReplyDecision['thread'] = 'resolves', createdAt?: string) => answer(`${outcome}. Fine.`, { outcome, thread }, createdAt);
     const kept = answer('Kept. `src/a.ts:12` still loops.');
-    const tracked = `Agreed. Filed as #5 for later work.\n\n${BOT_MARKER}\n${TRACKED_MARKER}`;
+    const tracked = `**Agreed.** Filed as #5 for later work.\n\n${BOT_MARKER}\n${TRACKED_MARKER}`;
 
     it.each<[string, ReturnType<typeof makeGraphqlFetchThreadNode>[], string?]>([
       ['an open warning thread', [warning('t1')]],

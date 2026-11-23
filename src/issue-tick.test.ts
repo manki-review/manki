@@ -93,7 +93,7 @@ describe('handleIssueBoxTick', () => {
     expect(octokit.rest.pulls.updateReviewComment).toHaveBeenCalledWith({ owner: 'o', repo: 'r', comment_id: 501, body: expected });
     expect(expected).toContain('<!-- manki-finding:');
     // The reply's marker is what lifts a warning's hold, whatever becomes of the thread.
-    expect(jest.mocked(state.replyToReviewThread).mock.calls).toEqual([[octokit, 'PRRT_1', 'Agreed. Filed as #12 for later work.', '<!-- manki-tracked -->']]);
+    expect(jest.mocked(state.replyToReviewThread).mock.calls).toEqual([[octokit, 'PRRT_1', '**Agreed.** Filed as #12 for later work.', '<!-- manki-tracked -->']]);
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(resolved.map(([id, reason]) => [octokit, id, reason]));
   });
 
@@ -215,7 +215,7 @@ describe('handleIssueBoxTick', () => {
     expect(octokit.rest.issues.create).not.toHaveBeenCalled();
     expect(octokit.rest.issues.update).not.toHaveBeenCalled();
     expect(jest.mocked(octokit.rest.pulls.updateReviewComment).mock.calls[0][0].body).toContain('\nIssue #9 already tracks this, linked by `@bob`\n');
-    expect(jest.mocked(state.replyToReviewThread).mock.calls).toEqual([[octokit, 'PRRT_1', 'Agreed. Filed as #9 for later work.', '<!-- manki-tracked -->']]);
+    expect(jest.mocked(state.replyToReviewThread).mock.calls).toEqual([[octokit, 'PRRT_1', '**Agreed.** Filed as #9 for later work.', '<!-- manki-tracked -->']]);
   });
 
   it.each([
