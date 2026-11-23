@@ -314,6 +314,7 @@ describe('buildJudgeSystemPrompt', () => {
     expect(schema.indexOf('"duplicateOf"')).toBeLessThan(schema.indexOf('"reasoning"'));
     expect(prompt).toContain('Start `reasoning` with your verdict');
     expect(prompt).toContain('Start `reasoning` with your verdict, the grade your reasoning concludes or `ignore`, then the facts behind it, and set `grade` to that verdict. The cell stays your answer from the Severity Table, so state it by the table even when your reasoning concludes a lower grade.');
+    expect(prompt).toContain('A verdict below a `blocker` cell is a doubt about how serious or lasting the damage is: Manki may hold the finding at a `warning` until a check with tools confirms that damage.');
     expect(prompt).not.toContain('the grade the cell gives');
   });
 
