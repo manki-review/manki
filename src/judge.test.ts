@@ -313,7 +313,8 @@ describe('buildJudgeSystemPrompt', () => {
     expect(schema.indexOf('"row"')).toBeLessThan(schema.indexOf('"reasoning"'));
     expect(schema.indexOf('"duplicateOf"')).toBeLessThan(schema.indexOf('"reasoning"'));
     expect(prompt).toContain('Start `reasoning` with your verdict');
-    expect(prompt).toContain('Set `grade` to the grade your reasoning concludes. When it is lower than a `blocker` cell gives, Manki can hold the finding at a `warning` until a check with tools confirms the damage the cell\'s row names.');
+    expect(prompt).toContain('Start `reasoning` with your verdict, the grade your reasoning concludes or `ignore`, then the facts behind it, and set `grade` to that verdict. The cell stays your answer from the Severity Table, so state it by the table even when your reasoning concludes a lower grade.');
+    expect(prompt).not.toContain('the grade the cell gives');
   });
 
   it('does not include scope validation (handled by reviewers)', () => {
@@ -2216,6 +2217,7 @@ describe('runJudgeAgent', () => {
       makeFinding({ title: 'Upload chunk sent twice', severity: 'warning', line: 17, evidence: { checks: [], proof: ['src/index.ts:17'] } }),
       makeFinding({ title: 'Balance short until rescan', severity: 'warning', line: 18, evidence: { checks: [], proof: ['src/index.ts:18'] } }),
       makeFinding({ title: 'Stock count short until reload', severity: 'warning', line: 19, evidence: { checks: [], proof: ['src/index.ts:19'] } }),
+      makeFinding({ title: 'Balance short on a doubted path', severity: 'warning', line: 20, evidence: { checks: [], proof: ['src/index.ts:20'] } }),
     ];
     mockSendMessage.mockResolvedValueOnce({ content: JSON.stringify({
       summary: 's',
@@ -2237,6 +2239,7 @@ describe('runJudgeAgent', () => {
         ...['Balance short until rescan', 'Stock count short until reload'].map((title, i) => ({
           id: 14 + i, title, row: 'wrong', column: 'normal', grade: 'warning', reasoning: 'warning. The total is short only until the next rescan, so it fails test 3.',
         })),
+        { id: 16, title: 'Balance short on a doubted path', row: 'wrong', column: 'normal', grade: 'warning', doubts: [{ premise: 'The backfill path skips the extension', decides: 'defect' }], reasoning: 'warning. The backfill path sits outside the code shown.' },
       ],
     }) }).mockResolvedValueOnce({ content: JSON.stringify({ summary: 's', findings: [{ id: 6, title: 'No entry', row: 'improvement', reasoning: 'r' }] }) });
     const refuterMessages: string[] = [];
@@ -2261,6 +2264,9 @@ describe('runJudgeAgent', () => {
       ] },
       'Stock count short until reload': { outcome: 'confirmed', reason: 'The backfill skips the item.', proof: ['src/index.ts:19'], premises: [
         { outcome: 'disproved', reason: 'The next reload corrects the count.', proof: ['src/index.ts:20'] },
+      ] },
+      'Balance short on a doubted path': { outcome: 'confirmed', reason: 'The backfill skips the output.', proof: ['src/index.ts:20'], premises: [
+        { outcome: 'confirmed', reason: 'The backfill path skips it.', proof: ['src/index.ts:20'] },
       ] },
     };
     const refuter: LLMClient = {
@@ -2304,23 +2310,25 @@ describe('runJudgeAgent', () => {
         // The judge's reasoning concludes a lower grade than its cell, so only a check that confirms the damage of the row gives the blocker.
         ['Balance short until rescan', 'blocker'],
         ['Stock count short until reload', 'warning'],
+        // Another doubt holds this one already and the judge named no consequence, so its lower verdict opens no way to a blocker.
+        ['Balance short on a doubted path', 'warning'],
       ]);
-      expect(refuterMessages).toHaveLength(11);
+      expect(refuterMessages).toHaveLength(12);
       expect(refuterMessages.find(m => m.includes(': Balance short until rescan\n'))).toContain("- **Judge's reasoning**: warning. The total is short only until the next rescan");
-      expect(refuterMessages.find(m => m.includes(': Balance short until rescan\n'))).toContain("  1. Once the failure happens, it does the damage of the 'wrong' row: a wrong result, a crash, a hang or resource exhaustion");
+      expect(refuterMessages.find(m => m.includes(': Balance short until rescan\n'))).toContain("  1. Once the failure happens, it does the damage of the 'wrong' row (a wrong result, a crash, a hang or resource exhaustion), and normal operation, such as a retry, a rescan, a restart or a later sync, does not undo that damage");
       // A finder filed `Deadlock on stop` as a blocker, so it is graded as if the judge had named no consequence.
-      expect(result.findings.map(f => f.doubts?.filter(d => d.consequence).length)).toEqual([0, 0, undefined, 0, 0, undefined, 0, 0, undefined, 0, 0, 1, 1, 1, 1]);
+      expect(result.findings.map(f => f.doubts?.filter(d => d.consequence).length)).toEqual([0, 0, undefined, 0, 0, undefined, 0, 0, undefined, 0, 0, 1, 1, 1, 1, 0]);
       expect(refuterMessages.find(m => m.includes(': Deadlock on stop\n'))).not.toContain('Stopping hangs the service');
       expect(refuterMessages.find(m => m.includes(': Upload chunk sent twice\n'))).toContain('  2. The stored file');
       expect(result.findings.map(f => f.cell)).toEqual([
         { row: 'wrong', column: 'normal' }, { row: 'wrong', column: 'rare' }, { row: 'degraded', column: 'normal' }, { row: 'wrong', column: 'rare' },
         undefined, { row: 'improvement', column: 'normal' }, { row: 'wrong', column: 'rare' }, { row: 'degraded', column: 'normal' }, { row: 'degraded', column: 'rare' },
         { row: 'wrong', column: 'normal' }, { row: 'wrong', column: 'normal' }, { row: 'severe', column: 'normal' }, { row: 'severe', column: 'normal' },
-        { row: 'wrong', column: 'normal' }, { row: 'wrong', column: 'normal' },
+        { row: 'wrong', column: 'normal' }, { row: 'wrong', column: 'normal' }, { row: 'wrong', column: 'normal' },
       ]);
-      expect(result.findings.map(f => f.gradeIfConfirmed)).toEqual(['blocker', 'blocker', undefined, 'blocker', undefined, undefined, 'blocker', 'warning', undefined, 'warning', 'warning', 'blocker', 'blocker', 'blocker', 'blocker']);
+      expect(result.findings.map(f => f.gradeIfConfirmed)).toEqual(['blocker', 'blocker', undefined, 'blocker', undefined, undefined, 'blocker', 'warning', undefined, 'warning', 'warning', 'blocker', 'blocker', 'blocker', 'blocker', 'warning']);
       // The judge's own answer is kept beside the grade Manki settled on.
-      expect(result.findings.map(f => f.judgeIfConfirmed)).toEqual([...Array(9).fill(undefined), 'warning', 'blocker', 'blocker', 'blocker', undefined, undefined]);
+      expect(result.findings.map(f => f.judgeIfConfirmed)).toEqual([...Array(9).fill(undefined), 'warning', 'blocker', 'blocker', 'blocker', undefined, undefined, undefined]);
       // Manki adds the claim the `rare` column makes as a premise of its own, next to any doubt the judge names.
       expect(result.findings[3].doubts).toEqual([REACH_DOUBT]);
       expect(result.findings[6].doubts).toEqual([{ premise: 'A request reads the second cache after the write', decides: 'grade' }, REACH_DOUBT]);
@@ -4926,8 +4934,9 @@ describe('mapJudgedToFindings', () => {
     const ifBlocker = { gradeIfConfirmed: 'blocker' as const, reasoning: 'r' };
     const harm = { premise: 'The report prints the wrong total', decides: 'grade' as const, consequence: true as const };
     const rareDoubt = { premise: 'This trigger happens in realistic use: the sequence of events the description names', decides: 'grade' as const };
-    const wrongDamage = { premise: 'Once the failure happens, it does the damage of the `wrong` row: a wrong result, a crash, a hang or resource exhaustion', decides: 'grade' as const, consequence: true as const };
-    const severeDamage = { ...wrongDamage, premise: 'Once the failure happens, it does the damage of the `severe` row: lost or corrupted data, security, memory safety or undefined behaviour, a broken public contract' };
+    const lasts = 'and normal operation, such as a retry, a rescan, a restart or a later sync, does not undo that damage';
+    const wrongDamage = { premise: `Once the failure happens, it does the damage of the \`wrong\` row (a wrong result, a crash, a hang or resource exhaustion), ${lasts}`, decides: 'grade' as const, consequence: true as const };
+    const severeDamage = { ...wrongDamage, premise: `Once the failure happens, it does the damage of the \`severe\` row (lost or corrupted data, security, memory safety or undefined behaviour, a broken public contract), ${lasts}` };
     const stated: Array<[string, Partial<Finding>, Omit<JudgedFinding, 'title'>, unknown[]]> = [
       ['Wrong result, warning if confirmed', {}, { row: 'wrong', ...kept }, ['warning', 'warning', [doubt]]],
       ['Lost data, warning if confirmed', {}, { row: 'severe', ...kept }, ['warning', 'warning', [doubt]]],
@@ -4986,7 +4995,9 @@ describe('mapJudgedToFindings', () => {
       // the row names, unless the judge names one, so only a check that confirms that damage gives the blocker.
       ['Wrong result, reasoning concludes warning', {}, { row: 'wrong', grade: 'warning', reasoning: 'r' }, ['warning', 'blocker', [wrongDamage]]],
       ['Lost data, reasoning concludes note', {}, { row: 'severe', grade: 'note', reasoning: 'r' }, ['warning', 'blocker', [severeDamage]]],
-      ['Wrong result, reasoning concludes warning, doubted', {}, { row: 'wrong', grade: 'warning', doubts: [doubt], reasoning: 'r' }, ['warning', 'blocker', [doubt, wrongDamage]]],
+      // A finding another doubt holds keeps its own path, so without a consequence the judge named no check raises it.
+      ['Wrong result, reasoning concludes warning, doubted', {}, { row: 'wrong', grade: 'warning', doubts: [doubt], reasoning: 'r' }, ['warning', 'blocker', [doubt]]],
+      ['Lost data, rare trigger, reasoning concludes warning', {}, { row: 'severe', grade: 'warning', rareTrigger: true, reasoning: 'r' }, ['warning', 'blocker', [rareDoubt]]],
       ['Wrong result, reasoning concludes warning, consequence named', {}, { row: 'wrong', grade: 'warning', ...ifBlocker, doubts: [harm] }, ['warning', 'blocker', [harm]]],
       ['Wrong result, reasoning concludes warning, warning if confirmed', {}, { row: 'wrong', grade: 'warning', gradeIfConfirmed: 'warning', reasoning: 'r' }, ['warning', 'warning', [wrongDamage]]],
       // A reasoning that agrees with the cell, or concludes a higher grade than it, changes nothing.
