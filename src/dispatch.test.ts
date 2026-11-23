@@ -125,6 +125,10 @@ describe('restoreDispatchedEvent', () => {
       await dispatch({ ...push, delivery_id });
       expect(startedByCatchUp()).toBe(false);
     }
+    // A catch-up whose head moved before the run started reviews the new head, which no catch-up asked for.
+    const moved = 'b2'.repeat(20);
+    await dispatch({ ...push, head_sha: moved, delivery_id: `catch-up-${moved.slice(0, 12)}` });
+    expect(startedByCatchUp()).toBe(false);
     // The catch-up asks only for a review of a push, so the id on any other event names none.
     await dispatch({ ...push, delivery_id: `catch-up-${HEAD.slice(0, 12)}` });
     await dispatch({ event: 'issue_comment', action: 'created', pr: '7', comment_id: '11', delivery_id: `catch-up-${HEAD.slice(0, 12)}` });

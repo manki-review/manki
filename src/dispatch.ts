@@ -103,7 +103,9 @@ export async function restoreDispatchedEvent(octokit: Octokit): Promise<Dispatch
     return 'gone';
   }
 
-  catchUp = inputs.event === 'pull_request' && !!inputs.headSha && inputs.deliveryId === `catch-up-${inputs.headSha.slice(0, 12)}`;
+  // A catch-up asked for its head alone, so a run that finds a newer head reviews it as that head's push.
+  catchUp = inputs.event === 'pull_request' && !!inputs.headSha && inputs.headSha === event.headSha
+    && inputs.deliveryId === `catch-up-${inputs.headSha.slice(0, 12)}`;
   github.context.eventName = inputs.event;
   github.context.payload = { ...event.objects, action: inputs.action, sender: event.sender, repository: github.context.payload.repository };
   github.context.actor = event.sender.login;
