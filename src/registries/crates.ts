@@ -1,4 +1,4 @@
-import { minimatch } from 'minimatch';
+import { Minimatch } from 'minimatch';
 import { posix } from 'path';
 import { validRange } from 'semver';
 import { parse } from 'smol-toml';
@@ -133,6 +133,9 @@ function cargoFreshPick(files: readonly RegistryConfig[]): string | undefined {
 /** How Cargo's `glob` crate matches the `members` of a workspace: no braces, no extglobs, and `*` matches a leading dot. */
 const MEMBER_GLOB = { dot: true, nobrace: true, noext: true, nonegate: true, nocomment: true };
 
+/** The most `members` and `exclude` entries of one workspace that Manki matches lockfiles against. */
+const MAX_WORKSPACE_ENTRIES = 1000;
+
 /**
  * Returns the `Cargo.lock` files of `files`, the files git tracks, that Cargo ignores: each one in the folder of a member
  * of a workspace whose root holds a `Cargo.lock` of its own, which every member builds against. `read` returns the text
@@ -140,12 +143,15 @@ const MEMBER_GLOB = { dot: true, nobrace: true, noext: true, nonegate: true, noc
  */
 export function ignoredMemberLockfiles(files: readonly string[], read: (path: string) => string | undefined): Set<string> {
   const tracked = new Set(files);
-  // The `[workspace]` table of each manifest: `null` without a manifest or without the table, `undefined` when unread.
-  const workspaces = new Map<string, TomlTable | null | undefined>();
-  const workspaceIn = (dir: string): TomlTable | null | undefined => {
+  // The member test of each manifest's workspace: `null` without a manifest or a `[workspace]`, `undefined` when undecided.
+  const workspaces = new Map<string, ((member: string) => boolean) | null | undefined>();
+  const workspaceIn = (dir: string): ((member: string) => boolean) | null | undefined => {
     const manifest = posix.join(dir, 'Cargo.toml');
     if (!tracked.has(manifest)) return null;
-    if (!workspaces.has(manifest)) workspaces.set(manifest, workspaceTable(read(manifest)));
+    if (!workspaces.has(manifest)) {
+      const table = workspaceTable(read(manifest));
+      workspaces.set(manifest, table ? memberTest(table, dir) : table);
+    }
     return workspaces.get(manifest);
   };
   return new Set(files.filter(file => {
@@ -154,9 +160,9 @@ export function ignoredMemberLockfiles(files: readonly string[], read: (path: st
     // The nearest manifest up from the lockfile with a `[workspace]` decides. One that excludes the folder can leave it
     // to a workspace further up, so the lockfile is kept.
     for (let dir = member; ; dir = posix.dirname(dir)) {
-      const workspace = workspaceIn(dir);
-      if (workspace === undefined) return false;
-      if (workspace !== null) return dir !== member && tracked.has(posix.join(dir, 'Cargo.lock')) && isMember(workspace, dir, member);
+      const isMember = workspaceIn(dir);
+      if (isMember === undefined) return false;
+      if (isMember !== null) return dir !== member && tracked.has(posix.join(dir, 'Cargo.lock')) && isMember(member);
       if (dir === '.') return false;
     }
   }));
@@ -175,17 +181,19 @@ function workspaceTable(text: string | undefined): TomlTable | null | undefined 
 }
 
 /**
- * Whether the folder `member` is a member of the workspace with the `[workspace]` table `workspace` in the folder `root`:
+ * Returns whether a folder is a member of the workspace with the `[workspace]` table `workspace` in the folder `root`:
  * a pattern of its `members` matches the folder and no path of its `exclude` holds it. Both are relative to `root`.
+ * Returns `undefined` when Manki cannot tell, such as for more than `MAX_WORKSPACE_ENTRIES` entries.
  */
-function isMember(workspace: TomlTable, root: string, member: string): boolean {
+function memberTest(workspace: TomlTable, root: string): ((member: string) => boolean) | undefined {
   const paths = (value: unknown): string[] | undefined => Array.isArray(value) && value.every(p => typeof p === 'string' && !p.includes('\\') && !posix.isAbsolute(p))
     ? value.map(p => posix.join(root, p as string).replace(/\/+$/, ''))
     : undefined;
   const members = paths(workspace.members ?? []);
   const excluded = paths(workspace.exclude ?? []);
-  if (!members || !excluded) return false;
-  return !excluded.some(path => member === path || member.startsWith(`${path}/`)) && members.some(pattern => minimatch(member, pattern, MEMBER_GLOB));
+  if (!members || !excluded || members.length + excluded.length > MAX_WORKSPACE_ENTRIES) return undefined;
+  const patterns = members.map(pattern => new Minimatch(pattern, MEMBER_GLOB));
+  return member => !excluded.some(path => member === path || member.startsWith(`${path}/`)) && patterns.some(pattern => pattern.match(member));
 }
 
 /**

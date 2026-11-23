@@ -207,12 +207,12 @@ async function resolveDependency(
     return stated.map(r => ({ ...r, file }));
   });
 
-  const texts = new Map(manifests.map(({ file, text }) => [file, text]));
-  const ignored = ignoredMemberLockfiles(files, file => texts.get(file));
-  const lockfiles = files.filter(f => registry.lockfiles.includes(posix.basename(f)) && !ignored.has(f));
+  const lockfiles = files.filter(f => registry.lockfiles.includes(posix.basename(f)));
   // A lockfile past the cap may lock the package too, so the listing cannot settle it.
   if (lockfiles.length > MAX_LOCKFILES) refuse(`the checkout holds ${lockfiles.length} lockfiles, more than the ${MAX_LOCKFILES} Manki reads`);
-  const locked = lockfiles.flatMap(file => {
+  const texts = new Map(manifests.map(({ file, text }) => [file, text]));
+  const ignored = ignoredMemberLockfiles([...lockfiles, ...texts.keys()], file => texts.get(file));
+  const locked = lockfiles.filter(f => !ignored.has(f)).flatMap(file => {
     const text = read(file, 'lock it');
     return certain(file, () => lockedPackages(file, text)).filter(p => registry.sameName(p.name, name)).map(p => ({ ...p, file }));
   });
