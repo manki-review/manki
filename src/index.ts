@@ -2455,8 +2455,18 @@ async function handleReviewStateCheck(): Promise<void> {
   }
 
   const { owner, repo } = github.context.repo;
-  const prNumber = pr.number;
-  const { config, held } = await loadEventConfig(octokit, owner, repo, pr.base.ref);
+  await runStateCheck(octokit, bot, owner, repo, pr.number, pr.user?.login, await loadEventConfig(octokit, owner, repo, pr.base.ref));
+}
+
+/**
+ * Runs the approval check after a thread or review changed, with the base branch's config `loaded`. It reopens the
+ * guarded threads the PR author resolved, then approves when nothing holds, or with `auto_approve` off withdraws an
+ * approval a blocking thread no longer allows.
+ */
+async function runStateCheck(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, prAuthorLogin: string | undefined,
+  { config, held }: { config: ReviewConfig; held: boolean },
+): Promise<void> {
   // Without the config nothing says whether Manki may approve, or which role below `admin` lets the PR author clear a thread.
   if (held) {
     core.info('The base branch config could not be read or loaded — skipping the state check');
@@ -2464,12 +2474,12 @@ async function handleReviewStateCheck(): Promise<void> {
   }
 
   // A guarded thread the PR author resolved blocks with `auto_approve` off too, so it is reopened first.
-  const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, pr.user?.login, config.author_clear_role);
+  const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, prAuthorLogin, config.author_clear_role);
   await reopenAuthorResolvedThreads(octokit, recap);
 
   if (!config.auto_approve) {
     core.info('auto_approve is disabled — skipping state check');
-    await withdrawBlockedApproval(octokit, bot, owner, repo, prNumber, pr.user?.login, config.author_clear_role);
+    await withdrawBlockedApproval(octokit, bot, owner, repo, prNumber, prAuthorLogin, config.author_clear_role);
     return;
   }
 
