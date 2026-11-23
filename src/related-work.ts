@@ -15,6 +15,7 @@ const OPEN_PRS = 50;
 const PR_FILES = 100;
 const MAX_RELATED_PRS = 5;
 const MAX_RELATED_ISSUES = 5;
+const MAX_TRACKING_ISSUES = 20;
 // GitHub search takes at most five operators, so six terms joined by OR.
 const MAX_SEARCH_TERMS = 6;
 /** GitHub refuses a search query of more than 256 characters, not counting its operators and qualifiers. */
@@ -146,13 +147,19 @@ async function searchIssues(octokit: Octokit, { owner, repo, title, body, diff }
 }
 
 /**
- * Returns each of `trackingIssues` that is an open issue, at most `MAX_RELATED_ISSUES`, without the issues the body
- * links. A number that cannot be read, such as one of a deleted issue, is left out.
+ * Returns each of the first `MAX_TRACKING_ISSUES` of `trackingIssues` that is an open issue, without the issues the
+ * body links. A number GitHub does not find, such as one of a deleted issue, is left out. Any other failed read fails
+ * the list.
  */
 async function fetchTrackingIssues(octokit: Octokit, { owner, repo, body, trackingIssues = [] }: RelatedWorkTarget, request: LookupRequest): Promise<RelatedItem[]> {
   const linked = linkedIssueNumbers(body);
-  const numbers = [...new Set(trackingIssues)].filter(n => !linked.has(n)).slice(0, MAX_RELATED_ISSUES);
-  const fetched = await Promise.all(numbers.map(issue_number => octokit.rest.issues.get({ owner, repo, issue_number, request }).then(r => r.data, () => undefined)));
+  const numbers = [...new Set(trackingIssues)].filter(n => !linked.has(n)).slice(0, MAX_TRACKING_ISSUES);
+  const missing = (error: unknown) => {
+    const status = (error as { status?: number })?.status;
+    if (status === 404 || status === 410) return undefined;
+    throw error;
+  };
+  const fetched = await Promise.all(numbers.map(issue_number => octokit.rest.issues.get({ owner, repo, issue_number, request }).then(r => r.data, missing)));
   return fetched.flatMap((issue): RelatedItem[] => !issue || issue.state !== 'open' || issue.pull_request ? [] : [
     { kind: 'issue', number: issue.number, title: issue.title, excerpt: excerpt(issue.body, MAX_EXCERPT), ...(issue.user && { author: issue.user.login }) },
   ]);
@@ -273,7 +280,12 @@ function spannedNames(text: string): string[] {
  */
 function citedCode(finding: Pick<Finding, 'title' | 'description' | 'file'>): string[] {
   const names = spannedNames(`${finding.title}\n${finding.description}`);
-  return [finding.file, finding.file.split('/').pop() ?? '', ...names].filter(name => name.length >= 3 && !/^[a-z]+$/.test(name));
+  return [...fileNames(finding.file), ...names].filter(name => name.length >= 3 && !/^[a-z]+$/.test(name));
+}
+
+/** Returns `file` and its file name. */
+function fileNames(file: string): string[] {
+  return [file, file.split('/').pop() ?? ''];
 }
 
 /** Whether `text` holds `name` as a whole name: `a.ts` is not in `data.ts`. */
@@ -283,14 +295,16 @@ function namesWhole(text: string, name: string): boolean {
 
 /**
  * Whether the title or excerpt of `item` names the file or the code that `finding` cites, as a whole name. With
- * `spannedWords`, a plain lowercase name such as `dialed` counts too, when both write it in a code span, as in `Bans::dialed`.
+ * `codeOnly`, a file path or file name names nothing, since an issue about another defect of the same file names it
+ * too. A plain lowercase name such as `dialed` counts then, when both write it in a code span, as in `Bans::dialed`.
  */
-export function namesCitedCode(item: RelatedItem, finding: Pick<Finding, 'title' | 'description' | 'file'>, spannedWords = false): boolean {
+export function namesCitedCode(item: RelatedItem, finding: Pick<Finding, 'title' | 'description' | 'file'>, codeOnly = false): boolean {
   const text = `${item.title}\n${item.excerpt}`;
-  if (citedCode(finding).some(name => namesWhole(text, name))) return true;
-  if (!spannedWords) return false;
+  if (!codeOnly) return citedCode(finding).some(name => namesWhole(text, name));
   const spans = [...text.matchAll(/`([^`\n]+)`/g)].map(m => m[1]).join('\n');
-  return spannedNames(`${finding.title}\n${finding.description}`).some(name => /^[a-z]{3,}$/.test(name) && namesWhole(spans, name));
+  const files = fileNames(finding.file);
+  return spannedNames(`${finding.title}\n${finding.description}`).filter(name => name.length >= 3 && !name.includes('/') && !files.includes(name))
+    .some(name => (/^[a-z]+$/.test(name) ? namesWhole(spans, name) : namesWhole(text, name)));
 }
 
 /**

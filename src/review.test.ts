@@ -5962,6 +5962,9 @@ describe('runReview', () => {
     }
     // A restatement graded above the deferred thread is posted, even while the issue verifies.
     expect(await run(push('src/x.ts', 12), { ...deferred, severity: 'note' }, restated, cites, { items: [issue] })).toEqual([['T1'], [restated.title]]);
+    // A file names no code here, since an issue about another defect of the same file names it too.
+    const fileOnly = [{ ...round, findings: { ...round.findings, entries: round.findings.entries.map(e => ({ ...e, evidence: { checks: ['`src/x.ts:12` keeps the entry.'], proof: [] } })) } }];
+    expect(await run(push('src/x.ts', 12), deferred, restated, fileOnly, { items: [{ ...issue, excerpt: 'Clean up `src/x.ts` and x.ts.' }] })).toEqual([[], [restated.title]]);
     // A plain lowercase name counts only when the issue writes it in a code span too, so a shared word links nothing.
     const lowercase = [{ ...round, findings: { ...round.findings, entries: round.findings.entries.map(e => ({ ...e, evidence: { checks: ['Only `dialed` removes one.'], proof: [] } })) } }];
     expect(await run(push('src/x.ts', 12), deferred, restated, lowercase, { items: [{ ...issue, excerpt: 'Make `Bans::dialed` reclaim it.' }] })).toEqual([['T1'], []]);

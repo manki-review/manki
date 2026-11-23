@@ -38,7 +38,7 @@ function makeOctokit(prs: unknown[], issues: unknown[] = [], permissions: Record
   });
   const get = jest.fn(async ({ issue_number }: { issue_number: number }) => {
     const issue = numbered.find(i => i.number === issue_number);
-    if (!issue) throw new Error('Not Found');
+    if (!issue) throw Object.assign(new Error('Not Found'), { status: 404 });
     return { data: issue };
   });
   const octokit = { graphql, rest: { search: { issuesAndPullRequests: search }, repos: { getCollaboratorPermissionLevel: permission }, issues: { get } } } as unknown as Octokit;
@@ -107,7 +107,8 @@ describe('findRelatedWork', () => {
       [50, 'maintainer', true], [51, 'reader', undefined], [52, 'helper[bot]', undefined], [53, undefined, undefined], [60, 'admin', true], [61, 'stranger', undefined],
     ]);
     // An issue Manki's answer named as tracking a deferred fix is read by its number and listed when it is open, once,
-    // whoever opened it. A closed issue, a PR, an issue the body links and a number that cannot be read are left out.
+    // whoever opened it. A closed issue, a PR, an issue the body links and a number GitHub does not find are left out,
+    // and none of them takes the place of a later number.
     const tracking = makeOctokit([], [{ number: 60, title: 'Tracked defect', body: 'b', user: { login: 'admin' } }], { admin: 'admin', maintainer: 'write' }, [
       { number: 60, title: 'Tracked defect', body: 'b', state: 'open', user: { login: 'admin' } },
       { number: 62, title: 'Bound the table', body: 'Reclaim `entries`.', state: 'open', user: { login: 'maintainer' } },
@@ -119,7 +120,7 @@ describe('findRelatedWork', () => {
     const deferred = await findRelatedWork(tracking.octokit, target(diff, { trackingIssues: [60, 62, 62, 63, 64, 65, 40, 99] }));
     expect(deferred.items.map(i => [i.number, i.byWriter])).toEqual([[60, true], [62, true], [63, undefined]]);
     expect(deferred.items[1]).toMatchObject({ kind: 'issue', title: 'Bound the table', excerpt: 'Reclaim `entries`.', author: 'maintainer' });
-    expect(tracking.get.mock.calls.map(([args]) => args.issue_number)).toEqual([60, 62, 63, 64, 65]);
+    expect(tracking.get.mock.calls.map(([args]) => args.issue_number)).toEqual([60, 62, 63, 64, 65, 99]);
     expect(deferred.skipped).toBeUndefined();
 
     // A body keeps the comment starts that nothing closes, and is read once however many of them it holds.
@@ -142,6 +143,10 @@ describe('findRelatedWork', () => {
     expect(await findRelatedWork(octokit, target(diffOf(file('src/a.ts'))))).toEqual({
       items: [], skipped: ['open PRs: GraphQL down', 'issue search: rate limited or not permitted'],
     });
+    // A tracking issue that cannot be read for another reason than a missing issue fails its list, which is named.
+    const tracking = makeOctokit([], [], {}, [{ number: 62, title: 'Bound the table', body: 'b', state: 'open' }]);
+    tracking.get.mockRejectedValueOnce(Object.assign(new Error('Server Error'), { status: 502 }));
+    expect(await findRelatedWork(tracking.octokit, target(diffOf(file('src/a.ts')), { trackingIssues: [61, 62] }))).toEqual({ items: [], skipped: ['tracking issues: Server Error'] });
 
     search.mockClear();
     expect(await findRelatedWork(octokit, target(diffOf(file('src/a.ts')), { title: 'fix: a bug' }))).toEqual({ items: [] });
