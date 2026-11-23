@@ -27,14 +27,14 @@ import { AnthropicClient } from './providers/anthropic';
 import { repoToolsPrompt } from './providers/cli-utils';
 import * as mcpServer from './mcp-server';
 import { RepoMemory, Learning, Suppression } from './memory';
-import { LinkedIssue, titleToSlug } from './github';
+import { capNotes, LinkedIssue, titleToSlug } from './github';
 import { parseFindings, parseProof, preExistingCheck, truncateDiff } from './review';
 import { stringifyFindingFingerprint } from './finding-fingerprint';
 import { lacksTrigger, unprovenReason } from './refute';
 import { parsePRDiff } from './diff';
 import { extractJSON } from './json';
 import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
-import { CELL_GRADES, Finding, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, ProvenanceEntry, REACH_DOUBT, ReviewConfig, RoundContext, SECURITY_TAG, ParsedDiff, DiffFile, DiffHunk, RulesMode, RuleVerdict, finderGrade, ThreadEvaluation, isNote, pendingGrade, staysWarningIfConfirmed, triggerDoubt, wouldBlockIfTrue } from './types';
+import { CELL_GRADES, Finding, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, ProvenanceEntry, REACH_DOUBT, ReviewConfig, ReviewResult, RoundContext, SECURITY_TAG, ParsedDiff, DiffFile, DiffHunk, RulesMode, RuleVerdict, finderGrade, ThreadEvaluation, isNote, pendingGrade, staysWarningIfConfirmed, triggerDoubt, wouldBlockIfTrue } from './types';
 import { LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy } from './test-utils';
 
 const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
@@ -560,12 +560,16 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('"effort": "quick" | "moderate" | "larger"');
     const schema = prompt.slice(prompt.indexOf('"findings": ['));
     expect(schema.indexOf('"effort"')).toBeLessThan(schema.indexOf('"reasoning"'));
+    // A note about how a test is built names no revert gap, also when a repository rule asks for that test style.
+    expect(prompt).toContain('"revertGap": "On a testing finding: file:line of a changed line whose revert no existing test would catch, or empty",');
+    expect(prompt).toContain('Leave it empty when a test already fails on that revert, and when the finding only says how a test is built: it sets private state, calls code directly instead of through the public API, is a unit test instead of an integration or end-to-end test, or breaks a test style, even one the repository\'s instructions state.');
+    expect(prompt).toContain('Manki posts a `testing` note only with a `revertGap` on a line the PR changes, and keeps the others in the round record. `revertGap` never changes the cell.');
   });
 
   it('asks for the order of the notes after the findings', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     expect(prompt).toContain('## Note Order');
-    expect(prompt).toContain('In `noteOrder`, list the number N of each such "Finding N", starting with the one whose fix helps the author most. A finding that prevents a likely future defect, closes a gap in the tests or stops a reader being misled comes before one that only tidies the code.\n\n## Duplicate Detection');
+    expect(prompt).toContain('In `noteOrder`, list the number N of each such "Finding N", starting with the one whose fix helps the author most. A finding that prevents a likely future defect, closes the gap in the tests its `revertGap` names or stops a reader being misled comes before one that only tidies the code.\n\n## Duplicate Detection');
     const schema = prompt.slice(prompt.indexOf('"findings": ['));
     expect(schema).toContain('  ],\n  "noteOrder": ["N of each finding graded note, the most useful first"]\n}');
     // The order comes after the findings and before the thread evaluations.
@@ -1319,6 +1323,13 @@ describe('parseJudgeResponse', () => {
       { id: 2, title: 'Covered', row: 'degraded', reasoning: 'r', fixLeaves: '' },
     ] }), undefined).findings;
     expect(leaves.map(f => f.fixLeaves)).toEqual(['The upload still has no timeout.', undefined]);
+    // A revert gap keeps the first location it names, relative to the workspace, and text without one is none.
+    const gaps = parseJudgeResponse(JSON.stringify({ summary: 's', findings: [
+      { id: 1, title: 'A', row: 'improvement', reasoning: 'r', category: 'testing', revertGap: '`/work/src/a.ts:12-14` the new guard' },
+      { id: 2, title: 'B', row: 'improvement', reasoning: 'r', category: 'testing', revertGap: 'the new guard' },
+      { id: 3, title: 'C', row: 'improvement', reasoning: 'r', category: 'testing', revertGap: ['src/a.ts:3'] },
+    ] }), '/work').findings;
+    expect(gaps.map(f => f.revertGap)).toEqual(['src/a.ts:12-14', undefined, undefined]);
     const base = { severity: 'warning' as const, file: 'src/upload.ts', line: 3, description: 'd', reviewers: ['r'] };
     const mapped = mapJudgedToFindings([{ ...base, title: 'Upload unbounded', howToFix: 'Check the size.' }, { ...base, title: 'Covered', line: 9 }], leaves);
     expect(mapped.map(f => f.howToFix)).toEqual(['Check the size. This fix leaves part of the problem: The upload still has no timeout.', undefined]);
@@ -2558,6 +2569,20 @@ describe('runJudgeAgent', () => {
     expect(result.findings.map(f => [f.severity, f.cell])).toEqual([
       ['warning', { row: 'degraded', column: 'normal', judgeColumn: 'rare' }], ['warning', { row: 'degraded', column: 'normal' }], ['blocker', { row: 'wrong', column: 'normal' }],
     ]);
+  });
+
+  it('keeps a `revertGap` only on a line the PR changes', async () => {
+    const titles = ['Gap on an added line', 'Gap past the change', 'Gap in another file'];
+    const gaps = ['src/index.ts:12', 'src/index.ts:40', 'src/other.ts:3'];
+    mockSendMessage.mockResolvedValue({ content: JSON.stringify({
+      summary: 's',
+      findings: titles.map((title, i) => ({ id: i + 1, title, row: 'improvement', reasoning: 'r', category: 'testing', revertGap: gaps[i] })),
+    }) });
+
+    const result = await runJudgeAgent(mockClient, makeConfig(), {
+      findings: titles.map((title, i) => makeFinding({ title, line: i + 1 })), diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1,
+    });
+    expect(result.findings.map(f => [f.severity, f.revertGap])).toEqual([['note', 'src/index.ts:12'], ['note', undefined], ['note', undefined]]);
   });
 
   it('keeps a reviewer\'s pre-existing mark only when the judge keeps it and every merged copy is marked and off the diff, and hides one on a line the PR adds from the judge', async () => {
@@ -6695,6 +6720,10 @@ interface NoteOrderFixture {
   formatting: string;
   /** Titles of notes whose description argues a consequence for callers, so the judge may grade them a warning. */
   noteOrWarning?: string[];
+  /** The title of a testing note on a changed line that no test catches being reverted, which the review must post. */
+  revertGap?: string;
+  /** The title of a note that only says how a test is built, which the review must not post. */
+  testMethod?: string;
   findings: Finding[];
   prDiff: string;
 }
@@ -6708,7 +6737,8 @@ describe('judge note order fixture corpus', () => {
     // The judge is shown only the files a finding sits on or cites, so it cannot check a claim about any other file.
     const shown = new Set(fixture.findings.flatMap(shownFiles));
     expect(diff.files.map(f => f.path).filter(path => !shown.has(path))).toEqual([]);
-    expect(fixture.findings.map(f => f.title)).toEqual(expect.arrayContaining([fixture.formatting, ...fixture.noteOrWarning ?? []]));
+    const named = [fixture.formatting, ...fixture.noteOrWarning ?? [], fixture.revertGap, fixture.testMethod].filter(title => title !== undefined);
+    expect(fixture.findings.map(f => f.title)).toEqual(expect.arrayContaining(named));
   });
 
   // Live replay against a real LLM, see `liveIt`.
@@ -6735,13 +6765,19 @@ describe('judge note order fixture corpus', () => {
     const { noteOrder } = JSON.parse(extractJSON(replies.at(-1) ?? '')) as { noteOrder?: unknown };
     const notes = result.findings.filter(f => isNote(f.severity));
     console.log(`[live-judge] ${fixture.name}: noteOrder=${JSON.stringify(noteOrder)} graded=${JSON.stringify(result.findings.map(f => [f.title, f.severity, f.noteRank]))}`);
-    const sureNotes = fixture.findings.filter(f => isNote(f.severity) && !fixture.noteOrWarning?.includes(f.title)).map(f => f.title);
+    const sureNotes = fixture.findings.filter(f => isNote(f.severity) && !fixture.noteOrWarning?.includes(f.title) && f.title !== fixture.testMethod).map(f => f.title);
     expect(notes.map(f => f.title)).toEqual(expect.arrayContaining(sureNotes));
     for (const title of fixture.noteOrWarning ?? []) expect(['note', 'warning']).toContain(result.findings.find(f => f.title === title)?.severity);
     // As many entries as notes, and every note at a place of its own, so `noteOrder` names each note once and nothing else.
     expect(noteOrder).toHaveLength(notes.length);
     expect(notes.map(f => f.noteRank).sort()).toEqual(notes.map((_, i) => i));
     expect(notes.find(f => f.title === fixture.formatting)?.noteRank).toBe(notes.length - 1);
+    // The review posts the testing note on a revert gap, and never the one that only says how a test is built.
+    const review: ReviewResult = { verdict: 'COMMENT', summary: '', findings: result.findings.filter(f => f.severity !== 'ignore'), highlights: [], reviewComplete: true, agentNames: [] };
+    capNotes(review, [], notes.length);
+    const posted = review.findings.map(f => f.title);
+    if (fixture.revertGap) expect(posted).toContain(fixture.revertGap);
+    if (fixture.testMethod) expect(posted).not.toContain(fixture.testMethod);
   }, 600_000);
 });
 

@@ -6375,6 +6375,20 @@ describe('postReview non-blocking findings', () => {
     const onlyAlerts = buildResult([...alerts, ...findings]);
     capNotes(onlyAlerts, existingThreads, 0);
     expect(titles(onlyAlerts.findings)).toEqual([...others, 'Unused import', 'Shadowed name']);
+
+    // A testing note without a revert gap only says how a test is built: it goes to the record first and takes no place.
+    const testing = { category: 'testing' as const };
+    const tests = [
+      nonBlocking('note', 'Test seeds private state', 30, { ...testing, noteRank: 0 }),
+      nonBlocking('note', 'No test reverts the guard', 31, { ...testing, revertGap: 'src/a.ts:31', noteRank: 1 }),
+      nonBlocking('warning', 'Test cannot fail', 32, testing),
+      nonBlocking('note', 'Coverage alert', 33, { ...testing, toolSource: 'coverage' }),
+      nonBlocking('note', 'Note one', 1),
+    ];
+    const methods = buildResult([...tests]);
+    capNotes(methods, [], 1);
+    expect(titles(methods.findings)).toEqual(['Test cannot fail', 'No test reverts the guard', 'Coverage alert']);
+    expect(methods.unposted).toEqual([{ ...tests[0], unpostedReason: 'test_method' }, { ...tests[4], unpostedReason: 'note_cap' }]);
   });
 
   it('does not post a non-blocking finding again while its open thread carries it, or when it repeats an answered thread', async () => {

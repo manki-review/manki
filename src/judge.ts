@@ -24,6 +24,7 @@ import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_RE
 import { indexThreadEvaluations, isPriorAddressedByJudge, stringifyFindingFingerprint } from './finding-fingerprint';
 import { disprovedTrigger, lacksTrigger, MAX_DOUBT_CHECKS, MAX_RELATED_PROOF, needsProof, refuteBlockers } from './refute';
 import { fetchedRelatedRepos, relatedNames, repoTools } from './related-repos';
+import { citesChangedLine } from './reply-check';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim, relatedCitations } from './static-signals';
 import { bySecondReadsOnly, canLeaveOut, CELL_GRADES, CheckProgress, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, RefutationOutcome, restsOnDrop, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, fixThreadFiles, GradedCounts, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isGuardedFinding, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RelatedRepoTools, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, wouldBlockIfTrue, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, triggerDoubt, isTriggerDoubt, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, ruleGrade, RulesMode, RuleVerdict } from './types';
@@ -349,6 +350,8 @@ export interface JudgedFinding {
   /** Whether the finding claims the code fails to compile, type-check or pass its tests. */
   buildClaim?: boolean;
   category?: FindingCategory;
+  /** The changed line the judge names on a `testing` finding, whose revert no existing test would catch. */
+  revertGap?: string;
   effort?: FindingEffort;
   /** The `file:line` locations the judge cites as showing the failure. */
   proof?: string[];
@@ -600,7 +603,7 @@ Not blockers:
 - **Go**: the retry loop logs "3 attempts failed" without the last error. Every result is still correct, but operators lose the cause in normal use. Degraded but correct: \`degraded\` and \`normal\`, a \`warning\`, with \`trigger\` "when a request fails three times in a row".
 - **Python**: \`merge_ranges\` returns a wrong range when two inputs share an end point, a case only the internal compaction job produces, and only after a crash recovery. Wrong behaviour in a rare internal edge case: \`wrong\` and \`rare\`, a \`warning\`, with \`reasoning\` that names the compaction job as the only code that passes \`merge_ranges\` such ranges.
 - **TypeScript**: search results are sorted case-sensitively, and the PR description says this matches the existing API. Intended but surprising: \`improvement\`, a \`note\` asking whether users expect it.
-- **Java**: the new \`parseHeader\` error branch has no test. Missing test coverage: \`improvement\`, a \`note\`.
+- **Java**: the new \`parseHeader\` error branch has no test, so deleting the branch fails no test. Missing test coverage: \`improvement\`, a \`note\`, with \`revertGap\` the branch's \`file:line\`. Had a test that sets private state covered the branch and failed on that deletion, a note on how that test is built would get an empty \`revertGap\`.
 - **Kotlin**: a new debug log line copies a cart's items into a list only to print their count. The log and the result are right, and the code caps a cart at 50 items with \`MAX_CART_ITEMS\`. A cost nobody would notice: \`improvement\`, a \`note\`.
 
 ## Evaluation Criteria
@@ -660,11 +663,13 @@ ${ruleFindings ? `${RULE_FINDINGS_SECTION}
 
 Set \`category\` to the kind of problem the finding names, picking the closest of: \`correctness\` (a wrong result or broken logic), \`security\` (exactly the findings you set \`security\` to true on), \`reliability\` (a crash, a hang, lost errors, or resource exhaustion that no outside input triggers), \`data\` (lost or corrupted data), \`concurrency\`, \`performance\`, \`compatibility\` (a broken public contract, wire or file format), \`testing\`, \`maintainability\` (duplication, structure, readability), \`documentation\` or \`style\`.
 
+Set \`category\` to \`testing\` on every finding about tests, also one about how a test is written. On such a finding, set \`revertGap\` to the \`file:line\` of a line this PR changes whose removal or reversal no existing test would catch. Leave it empty when a test already fails on that revert, and when the finding only says how a test is built: it sets private state, calls code directly instead of through the public API, is a unit test instead of an integration or end-to-end test, or breaks a test style, even one the repository's instructions state. A finding on a test that breaks such a convention gets a \`revertGap\` only when that test cannot fail on the revert of the changed line it covers. Manki posts a \`testing\` note only with a \`revertGap\` on a line the PR changes, and keeps the others in the round record. \`revertGap\` never changes the cell.
+
 Set \`effort\` to how big the fix is: \`quick\` for a few lines in one place, \`moderate\` for several places or a small redesign, \`larger\` for a design change or work across modules.
 
 ## Note Order
 
-A review lists only the first few findings whose cell gives \`note\`. In \`noteOrder\`, list the number N of each such "Finding N", starting with the one whose fix helps the author most. A finding that prevents a likely future defect, closes a gap in the tests or stops a reader being misled comes before one that only tidies the code.
+A review lists only the first few findings whose cell gives \`note\`. In \`noteOrder\`, list the number N of each such "Finding N", starting with the one whose fix helps the author most. A finding that prevents a likely future defect, closes the gap in the tests its \`revertGap\` names or stops a reader being misled comes before one that only tidies the code.
 
 ## Duplicate Detection
 
@@ -710,6 +715,7 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
       "dropRestsOn": {"premise": "", "row": "severe" | "wrong" | "degraded" | "improvement" | "style", "column": "normal" | "rare"},
       "buildClaim": false,
       "category": "correctness" | "security" | "reliability" | "data" | "concurrency" | "performance" | "compatibility" | "testing" | "maintainability" | "documentation" | "style",
+      "revertGap": "On a testing finding: file:line of a changed line whose revert no existing test would catch, or empty",
       "effort": "quick" | "moderate" | "larger",
       "fixLeaves": "",
       "trigger": "When X happens in normal use, or empty",
@@ -1445,6 +1451,7 @@ export function parseJudgeResponse(responseText: string, workspace: string | und
       const effort = oneOf(FINDING_EFFORTS, f.effort, 'effort');
       const securityClass = f.security === true ? oneOf(SECURITY_CLASSES, f.securityClass, 'securityClass') : undefined;
       const proof = parseProof(f.proof, workspace);
+      const revertGap = typeof f.revertGap === 'string' ? parseProof([f.revertGap], workspace)[0] : undefined;
       const title = String(f.title || 'Untitled');
       const stated = tableWord(f.row);
       // `ignore` is the prompt's word for a dropped finding, and `none` says the same.
@@ -1483,6 +1490,7 @@ export function parseJudgeResponse(responseText: string, workspace: string | und
         ...(f.rareTrigger === true && { rareTrigger: true }),
         ...(f.buildClaim === true && { buildClaim: true }),
         ...(category && { category }),
+        ...(revertGap && { revertGap }),
         ...(effort && { effort }),
         ...(proof.length > 0 && { proof }),
       }];
@@ -1758,7 +1766,9 @@ export async function runJudgeAgent(
   const staysPreExisting = (copy: Finding): boolean => input.preExistingCheck?.(copy) === 'pre_existing';
   // A claim hidden from the judge goes back on the finding, so the round record shows the claim and why it failed.
   const hiddenClaims = new Map(input.findings.flatMap((f, i) => (f.preExisting && !findings[i].preExisting ? [[findingKey(f), f.preExisting] as const] : [])));
-  const mapped = mapJudgedToFindings(findings, judgeResult.findings, linkablePriorFindings(priorRounds, openThreads ?? input.evaluatedThreads?.openThreads, input.settledThreadIds), staysPreExisting, !!refutation)
+  // A revert of a line the PR does not change undoes nothing of this change, so such a `revertGap` counts as none.
+  const judged = judgeResult.findings.map(({ revertGap, ...j }) => (revertGap && citesChangedLine(revertGap, diff.files) ? { ...j, revertGap } : j));
+  const mapped = mapJudgedToFindings(findings, judged, linkablePriorFindings(priorRounds, openThreads ?? input.evaluatedThreads?.openThreads, input.settledThreadIds), staysPreExisting, !!refutation)
     .map(f => (hiddenClaims.has(findingKey(f)) ? { ...f, preExisting: hiddenClaims.get(findingKey(f)) } : f))
     // The duplicates are folded and the rule has graded by here, so the drop sees the grade the finding ends with.
     .map(f => doubtUnprovenRule(applyOwnProposal(gradeConfirmedRule(f, config.review?.rules), provenanceMap), config.review?.rules))
@@ -1896,6 +1906,7 @@ export function mapJudgedToFindings(
     // The header calls a finding security only when it carries the security tag.
     if (finding.tags?.includes(SECURITY_TAG)) finding.category = 'security';
     else if (match.category && match.category !== 'security') finding.category = match.category;
+    if (match.revertGap) finding.revertGap = match.revertGap;
     if (match.effort) finding.effort = match.effort;
     if (match.noteRank !== undefined) finding.noteRank = match.noteRank;
     if (match.fixLeaves) finding.howToFix = [finding.howToFix?.trim(), `This fix leaves part of the problem: ${match.fixLeaves}`].filter(Boolean).join(' ');
