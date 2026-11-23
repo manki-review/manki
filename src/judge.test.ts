@@ -261,7 +261,7 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('- `warning`: state the cell all the same, list the fact in the code you could not settle in `doubts` with `decides` set to `defect`, and say it in `reasoning`. No tool check runs on this review, so Manki posts the warning only when `proof` cites the lines that show the failure.');
     expect(prompt).not.toMatch(/keep it, list|costs a single fix/);
     const warningTests = (p: string) => p.slice(p.indexOf('## Warning Tests'), p.indexOf('## Severity Table')).trim();
-    expect(warningTests(prompt)).toBe('## Warning Tests\n\nA finding is a `warning` only when it passes tests 1, 2 and 4: this PR causes it, you can name the failure as "when X happens, Y goes wrong", and `proof` cites the lines that show it. Y is a consequence someone would notice in realistic use. A cost nobody would notice is a note: state the `improvement` row, or the `style` row when the point is only wording. Grade a finding a note on this ground only when its description names no consequence anyone would notice and the code shown confirms that the scale is small. The finding\'s own word on the scale is not enough. When the code shown does not show the scale or contradicts the finding, keep the warning.\n\n**A `degraded` warning needs a realistic trigger**, by the rule under the Severity Table below. On every finding you keep, put that sequence of events in `trigger`, as "when X happens". Leave `trigger` empty when the trigger is not realistic or you are unsure whether anyone would notice the failure. Manki records a `degraded` warning without a trigger in the round record and never posts it, so keep its row and never move it to the `improvement` row for this reason. On the `severe` and `wrong` rows state the cell as the table says, and set `rareTrigger` to true when its trigger is not realistic by that rule. Manki then grades a `blocker` cell `warning` at most, unless the finding is a security defect. Set it only when the trigger needs such an event, never because a state looks unlikely: a state the code\'s own logic produces is the claim of the `rare` column.\n\nManki posts a warning only when it is proven. For one you cannot prove from the code shown, follow When You Are Unsure.');
+    expect(warningTests(prompt)).toBe('## Warning Tests\n\nA finding is a `warning` only when it passes tests 1, 2 and 4: this PR causes it, you can name the failure as "when X happens, Y goes wrong", and `proof` cites the lines that show it. Y is a consequence someone would notice in realistic use. A cost nobody would notice is a note: state the `improvement` row, or the `style` row when the point is only wording. Grade a finding a note on this ground only when its description names no consequence anyone would notice and the code shown confirms that the scale is small. The finding\'s own word on the scale is not enough. When the code shown does not show the scale or contradicts the finding, keep the warning.\n\n**A `degraded` warning needs a realistic trigger**, by the rule under the Severity Table below. On every finding you keep, put that sequence of events in `trigger`, as "when X happens". Leave `trigger` empty when the trigger is not realistic or you are unsure whether anyone would notice the failure. Manki records a `degraded` warning without a trigger in the round record and never posts it, so keep its row and never move it to the `improvement` row for this reason. On the `severe` and `wrong` rows state the cell as the table says, and set `rareTrigger` to true when its trigger is not realistic by that rule. Manki then grades a `blocker` cell `warning` until a check with tools confirms the trigger, unless the finding is a security defect. Set it only when the trigger needs such an event, never because a state looks unlikely: a state the code\'s own logic produces is the claim of the `rare` column.\n\nManki posts a warning only when it is proven. For one you cannot prove from the code shown, follow When You Are Unsure.');
     expect(prompt).toContain('"proof": ["file:line of each line that shows the failure, for a blocker or a warning"]');
     expect(prompt).not.toMatch(/confidence/i);
     const withTools = buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true, 8);
@@ -4895,6 +4895,7 @@ describe('mapJudgedToFindings', () => {
     const kept = { doubts: [doubt], gradeIfConfirmed: 'warning' as const, reasoning: 'r' };
     const ifBlocker = { gradeIfConfirmed: 'blocker' as const, reasoning: 'r' };
     const harm = { premise: 'The report prints the wrong total', decides: 'grade' as const, consequence: true as const };
+    const rareDoubt = { premise: 'This trigger happens in realistic use: the sequence of events the description names', decides: 'grade' as const };
     const stated: Array<[string, Partial<Finding>, Omit<JudgedFinding, 'title'>, unknown[]]> = [
       ['Wrong result, warning if confirmed', {}, { row: 'wrong', ...kept }, ['warning', 'warning', [doubt]]],
       ['Lost data, warning if confirmed', {}, { row: 'severe', ...kept }, ['warning', 'warning', [doubt]]],
@@ -4935,10 +4936,12 @@ describe('mapJudgedToFindings', () => {
       // Every other class, and a security finding the judge names no class for, keeps the blocker.
       ['Injection, warning if confirmed', {}, { row: 'severe', security: true, securityClass: 'injection', ...kept }, ['blocker', 'blocker', [doubt]]],
       ['Tagged security, exhaustion not marked', { tags: ['security'] }, { row: 'severe', securityClass: 'exhaustion', ...kept }, ['blocker', 'blocker', [doubt]]],
-      // A blocker cell without a realistic trigger is a warning that no confirmation raises, doubted or not, and needs no consequence.
-      ['Lost data, rare trigger', {}, { row: 'severe', rareTrigger: true, reasoning: 'r' }, ['warning', 'warning', undefined]],
-      ['Finder blocker, rare trigger', { severity: 'blocker' }, { row: 'wrong', rareTrigger: true, reasoning: 'r' }, ['warning', 'warning', undefined]],
-      ['Wrong result, rare trigger, consequence named', {}, { row: 'wrong', ...ifBlocker, rareTrigger: true, doubts: [doubt, harm] }, ['warning', 'warning', [doubt]]],
+      // A blocker cell without a realistic trigger is held down by the premise that its trigger happens, after any doubt the judge
+      // names, so only a check that confirms the trigger gives the blocker back. A consequence counts beside it as beside any doubt.
+      ['Lost data, rare trigger', {}, { row: 'severe', rareTrigger: true, reasoning: 'r' }, ['warning', 'blocker', [rareDoubt]]],
+      ['Finder blocker, rare trigger', { severity: 'blocker' }, { row: 'wrong', rareTrigger: true, reasoning: 'r' }, ['warning', 'blocker', [rareDoubt]]],
+      ['Wrong result, rare trigger, consequence named', {}, { row: 'wrong', ...ifBlocker, rareTrigger: true, doubts: [doubt, harm] }, ['warning', 'blocker', [doubt, harm, rareDoubt]]],
+      ['Lost data, rare trigger, warning if confirmed', {}, { row: 'severe', ...kept, rareTrigger: true }, ['warning', 'warning', [doubt, rareDoubt]]],
       // A security finding and a tool alert keep their blocker, and a cell that gives no blocker has nothing to cap.
       ['Marked security, rare trigger', {}, { row: 'severe', security: true, rareTrigger: true, reasoning: 'r' }, ['blocker', undefined, undefined]],
       ['Tool alert, rare trigger', { toolSource: 'clippy' }, { row: 'wrong', rareTrigger: true, reasoning: 'r' }, ['blocker', undefined, undefined]],
@@ -4954,7 +4957,7 @@ describe('mapJudgedToFindings', () => {
     ]);
     // The cap is the judge's step, with its reason, and the finding stays posted as one that would block if true.
     const rare = lowered.find(f => f.title === 'Finder blocker, rare trigger')!;
-    expect([rare.gradePath, staysWarningIfConfirmed(rare)]).toEqual([[{ from: 'blocker', to: 'warning', by: 'judge', reason: 'the judge found no realistic trigger' }], true]);
+    expect([rare.gradePath, wouldBlockIfTrue(rare)]).toEqual([[{ from: 'blocker', to: 'warning', by: 'judge', reason: 'the judge found no realistic trigger' }], true]);
     // The record keeps the cell beside the judge's answer, and only the `rare` column leaves a finding without a `pendingGrade`.
     // Such a finding is a warning to every later step, so `wouldBlockIfTrue` does not hold for it.
     expect(lowered.slice(0, 3).map(f => [f.cell, pendingGrade(f), staysWarningIfConfirmed(f), wouldBlockIfTrue(f)])).toEqual([

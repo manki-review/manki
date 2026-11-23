@@ -518,6 +518,26 @@ describe('refuteBlockers', () => {
     expect(result.map(f => needsProof(f))).toEqual([false, false, false]);
   });
 
+  it('gives a blocker the judge capped for a rare trigger back only when a check confirms the trigger, whatever it says about the defect', async () => {
+    const trigger = { ...triggerDoubt('When two reports get the same random name'), decides: 'grade' as const };
+    const capped = {
+      severity: 'warning' as const, gradeIfConfirmed: 'blocker' as const, cell: { row: 'severe' as const, column: 'normal' as const }, doubts: [trigger],
+      gradePath: [{ from: 'blocker' as const, to: 'warning' as const, by: 'judge' as const, reason: 'the judge found no realistic trigger' }],
+    };
+    const defect = { outcome: 'confirmed', reason: 'The rename moves the other report.', proof: ['src/math.ts:2'] };
+    const replies = {
+      'Trigger confirmed': { ...defect, premises: [{ outcome: 'confirmed', reason: 'A handler writes two reports at once.', proof: ['src/api.ts:4'] }] },
+      'Trigger unsettled': { ...defect, premises: [{ outcome: 'outside_code', reason: 'Collision odds are no code fact.' }] },
+      'Trigger disproved': { ...defect, premises: [{ outcome: 'disproved', reason: 'The name has 128 random bits.', proof: ['src/math.ts:1'] }] },
+    };
+    const result = await refuteBlockers(fakeClient(replies), Object.keys(replies).map(title => finding(title, capped)), { workspace, diff });
+    expect(result.map(f => [f.title, f.severity, f.refutation?.outcome])).toEqual([
+      ['Trigger confirmed', 'blocker', 'confirmed'],
+      ['Trigger unsettled', 'warning', 'unsettled'],
+      ['Trigger disproved', 'warning', 'unsettled'],
+    ]);
+  });
+
   it('checks each premise the judge doubts on its own, raises a finding with a blocker cell only when every premise is confirmed and every finder filed a blocker or the check confirmed the defect and its consequence, and never raises or moves one in the `rare` column', async () => {
     const exists = { premise: 'No caller bounds `a`', decides: 'defect' as const };
     const reached = { premise: 'A public handler passes `a` through', decides: 'grade' as const };

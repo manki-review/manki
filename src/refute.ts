@@ -585,7 +585,8 @@ export function unprovenReason(finding: Finding): UnprovenReason | undefined {
 
 /**
  * Whether the warning `finding` on the `degraded` row has no realistic trigger: the judge named none, or a check
- * `disprovedTrigger`. A finding on any other row keeps its grade however rare its trigger, since its consequence is serious.
+ * `disprovedTrigger`. A finding on any other row is posted however rare its trigger, since its consequence is serious.
+ * Its blocker cell waits for a check of the trigger when the judge marked it `rareTrigger`, as `gradeByCell` sets it.
  */
 export function lacksTrigger(finding: Finding): boolean {
   if (finding.severity !== 'warning' || finding.cell?.row !== 'degraded') return false;
