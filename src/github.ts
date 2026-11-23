@@ -345,7 +345,7 @@ function holdLine(hold: ApprovalHold, autoApprove: boolean): { line: string; box
     if (!autoApprove) return { line: `**Approval held:** this PR is a draft. Mark it ready for review, then tick the review box in the settings block. ${ROUND_APPROVES_LINE}`, box: 'again' };
     // "Nothing else" covers only what the PR shows, such as an open thread or a conflict. For every other case, in which
     // nothing follows, the check command names the reason.
-    return { line: '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. If the latest commit has no review yet, Manki reviews it first. If nothing happens, comment `/manki check`, and Manki approves or says what holds the approval.', box: 'check' };
+    return { line: '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. If the latest commit has no review yet, Manki reviews it first when automatic review runs on this PR. If nothing happens, as for a PR from a fork or while automatic review is off or paused, comment `/manki check`, and Manki approves or says what holds the approval.', box: 'check' };
   }
   if (hold.reason === 'config') {
     return {

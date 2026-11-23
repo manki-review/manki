@@ -535,7 +535,7 @@ function reviewCommand(command = '/manki review'): Promise<void> {
 }
 
 const SLASH_HINT = 'Next time, write `/manki` instead of `@manki`. `@manki` is the login of an unrelated GitHub user, who gets a notification each time.';
-const DRAFT_HOLD = '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. If the latest commit has no review yet, Manki reviews it first. If nothing happens, comment `/manki check`, and Manki approves or says what holds the approval.';
+const DRAFT_HOLD = '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. If the latest commit has no review yet, Manki reviews it first when automatic review runs on this PR. If nothing happens, as for a PR from a fork or while automatic review is off or paused, comment `/manki check`, and Manki approves or says what holds the approval.';
 const DRAFT_HOLD_WITHOUT_AUTO_APPROVE = '**Approval held:** this PR is a draft. Mark it ready for review, then tick the review box in the settings block. `auto_approve` is off, so Manki approves only at the end of a review round, when nothing holds the approval.';
 const REOPENED = 'Reopened. A blocking finding needs a maintainer or a fix: the PR author cannot resolve it.';
 /** What a "Fixed." on the blocker thread says about the push a review needs to confirm the fix. */

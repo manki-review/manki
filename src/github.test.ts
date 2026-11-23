@@ -2247,7 +2247,7 @@ describe('postReview body lead', () => {
     expect([event, approvalHeld]).toEqual(['COMMENT', 'draft']);
     // The head ends with the box of the step the hold line names.
     const withBox = (box: string) => approved.body.replace('\n\n**What this does:**', `\n\n<!-- manki-issue-box -->\n- [ ] ${box}\n\n**What this does:**`);
-    expect(body).toBe(`**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. If the latest commit has no review yet, Manki reviews it first. If nothing happens, comment \`/manki check\`, and Manki approves or says what holds the approval.\n\n${withBox('Check approval <!-- manki-box:check -->')}`);
+    expect(body).toBe(`**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. If the latest commit has no review yet, Manki reviews it first when automatic review runs on this PR. If nothing happens, as for a PR from a fork or while automatic review is off or paused, comment \`/manki check\`, and Manki approves or says what holds the approval.\n\n${withBox('Check approval <!-- manki-box:check -->')}`);
 
     // With `auto_approve` off, marking the PR ready approves nothing, so the line names the review box and no check command.
     mockGet.mockResolvedValueOnce({ data: { draft: true, mergeable: true, mergeable_state: 'clean', base: { ref: 'main' } } });
@@ -2276,7 +2276,7 @@ describe('postReview body lead', () => {
     expect(drafted.approvalHeld).toBe('config');
     expect(draftBody.split('\n\n').slice(0, 3)).toEqual([
       '**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.',
-      '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. If the latest commit has no review yet, Manki reviews it first. If nothing happens, comment `/manki check`, and Manki approves or says what holds the approval.',
+      '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. If the latest commit has no review yet, Manki reviews it first when automatic review runs on this PR. If nothing happens, as for a PR from a fork or while automatic review is off or paused, comment `/manki check`, and Manki approves or says what holds the approval.',
       approved.body.split('\n\n')[0],
     ]);
 
