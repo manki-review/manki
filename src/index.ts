@@ -25,6 +25,7 @@ import { currentFindingLine, fetchRecapState, FOUND_AGAIN_MARKER, parseContextBl
 import { carryBodyWarnings, filesChangedByPush, RETRY_HINT, ReviewClients, ReviewOptions, ROUND_TIME_MS, runReview } from './review';
 import { stringifyFindingFingerprint } from './finding-fingerprint';
 import { buildReviewClients, warmUpClients } from './review-clients';
+import { roundReplyMarker } from './review-record';
 import { buildRoundContext, mergedDuplicateCount, RoundRecordInput } from './round-context';
 import { formatRunner, recordQueueWait, runnerDiagnostics, startMemorySampler } from './run-diagnostics';
 import { collectStaticSignals, fetchLockfiles } from './static-signals';
@@ -1770,7 +1771,7 @@ async function replyPartlyFixedThreads(run: ReviewRun, result: ReviewResult): Pr
       continue;
     }
     try {
-      await replyToReviewThread(run.octokit, threadId, body);
+      await replyToReviewThread(run.octokit, threadId, body, roundReplyMarker(run.commitSha));
     } catch (error) {
       core.warning(`Failed to reply on partly fixed thread ${threadId}: ${error}`);
     }
@@ -1792,7 +1793,7 @@ async function replyFixedElsewhere(run: ReviewRun, result: ReviewResult): Promis
       + `Manki resolves no blocker on a fix outside the files its finding cited, so this thread stays open and keeps blocking. `
       + `A maintainer can resolve it. ${authorClearLine(run.config.author_clear_role)} A push that changes ${files} lets the next review confirm the fix.`;
     try {
-      await replyToReviewThread(run.octokit, threadId, body);
+      await replyToReviewThread(run.octokit, threadId, body, roundReplyMarker(run.commitSha));
     } catch (error) {
       core.warning(`Failed to reply on thread ${threadId} with the fix seen in ${fixedIn}: ${error}`);
     }
@@ -1842,7 +1843,7 @@ async function replyAnsweredThreads(run: ReviewRun, result: ReviewResult): Promi
       }
     }
     try {
-      await replyToReviewThread(run.octokit, threadId, formatFoundAgainReply(findings, closed), FOUND_AGAIN_MARKER);
+      await replyToReviewThread(run.octokit, threadId, formatFoundAgainReply(findings, closed), FOUND_AGAIN_MARKER, roundReplyMarker(run.commitSha));
     } catch (error) {
       core.warning(`Failed to reply on answered thread ${threadId}: ${error}`);
     }

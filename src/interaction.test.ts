@@ -1525,6 +1525,41 @@ describe('handleReviewCommentReply', () => {
     }
   });
 
+  it.each([
+    ['a withdrawal after a verdict the review of the head gave', 'Withdrawn', '14:34:11', 'head', 'warning', 'none', true],
+    ['a withdrawal after a verdict given before the reply', 'Withdrawn', '14:30:00', 'head', 'warning', 'none', false],
+    ['a withdrawal after a verdict the review of another head gave', 'Withdrawn', '14:34:11', 'other', 'warning', 'none', false],
+    ['a withdrawal in a thread that could not be read', 'Withdrawn', '14:34:11', 'head', 'warning', 'read fails', false],
+    // Only an answer that settles the thread replaces the verdict of a review that found it open.
+    ['an unverified reply after a verdict the review of the head gave', 'Unverified', '14:34:11', 'head', 'warning', 'none', false],
+    ['a withdrawal by a reader after a verdict the review of the head gave', 'Withdrawn', '14:34:11', 'head', 'warning', 'reader', false],
+    ['a withdrawal whose resolve fails after a verdict the review of the head gave', 'Withdrawn', '14:34:11', 'head', 'warning', 'resolve fails', false],
+    // A maintainer's withdrawal clears a blocker thread and replaces the verdict there too, but the PR author's leaves it open.
+    ['a withdrawal in a blocker thread after a verdict the review of the head gave', 'Withdrawn', '14:34:11', 'head', 'blocker', 'none', true],
+    ['a withdrawal by the PR author in a blocker thread after a verdict the review of the head gave', 'Withdrawn', '14:34:11', 'head', 'blocker', 'author', false],
+  ] as const)('answers %s, and says only when it replaces that verdict', async (_case, outcome, verdictAt, verdictHead, kind, trouble, replaces) => {
+    const head = 'a'.repeat(40);
+    setContext({
+      comment: { id: 1, body: 'Fixed in d2c4380.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'MEMBER', created_at: '2026-11-06T14:32:05Z' },
+      pull_request: { number: 1, head: { sha: head }, ...(trouble === 'author' && { user: { login: 'someone' } }) },
+      sender: { login: trouble === 'reader' ? 'reader' : 'someone' },
+    });
+    const octokit = createMockOctokit();
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { original_commit_id: POSTED_ON, user: MANKI_USER, body: findingComment(kind), path: 'src/file.ts', line: 10 } });
+    if (trouble === 'resolve fails') jest.mocked(state.resolveReviewThread).mockRejectedValueOnce(new Error('GitHub is down'));
+    const client = createMockClient();
+    jest.mocked(client.sendMessage).mockResolvedValue({ content: structured(`${outcome}. The caller already checks for null at \`src/file.ts:10\`.`) });
+    const thread = { id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: kind === 'blocker', findingTitle: 'This', roundReplies: [{ commit: verdictHead === 'head' ? head : 'b'.repeat(40), at: `2026-11-06T${verdictAt}Z` }] };
+    if (trouble === 'read fails') jest.mocked(state.fetchBotReviewThreads).mockRejectedValueOnce(new Error('GraphQL timeout'));
+    else jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([thread]);
+
+    await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, undefined, CONFIG);
+
+    const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls[0][0].body as string;
+    expect(body.startsWith(`${outcome}.`)).toBe(true);
+    expect(body.includes('\n\nThis answer reads your reply and replaces the verdict of the review of `aaaaaaa` above.')).toBe(replaces);
+  });
+
   it('includes scoped PR diff context in the Claude prompt', async () => {
     setContext({ comment: { id: 1, body: 'Why did you change this?', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'MEMBER' }, pull_request: { number: 1, head: { sha: 'a'.repeat(40) } } });
     const octokit = createMockOctokit();

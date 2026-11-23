@@ -663,6 +663,9 @@ export async function handleReviewCommentReply(
     }
     // A resolved thread that keeps blocking is left resolved, and `staysOpen` says that it is not cleared.
     const cleared = !!resolved && !staysOpen;
+    // An answer that settles the thread replaces an open verdict the review of the same head gave after the reply.
+    const roundReply = cleared && live ? live.roundReplies?.find(r => r.commit === head && Date.parse(r.at) > Date.parse(comment.created_at ?? '')) : undefined;
+    const replaces = roundReply ? [`This answer reads your reply and replaces the verdict of the review of \`${roundReply.commit.slice(0, 7)}\` above.`] : [];
 
     // A thread gets one Manki fix confirmation per head unless a second lifts a hold, but a writer's "Fixed." can still resolve it.
     let addNote: ((note: string) => Promise<unknown>) | undefined;
@@ -681,7 +684,7 @@ export async function handleReviewCommentReply(
       // The checks never read as a verdict on the finding. A blocking thread that no other note covers says that it stays
       // open, and names a review as a way out only when a review can clear it.
       const checks = list ? [list, statementSummary(checked, blocks || !live), ...(blocks && !staysOpen && !noted ? [staysOpenNote(guard, !!filePath, config?.author_clear_role, live.isResolved)] : [])] : [];
-      const text = [answer, ...checks, ...notes];
+      const text = [answer, ...replaces, ...checks, ...notes];
       const markers = [
         BOT_MARKER, response.record(decision, statementChecks(checked), comment.id),
         ...(settled === 'Fixed' && head && !closed ? [fixedMarker(head)] : []),
