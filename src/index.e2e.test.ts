@@ -1559,6 +1559,21 @@ describe('runFullReview end to end', () => {
       expect(core.info).toHaveBeenCalledWith(`Thread PRRT_1 stays as it is: ${why}`);
     });
 
+    it('keeps the warning thread open and counted when the security warning that raises it rides on its own earlier thread', async () => {
+      await warnFirst();
+      const secure = { row: 'degraded', trigger: 'When an invoice sums very large amounts', security: true };
+      await restateAfterPush(secure, [variant]);
+      expect(mockGitHub.threads.map(t => [t.id, t.isResolved])).toEqual([['PRRT_1', false], ['PRRT_2', false]]);
+
+      const title = 'Unbounded sum reaches the invoice total';
+      Object.assign(mockLLM.replies, { reviewer: JSON.stringify([{ ...warning, title }]), judge: restated(secure, 'P1', title) });
+      await forcedRound();
+      const review = postedReviews().at(-1)!;
+      expect(mockGitHub.threads.map(t => [t.id, t.isResolved])).toEqual([['PRRT_1', false], ['PRRT_2', false]]);
+      expect(review.body).toMatch(/^⚠️ \*\*2 warnings to address\.\*\*/);
+      expect(review.body).toContain('**Still open from earlier reviews:**\n- `src/math.ts:2`: Sum is never range checked');
+    });
+
     it('resolves a suggestion thread for a security suggestion, since the suggestion held nothing', async () => {
       Object.assign(mockLLM.replies, {
         reviewer: JSON.stringify([warning]),

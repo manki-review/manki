@@ -67,6 +67,7 @@ import {
   postReview,
   capNotes,
   holdsApproval,
+  openThreadFor,
   limitFallbackLines,
   formatOpenBlockers,
   unreadRecordsLine,
@@ -1784,7 +1785,7 @@ async function closeRaisedThreads(run: ReviewRun, result: ReviewResult): Promise
   }
   const earlier = new Set(run.recap.previousFindings.map(t => t.threadId));
   const posted = live.flatMap(t => t.place?.commit === commitSha && !earlier.has(t.id) ? [{ threadId: t.id, thread: t, ...t.place }] : []);
-  const raised = raisedThreads(result);
+  const raised = raisedThreads(run, result);
   const closed = new Set<string>();
   for (const f of raising) {
     const old = live.find(t => t.id === f.raises);
@@ -1814,11 +1815,17 @@ async function closeRaisedThreads(run: ReviewRun, result: ReviewResult): Promise
   }
 }
 
-/** Returns the findings that raise each earlier thread no finding of the round went into, which `closeRaisedThreads` may close. */
-function raisedThreads(result: ReviewResult): Map<string, Finding[]> {
+/**
+ * Returns the findings that raise each earlier thread no finding of the round went into, which `closeRaisedThreads` may
+ * close. Only a finding that gets a thread of its own counts, never one an open thread carries.
+ */
+function raisedThreads(run: ReviewRun, result: ReviewResult): Map<string, Finding[]> {
   const carrying = new Set(result.findings.flatMap(g => [g.threadId, g.answeredIn?.threadId]));
   const raised = new Map<string, Finding[]>();
-  for (const f of result.findings) if (f.raises && !carrying.has(f.raises)) raised.set(f.raises, [...raised.get(f.raises) ?? [], f]);
+  for (const f of result.findings) {
+    if (!f.raises || carrying.has(f.raises) || f.threadId || f.answeredIn || openThreadFor(f, run.recap.previousFindings)) continue;
+    raised.set(f.raises, [...raised.get(f.raises) ?? [], f]);
+  }
   return raised;
 }
 
@@ -2016,7 +2023,7 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
     return by ? [{ title: f.title, file: f.file, line: f.line, reason: by.reason }] : [];
   });
   // Read after the round resolved the threads it found fixed, and with its own grades, which can lower a blocker thread to a warning.
-  const raised = raisedThreads(result);
+  const raised = raisedThreads(run, result);
   const openWarnings = result.verdict === 'APPROVE'
     ? await fetchHeldWarnings(octokit, bot, owner, repo, prNumber, run.options.prAuthorLogin, run.config.author_clear_role, context).then(held => held.filter(t => !leftOutOfHeld(t, raised)), (error: unknown) => {
       core.warning(`Could not read the warning threads, so the approval is held: ${error instanceof Error ? error.message : error}`);
