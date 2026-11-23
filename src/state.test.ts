@@ -1128,6 +1128,16 @@ describe('checkAndAutoApprove', () => {
         jest.mocked(unread.paginate).mockRejectedValueOnce(new Error('rate limited'));
         await withdrawBlockedApproval(unread, TEST_BOT, 'owner', 'repo', 1, 'author', undefined);
         expect(dismissPreviousReviews).not.toHaveBeenCalled();
+        // A head that cannot be read still leaves the approval withdrawn and the coordinator told, and only the check is skipped.
+        checkRuns = { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) };
+        jest.mocked(authModule.reportPrState).mockClear();
+        const headless = setup([thread('t1', 'blocker')]);
+        jest.mocked(headless.rest.pulls.get).mockRejectedValue(new Error('Not Found'));
+        dismissPreviousReviews.mockResolvedValueOnce(1);
+        await withdrawBlockedApproval(headless, TEST_BOT, 'owner', 'repo', 1, 'author', undefined);
+        expect(jest.mocked(authModule.reportPrState).mock.calls).toEqual([['owner', 'repo', 1, { approval: null }]]);
+        expect(checkRuns.create).not.toHaveBeenCalled();
+        expect(core.warning).toHaveBeenLastCalledWith('Withdrew Manki\'s approval, but could not read the head to fail its check: Not Found');
       }
     });
   });
