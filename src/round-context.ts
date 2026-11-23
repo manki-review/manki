@@ -1,4 +1,5 @@
 import type { LLMCall } from './providers';
+import { calibrate, FixRateHistory } from './fix-rate';
 import { isEmptyInterRoundDiff, MAX_INTER_ROUND_DIFF_CHARS } from './judge';
 import { collectResolvedThreadIds, fingerprintFinding, PreviousFinding, RecapState, securityOverridesIn } from './recap';
 import { MANKI_VERSION, RepoContext } from './github';
@@ -40,6 +41,8 @@ export interface RoundRecordInput {
   memoryLoadError?: string;
   /** Why the run may not use memory, when `memoryLoadStatus` is `skipped`. */
   memorySkip?: MemorySkip;
+  /** The repo's fix-rate history, read from memory at the start of the round. */
+  fixRates?: FixRateHistory;
   staticAnalysis?: RoundStaticAnalysis;
   /** The token service calls the run made before the round posts. */
   tokenServiceCalls?: TokenServiceCall[];
@@ -108,7 +111,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
   const {
     prNumber, commitSha, trigger, options, config, models, recap,
     priorRoundCount, maxAutoRounds, diff, excludedFiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError, memorySkip, staticAnalysis,
-    tokenServiceCalls,
+    tokenServiceCalls, fixRates,
   } = input;
   const { skipCap, forceReview, bypassHint } = options;
   const { plannerDurationMs, judgeDurationMs, wallClockMs } = durations;
@@ -292,6 +295,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(f.unpostedReason && { unpostedReason: f.unpostedReason }),
   });
   const unposted = [...(result.unpostedPreExisting ?? []), ...(result.unposted ?? [])].map((f): FindingFingerprintEntry => ({ ...toEntry(f), posted: 'record' }));
+  const calibrations = fixRates ? result.findings.map(f => calibrate(fixRates, f)) : [];
   return {
     meta: {
       prNumber,
@@ -308,6 +312,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
       ...(!result.reviewComplete && { incomplete: true as const }),
       ...(result.retryAfter && { retryAfter: result.retryAfter }),
       ...(result.reused && { reusedFrom: result.reused.from }),
+      ...(fixRates && { calibrationLowered: calibrations.filter(c => c?.wouldLower).length }),
     },
     config: {
       memoryEnabled: config.memory?.enabled ?? false,
@@ -432,7 +437,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     findings: {
       count: result.findings.length,
       severityCounts: severityMap,
-      entries: result.findings.map(toEntry),
+      entries: result.findings.map((f, i) => ({ ...toEntry(f), ...(calibrations[i] && { calibration: calibrations[i] }) })),
       ...(unposted.length > 0 && { unposted }),
       ...(result.carried && { carried: result.carried }),
       ...(result.carriedEnded && { carriedEnded: result.carriedEnded }),

@@ -5,12 +5,18 @@ import { parsePRDiff } from './diff';
 import { BotIdentity, fetchInterRoundDiff } from './github';
 import { appendMemoryLine, MemoryStore } from './memory';
 import { fetchRecapState, judgeAddressedThreadIds, PreviousFinding } from './recap';
-import { AuthorClearRole, citesEvidence, FindingFingerprint, FindingFingerprintEntry, ParsedDiff, RoundContext } from './types';
+import { AuthorClearRole, citesEvidence, Finding, FindingCalibration, FindingFingerprint, FindingFingerprintEntry, isSecurityFinding, migrateStoredSeverities, ParsedDiff, RoundContext } from './types';
 import { sanitizeTokens } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
 const FIX_RATE_FILE = 'metrics/fix-rate.jsonl';
+/** The newest lines of the fix-rate history a round reads. */
+const HISTORY_LINES = 500;
+/** The fewest posted findings a class needs before its fix rate counts. */
+const MIN_POSTED = 20;
+/** A class fixed less often than this would have its findings lowered. */
+const LOW_FIX_RATE = 0.3;
 
 export interface MergedPullRequest {
   number: number;
@@ -30,6 +36,7 @@ interface OutcomeCounts extends Record<Outcome, number> {
 interface SpecialistKey {
   severity: string;
   specialist: string;
+  category: string;
 }
 
 interface CalibrationKey {
@@ -52,7 +59,7 @@ export interface PostedFinding {
 
 /**
  * Records how many posted findings of a merged pull request were fixed, dismissed or left
- * untouched, per severity and specialist (`counts`) and per severity, check status, tool
+ * untouched, per severity, specialist and category (`counts`) and per severity, check status, tool
  * evidence, category, effort, whether the finding had evidence and whether the judge checked
  * it (`calibration`). Writes one JSON line to the job summary, and appends it to
  * `metrics/fix-rate.jsonl` in the repo's memory when `memory` is given. The line carries
@@ -95,7 +102,7 @@ export async function recordFixRate(
       || touchesFinding(diffs.get(commitSha), entry.fingerprint);
     const outcome: Outcome = fixed ? 'fixed' : isDismissed(thread, pr.authorLogin) ? 'dismissed' : 'untouched';
     const specialist = entry.reviewers?.[0] ?? entry.specialist ?? 'unknown';
-    tally<SpecialistKey>(counts, { severity: entry.severity, specialist }, outcome);
+    tally<SpecialistKey>(counts, { severity: entry.severity, specialist, category: entry.category ?? 'unknown' }, outcome);
     tally<CalibrationKey>(calibration, {
       severity: entry.severity,
       checkStatus: entry.checkStatus ?? 'unknown',
@@ -169,4 +176,87 @@ function isDismissed(thread: PreviousFinding | undefined, prAuthorLogin: string 
   return prAuthorLogin !== undefined
     && thread.authorReplyLogin === prAuthorLogin
     && !!thread.replyAgreed;
+}
+
+/** Posted and fixed findings per class, keyed by `FindingCalibration.class`. */
+export type FixRateHistory = Map<string, { posted: number; fixed: number }>;
+
+/**
+ * Returns the model of reviewer `name`: `GPT 6.2 Sol` for the finder `GPT 6.2 Sol · high · focus` and for the quick
+ * check `Quick check · GPT 6.2 Sol`. A name without a model gives its kind, such as `Sweep` for `Sweep 1` and
+ * `Sibling field` for `Sibling field: a vs b`.
+ */
+export function finderModel(name: string): string {
+  const parts = name.replace(/ #\d+$/, '').split(' · ');
+  if (parts.length > 1) return parts[0] === 'Quick check' ? parts[1] : parts[0];
+  return parts[0].replace(/:.*$/s, '').replace(/ \d+$/, '');
+}
+
+const classOf = (severity: string, model: string, category?: string): string => [severity, model, ...(category ? [category] : [])].join(' · ');
+
+/**
+ * Sums the `counts` rows of fix-rate lines per class: severity and finder model, and severity, finder model and
+ * category. Lines written before `counts` held the category only add to the first. A line that is no JSON is skipped.
+ */
+export function aggregateFixRates(lines: string[]): FixRateHistory {
+  const history: FixRateHistory = new Map();
+  const add = (key: string, posted: number, fixed: number) => {
+    const row = history.get(key) ?? { posted: 0, fixed: 0 };
+    row.posted += posted;
+    row.fixed += fixed;
+    history.set(key, row);
+  };
+  for (const line of lines) {
+    let record: { counts?: unknown };
+    try {
+      record = migrateStoredSeverities(JSON.parse(line));
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(record?.counts)) continue;
+    for (const row of record.counts as Array<Partial<SpecialistKey & OutcomeCounts>>) {
+      if (typeof row?.severity !== 'string' || typeof row.specialist !== 'string') continue;
+      const posted = Number(row.posted) || 0;
+      const fixed = Number(row.fixed) || 0;
+      const model = finderModel(row.specialist);
+      add(classOf(row.severity, model), posted, fixed);
+      if (typeof row.category === 'string') add(classOf(row.severity, model, row.category), posted, fixed);
+    }
+  }
+  return history;
+}
+
+/** Reads the newest `HISTORY_LINES` lines of the repo's fix-rate history. Returns nothing, and only logs, when the file is missing or cannot be read. */
+export async function readFixRateHistory(memory: MemoryStore): Promise<FixRateHistory | undefined> {
+  try {
+    const { text } = await memory.read(FIX_RATE_FILE);
+    if (text === null) {
+      core.info(`No fix-rate history in ${memory.name}, no calibration is recorded`);
+      return undefined;
+    }
+    const lines = text.split('\n').filter(line => line.trim()).slice(-HISTORY_LINES);
+    const history = aggregateFixRates(lines);
+    core.info(`Read ${lines.length} fix-rate lines from ${memory.name}`);
+    return history;
+  } catch (error) {
+    core.info(`Failed to read the fix-rate history from ${memory.name}, no calibration is recorded: ${sanitizeTokens(String(error))}`);
+    return undefined;
+  }
+}
+
+/**
+ * Returns the fix rate of `finding`'s class in `history`: the class with its category when that has `MIN_POSTED`
+ * findings, else the class without it. Nothing for an ignored finding, a security finding, a tool alert or a class with no
+ * posted finding.
+ */
+export function calibrate(history: FixRateHistory, finding: Finding): FindingCalibration | undefined {
+  if (finding.severity === 'ignore' || finding.toolSource || isSecurityFinding(finding.tags, finding.reviewers)) return undefined;
+  const model = finderModel(finding.reviewers[0] ?? 'unknown');
+  const fine = classOf(finding.severity, model, finding.category ?? 'unknown');
+  const coarse = classOf(finding.severity, model);
+  const fineRow = history.get(fine);
+  const [name, row] = fineRow && fineRow.posted >= MIN_POSTED ? [fine, fineRow] : [coarse, history.get(coarse)];
+  if (!row || row.posted === 0) return undefined;
+  const rate = row.fixed / row.posted;
+  return { class: name, posted: row.posted, fixed: row.fixed, rate: Math.round(rate * 100) / 100, wouldLower: row.posted >= MIN_POSTED && rate < LOW_FIX_RATE };
 }
