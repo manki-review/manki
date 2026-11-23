@@ -11,7 +11,7 @@ import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig, readClosedPaths
 import { AgentProgressEntry, ApprovalRecord, RecordOnlyReason, SideCheckKind, agreedOutcome, oneCheckOnBase, sameOnBase, confirmsAll, confirmsCodePath, confirmsDefect, openCodePremise, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, RoundDependencySource, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundScope, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, SCOPE_READER_NAME, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { holdsLines } from './code-window';
 import { firstCommentableLine, isLineInDiff, listedFilesDiff, findClosedPattern } from './diff';
-import { filedIssueOf, issueBox, ISSUE_BOX_LABEL, messageBox, withMessageBoxes } from './issue-box';
+import { issueBox, ISSUE_BOX_LABEL, messageBox, withMessageBoxes } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import type { FixClaim, PreviousFinding } from './recap';
@@ -2107,14 +2107,13 @@ const AGREED_ANSWER_RE = /^\**Agreed\./;
 
 /**
  * Returns the line of each closed thread where Manki's latest answer agreed to leave its finding for later work, with
- * the issue Manki filed for it. A suggestion is optional, so an agreed one is not listed again.
+ * the issue Manki filed for it, if any. A suggestion is optional, so an agreed one is not listed again.
  */
 function agreedFollowUps(threads: PreviousFinding[]): string[] {
   return threads.flatMap(t => {
     if (!t.answer || !AGREED_ANSWER_RE.test(t.answer) || t.severity === 'unknown' || isNote(t.recordedGrade ?? t.severity) || t.fixed) return [];
     if (t.status !== 'resolved' && t.status !== 'auto-resolved') return [];
-    const issue = filedIssueOf(t.answer);
-    return [`${formatTraceEntry({ file: t.file, line: currentFindingLine(t), title: t.title, threadUrl: t.threadUrl })}${issue ? ` (tracked in #${issue})` : ''}`];
+    return [`${formatTraceEntry({ file: t.file, line: currentFindingLine(t), title: t.title, threadUrl: t.threadUrl })}${t.filedIssue ? ` (tracked in #${t.filedIssue})` : ''}`];
   });
 }
 
