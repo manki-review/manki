@@ -7,7 +7,7 @@ import { sanitizeForPromptEmbed } from './memory';
 import { fenceText } from './github';
 import { LLMClient, NotStartedError } from './providers';
 import { changeSection, citedChanges, locationFile, locationLines, MAX_PARALLEL_REFUTATIONS } from './refute';
-import { cellGrade, Finding, gradedByRule, gradeStep, isGradeCell, isSecurityFinding, OtherFinderVote, ParsedDiff, pendingGrade, RulesMode } from './types';
+import { cellGrade, DISPROVED_TAG, Finding, gradedByRule, gradeStep, isDisprovedBlocker, isGradeCell, isSecurityFinding, OtherFinderVote, ParsedDiff, pendingGrade, RulesMode } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 
 // A safety net for a call without tools, which normally answers in well under a minute.
@@ -135,15 +135,21 @@ export async function otherFinderVotes(findings: readonly Finding[], { workspace
 }
 
 /**
- * Returns `finding` with its `vote`. A vote that declines lowers a blocker to a warning. A warning it declines is
- * returned with `other_finder_declined` as its `unpostedReason`, for the round record only. A vote lowers a finding at
- * most one step below the grade of its cell, so a blocker cell the judge already held at a warning stays posted.
+ * Returns `finding` with its `vote`. A vote that declines lowers a blocker to a warning that `DISPROVED_TAG` guards, so
+ * text in the code that steers the vote cannot also let the PR author clear it. A warning it declines is returned with
+ * `other_finder_declined` as its `unpostedReason`, for the round record only. A vote lowers a finding at most one step
+ * below the grade of its cell, so a blocker cell the judge already held at a warning stays posted. A finding the refuter
+ * lowered from a blocker or that `gradedByRule` under `rules` after the vote was asked keeps its grade and gets no vote.
  */
-export function withVote(finding: Finding, vote: OtherFinderVote | undefined): Finding {
-  if (!vote) return finding;
+export function withVote(finding: Finding, vote: OtherFinderVote | undefined, rules?: RulesMode): Finding {
+  if (!vote || isDisprovedBlocker(finding) || finding.tags?.includes(DISPROVED_TAG) || gradedByRule(finding, rules)) return finding;
   const voted = { ...finding, otherFinderVote: vote };
   if (!vote.declined) return voted;
-  if (finding.severity === 'blocker') return { ...voted, ...gradeStep(finding, 'warning', 'other_finder', DECLINED_BLOCKER_REASON) };
-  const blockerCell = isGradeCell(finding.cell) && cellGrade(finding.cell.row, finding.cell.column) === 'blocker';
+  if (finding.severity === 'blocker') {
+    return { ...voted, ...gradeStep(finding, 'warning', 'other_finder', DECLINED_BLOCKER_REASON), tags: [...(finding.tags ?? []), DISPROVED_TAG] };
+  }
+  // A disproof keeps the cell it moved the finding off as `judgeCell`.
+  const cell = finding.judgeCell ?? finding.cell;
+  const blockerCell = isGradeCell(cell) && cellGrade(cell.row, cell.column) === 'blocker';
   return finding.severity === 'warning' && !blockerCell ? { ...voted, unpostedReason: 'other_finder_declined' } : voted;
 }

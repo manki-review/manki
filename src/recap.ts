@@ -96,7 +96,7 @@ function isSecurityThread(body: string): boolean {
   return isSecurityFinding(data?.tags, data?.flaggedBy ?? []);
 }
 
-/** Whether a Manki thread's first comment holds a blocker posted as a warning because every refuter disproved it, by `DISPROVED_TAG`. */
+/** Whether a Manki thread's first comment holds a blocker posted as a warning by a check, by `DISPROVED_TAG`. */
 function isDisprovedThread(body: string): boolean {
   return !!parseFindingData(body)?.tags?.includes(DISPROVED_TAG);
 }

@@ -2138,7 +2138,7 @@ export async function runReview(
       finders: team.finders.map(f => ({ name: f.name, client: lateFallback(pickReviewerClient(clients, f.model), 'vote', f.name, false) })),
     }) : judged.map(() => undefined),
   ]);
-  const checked = withOrigins(refuted, origins).map((f, i) => withVote(f, votes[i]));
+  const checked = withOrigins(refuted, origins).map((f, i) => withVote(f, votes[i], config.review?.rules));
   const after = new Map(judged.map((f, i) => [f, checked[i]]));
   allJudgedFindings = allJudgedFindings?.map(f => after.get(f) ?? f);
   const declined = checked.filter(f => f.unpostedReason === 'other_finder_declined');
