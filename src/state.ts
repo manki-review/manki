@@ -956,6 +956,7 @@ type ApprovalCheck = { approved: true; standing?: true } | { approved: false; wh
 
 // A dismissed approval no longer covers the head, so resolving the threads alone approves nothing.
 const WITHDRAWN_LINE = `A blocking thread is not cleared, so Manki withdrew its approval. ${NEXT_ROUND_LINE}`;
+const NOT_WITHDRAWN_LINE = `A blocking thread is not cleared, but Manki could not dismiss every approval it gave, so this check fails instead. ${NEXT_ROUND_LINE}`;
 
 /**
  * Dismisses Manki's approvals while a blocking thread is not cleared, as after a reopen. Once it dismissed one, or a
@@ -983,13 +984,13 @@ async function withdrawBlockedApproval(
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const { data: pr } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
-      if (await reportCheck(octokit, owner, repo, pr.head.sha, outcomeReport('ADDRESS_FIRST', WITHDRAWN_LINE))) return;
+      if (await reportCheck(octokit, owner, repo, pr.head.sha, outcomeReport('ADDRESS_FIRST', failed ? NOT_WITHDRAWN_LINE : WITHDRAWN_LINE))) return;
     } catch (error) {
       assertWritesAllowed();
-      core.warning(`Withdrew Manki's approval, but could not read the head to fail its check: ${error instanceof Error ? error.message : error}`);
+      core.warning(`A blocking thread is not cleared, but Manki could not read the head to fail its check: ${error instanceof Error ? error.message : error}`);
     }
   }
-  core.warning('Withdrew Manki\'s approval, but could not fail its check, so a required check may pass until the next review round');
+  core.warning('A blocking thread is not cleared, but Manki could not fail its check, so a required check may pass until the next review round');
 }
 
 /** Post an approval review if all findings are resolved. */

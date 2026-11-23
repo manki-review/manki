@@ -1117,7 +1117,9 @@ describe('checkAndAutoApprove', () => {
           jest.mocked(authModule.reportPrState).mockClear();
           dismissPreviousReviews.mockResolvedValueOnce({ dismissed: 1, failed: true });
           await check([thread('t1', 'blocker')]);
-          expect(checkRuns.create.mock.calls).toEqual([[expect.objectContaining({ conclusion: 'failure' })]]);
+          expect(checkRuns.create.mock.calls).toEqual([[expect.objectContaining({
+            conclusion: 'failure', output: expect.objectContaining({ summary: expect.stringMatching(/^A blocking thread is not cleared, but Manki could not dismiss every approval it gave, so this check fails instead\./) }),
+          })]]);
           expect(authModule.reportPrState).not.toHaveBeenCalled();
           checkRuns = { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) };
           dismissPreviousReviews.mockResolvedValueOnce({ dismissed: 0, failed: true });
@@ -1150,8 +1152,8 @@ describe('checkAndAutoApprove', () => {
         expect(jest.mocked(authModule.reportPrState).mock.calls).toEqual([['owner', 'repo', 1, { approval: null }]]);
         expect(headless.rest.pulls.get).toHaveBeenCalledTimes(2);
         expect(checkRuns.create).not.toHaveBeenCalled();
-        expect(core.warning).toHaveBeenCalledWith('Withdrew Manki\'s approval, but could not read the head to fail its check: Not Found');
-        expect(core.warning).toHaveBeenLastCalledWith('Withdrew Manki\'s approval, but could not fail its check, so a required check may pass until the next review round');
+        expect(core.warning).toHaveBeenCalledWith('A blocking thread is not cleared, but Manki could not read the head to fail its check: Not Found');
+        expect(core.warning).toHaveBeenLastCalledWith('A blocking thread is not cleared, but Manki could not fail its check, so a required check may pass until the next review round');
         // A check write that fails once is tried again, so the check still fails.
         checkRuns = { create: jest.fn().mockRejectedValueOnce(new Error('Bad Gateway')).mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) };
         dismissPreviousReviews.mockResolvedValueOnce({ dismissed: 1, failed: false });
