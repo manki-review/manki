@@ -11,7 +11,7 @@ import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig, readClosedPaths
 import { AgentProgressEntry, ApprovalRecord, RecordOnlyReason, SideCheckKind, agreedOutcome, oneCheckOnBase, sameOnBase, confirmsAll, confirmsCodePath, confirmsDefect, openCodePremise, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, RoundDependencySource, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundScope, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, SCOPE_READER_NAME, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { holdsLines } from './code-window';
 import { firstCommentableLine, isLineInDiff, listedFilesDiff, findClosedPattern } from './diff';
-import { issueBox, ISSUE_BOX_LABEL, messageBox, withMessageBoxes } from './issue-box';
+import { filedIssueOf, issueBox, ISSUE_BOX_LABEL, messageBox, withMessageBoxes } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import type { FixClaim, PreviousFinding } from './recap';
@@ -2106,14 +2106,16 @@ async function postFileLevelComments(
 const AGREED_ANSWER_RE = /^\**Agreed\./;
 
 /**
- * Returns the findings of the closed threads where Manki's latest answer agreed to leave them for later work. A suggestion
- * is optional, so an agreed one is not listed again.
+ * Returns the line of each closed thread where Manki's latest answer agreed to leave its finding for later work, with
+ * the issue Manki filed for it. A suggestion is optional, so an agreed one is not listed again.
  */
-function agreedFollowUps(threads: PreviousFinding[]): Finding[] {
-  return threads.flatMap(t => (t.answer && AGREED_ANSWER_RE.test(t.answer) && t.severity !== 'unknown' && !isNote(t.recordedGrade ?? t.severity) && !t.fixed
-    && (t.status === 'resolved' || t.status === 'auto-resolved')
-    ? [{ severity: t.severity, title: t.title, file: t.file, line: currentFindingLine(t), description: t.description ?? '', ...(t.suggestedFix && { suggestedFix: t.suggestedFix }), ...(t.howToFix && { howToFix: t.howToFix }), reviewers: [] }]
-    : []));
+function agreedFollowUps(threads: PreviousFinding[]): string[] {
+  return threads.flatMap(t => {
+    if (!t.answer || !AGREED_ANSWER_RE.test(t.answer) || t.severity === 'unknown' || isNote(t.recordedGrade ?? t.severity) || t.fixed) return [];
+    if (t.status !== 'resolved' && t.status !== 'auto-resolved') return [];
+    const issue = filedIssueOf(t.answer);
+    return [`${formatTraceEntry({ file: t.file, line: currentFindingLine(t), title: t.title, threadUrl: t.threadUrl })}${issue ? ` (tracked in #${issue})` : ''}`];
+  });
 }
 
 /**
@@ -2337,7 +2339,7 @@ export async function postReview(
   const linkTo = linkAt(commitSha);
   const followUps = agreedFollowUps(existingThreads);
   const carried = result.carried ?? [];
-  const listedFiles = [...result.findings.filter(f => !isBlockingFinding(f)), ...followUps].filter(f => f.file && f.line > 0).map(f => f.file);
+  const listedFiles = result.findings.filter(f => !isBlockingFinding(f) && f.file && f.line > 0).map(f => f.file);
   const changed = diff?.files.map(f => f.path) ?? [];
   // GitHub only takes comments on changed files, so the first one with a changed line carries the thread of a blocker that sits elsewhere.
   const anchorFile = diff?.files.find(f => firstCommentableLine(f) !== undefined) ?? diff?.files.at(0);
@@ -2564,7 +2566,7 @@ export async function postReview(
       formatNotesSection(shown(notesListed(withoutLineThreads)), result.unposted ?? [], links),
       dropped.size > 0 && leftOutForRoom(dropped.size),
       skipped && skippedFileList(skipped) && `### Not read by any model · ${countOf(skipped.excluded.length + skipped.binary.length, 'file')}\n\nA person needs to look at these before the PR merges.\n\n${skippedFileList(skipped)}`,
-      formatFindingSection(`📌 ${countOf(followUps.length, 'follow-up')} agreed for later`, followUps.map(f => formatFindingFold(f, links)), 'Agreed in their threads as later work. None of them blocks.'),
+      formatFindingSection(`📌 ${countOf(followUps.length, 'follow-up')} agreed for later`, followUps.length > 0 ? [followUps.join('\n')] : [], 'Agreed in their threads as later work. None of them blocks.'),
       formatRelatedWork(result.relatedWork, owner, repo),
       formatScope(result.scope, linkTo),
       overrides,
