@@ -108,7 +108,7 @@ The exit comes from the round record, never from a guess:
 - `merged`: the judge merged it into another finding.
 - `judge`, `refuter`, `earlier_round`: the judge graded it `ignore`, a tool check disproved it, or a resolved or agreed thread, a ratchet or a fix an earlier round proposed suppressed it.
 - `unproven`: it was left out as a warning nothing proves.
-- `pre_existing`, `reviewed_code`, `listed_earlier`, `note_cap`, `test_method`, `memory_suppression`, `static_signal_match`: it was left out for that reason, or a memory suppression or a CI tool on the same line hid it.
+- `pre_existing`, `reviewed_code`, `listed_earlier`, `note_cap`, `caught_by_test`, `memory_suppression`, `static_signal_match`: it was left out for that reason, or a memory suppression or a CI tool on the same line hid it.
 - `unknown`: the record does not say for certain.
 
 A later stage records each finding by its place and title. The dedup records only the title, so a finding counts as `dedup` only when the dedup dropped at least as many findings with that title as no later stage names. The judge merges a duplicate without naming it. Each place a later stage names stands for one finding there, and each dedup drop for one finding with its title, so every other finding left the review unnamed. A finding no stage names counts as `merged` only when the judge merged at least as many findings as left unnamed, and no other step that records no finding ran: the drop of notes on test files from the second round on, and the fold into a verdict reader's blocker. A lead no stage names stays `unknown`, since the sweep's judge can leave one unsettled without recording it. Two findings with the same place and title but other text are one finding to the record, so both are `unknown`.

@@ -6376,19 +6376,25 @@ describe('postReview non-blocking findings', () => {
     capNotes(onlyAlerts, existingThreads, 0);
     expect(titles(onlyAlerts.findings)).toEqual([...others, 'Unused import', 'Shadowed name']);
 
-    // A testing note without a revert gap only says how a test is built: it goes to the record first and takes no place.
+    // A testing note without a revert gap follows every other note but the style notes, whatever the judge's order.
+    // One that claims a gap a test already catches goes to the record first and takes no place.
     const testing = { category: 'testing' as const };
     const tests = [
       nonBlocking('note', 'Test seeds private state', 30, { ...testing, noteRank: 0 }),
-      nonBlocking('note', 'No test reverts the guard', 31, { ...testing, revertGap: 'src/a.ts:31', noteRank: 1 }),
+      nonBlocking('note', 'Rename the flag', 20, { ...cell('style'), noteRank: 1 }),
+      nonBlocking('note', 'No test reverts the guard', 31, { ...testing, revertGap: 'src/a.ts:31', noteRank: 2 }),
+      nonBlocking('note', 'Guard already tested', 34, { ...testing, revertGap: 'caught', noteRank: 3 }),
       nonBlocking('warning', 'Test cannot fail', 32, testing),
       nonBlocking('note', 'Coverage alert', 33, { ...testing, toolSource: 'coverage' }),
-      nonBlocking('note', 'Note one', 1),
+      nonBlocking('note', 'Note one', 1, { noteRank: 4 }),
     ];
     const methods = buildResult([...tests]);
-    capNotes(methods, [], 1);
-    expect(titles(methods.findings)).toEqual(['Test cannot fail', 'No test reverts the guard', 'Coverage alert']);
-    expect(methods.unposted).toEqual([{ ...tests[0], unpostedReason: 'test_method' }, { ...tests[4], unpostedReason: 'note_cap' }]);
+    capNotes(methods, [], 3);
+    expect(titles(methods.findings)).toEqual(['Test cannot fail', 'No test reverts the guard', 'Note one', 'Test seeds private state', 'Coverage alert']);
+    expect(methods.unposted).toEqual([{ ...tests[3], unpostedReason: 'caught_by_test' }, { ...tests[1], unpostedReason: 'note_cap' }]);
+    const methodFills = buildResult([...tests]);
+    capNotes(methodFills, [], 2);
+    expect(titles(methodFills.unposted)).toEqual(['Guard already tested', 'Test seeds private state', 'Rename the flag']);
   });
 
   it('does not post a non-blocking finding again while its open thread carries it, or when it repeats an answered thread', async () => {

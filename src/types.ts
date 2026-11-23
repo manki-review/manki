@@ -393,7 +393,10 @@ export interface Finding {
   origin?: FindingOrigin;
   /** The kind of problem, set by the judge. */
   category?: FindingCategory;
-  /** On a `testing` finding, the `file:line` of a changed line whose removal or reversal no existing test would catch, as the judge named it. */
+  /**
+   * On a `testing` finding, the `file:line` of a changed line whose removal or reversal no existing test would catch, as
+   * the judge named it, or `REVERT_CAUGHT` when the finding claims such a gap and an existing test already catches it.
+   */
   revertGap?: string;
   /** How big the fix is, set by the judge. */
   effort?: FindingEffort;
@@ -1271,7 +1274,7 @@ export const UNPOSTED_REASONS = {
   reviewed_code: 'on code an earlier round reviewed',
   listed_earlier: 'listed by an earlier round',
   note_cap: 'over the `review.notes` limit',
-  test_method: 'it is about how a test is written and names no changed line that a test would miss',
+  caught_by_test: 'an existing test already fails when the change it names is reverted',
   pre_existing: 'on code this PR did not change',
   memory_suppression: 'hidden by a memory suppression',
   static_signal_match: 'a CI tool reports the same line',
@@ -1281,6 +1284,8 @@ export const UNPOSTED_REASONS = {
   no_proof: 'it cites no lines that prove it',
 } as const;
 export type UnpostedReason = keyof typeof UNPOSTED_REASONS;
+/** The `revertGap` the judge states on a `testing` finding whose missing test an existing test already provides. */
+export const REVERT_CAUGHT = 'caught';
 /** A step after the judge's grading that can grade a finding the judge kept `ignore`. */
 export type LaterDrop = Extract<GradeChange, 'refutation' | 'in_pr_suppression' | 'resolved_thread' | 'ratchet'>;
 /** Why a finding the judge kept, or one added after it, is only in the round record. */

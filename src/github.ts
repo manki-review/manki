@@ -15,7 +15,7 @@ import { issueBox, ISSUE_BOX_LABEL, messageBox, withMessageBoxes } from './issue
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import type { FixClaim, PreviousFinding } from './recap';
-import { AUTHOR_CLEAR_ROLES, AuthorClearRole, breaksRule, cellGrade, findingKey, isDisprovedBlocker, isGuardedFinding, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, overruledDisproof, gradedAbove, pendingGrade, SEVERITY_NAME, SEVERITY_ORDER, threadBlocks } from './types';
+import { AUTHOR_CLEAR_ROLES, REVERT_CAUGHT, AuthorClearRole, breaksRule, cellGrade, findingKey, isDisprovedBlocker, isGuardedFinding, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, overruledDisproof, gradedAbove, pendingGrade, SEVERITY_NAME, SEVERITY_ORDER, threadBlocks } from './types';
 import { formatDuration, hiddenCharacters, ownMarker, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { compressReviewRecord, extractApprovalRecords, formatReviewRecord, hasOwnMarker, hasReviewRecord, smallerRecords } from './review-record';
 import { modelDisplayName } from './providers/model-registry';
@@ -1081,7 +1081,7 @@ const RECORD_ONLY_NAMES: Record<RecordOnlyReason, string> = {
   reviewed_code: 'on code an earlier round reviewed',
   listed_earlier: 'listed by an earlier round',
   note_cap: 'over the `review.notes` limit',
-  test_method: 'about how a test is written',
+  caught_by_test: 'already caught by a test',
   memory_suppression: 'suppressed by memory',
   static_signal_match: 'reported by a CI tool',
   no_trigger: 'no realistic trigger',
@@ -2187,19 +2187,20 @@ function carriedBy(finding: Finding, matched: string | undefined): string | unde
  * `style` row of the severity table follows every other note, so a style note takes only a slot no other note fills.
  * Within each group the notes keep the judge's order, and a note the judge did not rank follows the ranked ones, in the
  * order returned. A tool alert is listed with the notes and counts toward no limit. A note an earlier thread carries is
- * not listed, so it stays in place and counts toward no limit. A `testing` note without a `revertGap` only says how a
- * test is written, so it moves to `result.unposted` before the limit, marked `test_method`.
+ * not listed, so it stays in place and counts toward no limit. A `testing` note without a `revertGap` follows every
+ * other note except the style notes. One whose `revertGap` is `REVERT_CAUGHT` claims a gap a test already covers, so it
+ * moves to `result.unposted` before the limit, marked `caught_by_test`.
  */
 export function capNotes(result: ReviewResult, existingThreads: PreviousFinding[], limit = DEFAULT_NOTES): void {
   const listable = new Set(result.findings.filter(f => isListedNote(f) && !carriedBy(f, openThreadFor(f, existingThreads))));
-  const testMethod = new Set([...listable].filter(f => f.category === 'testing' && !f.revertGap && canLeaveOut(f)));
-  const group = (f: Finding): number => (f.fixedElsewhere ? -1 : f.cell?.row === 'style' ? 1 : 0);
+  const caught = new Set([...listable].filter(f => f.category === 'testing' && f.revertGap === REVERT_CAUGHT && canLeaveOut(f)));
+  const group = (f: Finding): number => (f.fixedElsewhere ? -1 : f.cell?.row === 'style' ? 2 : f.category === 'testing' && !f.revertGap ? 1 : 0);
   const rank = (f: Finding): number => f.noteRank ?? Number.MAX_SAFE_INTEGER;
-  const ordered = [...listable].filter(f => !testMethod.has(f)).sort((a, b) => group(a) - group(b) || rank(a) - rank(b));
+  const ordered = [...listable].filter(f => !caught.has(f)).sort((a, b) => group(a) - group(b) || rank(a) - rank(b));
   const capped = new Set(ordered.filter(canLeaveOut).slice(limit));
   result.findings = [...result.findings.filter(f => !listable.has(f)), ...ordered.filter(f => !capped.has(f))];
   const unposted = [
-    ...[...testMethod].map((f): Finding => ({ ...f, unpostedReason: 'test_method' })),
+    ...[...caught].map((f): Finding => ({ ...f, unpostedReason: 'caught_by_test' })),
     ...[...capped].map((f): Finding => ({ ...f, unpostedReason: 'note_cap' })),
   ];
   if (unposted.length > 0) result.unposted = [...(result.unposted ?? []), ...unposted];

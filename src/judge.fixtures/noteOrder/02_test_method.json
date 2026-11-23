@@ -60,7 +60,26 @@
           "quota/limiter_test.go:19"
         ]
       }
+    },
+    {
+      "title": "No test checks that hits older than the window stop counting",
+      "file": "quota/limiter.go",
+      "line": 32,
+      "description": "`TestAllowStopsAtMax` makes its three calls at once and never moves the clock, so no test reaches a hit older than `Window`. Deleting the `t.After(cutoff)` check on line 32 would keep every old hit and refuse callers forever, and no test would fail. Add a test that advances the clock past the window.",
+      "severity": "note",
+      "reviewers": [
+        "Correctness"
+      ],
+      "evidence": {
+        "checks": [
+          "quota/limiter_test.go:8: `TestAllowStopsAtMax` calls `Allow` three times with the real clock"
+        ],
+        "proof": [
+          "quota/limiter_test.go:8"
+        ]
+      }
     }
   ],
-  "prDiff": "diff --git a/quota/limiter.go b/quota/limiter.go\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/quota/limiter.go\n@@ -0,0 +1,42 @@\n+package quota\n+\n+import (\n+\t\"sync\"\n+\t\"time\"\n+)\n+\n+// Limiter allows at most Max calls per key within Window.\n+type Limiter struct {\n+\tMax    int\n+\tWindow time.Duration\n+\tmu     sync.Mutex\n+\thits   map[string][]time.Time\n+\tnow    func() time.Time\n+}\n+\n+// NewLimiter returns a limiter that allows max calls per key within window.\n+func NewLimiter(max int, window time.Duration) *Limiter {\n+\tif max < 1 {\n+\t\tmax = 1\n+\t}\n+\treturn &Limiter{Max: max, Window: window, hits: map[string][]time.Time{}, now: time.Now}\n+}\n+\n+// Allow reports whether key may make another call now, and records the call when it may.\n+func (l *Limiter) Allow(key string) bool{\n+\tl.mu.Lock()\n+\tdefer l.mu.Unlock()\n+\tcutoff := l.now().Add(-l.Window)\n+\tvar kept []time.Time\n+\tfor _, t := range l.hits[key] {\n+\t\tif t.After(cutoff) {\n+\t\t\tkept = append(kept, t)\n+\t\t}\n+\t}\n+\tif len(kept) >= l.Max {\n+\t\tl.hits[key] = kept\n+\t\treturn false\n+\t}\n+\tl.hits[key] = append(kept, l.now())\n+\treturn true\n+}\ndiff --git a/quota/limiter_test.go b/quota/limiter_test.go\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/quota/limiter_test.go\n@@ -0,0 +1,26 @@\n+package quota\n+\n+import (\n+\t\"testing\"\n+\t\"time\"\n+)\n+\n+func TestAllowStopsAtMax(t *testing.T) {\n+\tl := NewLimiter(2, time.Minute)\n+\tif !l.Allow(\"a\") || !l.Allow(\"a\") {\n+\t\tt.Fatal(\"the first two calls must pass\")\n+\t}\n+\tif l.Allow(\"a\") {\n+\t\tt.Fatal(\"the third call must be refused\")\n+\t}\n+}\n+\n+func TestAllowForgetsOldHits(t *testing.T) {\n+\tl := NewLimiter(1, time.Minute)\n+\tstart := time.Unix(1000, 0)\n+\tl.hits[\"a\"] = []time.Time{start}\n+\tl.now = func() time.Time { return start.Add(2 * time.Minute) }\n+\tif !l.Allow(\"a\") {\n+\t\tt.Fatal(\"a hit older than the window must not count\")\n+\t}\n+}\n"
+  "prDiff": "diff --git a/quota/limiter.go b/quota/limiter.go\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/quota/limiter.go\n@@ -0,0 +1,42 @@\n+package quota\n+\n+import (\n+\t\"sync\"\n+\t\"time\"\n+)\n+\n+// Limiter allows at most Max calls per key within Window.\n+type Limiter struct {\n+\tMax    int\n+\tWindow time.Duration\n+\tmu     sync.Mutex\n+\thits   map[string][]time.Time\n+\tnow    func() time.Time\n+}\n+\n+// NewLimiter returns a limiter that allows max calls per key within window.\n+func NewLimiter(max int, window time.Duration) *Limiter {\n+\tif max < 1 {\n+\t\tmax = 1\n+\t}\n+\treturn &Limiter{Max: max, Window: window, hits: map[string][]time.Time{}, now: time.Now}\n+}\n+\n+// Allow reports whether key may make another call now, and records the call when it may.\n+func (l *Limiter) Allow(key string) bool{\n+\tl.mu.Lock()\n+\tdefer l.mu.Unlock()\n+\tcutoff := l.now().Add(-l.Window)\n+\tvar kept []time.Time\n+\tfor _, t := range l.hits[key] {\n+\t\tif t.After(cutoff) {\n+\t\t\tkept = append(kept, t)\n+\t\t}\n+\t}\n+\tif len(kept) >= l.Max {\n+\t\tl.hits[key] = kept\n+\t\treturn false\n+\t}\n+\tl.hits[key] = append(kept, l.now())\n+\treturn true\n+}\ndiff --git a/quota/limiter_test.go b/quota/limiter_test.go\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/quota/limiter_test.go\n@@ -0,0 +1,26 @@\n+package quota\n+\n+import (\n+\t\"testing\"\n+\t\"time\"\n+)\n+\n+func TestAllowStopsAtMax(t *testing.T) {\n+\tl := NewLimiter(2, time.Minute)\n+\tif !l.Allow(\"a\") || !l.Allow(\"a\") {\n+\t\tt.Fatal(\"the first two calls must pass\")\n+\t}\n+\tif l.Allow(\"a\") {\n+\t\tt.Fatal(\"the third call must be refused\")\n+\t}\n+}\n+\n+func TestAllowForgetsOldHits(t *testing.T) {\n+\tl := NewLimiter(1, time.Minute)\n+\tstart := time.Unix(1000, 0)\n+\tl.hits[\"a\"] = []time.Time{start}\n+\tl.now = func() time.Time { return start.Add(2 * time.Minute) }\n+\tif !l.Allow(\"a\") {\n+\t\tt.Fatal(\"a hit older than the window must not count\")\n+\t}\n+}\n",
+  "caught": "No test checks that hits older than the window stop counting"
 }
