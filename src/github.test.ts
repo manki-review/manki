@@ -1897,6 +1897,8 @@ describe('postReview with context', () => {
     // The record keeps the findings left out as in the record only, and the shown ones as in the body.
     const [record] = extractReviewRecords(cut).records.map(r => JSON.parse(r) as RoundContext);
     expect(record.findings.entries.filter(e => e.posted === 'record').map(e => e.title)).toEqual(missing);
+    // A warning left out keeps what carries a listed one to the next round.
+    expect(record.findings.entries.filter(e => e.severity === 'warning').every(e => !!(e.citedLine || e.unread) && !!e.description)).toBe(true);
     expect(record.findings.entries.filter(e => e.posted === 'body').map(e => e.title)).toEqual(shown.sort((a, b) => many.findIndex(f => f.title === a) - many.findIndex(f => f.title === b)));
     expect(cut).not.toContain('truncated');
     expect(balanced(cut)).toBe(true);

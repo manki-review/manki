@@ -2590,14 +2590,16 @@ export async function postReview(
     const placeOf = (f: Finding): PostedPlace => dropped.has(f) ? 'record' : refused.has(f) || inBody.has(f) ? 'body' : threadFindings.includes(f) ? 'thread' : 'earlier_thread';
     const recordPlace = (entry: FindingFingerprintEntry, f: Finding): FindingFingerprintEntry => {
       const posted = placeOf(f);
-      const bodyWarning = posted === 'body' && f.severity === 'warning';
+      // A finding left out of the body keeps what a listed one records, so a later round still carries a warning among them.
+      const listed = posted === 'body' || posted === 'record';
+      const bodyWarning = listed && f.severity === 'warning';
       const cited = bodyWarning ? citedLine(files.get(f.file), f.line) : undefined;
       // A file that is gone at the head was read and ends the warning. Only one that exists but was not read keeps it.
       const unread = bodyWarning && !!f.file && f.line > 0 && !files.has(f.file) && !gone.has(f.file);
       // A finding with a thread of its own records no earlier thread, which its record entry would otherwise raise.
       const { threadId: linked, ...unlinked } = entry;
       const threadId = posted === 'thread' ? undefined : linked ?? (posted === 'earlier_thread' ? leftTo.get(f) : undefined);
-      const description = posted === 'body' && (f.severity === 'blocker' || cited || unread) && f.description ? safeTruncate(f.description, MAX_RECORDED_DESCRIPTION) : undefined;
+      const description = listed && (f.severity === 'blocker' || cited || unread) && f.description ? safeTruncate(f.description, MAX_RECORDED_DESCRIPTION) : undefined;
       const holds = holdsApproval(f);
       return { ...unlinked, ...(threadId && { threadId }), posted, ...(cited && { citedLine: cited }), ...(unread && { unread: true as const }), ...(holds && { holds }), ...(description && { description }) };
     };
