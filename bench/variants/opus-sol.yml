@@ -1,0 +1,7 @@
+models:
+  second_refuter: gpt-6.2-sol
+review:
+  groups:
+    trivial: [claude-sonnet-5-5]
+    solo: [claude-opus-5-5]
+    full: [claude-opus-5-5, gpt-6.2-sol]
