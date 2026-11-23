@@ -527,6 +527,9 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('- **partly_addressed**: the change removes some of the failures the original concern names, but at least one remains.');
     expect(prompt).toContain("and `row` and `column` to the Severity Table cell that remaining damage earns by the rules above. Manki works out the thread's grade from the cell. When the remaining damage is the same as before, state a cell that gives the thread's own grade. Applying the fix an earlier round suggested never lowers it, since that fix can itself cover only part. On the `wrong` row Manki grades what remains in the `normal` column whatever column you state, since nothing checks a `rare` claim on a thread.");
     expect(prompt).toContain('"status": "addressed" | "partly_addressed" | "not_addressed" | "uncertain"');
+    // A new defect in the fix is a finding of its own, and only a failure the thread named keeps the thread open.
+    expect(prompt).toContain('Manki replies there with what remains. Name in `remaining` only failures the original concern named.\n- **not_addressed**');
+    expect(prompt).toContain('\n\nJudge each thread only by the failures its own concern names. When the push fixes every one of them, mark the thread `addressed`, even when a finding of this round reports a new defect in the code of the fix or elsewhere in the same lines. That defect is its own finding, posted and graded on its own, and never what remains of the thread. But when a finding of this round that you keep names a failure the concern already named, mark the thread `partly_addressed` or `not_addressed`, never `addressed`.\n\nAn outdated thread shows');
     // A push that only works around the reported case keeps the thread open, but only on a cited cause or a named failing input.
     expect(prompt).toContain('does it fix the root cause the concern named, or is it a hacky workaround for the reported case?');
     expect(prompt).toContain('Mark a workaround `partly_addressed`, never `addressed`, and in `remaining` cite the `file:line` of the code that causes the problem or name the input or path that still fails. When you can do neither, decide by the rules above.');
@@ -6430,6 +6433,8 @@ interface ThreadFixture {
   expectedReasonHint: string;
   openThread: OpenThread;
   interRoundDiff: string;
+  /** Findings of the same round that the judge grades next to the thread. */
+  roundFindings?: Finding[];
 }
 
 /** The files whose diff the judge is shown for `finding`: its own, and each one a proving line or an evidence line cites. */
@@ -6448,8 +6453,8 @@ function loadFixtures<T>(corpus: string): T[] {
 describe('judge thread-evaluation fixture corpus', () => {
   const fixtures = loadFixtures<ThreadFixture>('threadEvaluations');
 
-  it('loads at least the nine required fixtures', () => {
-    expect(fixtures.length).toBeGreaterThanOrEqual(9);
+  it('loads at least the ten required fixtures', () => {
+    expect(fixtures.length).toBeGreaterThanOrEqual(10);
   });
 
   it.each(fixtures)('fixture $name is structurally valid', (fixture) => {
@@ -6469,6 +6474,8 @@ describe('judge thread-evaluation fixture corpus', () => {
     }
     // Three addressed variants (obvious fix, file deleted, refactor-mooted) plus one rewrite.
     expect(byStatus.get('addressed')?.length ?? 0).toBeGreaterThanOrEqual(3);
+    // A new defect the fix adds is a finding of its own and leaves the fixed thread `addressed`.
+    expect(byStatus.get('addressed')).toEqual(expect.arrayContaining([expect.stringContaining('new-defect')]));
     expect(byStatus.get('partly_addressed')?.length ?? 0).toBeGreaterThanOrEqual(1);
     // not_addressed must include the adversarial injection case and the
     // empty-inter-round-diff case (judge returns `not_addressed` directly
@@ -6504,7 +6511,7 @@ describe('judge thread-evaluation fixture corpus', () => {
 
     const systemPrompt = buildJudgeSystemPrompt(makeConfig(), 3, true, 1);
     const userMessage = buildJudgeUserMessage(
-      [],
+      fixture.roundFindings ?? [],
       new Map(),
       '',
       undefined,

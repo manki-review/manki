@@ -1,0 +1,34 @@
+{
+  "name": "fix-adds-new-defect",
+  "expectedStatus": "addressed",
+  "expectedReasonHint": "MAX_ATTEMPTS",
+  "openThread": {
+    "threadId": "PRRT_fix_adds_defect",
+    "title": "`fetchWithRetry` retries forever",
+    "file": "src/http/retry.ts",
+    "line": 7,
+    "severity": "warning",
+    "description": "`fetchWithRetry` loops with `while (true)` and no attempt limit, so while the server keeps answering 503 or the host stays down, the caller waits forever.",
+    "suggestedFix": "Stop after a fixed number of attempts, such as five.",
+    "currentCode": "   1: import { sleep } from './sleep';\n   2: \n   3: const MAX_ATTEMPTS = 5;\n   4: \n   5: export async function fetchWithRetry(url: string): Promise<Response> {\n   6:   let last: Response | undefined;\n>>>7:   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {\n   8:     try {\n   9:       last = await fetch(url);\n  10:       if (last.ok) return last;\n  11:     } catch {\n  12:       // network error: try again\n  13:     }\n  14:     await sleep(500);\n  15:   }\n  16:   return last!;\n  17: }\n"
+  },
+  "interRoundDiff": "diff --git a/src/http/retry.ts b/src/http/retry.ts\nindex 1111111..2222222 100644\n--- a/src/http/retry.ts\n+++ b/src/http/retry.ts\n@@ -1,13 +1,17 @@\n import { sleep } from './sleep';\n \n+const MAX_ATTEMPTS = 5;\n+\n export async function fetchWithRetry(url: string): Promise<Response> {\n-  while (true) {\n+  let last: Response | undefined;\n+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {\n     try {\n-      const res = await fetch(url);\n-      if (res.ok) return res;\n+      last = await fetch(url);\n+      if (last.ok) return last;\n     } catch {\n       // network error: try again\n     }\n     await sleep(500);\n   }\n+  return last!;\n }\n",
+  "roundFindings": [
+    {
+      "severity": "warning",
+      "title": "`fetchWithRetry` returns `undefined` when every attempt throws",
+      "file": "src/http/retry.ts",
+      "line": 16,
+      "description": "When every `fetch` call throws, as while the host is down, `last` is never set and `return last!` hands the caller `undefined` typed as a `Response`. The caller then fails with a `TypeError` on its first property read, far from the cause.",
+      "reviewers": [
+        "Reviewer"
+      ],
+      "evidence": {
+        "checks": [],
+        "proof": [
+          "src/http/retry.ts:16"
+        ]
+      }
+    }
+  ]
+}

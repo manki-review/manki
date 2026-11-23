@@ -5637,6 +5637,12 @@ describe('runReview', () => {
     const namedAgain = await runWith(touching);
     expect(namedAgain.outcome).toBe('ADDRESS_FIRST');
     expect(namedAgain.threadEvaluations).toEqual([expect.objectContaining({ threadId: 'T1', status: 'not_addressed' })]);
+    // A new defect in the code of the fix, on the thread's own line, keeps the fixed thread resolved and gets a thread of its own.
+    const added: Finding = { severity: 'blocker', title: 'Fix returns undefined', file: 'src/x.ts', line: 10, description: 'd', reviewers: ['r'] };
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [added], summary: 'New defect.', threadEvaluations: [addressed] });
+    const newDefect = await runWith(touching);
+    expect([newDefect.outcome, newDefect.threadEvaluations]).toEqual(['ADDRESS_FIRST', [addressed]]);
+    expect(newDefect.findings.map(f => [f.title, f.threadId])).toEqual([['Fix returns undefined', undefined]]);
 
     // A partly fixed thread keeps the grade what remains earns, never above its own, and drops only on a push to its file.
     const partly = (grade?: ThreadEvaluation['grade']): ThreadEvaluation => ({ threadId: 'T1', status: 'partly_addressed', reason: 'Size checked.', remaining: 'No timeout.', ...(grade && { grade }) });

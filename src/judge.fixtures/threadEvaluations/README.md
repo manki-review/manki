@@ -30,3 +30,4 @@ asserts the returned status matches `expectedStatus`. It does not go through
 | `07_addressed_via_rewrite.json` | `addressed` | Author fixed the issue differently than the original suggestion. Diff shows a working alternative. |
 | `08_partial_fix_other_callsite.json` | `not_addressed` | Diff fixes a similar pattern elsewhere but not at the flagged line. |
 | `09_one_of_two_failures_fixed.json` | `partly_addressed` | The concern names two failures. The diff fixes one, and the current code still shows the other. |
+| `10_fix_adds_new_defect.json` | `addressed` | The diff fixes the failure the concern names, and a finding of the same round reports a new defect in the code of the fix. That defect is a finding of its own and does not keep the thread open. |
