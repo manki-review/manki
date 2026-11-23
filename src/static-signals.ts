@@ -451,11 +451,16 @@ export function toolAlertFindings(signals: StaticSignal[]): Finding[] {
     reviewers: [s.tool],
     toolSource: s.tool,
     toolEvidence: { status: 'confirmed', note: `${s.tool} reports this result.` },
+    ...(isSecuritySignal(s) && { securityAlert: true }),
   }));
 }
 
+function isSecuritySignal(signal: StaticSignal): boolean {
+  return signal.source === 'dependency_review' || SECURITY_RULE.test(signal.tool) || SECURITY_RULE.test(signal.ruleId);
+}
+
 function isTriagedSignal(signal: StaticSignal): boolean {
-  if (signal.source === 'dependency_review' || SECURITY_RULE.test(signal.tool) || SECURITY_RULE.test(signal.ruleId)) return true;
+  if (isSecuritySignal(signal)) return true;
   // The rule id names the problem. A job name such as `lint-format` says nothing about each result it reports.
   if (STYLE_RULE.test(signal.ruleId || signal.tool)) return false;
   return signal.source !== 'checks' || signal.severity === 'error';

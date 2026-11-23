@@ -376,6 +376,8 @@ export interface Finding {
   ownThread?: boolean;
   /** Tool that reported the finding, when it comes from a CI or code-scanning result instead of a reviewer. */
   toolSource?: string;
+  /** Whether the tool, its rule or the dependency review behind a tool alert names a security problem, so no disproof lowers the alert. */
+  securityAlert?: boolean;
   /** What the deterministic claim checks and CI results say about the finding. */
   toolEvidence?: ToolEvidence;
   /** Whether the judge or the verdict reader says the finding claims the code fails to compile, type-check or pass its tests. */

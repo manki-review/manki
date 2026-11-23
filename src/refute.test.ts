@@ -352,6 +352,7 @@ describe('refuteBlockers', () => {
       ['Security raise', { ...raised(), tags: ['security'] }],
       ['Tool alert', { ...raised(), toolSource: 'eslint' }],
       ['Security tool alert', { ...raised(), toolSource: 'zizmor', tags: ['security'] }],
+      ['Tool alert on a security rule', { ...raised(), toolSource: 'CodeQL', securityAlert: true }],
       ['Open lead', { ...raised(), notChecked: true, lead: { checked: 'read src/math.ts:2', left: 'find the callers' } }],
       ['In a blocking thread', { ...raised(), threadId: 'T1' }],
       ['Answered in a blocking thread', { ...raised(), answeredIn: { threadId: 'T1', answer: 'Fixed.', grade: { severity: 'blocker' } } }],

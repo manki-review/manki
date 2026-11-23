@@ -867,9 +867,14 @@ describe('toolAlertFindings', () => {
     expect(findings[0]).toEqual({
       severity: 'warning', title: 'js/sql-injection: Query built from user input', file: 'src/app.ts', line: 2,
       description: 'Query built from user input', reviewers: ['CodeQL'], toolSource: 'CodeQL',
-      toolEvidence: { status: 'confirmed', note: 'CodeQL reports this result.' },
+      toolEvidence: { status: 'confirmed', note: 'CodeQL reports this result.' }, securityAlert: true,
     });
     expect(findings.map(f => f.severity)).toEqual(['warning', 'note', 'blocker', 'note', 'note', 'blocker', 'warning', 'note', 'warning', 'blocker', 'note']);
+    // A tool, rule or dependency review that names a security problem marks the alert, so no disproof lowers it.
+    expect(findings.filter(f => f.securityAlert).map(f => f.title)).toEqual([
+      'js/sql-injection: Query built from user input', 'B602 shell injection: subprocess with shell=True', 'GHSA-1234: lodash@4.17.0: prototype pollution',
+      'CKV_AWS_20: S3 bucket is public', 'js/tainted-format-string: Format string from user input',
+    ]);
   });
 });
 
