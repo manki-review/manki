@@ -21,7 +21,7 @@ import { isParsedLockfile, LockfileDiff, lockfilesLast, readLockfileChanges, wit
 import { loadMemory, MemoryRefusedError, MemorySkip, openMemoryStore, RepoMemory } from './memory';
 import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
 import { findRelatedWork } from './related-work';
-import { currentFindingLine, fetchRecapState, FOUND_AGAIN_MARKER, isGuarded, parseContextBlocks, PreviousFinding, pushTouchesThread, RecapState, replyClassOf, replyShownToJudge, securityOverridesIn } from './recap';
+import { currentFindingLine, fetchRecapState, FOUND_AGAIN_MARKER, isGuarded, parseContextBlocks, PreviousFinding, pushTouchesThread, RAISED_MARKER, RecapState, replyClassOf, replyShownToJudge, securityOverridesIn } from './recap';
 import { carryBodyWarnings, citedPlaces, filesChangedByPush, RETRY_HINT, ReviewClients, ReviewOptions, ROUND_TIME_MS, runReview } from './review';
 import { findPriorThreadId, stringifyFindingFingerprint } from './finding-fingerprint';
 import { buildReviewClients, warmUpClients } from './review-clients';
@@ -105,7 +105,7 @@ import {
   wasEdited,
 } from './github';
 import type { ApprovalHeld, BotIdentity, LinkedIssue, StandingVerdict } from './github';
-import { announceSecurityOverrides, approveOrSayWhy, authorClearLine, autoReviewHalt, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, findUnchangedVerdict, fixedMarker, holdApproval, isNewChange, pauseState, RAISED_MARKER, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread, withdrawBlockedApproval } from './state';
+import { announceSecurityOverrides, approveOrSayWhy, authorClearLine, autoReviewHalt, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, findUnchangedVerdict, fixedMarker, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread, withdrawBlockedApproval } from './state';
 import type { PauseState, ReviewThread } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;

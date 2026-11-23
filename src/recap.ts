@@ -212,10 +212,17 @@ function dismissRecordMarker(login: string): string {
   return `${DISMISS_RECORD_OPENER}${login} -->`;
 }
 
-/** Returns the comments of a thread after Manki's last reopen marker. A reopen ends every settlement before it. */
+/** Marks Manki's reply that a finding of a later round continues the thread's finding in a thread of its own, which holds instead. */
+const RAISED_MARKER = '<!-- manki-raised -->';
+
+/**
+ * Returns the comments of a thread after Manki's last reopen marker or `RAISED_MARKER`. Either ends every settlement
+ * before it: a reopen opens the thread again, and a raise moves its finding to another thread.
+ */
 function sinceLastReopen<T extends { body?: string | null; author?: { login: string } | null }>(bot: BotIdentity, comments: readonly T[]): T[] {
   const replies = comments.slice(1);
-  const reopened = replies.reduce((at, c, i) => isBotLogin(bot, c.author?.login) && hasOwnMarker(c.body ?? '', REOPENED_MARKER, COMMENT_MARKER) ? i : at, -1);
+  const ends = (body: string) => hasOwnMarker(body, REOPENED_MARKER, COMMENT_MARKER) || hasOwnMarker(body, RAISED_MARKER, COMMENT_MARKER);
+  const reopened = replies.reduce((at, c, i) => isBotLogin(bot, c.author?.login) && ends(c.body ?? '') ? i : at, -1);
   return replies.slice(reopened + 1);
 }
 
@@ -1696,4 +1703,4 @@ function dropWaivedRestatements(
   return { unique, duplicates };
 }
 
-export { BOT_PREFIX_PATTERN, guardedKind, isDisprovedThread, clearRecordLogin, clearRecordMarker, dismissRecordLogins, dismissRecordMarker, dropWaivedRestatements, withoutCode, blockersToRecheck, currentFindingLine, DuplicateMatch, FixClaim, fixClaimMarker, fixClaimOf, namedPullRequests, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, pushTouchesThread, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };
+export { BOT_PREFIX_PATTERN, RAISED_MARKER, guardedKind, isDisprovedThread, clearRecordLogin, clearRecordMarker, dismissRecordLogins, dismissRecordMarker, dropWaivedRestatements, withoutCode, blockersToRecheck, currentFindingLine, DuplicateMatch, FixClaim, fixClaimMarker, fixClaimOf, namedPullRequests, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, pushTouchesThread, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };

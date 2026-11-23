@@ -9,7 +9,7 @@ import { ISSUE_BOX_LABEL, withMessageBoxes } from './issue-box';
 import { MessageBox, SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
-import { clearRecordLogin, dismissRecordLogins, dismissRecordMarker, FixClaim, fixClaimOf, fetchPriorRoundContexts, fetchRecapState, guardedKind, isDisprovedThread, isOverrideCandidate, judgeAddressedThreadIds, parseContextBlocks, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, RecordedGrade, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingPlace } from './recap';
+import { clearRecordLogin, dismissRecordLogins, dismissRecordMarker, FixClaim, fixClaimOf, fetchPriorRoundContexts, fetchRecapState, guardedKind, isDisprovedThread, isOverrideCandidate, judgeAddressedThreadIds, parseContextBlocks, RAISED_MARKER, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, RecordedGrade, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingPlace } from './recap';
 import { FIXED_MARKER_OPENER, fixedMarker, formatApprovalRecord, hasOwnMarker, hasReviewRecord, ROUND_REPLY_OPENER, settlingDecision } from './review-record';
 import { findPriorThreadId } from './finding-fingerprint';
 import { ApprovalRecord, AuthorClearRole, FindingSeverity, gradedAbove, PRE_EXISTING_TAG, ReviewConfig, RoundContext, SecurityOverride, threadBlocks, threadWarns } from './types';
@@ -110,9 +110,6 @@ const THREAD_COMMENTS_LIMIT = 100;
 
 /** Marks Manki's reply that the thread's finding is filed as an issue, which lifts the hold of a warning thread. */
 const TRACKED_MARKER = '<!-- manki-tracked -->';
-
-/** Marks Manki's reply that a finding of a later round continues the thread's finding in a thread of its own, which holds instead. */
-const RAISED_MARKER = '<!-- manki-raised -->';
 
 /**
  * Whether `body`, one of Manki's own replies in a thread, settles a warning: it carries `TRACKED_MARKER` or
@@ -1255,4 +1252,4 @@ async function approveOrSayWhy(
   return refusal ? heldBy(refusal) : { approved: true };
 }
 
-export { ApprovalCheck, PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, recordDismissal, approveOrSayWhy, authorClearLine, authorResolvedNote, autoReviewHalt, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, rolePhrase, resolveReviewThread, retireStaleNotices, unclearedThreads, unresolveReviewThread, warningHoldNote, withdrawBlockedApproval, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX, RAISED_MARKER, TRACKED_MARKER };
+export { ApprovalCheck, PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, recordDismissal, approveOrSayWhy, authorClearLine, authorResolvedNote, autoReviewHalt, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, rolePhrase, resolveReviewThread, retireStaleNotices, unclearedThreads, unresolveReviewThread, warningHoldNote, withdrawBlockedApproval, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX, TRACKED_MARKER };

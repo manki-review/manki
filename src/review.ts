@@ -2227,7 +2227,7 @@ export async function runReview(
   const openThreadIndex = new Map((openThreads ?? []).map(t => [t.threadId, t]));
   // Unlinked before the threads are graded, so the grades, the fold and the verdict all see the finding on its own.
   const priorThreads = new Map(priorFindingsFlat.flatMap(e => e.threadId ? [[stringifyFindingFingerprint(e.fingerprint), e.threadId] as const] : []));
-  const guard = (f: Finding): Finding => withoutUnfitThreads(f, openThreadIndex, previousFindings, priorThreads);
+  const guard = (f: Finding): Finding => withoutUnfitThreads(f, openThreadIndex, previousFindings, priorThreads, priorFindingsFlat);
   finalFindings = finalFindings.map(guard);
   const fixedElsewhere = refutation
     ? await confirmPushedFixes(refutation.client, refutation.pair, fixesElsewhere(judgeThreadEvaluations, openThreadIndex, pushChangedFiles).filter(({ thread }) =>
@@ -4002,9 +4002,12 @@ function postedOnItsOwn(f: Finding): Finding {
  * the thread of the earlier finding its `sameAs` names: a security finding needs a security thread, and the warning of
  * a disproved blocker any guarded thread. A thread is guarded by its first comment, so another would lose the finding's
  * guard, and a `sameAs` to it would leave that thread out of the open ones in the verdict. `priorThreads` gives the
- * thread of each earlier finding by its key. An open thread that `f` links to or names but may not join is kept as `raises`.
+ * thread of each earlier finding by its key. An open thread that `f` links to or names but may not join is kept as `raises`
+ * when `f` restates that thread's own finding, by `restatesThreadFinding` over `priorEntries`.
  */
-function withoutUnfitThreads(f: Finding, openThreadIndex: Map<string, OpenThread>, previousFindings: PreviousFinding[] | undefined, priorThreads: ReadonlyMap<string, string>): Finding {
+function withoutUnfitThreads(
+  f: Finding, openThreadIndex: Map<string, OpenThread>, previousFindings: PreviousFinding[] | undefined, priorThreads: ReadonlyMap<string, string>, priorEntries: readonly FindingFingerprintEntry[],
+): Finding {
   const security = isSecurityFinding(f.tags, f.reviewers);
   const guarded = isGuardedFinding(f.tags, f.reviewers);
   // A thread the round knows nothing about, as when the threads could not be read, keeps its link.
@@ -4016,7 +4019,9 @@ function withoutUnfitThreads(f: Finding, openThreadIndex: Map<string, OpenThread
   const below = (grade: ThreadGrade | undefined): boolean => !!grade && f.severity !== 'ignore' && gradedAbove(f.severity, grade);
   const unfit = (threadId: string | undefined): boolean => plain(threadId) || below(threadOf(threadId));
   const answeredUnfit = !!f.answeredIn && (plain(f.answeredIn.threadId) || below(f.answeredIn.grade));
-  const raises = [f.threadId, f.answeredIn?.threadId, f.sameAs && priorThreads.get(f.sameAs)].find(id => !!id && openThreadIndex.has(id) && unfit(id)) || f.raises;
+  // Only a thread whose own finding `f` restates moves to the new thread, never one that took `f` or the entry it names as a variant.
+  const raises = [f.threadId, f.answeredIn?.threadId, f.sameAs && priorThreads.get(f.sameAs)]
+    .find(id => !!id && openThreadIndex.has(id) && unfit(id) && restatesThreadFinding({ ...f, threadId: id }, openThreadIndex, priorEntries)) || f.raises;
   if (!guarded && !(f.threadId && unfit(f.threadId)) && !answeredUnfit) return raises ? { ...f, raises } : f;
   const { sameAs, threadId, variantOf, answeredIn, ...rest } = f;
   const linked: Finding = {
