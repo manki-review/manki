@@ -287,10 +287,9 @@ function premisesOutcome(doubts: readonly Doubt[], checks: readonly PremiseCheck
 function outsideBehavior(value: unknown, workspace: string, related?: RelatedRepoTools): { outside: OutsideBehavior; proof: string[]; relatedProof: string[] } | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const { behavior, stated_in: statedIn } = value as Record<string, unknown>;
-  // An `outside` that names no behavior, empty or copied from the answer form, marks nothing.
+  // An `outside` that names no behavior, empty or copied from the answer form, marks nothing. A copied line states nothing.
   const named = replyText(behavior);
-  const copiedLines = Array.isArray(statedIn) && statedIn.length > 0 && statedIn.every(line => line === OUTSIDE_EXAMPLE.statedIn);
-  if (!named || named === OUTSIDE_EXAMPLE.behavior || copiedLines) return undefined;
+  if (!named || named === OUTSIDE_EXAMPLE.behavior) return undefined;
   const { proof, relatedProof } = shownLines(statedIn, workspace, related);
   return { outside: { behavior: named, stated: proof.length + relatedProof.length > 0 }, proof, relatedProof };
 }

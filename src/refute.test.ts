@@ -820,11 +820,13 @@ describe('refuteBlockers', () => {
     const outsideReplies = {
       'Code premise': { ...confirmed('src/math.ts:2'), premises: [confirmed('src/math.ts:2')] },
       'Empty outside behavior': { ...confirmed('src/math.ts:2'), outside: { behavior: ' ', stated_in: [] }, premises: [{ ...confirmed('src/math.ts:2'), outside: {} }] },
-      // A reply that copies the answer form's example names no behavior either, in its text or in its only line.
+      // A reply that copies the answer form's example behavior names none either. The example's line states nothing, so a
+      // real behavior cited only with it is unstated.
       'Copied outside example': {
-        ...confirmed('src/math.ts:2'), outside: { behavior: 'The outside behaviour the confirmation rests on, in one sentence', stated_in: [] },
-        premises: [{ ...confirmed('src/math.ts:2'), outside: { behavior, stated_in: ['file:line'] } }],
+        ...confirmed('src/math.ts:2'), outside: { behavior: 'The outside behaviour the confirmation rests on, in one sentence', stated_in: ['file:line'] },
+        premises: [confirmed('src/math.ts:2')],
       },
+      'Behavior stated only by the example line': { ...confirmed('src/math.ts:2'), outside: { behavior, stated_in: ['file:line'] } },
       'Premise on a stated behavior': { ...confirmed('src/math.ts:2'), premises: [{ ...confirmed('src/math.ts:2'), outside: { behavior, stated_in: ['README.md:1'] } }] },
       'Premise on an unstated behavior': { ...confirmed('src/math.ts:2'), premises: [{ ...confirmed('src/math.ts:2'), outside: { behavior, stated_in: [] } }] },
       'Defect on an unstated behavior': { ...confirmed('src/math.ts:2'), outside: { behavior, stated_in: ['docs/missing.md:1'] }, premises: [confirmed('src/math.ts:2')] },
@@ -835,6 +837,7 @@ describe('refuteBlockers', () => {
       ...['Code premise', 'Empty outside behavior', 'Copied outside example', 'Premise on a stated behavior', 'Premise on an unstated behavior', 'Defect on an unstated behavior'].map(title => finding(title, raisable)),
       finding('Capped blocker on an unstated behavior', { severity: 'warning', tags: ['unproven-blocker'] }),
       finding('Lead on an unstated behavior', { severity: 'warning', notChecked: true, lead: { checked: 'read src/math.ts:2', left: 'find the callers' } }),
+      finding('Behavior stated only by the example line', { severity: 'warning', tags: ['unproven-blocker'] }),
     ];
     const outsideResult = await refuteBlockers(fakeClient(outsideReplies), outsideFindings, { workspace, diff });
     expect(outsideResult.map(f => [f.title, f.severity, f.refutation?.outcome, f.refutation?.defect, f.refutation?.premises?.[0]?.outcome, checkStatus(f), unprovenReason(f)])).toEqual([
@@ -848,9 +851,11 @@ describe('refuteBlockers', () => {
       ['Defect on an unstated behavior', 'warning', 'unsettled', 'unsettled', 'confirmed', 'unconfirmed', undefined],
       ['Capped blocker on an unstated behavior', 'warning', 'unsettled', 'unsettled', undefined, 'unconfirmed', undefined],
       ['Lead on an unstated behavior', 'warning', 'unsettled', 'unsettled', undefined, 'unconfirmed', undefined],
+      ['Behavior stated only by the example line', 'warning', 'unsettled', 'unsettled', undefined, 'unconfirmed', undefined],
     ]);
     // The check finished the lead, so it is posted at its grade and not listed as unfinished.
-    expect([outsideResult.at(-1)?.lead, outsideResult.at(-1)?.notChecked]).toEqual([undefined, undefined]);
+    expect([outsideResult.at(-2)?.lead, outsideResult.at(-2)?.notChecked]).toEqual([undefined, undefined]);
+    expect(outsideResult.at(-1)?.refutation?.outside).toEqual({ behavior, stated: false });
     for (const { refutation } of outsideResult.slice(0, 3)) expect([refutation, ...refutation!.premises!].some(answer => !!answer && 'outside' in answer)).toBe(false);
     // The stating line joins the premise's proof, and the record keeps whether a line stated the behavior.
     expect(outsideResult[3].refutation?.premises?.[0]).toMatchObject({ outside: { behavior, stated: true }, proof: ['src/math.ts:2', 'README.md:1'] });
