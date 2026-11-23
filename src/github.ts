@@ -4541,7 +4541,7 @@ function givesVerdict(review: { state?: string; body?: string | null }): boolean
 
 /**
  * State-based head-SHA dedupe gate. Returns the most-recent review by `bot` that `reviewedCommit` places on `commitSha`
- * when it gave a verdict, otherwise `undefined`. A dismissed review counts only when `dismissedByPerson` lists it. A
+ * when it gave a verdict, otherwise `undefined`. Only a review that `standingOnCommit` keeps counts. A
  * newest review without a verdict does not count, so a later run reviews the commit
  * again, also when an earlier review of the commit is complete.
  * Run entry points consult this before any LLM call so serialized
@@ -4553,8 +4553,7 @@ async function findBotReviewOnCommit(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, commitSha: string,
 ): Promise<BotReviewSummary | undefined> {
   const onCommit = (await fetchBotReviews(octokit, bot, owner, repo, prNumber, true)).filter(r => r.commitId === commitSha);
-  const setAside = await dismissedByPerson(octokit, bot, owner, repo, prNumber, onCommit);
-  const newest = onCommit.filter(r => r.state !== 'DISMISSED' || r === setAside).at(-1);
+  const newest = (await standingOnCommit(octokit, bot, owner, repo, prNumber, onCommit)).at(-1);
   return newest && givesVerdict(newest) ? newest : undefined;
 }
 
@@ -4650,26 +4649,28 @@ async function fetchReviewDismissals(octokit: Octokit, owner: string, repo: stri
 }
 
 /**
- * Returns the newest review with a verdict in `onCommit`, Manki's reviews of one commit oldest first, when it is
- * a request for changes that a person dismissed. A person's dismissal sets the block aside, but the review still covers
- * its commit. Any later verdict on the commit decides instead, so an approval a person dismissed after it covers nothing.
- * A dismissed approval, and a dismissal by Manki, a push or another app, give `undefined`, and so does a timeline that
- * cannot be read.
+ * Returns the reviews of `onCommit`, Manki's reviews of one commit oldest first, that stand on it. The newest review with
+ * a verdict decides. When a person dismissed it, a request for changes still stands, since the dismissal only sets its
+ * block aside, while an approval leaves nothing standing on the commit. Otherwise every review not dismissed stands, as
+ * after a dismissal by Manki, a push or another app, and when the timeline cannot be read.
  */
-async function dismissedByPerson<T extends { id: number; state?: string; body?: string | null }>(
+async function standingOnCommit<T extends { id: number; state?: string; body?: string | null }>(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, onCommit: T[],
-): Promise<T | undefined> {
+): Promise<T[]> {
+  const kept = onCommit.filter(r => r.state !== 'DISMISSED');
   const newest = onCommit.filter(givesVerdict).at(-1);
-  if (newest?.state !== 'DISMISSED') return undefined;
+  if (newest?.state !== 'DISMISSED') return kept;
   try {
     const set = (await fetchReviewDismissals(octokit, owner, repo, prNumber)).find(d => d.reviewId === newest.id);
-    return set?.state === 'changes_requested' && !set.dismissalCommitId && set.actor?.type === 'User' && !isBotLogin(bot, set.actor.login) ? newest : undefined;
+    if (!set || set.dismissalCommitId || set.actor?.type !== 'User' || isBotLogin(bot, set.actor.login)) return kept;
+    if (set.state === 'approved') return [];
+    return set.state === 'changes_requested' ? onCommit.filter(r => r.state !== 'DISMISSED' || r === newest) : kept;
   } catch (error) {
     core.warning(`Could not read who dismissed Manki's review, so it counts as no review: ${error instanceof Error ? error.message : error}`);
-    return undefined;
+    return kept;
   }
 }
 
 export type { CodeLinks };
-export { APPROVED_LINE, CHECKS_MARKER, isAutoApproval, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, BASE_NOTE_RE, TRACKED_NOTE_RE, TRUST_NOTE_RE, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isBotUser, authorClearRole, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, givesVerdict, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, dismissedByPerson, fetchStandingVerdict, REVIEW_STATE_VERDICTS, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, HELD_FOR_PERSON_MARKER };
+export { APPROVED_LINE, CHECKS_MARKER, isAutoApproval, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, BASE_NOTE_RE, TRACKED_NOTE_RE, TRUST_NOTE_RE, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isBotUser, authorClearRole, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, givesVerdict, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, standingOnCommit, fetchStandingVerdict, REVIEW_STATE_VERDICTS, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, HELD_FOR_PERSON_MARKER };
 export type { StandingVerdict };

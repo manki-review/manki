@@ -7010,6 +7010,12 @@ describe('hasBotReviewOnCommit', () => {
     const dismissal = (id: number, state: string) => ({ actor: person, dismissed_review: { review_id: id, state, dismissal_commit_id: null } });
     const octokit = makeMockOctokit([{ id: 5, ...review }, { id: 6, ...review }], [dismissal(5, 'changes_requested'), dismissal(6, 'approved')]);
     expect(await hasBotReviewOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, testSha('123'))).toBe(false);
+    // So does a standing review before it.
+    const standing = makeMockOctokit([{ id: 5, ...review, state: 'COMMENTED' }, { id: 6, ...review }], [dismissal(6, 'approved')]);
+    expect(await hasBotReviewOnCommit(standing, TEST_BOT, 'owner', 'repo', 1, testSha('123'))).toBe(false);
+    // A dismissal by Manki keeps the standing review.
+    const ownDismissal = makeMockOctokit([{ id: 5, ...review, state: 'COMMENTED' }, { id: 6, ...review }], [{ ...dismissal(6, 'approved'), actor: { login: BOT_LOGIN, type: 'Bot' } }]);
+    expect(await hasBotReviewOnCommit(ownDismissal, TEST_BOT, 'owner', 'repo', 1, testSha('123'))).toBe(true);
   });
 
   it('returns false when the only bot review is on a different commit', async () => {

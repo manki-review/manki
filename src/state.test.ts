@@ -2008,9 +2008,9 @@ describe('checkAndAutoApprove', () => {
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const head = testSha('5ae');
     const person = { login: 'maintainer', type: 'User' };
-    type Setup = { resolved?: boolean; commit?: string; heldForPerson?: boolean; timelineFails?: boolean; actor?: { login: string; type: string }; state?: string; pushed?: string; approvedAfter?: boolean };
-    // Round 1 requested changes on `commit` for one blocker thread, and `actor` dismissed that review. With `approvedAfter`,
-    // Manki then approved the head and a person dismissed that approval too.
+    type Setup = { resolved?: boolean; commit?: string; heldForPerson?: boolean; timelineFails?: boolean; actor?: { login: string; type: string }; state?: string; pushed?: string; approvedAfter?: boolean; stands?: boolean };
+    // Round 1 requested changes on `commit` for one blocker thread, and `actor` dismissed that review, unless it `stands`.
+    // With `approvedAfter`, Manki then approved the head and a person dismissed that approval.
     const check = async (setup: Setup = {}) => {
       warnSpy.mockClear();
       const threads = [makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix --> fix', isResolved: setup.resolved ?? true })];
@@ -2020,7 +2020,7 @@ describe('checkAndAutoApprove', () => {
       const octokit = makeMockOctokit({
         threads, prHeadSha: head, createReviewFn: createReviewMock,
         existingReviews: [
-          { id: 5, body, state: 'DISMISSED', commit_id: commit, user: { login: 'manki-review[bot]', type: 'Bot' } },
+          { id: 5, body, state: setup.stands ? 'CHANGES_REQUESTED' : 'DISMISSED', commit_id: commit, user: { login: 'manki-review[bot]', type: 'Bot' } },
           ...setup.approvedAfter ? [{ id: 6, body: roundBody(roundThatPosted(commit, [])), state: 'DISMISSED', commit_id: commit, user: { login: 'manki-review[bot]', type: 'Bot' } }] : [],
         ],
       });
@@ -2041,9 +2041,10 @@ describe('checkAndAutoApprove', () => {
     // So does a review that held its approval for a person.
     expect(await check({ heldForPerson: true })).toEqual({ approved: false, posted: [], covered: true });
     // A dismissal by Manki, by another app, of an approval, by a push, on an older commit, or one the timeline cannot show covers nothing.
-    // So does a request for changes that a later verdict on the head replaced, here an approval a person dismissed.
+    // The newest verdict on the head decides, so a person's dismissal of a later approval leaves no review on the head, standing or not.
     for (const setup of [
       { approvedAfter: true },
+      { approvedAfter: true, stands: true },
       { actor: { login: 'manki-review[bot]', type: 'Bot' } },
       { actor: { login: 'other-app[bot]', type: 'Bot' } },
       { state: 'approved' },

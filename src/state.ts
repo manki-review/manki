@@ -4,7 +4,7 @@ import * as github from '@actions/github';
 import { assertWritesAllowed } from './abort';
 import { changeThreadThroughService, fetchPrState, reportPrState } from './auth';
 import { newestCheckPassed, outcomeReport, reportCheck } from './check-run';
-import { AFTER_PUSH_LINE, ApprovalHeld, approvalHoldBox, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, autoApproveHeadMarker, failedAutoApproveId, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchBlobShas, fetchInterRoundDiff, fetchPRComments, givesVerdict, HELD_FOR_PERSON_MARKER, inline, sanitizeMarkdown, dismissedByPerson, fetchReviewThreadNodes, fetchStandingVerdict, MANKI_VERSION, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatReadyReport, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, authorClearRole, deleteAutoApproveProgressComment, reviewedCommit, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
+import { AFTER_PUSH_LINE, ApprovalHeld, approvalHoldBox, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, autoApproveHeadMarker, failedAutoApproveId, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchBlobShas, fetchInterRoundDiff, fetchPRComments, givesVerdict, HELD_FOR_PERSON_MARKER, inline, sanitizeMarkdown, standingOnCommit, fetchReviewThreadNodes, fetchStandingVerdict, MANKI_VERSION, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatReadyReport, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, authorClearRole, deleteAutoApproveProgressComment, reviewedCommit, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
 import { ISSUE_BOX_LABEL, withMessageBoxes } from './issue-box';
 import { MessageBox, SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
@@ -649,12 +649,12 @@ function isBotReview(bot: BotIdentity, r: ReviewEntry): boolean {
   return !!r.body?.includes('<!-- manki') && isBotLogin(bot, r.user?.login);
 }
 
-/** Returns Manki's reviews that still stand: every one not dismissed, and the one on `headSha` that `dismissedByPerson` returns. */
+/** Returns Manki's reviews that still stand: on `headSha` the ones `standingOnCommit` keeps, and elsewhere every one not dismissed. */
 async function standingReviews(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string, reviews: ReviewEntry[],
 ): Promise<ReviewEntry[]> {
-  const setAside = await dismissedByPerson(octokit, bot, owner, repo, prNumber, reviews.filter(r => isBotReview(bot, r) && reviewedCommit(r) === headSha));
-  return reviews.filter(r => isBotReview(bot, r) && (r.state !== 'DISMISSED' || r === setAside));
+  const onHead = new Set(await standingOnCommit(octokit, bot, owner, repo, prNumber, reviews.filter(r => isBotReview(bot, r) && reviewedCommit(r) === headSha)));
+  return reviews.filter(r => isBotReview(bot, r) && (reviewedCommit(r) === headSha ? onHead.has(r) : r.state !== 'DISMISSED'));
 }
 
 /**
