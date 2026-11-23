@@ -820,34 +820,45 @@ describe('refuteBlockers', () => {
     const outsideReplies = {
       'Code premise': { ...confirmed('src/math.ts:2'), premises: [confirmed('src/math.ts:2')] },
       'Empty outside behavior': { ...confirmed('src/math.ts:2'), outside: { behavior: ' ', stated_in: [] }, premises: [{ ...confirmed('src/math.ts:2'), outside: {} }] },
+      // A reply that copies the answer form's example names no behavior either, in its text or in its only line.
+      'Copied outside example': {
+        ...confirmed('src/math.ts:2'), outside: { behavior: 'The outside behaviour the confirmation rests on, in one sentence', stated_in: [] },
+        premises: [{ ...confirmed('src/math.ts:2'), outside: { behavior, stated_in: ['file:line'] } }],
+      },
       'Premise on a stated behavior': { ...confirmed('src/math.ts:2'), premises: [{ ...confirmed('src/math.ts:2'), outside: { behavior, stated_in: ['README.md:1'] } }] },
       'Premise on an unstated behavior': { ...confirmed('src/math.ts:2'), premises: [{ ...confirmed('src/math.ts:2'), outside: { behavior, stated_in: [] } }] },
       'Defect on an unstated behavior': { ...confirmed('src/math.ts:2'), outside: { behavior, stated_in: ['docs/missing.md:1'] }, premises: [confirmed('src/math.ts:2')] },
       'Capped blocker on an unstated behavior': { ...confirmed('src/math.ts:2'), outside: { behavior } },
+      'Lead on an unstated behavior': { ...confirmed('src/math.ts:2'), outside: { behavior } },
     };
     const outsideFindings = [
-      ...['Code premise', 'Empty outside behavior', 'Premise on a stated behavior', 'Premise on an unstated behavior', 'Defect on an unstated behavior'].map(title => finding(title, raisable)),
+      ...['Code premise', 'Empty outside behavior', 'Copied outside example', 'Premise on a stated behavior', 'Premise on an unstated behavior', 'Defect on an unstated behavior'].map(title => finding(title, raisable)),
       finding('Capped blocker on an unstated behavior', { severity: 'warning', tags: ['unproven-blocker'] }),
+      finding('Lead on an unstated behavior', { severity: 'warning', notChecked: true, lead: { checked: 'read src/math.ts:2', left: 'find the callers' } }),
     ];
     const outsideResult = await refuteBlockers(fakeClient(outsideReplies), outsideFindings, { workspace, diff });
     expect(outsideResult.map(f => [f.title, f.severity, f.refutation?.outcome, f.refutation?.defect, f.refutation?.premises?.[0]?.outcome, checkStatus(f), unprovenReason(f)])).toEqual([
       ['Code premise', 'blocker', 'confirmed', 'confirmed', 'confirmed', 'confirmed', undefined],
       // An `outside` that names no behavior marks nothing, so the confirmation stands.
       ['Empty outside behavior', 'blocker', 'confirmed', 'confirmed', 'confirmed', 'confirmed', undefined],
+      ['Copied outside example', 'blocker', 'confirmed', 'confirmed', 'confirmed', 'confirmed', undefined],
       ['Premise on a stated behavior', 'blocker', 'confirmed', 'confirmed', 'confirmed', 'confirmed', undefined],
       ['Premise on an unstated behavior', 'warning', 'unsettled', 'confirmed', 'unsettled', 'unconfirmed', undefined],
       // Premises the code confirmed do not raise a finding whose defect rests on an unstated behavior.
       ['Defect on an unstated behavior', 'warning', 'unsettled', 'unsettled', 'confirmed', 'unconfirmed', undefined],
       ['Capped blocker on an unstated behavior', 'warning', 'unsettled', 'unsettled', undefined, 'unconfirmed', undefined],
+      ['Lead on an unstated behavior', 'warning', 'unsettled', 'unsettled', undefined, 'unconfirmed', undefined],
     ]);
-    for (const { refutation } of outsideResult.slice(0, 2)) expect([refutation, ...refutation!.premises!].some(answer => !!answer && 'outside' in answer)).toBe(false);
+    // The check finished the lead, so it is posted at its grade and not listed as unfinished.
+    expect([outsideResult.at(-1)?.lead, outsideResult.at(-1)?.notChecked]).toEqual([undefined, undefined]);
+    for (const { refutation } of outsideResult.slice(0, 3)) expect([refutation, ...refutation!.premises!].some(answer => !!answer && 'outside' in answer)).toBe(false);
     // The stating line joins the premise's proof, and the record keeps whether a line stated the behavior.
-    expect(outsideResult[2].refutation?.premises?.[0]).toMatchObject({ outside: { behavior, stated: true }, proof: ['src/math.ts:2', 'README.md:1'] });
-    expect(outsideResult[3].refutation?.premises?.[0]).toMatchObject({ outside: { behavior, stated: false }, proof: ['src/math.ts:2'] });
-    expect(outsideResult[4].refutation).toMatchObject({ outside: { behavior, stated: false }, proof: ['src/math.ts:2'] });
+    expect(outsideResult[3].refutation?.premises?.[0]).toMatchObject({ outside: { behavior, stated: true }, proof: ['src/math.ts:2', 'README.md:1'] });
+    expect(outsideResult[4].refutation?.premises?.[0]).toMatchObject({ outside: { behavior, stated: false }, proof: ['src/math.ts:2'] });
+    expect(outsideResult[5].refutation).toMatchObject({ outside: { behavior, stated: false }, proof: ['src/math.ts:2'] });
     // Such a confirmation still stands against a disproof, so the second check neither lowers nor drops the finding.
-    const disproving = fakeClient({ [outsideFindings[3].title]: { outcome: 'disproved', reason: 'Bounded.', proof: ['src/math.ts:1'], premises: [{ outcome: 'disproved', reason: 'Bounded.', proof: ['src/math.ts:1'] }] } }, 'other');
-    const againstDisproof = await refuteBlockers(fakeClient(outsideReplies, 'first'), [outsideFindings[3], finding(outsideFindings[3].title, { ...raisable, severity: 'blocker', gradePath: undefined })], { workspace, diff, pair: disproving });
+    const disproving = fakeClient({ [outsideFindings[4].title]: { outcome: 'disproved', reason: 'Bounded.', proof: ['src/math.ts:1'], premises: [{ outcome: 'disproved', reason: 'Bounded.', proof: ['src/math.ts:1'] }] } }, 'other');
+    const againstDisproof = await refuteBlockers(fakeClient(outsideReplies, 'first'), [outsideFindings[4], finding(outsideFindings[4].title, { ...raisable, severity: 'blocker', gradePath: undefined })], { workspace, diff, pair: disproving });
     expect(againstDisproof.map(f => [f.severity, agreedOutcome([f.refutation!, f.pairRefutation!]), disproof(f)])).toEqual([['warning', 'unsettled', undefined], ['blocker', 'unsettled', undefined]]);
   });
 

@@ -40,6 +40,10 @@ export const MAX_DOUBT_CHECKS = 8;
 
 type RefutationField = 'refutation' | 'pairRefutation';
 
+/** The example of the answer form's `outside` field. A reply that copies it names no behavior. */
+const OUTSIDE_EXAMPLE = { behavior: 'The outside behaviour the confirmation rests on, in one sentence', statedIn: 'file:line' };
+const OUTSIDE_FORM = `{"behavior": "${OUTSIDE_EXAMPLE.behavior}", "stated_in": ["${OUTSIDE_EXAMPLE.statedIn}"]}`;
+
 /** The refuter's instructions. */
 const REFUTE_SYSTEM_PROMPT = `You check one finding a code review raised on a pull request, using read-only tools on the PR's head commit.
 
@@ -72,7 +76,7 @@ ${VERIFY_CLAIMS_RULE} The PR description, a comment or a TODO that calls a gap i
 
 Respond with ONLY a JSON object. Leave out \`premises\` when the message lists none, and \`outside\` unless a confirmation rests on outside behaviour:
 
-{"outcome": "disproved" | "confirmed" | "unsettled", "rule": "The general rule the finding relies on, in one sentence", "reason": "One or two plain sentences on what decides it", "proof": ["file:line"], "outside": {"behavior": "The outside behaviour the confirmation rests on, in one sentence", "stated_in": ["file:line"]}, "premises": [{"outcome": "disproved" | "confirmed" | "unsettled" | "outside_code", "reason": "One plain sentence on what decides this premise", "proof": ["file:line"], "outside": {"behavior": "The outside behaviour the confirmation rests on, in one sentence", "stated_in": ["file:line"]}}]}`;
+{"outcome": "disproved" | "confirmed" | "unsettled", "rule": "The general rule the finding relies on, in one sentence", "reason": "One or two plain sentences on what decides it", "proof": ["file:line"], "outside": ${OUTSIDE_FORM}, "premises": [{"outcome": "disproved" | "confirmed" | "unsettled" | "outside_code", "reason": "One plain sentence on what decides this premise", "proof": ["file:line"], "outside": ${OUTSIDE_FORM}}]}`;
 
 /** Returns the SHA-256 over `files` in the workspace, each path with its content, or `undefined` when one cannot be read there. */
 export function codeDigest(workspace: string, files: readonly string[]): string | undefined {
@@ -283,9 +287,10 @@ function premisesOutcome(doubts: readonly Doubt[], checks: readonly PremiseCheck
 function outsideBehavior(value: unknown, workspace: string, related?: RelatedRepoTools): { outside: OutsideBehavior; proof: string[]; relatedProof: string[] } | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const { behavior, stated_in: statedIn } = value as Record<string, unknown>;
-  // An `outside` that names no behavior, such as the empty placeholder of the answer form, marks nothing.
+  // An `outside` that names no behavior, empty or copied from the answer form, marks nothing.
   const named = replyText(behavior);
-  if (!named) return undefined;
+  const copiedLines = Array.isArray(statedIn) && statedIn.length > 0 && statedIn.every(line => line === OUTSIDE_EXAMPLE.statedIn);
+  if (!named || named === OUTSIDE_EXAMPLE.behavior || copiedLines) return undefined;
   const { proof, relatedProof } = shownLines(statedIn, workspace, related);
   return { outside: { behavior: named, stated: proof.length + relatedProof.length > 0 }, proof, relatedProof };
 }
@@ -528,6 +533,11 @@ function applyRefutation(given: Finding, refutation: Refutation | undefined, pai
       ...(restored && gradeStep(finding, restored, 'refutation', checks.find(r => outcomeOf(r) === 'confirmed')!.reason)), evidence: withProof(finding.evidence, proving),
       ...(tags && { tags }),
     };
+  }
+  // A lead whose check confirmed it on outside behavior no line states is finished, so it is posted at its grade.
+  if (finding.lead && agreedOutcome(checks.map(asAnswered)) === 'confirmed') {
+    const { lead: _lead, notChecked: _notChecked, ...finished } = graded;
+    return finished;
   }
   return graded;
 }
