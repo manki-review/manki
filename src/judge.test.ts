@@ -30,7 +30,7 @@ import { RepoMemory, Learning, Suppression } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
 import { parseFindings, parseProof, preExistingCheck, truncateDiff } from './review';
 import { stringifyFindingFingerprint } from './finding-fingerprint';
-import { lacksTrigger, unprovenReason } from './refute';
+import { unpostedForTrigger, unprovenReason } from './refute';
 import { parsePRDiff } from './diff';
 import { extractJSON } from './json';
 import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
@@ -6685,7 +6685,7 @@ describe('judge grading fixture corpus', () => {
     // Without tools the doubt holds the finding at a warning either way. What differs is whether a check that confirms the doubt raises it.
     if (fixture.ifConfirmed) expect(graded && pendingGrade(graded) === 'blocker' ? 'blocker' : 'warning').toBe(fixture.ifConfirmed);
     // A warning without a realistic trigger is kept in the round record only. One with a serious consequence or a common trigger is posted.
-    if (fixture.posted !== undefined) expect(graded.severity !== 'ignore' && !lacksTrigger(graded)).toBe(fixture.posted);
+    if (fixture.posted !== undefined) expect(graded.severity !== 'ignore' && !unpostedForTrigger(graded)).toBe(fixture.posted);
   }, 600_000);
 });
 

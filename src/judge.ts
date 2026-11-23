@@ -22,7 +22,7 @@ import { sanitize, titleOverlapType } from './recap';
 import { FINDER_TOOLS_TIMEOUT_MS, guardedThreadStaysOpen, determineOutcome, earlierFindings, fencePrText, filesChangedByPush, parseProof, postedWhenPreExisting, restatesEarlier, sameProblem, truncateDiff } from './review';
 import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge, stringifyFindingFingerprint } from './finding-fingerprint';
-import { disprovedTrigger, lacksTrigger, MAX_DOUBT_CHECKS, MAX_RELATED_PROOF, needsProof, refuteBlockers } from './refute';
+import { MAX_DOUBT_CHECKS, MAX_RELATED_PROOF, needsProof, refuteBlockers, unpostedForTrigger } from './refute';
 import { fetchedRelatedRepos, relatedNames, repoTools } from './related-repos';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim, relatedCitations } from './static-signals';
@@ -1769,8 +1769,8 @@ export async function runJudgeAgent(
     return { ...crossRound, ...applyInPrSuppression(crossRound.findings, inPrSuppressions, quiet, input.agreedCodeChanged) };
   };
   const earlier = earlierFindings(priorRounds ?? [], openThreads ?? input.evaluatedThreads?.openThreads ?? [], crossRoundOptions.threadEvaluations);
-  // `hideUnprovenWarnings` leaves out a warning with no trigger whatever a check says, unless an earlier finding may carry it or it would block if true and no check disproved its trigger.
-  const noTrigger = (finding: Finding): boolean => lacksTrigger(finding) && needsProof(finding, config.review?.rules) && (!wouldBlockIfTrue(finding) || disprovedTrigger(finding))
+  // `hideUnprovenWarnings` leaves out such a warning whatever a check says, unless an earlier finding may carry it.
+  const noTrigger = (finding: Finding): boolean => unpostedForTrigger(finding) && needsProof(finding, config.review?.rules)
     && !finding.threadId && !finding.answeredIn && finding.raisedIn === undefined && !restatesEarlier(earlier, finding);
   // Each step after the refuter that keeps a warning out of the review whatever a check says belongs here: the
   // suppressions above, which drop it or make it a note, the memory suppressions, `markPreExisting` and `noTrigger`.
