@@ -5839,6 +5839,10 @@ describe('runReview', () => {
         [clientsWith('disproved'), { findings: [{ ...restated, toolSource: 'semgrep' }] }],
         // A variant of the thread's mistake in another place is not what the fix covered.
         [clientsWith('disproved'), { findings: [{ ...restated, line: 3, sameAs: undefined, variantOf: 'src/x.ts:10:10:old-issue' }] }],
+        // So is a restatement of another finding an earlier round recorded under the thread.
+        [clientsWith('disproved'), { findings: [{ ...restated, line: 40, sameAs: 'src/x.ts:40:40:other-place' }], priors: [buildPriorRound(1, [
+          makePriorWarningFinding({ severity: 'blocker' }), makePriorWarningFinding({ severity: 'blocker', title: 'Other place', fingerprint: { file: 'src/x.ts', lineStart: 40, lineEnd: 40, slug: 'other-place' } }),
+        ])] }],
         [clientsWith('disproved'), { push: pushY }], [clientsWith('disproved'), { push: null }],
       ] as Array<[ReviewClients, Parameters<typeof runWith>[1]?]>) {
         const kept = await runWith(clients, options);
