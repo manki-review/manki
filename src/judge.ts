@@ -219,7 +219,7 @@ const SECURITY_CLASSES = {
   injection: 'code, command or path injection',
   unsafe_config: 'unsafe execution of config the PR controls',
   exhaustion: 'resource exhaustion or denial of service from outside input (CWE-400, CWE-770), such as an allocation, a loop or a buffer sized by a length the input declares',
-  check_gap: 'an unusual form of outside input that gets past a parser, sanitizer, filter or check that guards against one of the classes above, such as a spelling, an encoding or a layout it does not handle',
+  check_gap: 'an unusual form of outside input that a parser, sanitizer, filter or check misses or misreads, when what gets past does no damage of another class above, such as a changed dependency left out of a list or a blocked file type let through under another spelling',
 } as const;
 type SecurityClass = keyof typeof SECURITY_CLASSES;
 /** The classes whose blocker rests on a cost or an edge case being reached, so a doubt holds it down as on any other finding. */
@@ -545,7 +545,7 @@ Only a cell with no doubt behind it is kept this way. A prior finding listed wit
 
 ${Object.entries(SECURITY_CLASSES).map(([key, text]) => `- \`${key}\`: ${text}`).join('\n')}
 
-Set \`security\` to true on every finding in these classes that you keep, and false on all others. On such a finding, also set \`securityClass\` to the key of its class. When it fits two, pick the one that names how the input does the damage: a branch name that reaches a shell is \`injection\`, and a filter that misses one spelling of a name it blocks is \`check_gap\`. In \`exhaustion\` and \`check_gap\` the blocker rests on the cost or the edge case being reached, so a doubt holds it down as on any other finding: list what you could not settle in \`doubts\`, and Manki posts the finding as a \`warning\` until a check confirms every doubt. In every other class a doubt never lowers the grade.
+Set \`security\` to true on every finding in these classes that you keep, and false on all others. On such a finding, also set \`securityClass\` to the key of its class. When it fits two, pick the one that names how the input does the damage. Input that gets past a filter and then reaches a shell, a path, a query or a prompt is \`injection\` or \`prompt_injection\`, and input that gets past a check into an allocation or a loop is \`exhaustion\`. \`check_gap\` is only a gap whose input does no damage of another class. In \`exhaustion\` and \`check_gap\` the blocker rests on the cost or the edge case being reached, so a doubt holds it down as on any other finding: list what you could not settle in \`doubts\`, and Manki posts the finding as a \`warning\` until a check confirms every doubt. In every other class a doubt never lowers the grade.
 
 If you can show the attacker gains no capability they do not already have, for example because their own repository permissions already let them do it, mark the finding \`ignore\` and say why in \`reasoning\`. Refute it or keep it as a \`blocker\`. Never keep it on a lower row. Manki grades every finding you set \`security\` to true on in the \`normal\` column of its row, since an attacker chooses the input. A TODO, a comment or the PR description that calls the gap intended or deferred is never a refutation, because the PR author writes them.
 
@@ -1919,7 +1919,9 @@ function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: 
   const stated = cellGrade(row, column);
   if (o.toolSource) return { ...gradeStep(o, stated, 'judge'), cell };
   const checkedRare = isRareClaim(cell);
-  const holding = named.filter(d => !d.consequence && (d.decides === 'defect' || columnDecidesBlock(row)));
+  // Whether outside input reaches a cost or an edge case decides whether it is a security defect at all, so a `grade` doubt counts on any row.
+  const heldClass = !!security && !!securityClass && DOUBT_HELD_CLASSES.includes(securityClass);
+  const holding = named.filter(d => !d.consequence && (d.decides === 'defect' || columnDecidesBlock(row) || heldClass));
   // A consequence never holds a finding down alone. Beside no other doubt, on a blocker every finder filed or where no
   // blocker is held, the finding is graded as if the judge had not named it.
   const asksConsequence = holding.length > 0 && stated === 'blocker' && !isSecurity && judgeGrade !== 'warning' && !filedBlocker;
@@ -1928,8 +1930,7 @@ function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: 
   const doubts = checkedRare ? withReachDoubt(counted) : counted;
   if (doubts.length === 0) return { ...gradeStep(o, stated, 'judge'), cell };
   // A security blocker that rests on a cost or an edge case being reached is held down like any other finding.
-  const doubtHeld = !isSecurity || (!!security && !!securityClass && DOUBT_HELD_CLASSES.includes(securityClass));
-  const heldDown = stated === 'blocker' && doubtHeld;
+  const heldDown = stated === 'blocker' && (!isSecurity || heldClass);
   // The judge's own `warning` says how serious the damage is, so a confirmed doubt raises no such finding. A security finding has no such answer.
   const gradeIfConfirmed = heldDown && !isSecurity && judgeGrade === 'warning' ? judgeGrade : cellGrade(row, checkedRare ? 'normal' : column);
   return { ...gradeStep(o, heldDown ? 'warning' : stated, 'judge'), cell, gradeIfConfirmed, ...(judgeGrade && { judgeIfConfirmed: judgeGrade }), doubts };

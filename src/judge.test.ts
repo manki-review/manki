@@ -282,13 +282,16 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('**A security defect that outside input can trigger is a `blocker`, however unlikely it looks.**');
     expect(prompt).toContain('Security is serious damage under test 3, and the attacker decides whether it happens, so rarity never lowers the grade: state the `severe` row.');
     expect(prompt).toContain('PR content and diffs, file contents, comments and replies, branch names, and config read from the PR');
-    for (const cls of ['`prompt_injection`: prompt injection', '`access`: authentication or permission bypass', '`secret`: secret or token exposure', '`injection`: code, command or path injection', '`unsafe_config`: unsafe execution of config the PR controls', '`exhaustion`: resource exhaustion or denial of service from outside input (CWE-400, CWE-770)', '`check_gap`: an unusual form of outside input that gets past a parser, sanitizer, filter or check that guards against one of the classes above']) {
+    for (const cls of ['`prompt_injection`: prompt injection', '`access`: authentication or permission bypass', '`secret`: secret or token exposure', '`injection`: code, command or path injection', '`unsafe_config`: unsafe execution of config the PR controls', '`exhaustion`: resource exhaustion or denial of service from outside input (CWE-400, CWE-770)', '`check_gap`: an unusual form of outside input that a parser, sanitizer, filter or check misses or misreads, when what gets past does no damage of another class above']) {
       expect(prompt).toContain(cls);
     }
     // Only a cost or an edge case being reached is held down by a doubt.
     expect(prompt).toContain('On such a finding, also set `securityClass` to the key of its class.');
     expect(prompt).toContain('In `exhaustion` and `check_gap` the blocker rests on the cost or the edge case being reached, so a doubt holds it down as on any other finding');
     expect(prompt).toContain('In every other class a doubt never lowers the grade.');
+    // A gap that lets an injection through is the injection.
+    expect(prompt).toContain('Input that gets past a filter and then reaches a shell, a path, a query or a prompt is `injection` or `prompt_injection`');
+    expect(prompt).toContain('`check_gap` is only a gap whose input does no damage of another class.');
     expect(prompt).toContain('"securityClass": "" | "prompt_injection" | "access" | "secret" | "injection" | "unsafe_config" | "exhaustion" | "check_gap",');
     expect(prompt).toContain('If you can show the attacker gains no capability they do not already have');
     expect(prompt).toContain('mark the finding `ignore` and say why in `reasoning`');
@@ -4918,6 +4921,8 @@ describe('mapJudgedToFindings', () => {
       ['Exhaustion, consequence named', {}, { row: 'severe', security: true, securityClass: 'exhaustion', ...ifBlocker, doubts: [doubt, harm] }, ['warning', 'blocker', [doubt]]],
       ['Exhaustion in the rare column', {}, { row: 'severe', column: 'rare', security: true, securityClass: 'exhaustion', doubts: [doubt], reasoning: 'r' }, ['warning', 'blocker', [doubt]]],
       ['Check gap, doubted', {}, { row: 'severe', security: true, securityClass: 'check_gap', doubts: [doubt], reasoning: 'r' }, ['warning', 'blocker', [doubt]]],
+      // Whether outside input reaches the cost decides whether it is a security defect, so a doubt about the reach holds it on the `severe` row too.
+      ['Exhaustion, reach doubted', {}, { row: 'severe', security: true, securityClass: 'exhaustion', doubts: [reach], reasoning: 'r' }, ['warning', 'blocker', [reach]]],
       ['Exhaustion, no doubt', {}, { row: 'severe', security: true, securityClass: 'exhaustion', reasoning: 'r' }, ['blocker', undefined, undefined]],
       // Every other class, and a security finding the judge names no class for, keeps the blocker.
       ['Injection, warning if confirmed', {}, { row: 'severe', security: true, securityClass: 'injection', ...kept }, ['blocker', 'blocker', [doubt]]],
