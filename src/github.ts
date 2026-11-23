@@ -2028,8 +2028,8 @@ function originGroups(findings: Finding[], followUp: boolean): Array<[string, Fi
       ? 'It sits on lines an earlier round already reviewed, so it doesn\'t block this PR.'
       : 'These sit on lines an earlier round already reviewed, so none of them block this PR.'],
     ['Pre-existing', preExisting, preExisting.length === 1
-      ? 'It sits on code this PR did not change, or the code before this PR fails the same way, so it doesn\'t block. If it is a blocker, it is listed as a warning.'
-      : 'These sit on code this PR did not change, or the code before this PR fails the same way, so none of them block. A blocker among them is listed as a warning.'],
+      ? 'This PR did not cause it, so it doesn\'t block: it is on lines the PR did not change, or the code fails the same way without the PR.'
+      : 'This PR did not cause these, so none of them block: each is on lines the PR did not change, or the code fails the same way without the PR.'],
   ];
   return groups.map(([title, listed, intro]) => [title, [...listed].sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity)), intro]);
 }
