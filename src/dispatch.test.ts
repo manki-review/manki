@@ -104,10 +104,13 @@ describe('restoreDispatchedEvent', () => {
     expect(octokit.graphql).toHaveBeenCalledWith(expect.any(String), { id: 'IC_11' });
   });
 
-  it('stops a push run whose head moved on, and not a merge', async () => {
+  it('reviews the head a push run finds when it moved on, and stops only an approval check', async () => {
     const pushed = { event: 'pull_request', pr: '7', head_sha: 'b2'.repeat(20) };
 
-    expect(await dispatch({ ...pushed, action: 'synchronize' })).toBe('superseded');
+    expect(await dispatch({ ...pushed, action: 'synchronize' })).toBe('run');
+    expect(github.context.payload.pull_request).toEqual(PR);
+    expect(core.info).toHaveBeenCalledWith(expect.stringContaining('Reviewing the PR head instead'));
+    expect(await dispatch({ ...pushed, action: 'ready_for_review' })).toBe('run');
     // The approval check of a PR marked ready runs only on the head it was queued for.
     expect(await dispatch({ ...pushed, action: 'approval_check' })).toBe('superseded');
     expect(await dispatch({ ...pushed, action: 'closed' })).toBe('run');

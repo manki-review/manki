@@ -50,7 +50,7 @@ let catchUp = false;
  */
 export const APPROVAL_CHECK_ACTION = 'approval_check';
 
-/** What a dispatched run does next: run the handlers, or stop because the head moved on or the comment or review is gone. */
+/** What a dispatched run does next: run the handlers, or stop because the head of an approval check moved on or the comment or review is gone. */
 export type DispatchOutcome = 'run' | 'superseded' | 'gone';
 
 /** Whether the run was started by `workflow_dispatch`. The original event name stays in the environment after the payload is rebuilt. */
@@ -109,8 +109,13 @@ export async function restoreDispatchedEvent(octokit: Octokit): Promise<Dispatch
   github.context.actor = event.sender.login;
 
   if (inputs.event === 'pull_request' && inputs.action !== 'closed' && event.headSha !== inputs.headSha) {
-    core.info(`Dispatched for ${inputs.headSha?.slice(0, 7)}, but the PR head is ${event.headSha?.slice(0, 7)}. A newer run reviews it.`);
-    return 'superseded';
+    const moved = `Dispatched for ${inputs.headSha?.slice(0, 7)}, but the PR head is ${event.headSha?.slice(0, 7)}.`;
+    // The approval check decides only on the head it was queued for. A review reviews the head it finds.
+    if (inputs.action === APPROVAL_CHECK_ACTION) {
+      core.info(`${moved} A newer run checks it.`);
+      return 'superseded';
+    }
+    core.info(`${moved} Reviewing the PR head instead.`);
   }
   return 'run';
 }
