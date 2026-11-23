@@ -7,7 +7,7 @@ import { rcompare, satisfies, valid } from 'semver';
 import { ArchiveLimits, extractTarGz } from './archive';
 import { lockedPackages, MAX_LOCKFILE_BYTES, MAX_LOCKFILES, MAX_LOCKFILES_TOTAL_BYTES } from './lockfile';
 import { resolveInRoot } from './mcp-server';
-import { cratesIo } from './registries/crates';
+import { cratesIo, ignoredMemberLockfiles } from './registries/crates';
 import { npmRegistry } from './registries/npm';
 import { shown } from './registries/shown';
 import { PublishedVersion, Registry, RegistryConfig, RegistryFetch } from './registries/types';
@@ -159,8 +159,9 @@ function linksToPlainFile(root: string, link: string, plainFiles: ReadonlySet<st
 
 /**
  * Returns the version of `name` that the PR at `root`, with the files `listing` holds, uses, but only when Manki is
- * certain which code the PR runs. It is the version a committed lockfile of the registry locks. Without one, it is the
- * newest published version that the one requirement of the PR's manifests allows. With `version` set it must be that
+ * certain which code the PR runs. It is the version a committed lockfile of the registry locks, but not a `Cargo.lock`
+ * of a workspace member, which Cargo ignores. Without one, it is the newest published version that the one requirement
+ * of the PR's manifests allows. With `version` set it must be that
  * version, or one of those the lockfiles lock. Refuses the package, recorded as refused, when the listing was cut, the
  * checkout holds a committed install or an install file Manki does not read, a file that can lock, require or override
  * it could not be read with certainty, a setting may take it from another registry or changes the lockfile, a manifest
@@ -206,7 +207,9 @@ async function resolveDependency(
     return stated.map(r => ({ ...r, file }));
   });
 
-  const lockfiles = files.filter(f => registry.lockfiles.includes(posix.basename(f)));
+  const texts = new Map(manifests.map(({ file, text }) => [file, text]));
+  const ignored = ignoredMemberLockfiles(files, file => texts.get(file));
+  const lockfiles = files.filter(f => registry.lockfiles.includes(posix.basename(f)) && !ignored.has(f));
   // A lockfile past the cap may lock the package too, so the listing cannot settle it.
   if (lockfiles.length > MAX_LOCKFILES) refuse(`the checkout holds ${lockfiles.length} lockfiles, more than the ${MAX_LOCKFILES} Manki reads`);
   const locked = lockfiles.flatMap(file => {

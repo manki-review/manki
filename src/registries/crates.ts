@@ -1,3 +1,5 @@
+import { minimatch } from 'minimatch';
+import { posix } from 'path';
 import { validRange } from 'semver';
 import { parse } from 'smol-toml';
 
@@ -126,6 +128,64 @@ function cargoFreshPick(files: readonly RegistryConfig[]): string | undefined {
     if ([pkg.edition, shared.edition].includes('2024') || [pkg.resolver, workspace.resolver].includes('3')) resolver ??= file;
   }
   return rustVersion && resolver ? `${shown(rustVersion)} sets \`rust-version\` and ${shown(resolver)} lets Cargo pick by it, so a fresh install may pick an older version` : undefined;
+}
+
+/** How Cargo's `glob` crate matches the `members` of a workspace: no braces, no extglobs, and `*` matches a leading dot. */
+const MEMBER_GLOB = { dot: true, nobrace: true, noext: true, nonegate: true, nocomment: true };
+
+/**
+ * Returns the `Cargo.lock` files of `files`, the files git tracks, that Cargo ignores: each one in the folder of a member
+ * of a workspace whose root holds a `Cargo.lock` of its own, which every member builds against. `read` returns the text
+ * of a tracked `Cargo.toml`, or `undefined` when it cannot be read. A lockfile Manki cannot place for certain is kept.
+ */
+export function ignoredMemberLockfiles(files: readonly string[], read: (path: string) => string | undefined): Set<string> {
+  const tracked = new Set(files);
+  // The `[workspace]` table of each manifest: `null` without a manifest or without the table, `undefined` when unread.
+  const workspaces = new Map<string, TomlTable | null | undefined>();
+  const workspaceIn = (dir: string): TomlTable | null | undefined => {
+    const manifest = posix.join(dir, 'Cargo.toml');
+    if (!tracked.has(manifest)) return null;
+    if (!workspaces.has(manifest)) workspaces.set(manifest, workspaceTable(read(manifest)));
+    return workspaces.get(manifest);
+  };
+  return new Set(files.filter(file => {
+    if (posix.basename(file) !== 'Cargo.lock') return false;
+    const member = posix.dirname(file);
+    // The nearest manifest up from the lockfile with a `[workspace]` decides. One that excludes the folder can leave it
+    // to a workspace further up, so the lockfile is kept.
+    for (let dir = member; ; dir = posix.dirname(dir)) {
+      const workspace = workspaceIn(dir);
+      if (workspace === undefined) return false;
+      if (workspace !== null) return dir !== member && tracked.has(posix.join(dir, 'Cargo.lock')) && isMember(workspace, dir, member);
+      if (dir === '.') return false;
+    }
+  }));
+}
+
+/** Returns the `[workspace]` table of a manifest's `text`, `null` when it has none, or `undefined` when it cannot be read. */
+function workspaceTable(text: string | undefined): TomlTable | null | undefined {
+  if (text === undefined) return undefined;
+  try {
+    const { workspace } = parse(text);
+    if (workspace === undefined) return null;
+    return tableOf(workspace) === workspace ? workspace as TomlTable : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Whether the folder `member` is a member of the workspace with the `[workspace]` table `workspace` in the folder `root`:
+ * a pattern of its `members` matches the folder and no path of its `exclude` holds it. Both are relative to `root`.
+ */
+function isMember(workspace: TomlTable, root: string, member: string): boolean {
+  const paths = (value: unknown): string[] | undefined => Array.isArray(value) && value.every(p => typeof p === 'string' && !p.includes('\\') && !posix.isAbsolute(p))
+    ? value.map(p => posix.join(root, p as string).replace(/\/+$/, ''))
+    : undefined;
+  const members = paths(workspace.members ?? []);
+  const excluded = paths(workspace.exclude ?? []);
+  if (!members || !excluded) return false;
+  return !excluded.some(path => member === path || member.startsWith(`${path}/`)) && members.some(pattern => minimatch(member, pattern, MEMBER_GLOB));
 }
 
 /**
