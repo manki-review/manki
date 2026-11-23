@@ -4002,7 +4002,7 @@ function postedOnItsOwn(f: Finding): Finding {
  * the thread of the earlier finding its `sameAs` names: a security finding needs a security thread, and the warning of
  * a disproved blocker any guarded thread. A thread is guarded by its first comment, so another would lose the finding's
  * guard, and a `sameAs` to it would leave that thread out of the open ones in the verdict. `priorThreads` gives the
- * thread of each earlier finding by its key.
+ * thread of each earlier finding by its key. An open thread that `f` links to or names but may not join is kept as `raises`.
  */
 function withoutUnfitThreads(f: Finding, openThreadIndex: Map<string, OpenThread>, previousFindings: PreviousFinding[] | undefined, priorThreads: ReadonlyMap<string, string>): Finding {
   const security = isSecurityFinding(f.tags, f.reviewers);
@@ -4016,10 +4016,12 @@ function withoutUnfitThreads(f: Finding, openThreadIndex: Map<string, OpenThread
   const below = (grade: ThreadGrade | undefined): boolean => !!grade && f.severity !== 'ignore' && gradedAbove(f.severity, grade);
   const unfit = (threadId: string | undefined): boolean => plain(threadId) || below(threadOf(threadId));
   const answeredUnfit = !!f.answeredIn && (plain(f.answeredIn.threadId) || below(f.answeredIn.grade));
-  if (!guarded && !(f.threadId && unfit(f.threadId)) && !answeredUnfit) return f;
+  const raises = [f.threadId, f.answeredIn?.threadId, f.sameAs && priorThreads.get(f.sameAs)].find(id => !!id && openThreadIndex.has(id) && unfit(id)) || f.raises;
+  if (!guarded && !(f.threadId && unfit(f.threadId)) && !answeredUnfit) return raises ? { ...f, raises } : f;
   const { sameAs, threadId, variantOf, answeredIn, ...rest } = f;
   const linked: Finding = {
     ...rest,
+    ...(raises && { raises }),
     ...(sameAs && !plain(priorThreads.get(sameAs)) && { sameAs }),
     ...(threadId && !unfit(threadId) && { threadId }),
     ...(variantOf && !(threadId && unfit(threadId)) && { variantOf }),

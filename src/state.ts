@@ -79,9 +79,10 @@ interface ReviewThread {
   /** Whether the thread is a warning that is no pre-existing defect, so it holds an approval until `heldWarnings` finds it cleared. */
   isWarning?: true;
   /**
-   * Why a warning thread no longer holds an approval. `answer`: one of Manki's own replies accepted a reply or filed the
-   * finding as an issue, by `settlesWarning`. `fixed`: a round found the thread fixed and Manki resolved it. Either
-   * counts only when it came after the latest round that made the thread a warning or put a finding into it.
+   * Why a warning thread no longer holds an approval. `answer`: one of Manki's own replies accepted a reply, filed the
+   * finding as an issue or moved it to a thread of a higher grade or guard, by `settlesWarning`. `fixed`: a round found
+   * the thread fixed and Manki resolved it. Either counts only when it came after the latest round that made the thread
+   * a warning or put a finding into it.
    */
   holdLifted?: 'answer' | 'fixed';
   isSecurity?: boolean;
@@ -110,14 +111,17 @@ const THREAD_COMMENTS_LIMIT = 100;
 /** Marks Manki's reply that the thread's finding is filed as an issue, which lifts the hold of a warning thread. */
 const TRACKED_MARKER = '<!-- manki-tracked -->';
 
+/** Marks Manki's reply that a finding of a later round continues the thread's finding in a thread of its own, which holds instead. */
+const RAISED_MARKER = '<!-- manki-raised -->';
+
 /**
- * Whether `body`, one of Manki's own replies in a thread, settles a warning: it carries `TRACKED_MARKER`, or its reply
- * record holds the decision of a "Fixed.", "Withdrawn." or "Agreed." answer. Both are read only below Manki's comment
- * marker, so text a person or a model wrote settles nothing. Neither does a record that cannot be read.
+ * Whether `body`, one of Manki's own replies in a thread, settles a warning: it carries `TRACKED_MARKER` or
+ * `RAISED_MARKER`, or its reply record holds the decision of a "Fixed.", "Withdrawn." or "Agreed." answer. Both are read
+ * only below Manki's comment marker, so text a person or a model wrote settles nothing. Neither does a record that cannot be read.
  */
 function settlesWarning(body: string): boolean {
   if (!body.includes(`\n${BOT_MARKER}`)) return false;
-  if (hasOwnMarker(body, TRACKED_MARKER, BOT_MARKER)) return true;
+  if (hasOwnMarker(body, TRACKED_MARKER, BOT_MARKER) || hasOwnMarker(body, RAISED_MARKER, BOT_MARKER)) return true;
   return !!settlingDecision(body);
 }
 
@@ -1251,4 +1255,4 @@ async function approveOrSayWhy(
   return refusal ? heldBy(refusal) : { approved: true };
 }
 
-export { ApprovalCheck, PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, recordDismissal, approveOrSayWhy, authorClearLine, authorResolvedNote, autoReviewHalt, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, rolePhrase, resolveReviewThread, retireStaleNotices, unclearedThreads, unresolveReviewThread, warningHoldNote, withdrawBlockedApproval, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX, TRACKED_MARKER };
+export { ApprovalCheck, PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, recordDismissal, approveOrSayWhy, authorClearLine, authorResolvedNote, autoReviewHalt, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, rolePhrase, resolveReviewThread, retireStaleNotices, unclearedThreads, unresolveReviewThread, warningHoldNote, withdrawBlockedApproval, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX, RAISED_MARKER, TRACKED_MARKER };
