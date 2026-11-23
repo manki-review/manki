@@ -1,0 +1,135 @@
+# Manki 7.7.5 posted P3 again in this round, as a new blocker outside its thread. A later rescan of the block credits the
+# missed outputs, so it stays a warning, and its open thread already carries it. The push dropped the BIP39 change of P6.
+id: rdc-1495-r2
+repo: xdustinface/rust-dashcore
+source: rust-dashcore upstream PR 1495, round 2 by Manki 7.7.5, every comment checked against the code
+base: f6bb90cbbcae3d401bb3c9ebc4a9a26873a41404
+head: 9762c89496ebe924efcf336a0d0c918b3b6c9abe
+title: "chore: release `v0.46.1`"
+body: |
+  Releases `v0.46.1`, a patch release on top of `v0.46.0` for Dash Platform 5.1. It ships the InstantSend fix from upstream PR 1419 without the 0.47 API changes on `dev`, so Platform can take it without porting to 0.47 first.
+
+  The branch is `master` (`v0.46.0`) plus 17 fixes cherry-picked from `dev` with `-x`, in `dev` order, and the `0.46.1` changelog. Nothing in it touches signature verification, BIP39 seed derivation or the crypto dependencies, so Platform signs, derives keys and verifies with the same code as on `v0.46.0`. The high-S fix (upstream PR 1379) and the BIP39 seed derivation rewrite (upstream PR 1393) stay out for that reason and ship with 0.47.
+
+  Four picks needed hand edits:
+  - upstream PR 1418 and upstream PR 1399: import conflicts in test code.
+  - upstream PR 1419: the v6 storage migration that deletes the masternode snapshot is left out, and storage stays at version 3. Shipping it here as version 4 would make 0.47 skip its own v4 checksum migration. The snapshot format still changes, so 0.46.0 snapshots fail to decode and are removed and resynced on first start, as before.
+  - upstream PR 1447 and upstream PR 1454: their tests pass the `add_to_state` argument that 0.46.0 still has.
+
+  It also backports the release automation from upstream PR 1406, so this is its first run, upstream PR 1411, which fixes the lockfile check, and upstream PR 1428, which replaces the `chrono` crate the security audit now flags as unmaintained. Their workflows use the action versions `v0.46.0` already locks.
+
+  Merge with a merge commit, not a squash. The `Release` workflow then waits for approval, tags the merge commit `v0.46.1`, publishes the release and opens a PR that brings the changelog to `dev`. The PRs listed in the `0.46.1` section must stay out of the `0.47.0` section, and `Release Check` enforces that.
+key_version: 1
+prior_round:
+  head: b37e48976bd247fcb684db8deee141f4ecd4012f
+  findings:
+    - id: P1
+      severity: blocker
+      title: New public field on `QRInfoFeedResult` breaks downstream code in a patch release
+      file: dash-spv/src/sml_engine.rs
+      line: 48
+      cell:
+        row: severe
+        column: normal
+      posted: thread
+      state: open
+      description: "`QRInfoFeedResult` is re-exported as `dash_spv::QRInfoFeedResult` and reaches users through `SyncEvent::MasternodeStateUpdated`. All its fields are `pub` and it is not `#[non_exhaustive]`, so adding `complete_cycle_height` breaks any downstream struct literal or exhaustive destructuring of it. Cargo treats `0.46.1` as compatible with `0.46.0` and picks it up on `cargo update`, which goes against the PR's claim that the release ships without API changes."
+      how_to_fix: Keep the public struct as it is in `0.46.0` and give the manager the completion height another way. For example, add a crate-private engine method that returns the served cycle's height when `is_cycle_fully_verified` holds, and have `sync_manager.rs` call it after `feed_qr_info`, or return the heigh...
+      evidence_files:
+        - dash-spv/src/lib.rs
+        - dash-spv/src/sync/events.rs
+        - dash-spv/src/sync/masternodes/sync_manager.rs
+        - Cargo.toml
+        - dash-spv/Cargo.toml
+    - id: P2
+      severity: blocker
+      title: A forged pending InstantLock still hides the genuine lock for its txid
+      file: dash-spv/src/sync/instantsend/manager.rs
+      line: 162
+      cell:
+        row: wrong
+        column: normal
+      posted: thread
+      state: open
+      description: A peer can send a lock for a real txid with a made-up `cyclehash`.
+      how_to_fix: Do not drop an incoming lock at the txid check when the cached entry is unvalidated. Verify the new lock as well. If it verifies, replace the cached entry and remove the pending forged lock. If it is also pending, queue it next to the forged one, keyed by lock hash (`InstantLock::hash`) rather than ...
+      evidence_files:
+        - dash-spv/src/validation/instantlock.rs
+        - dash-spv/src/sync/instantsend/sync_manager.rs
+    - id: P3
+      severity: warning
+      title: Block confirmation that backfills an account skips the settle loop, so far outputs stay uncredited
+      file: key-wallet/src/transaction_checking/wallet_checker.rs
+      line: 455
+      grade_if_confirmed: blocker
+      cell:
+        row: wrong
+        column: normal
+      doubts:
+        - premise: After `use_involved_addresses` derives the far address during block processing, no filter rescan re-delivers that block to `check_transaction`, so the far output is never credited or recorded
+          decides: grade
+        - premise: The BIP44 account's record built by `record_transaction` at key-wallet/src/managed_account/managed_core_funds_account.rs:970 omits the output paying the address that the following `use_involved_addresses` derives, and that coin is missing from `utxos` and from the wallet balance
+          decides: grade
+          consequence: true
+      posted: thread
+      state: open
+      description: The PR now marks a transaction's addresses as used and extends the address window before recording, for a first sighting (`is_new`) and for an account...
+      how_to_fix: |-
+        Fix it in the helper so it covers every path:
+        1. Make `matches_without_record` filter on `!account.has_transaction(txid)`. That counts finalized txids as held and keeps the legacy summary-less path in `adopt_finalized_outputs`, which relies on unused addresses.
+        2. Call `use_addresses_until_settled` ...
+      evidence_files:
+        - key-wallet/src/managed_account/managed_core_funds_account.rs
+    - id: P4
+      severity: note
+      title: Finalized re-delivery leaves the input in `spent_before_funded` and `claim_guarded_outputs`
+      file: key-wallet/src/managed_account/managed_core_funds_account.rs
+      line: 1074
+      cell:
+        row: improvement
+        column: normal
+      posted: thread
+      state: open
+      description: "`input.previous_output` can be in `spent_before_funded`. `take_in_output` writes it there when the spend was observed before the funding arrived (lines 333-340). The new loop in `adopt_finalized_outputs` only inserts into `spent_outpoints` and removes from `utxos`, so that entry stays in `spent_before_funded`."
+      how_to_fix: Add a helper that drops an input's entries from `spent_before_funded` and `claim_guarded_outputs`. Call it from both the live spend loop and the `adopt_finalized_outputs` loop. For the finalized case, drop the `spent_before_funded` entry outright, without pushing it to `unsettled_spends`, because th...
+      evidence_files:
+        - key-wallet/src/transaction_checking/account_checker.rs
+        - key-wallet/src/wallet/managed_wallet_info/wallet_info_interface.rs
+        - key-wallet-manager/src/process_block.rs
+        - key-wallet/src/tests/observed_spent_outpoints_tests.rs
+    - id: P5
+      severity: note
+      title: A cycle with a failed DKG index never counts as complete, so QRInfo is re-requested at every tip in its mining window
+      file: dash-spv/src/sml_engine.rs
+      line: 1004
+      cell:
+        row: improvement
+        column: normal
+      posted: thread
+      state: open
+      description: "`complete_cycle_height` is set only when `fills_every_slot` finds one of the cycle's own quorums in every slot. A slot whose DKG failed keeps an older cycle's quorum, which `store_cycle_if_fully_verified` leaves out, so that cycle never completes. `sync_manager.rs:127` then never calls `mark_cycle_validated` for it."
+      how_to_fix: Count a slot as settled when the active set's verified quorum at that index belongs to an older cycle, for example by reporting completion when every served index is verified and every own-cycle quorum is stored. Otherwise accept the extra requests and document them.
+      evidence_files:
+        - dash-spv/src/sync/masternodes/manager.rs
+        - dash-spv/src/sync/masternodes/sync_manager.rs
+    - id: P6
+      severity: note
+      title: PR text says the crypto code is untouched, but BIP39 seed derivation is replaced by a hand-written PBKDF2
+      file: key-wallet/src/mnemonic.rs
+      line: 395
+      cell:
+        row: improvement
+        column: normal
+      posted: thread
+      state: open
+      description: The PR says nothing in it touches signature verification or the crypto dependencies, and lists only four picks as hand-edited. `Mnemonic::to_seed` no longer calls `bip39`. It now runs a new in-repo PBKDF2-HMAC-SHA512 (`bip39_seed`) that produces every wallet seed. Wrong output here would derive different keys for the same phrase, so a release note should call it out.
+      how_to_fix: Mention the `to_seed` replacement in the PR description and changelog. Keep the vector tests (`TREZOR_VECTORS`, `JAPANESE_SEED_VECTORS`, `test_bip39_seed_matches_the_bip39_crate`) as the guard.
+must_resolve: [P6]
+must_keep_open: []
+must_not_repeat: [P1, P2, P3, P4, P5]
+must_catch: []
+nice_to_have:
+  - id: N1
+    severity: warning
+    mechanism: "A peer can send an `InstantLock` for a wallet transaction whose `cyclehash` names a cycle the engine does not hold. `process_instantlock` keeps it pending and emits `InstantLockReceived` with `validated: false`. The mempool manager ignores `validated`, so the wallet marks the transaction InstantSend-locked. When a held quorum later refutes the lock, `validate_pending` only drops the cached entry and tells the wallet nothing. The gap is older than the PR: the base also passed unvalidated locks to the mempool manager."
+    locations: ["dash-spv/src/sync/instantsend/manager.rs", "process_instantlock", "validate_pending", "dash-spv/src/sync/mempool/sync_manager.rs", "process_instant_send"]

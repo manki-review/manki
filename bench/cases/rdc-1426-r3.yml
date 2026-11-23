@@ -1,0 +1,73 @@
+# Manki 7.7.5 posted two warnings in this round that a good round leaves out. One needs the filter tip lookup to fail,
+# which only reads a cached height. The other needs a disk write to fail on a fresh chain, in code the PR left as it was.
+id: rdc-1426-r3
+repo: xdustinface/rust-dashcore
+source: rust-dashcore upstream PR 1426, round 3 by Manki 7.7.5, every comment checked against the code
+base: faaca5f1b300a279f40ed55a3f0ac90f74bf1e0f
+head: d31ec981450f9216f70fd0a3877e22563060db0c
+title: "fix(dash-spv): tell an empty filter header store from genesis"
+body: |
+  Filter header sync treated an empty filter header store and one holding only the genesis filter header the same way, because it read the stored tip as 0 in both cases.
+
+  Over a stored genesis header, `start_download` restarted at height 0 and rewrote it, which panics in debug builds. Over an empty store, `handle_new_headers` took a block header tip of 0 as caught up. On a new regtest or devnet chain holding only genesis, the sync completed without the genesis filter header, then rejected every batch from height 1 and requested it again forever.
+
+  Both paths now take the next height from the stored tip as an `Option`. A dashd test syncs a client on a genesis-only chain and checks that it follows the next two blocks.
+
+  Closes upstream issue 1397
+key_version: 1
+prior_round:
+  head: 5bad623e46ef0eebeaa687a363d784179980cfc4
+  findings:
+    - id: P1
+      severity: blocker
+      title: Empty filter header storage is still recorded as height 0, so a genesis-only chain never downloads the genesis filter header
+      file: dash-spv/src/sync/filter_headers/manager.rs
+      line: 291
+      grade_if_confirmed: blocker
+      cell:
+        row: wrong
+        column: normal
+      doubts:
+        - premise: "`try_complete_sync` (manager.rs:61-63) sets `Synced` when filter storage is empty and the block header tip is 0, with no other condition such as `block_headers_synced` blocking it"
+          decides: defect
+        - premise: "`pipeline.is_complete()` is true for a default `FilterHeadersPipeline`, so `handle_new_headers` calls `init` at `current_height() + 1 = 1` instead of `start_download`"
+          decides: defect
+        - premise: after the batch at height 1 is rejected for a missing stored header at 0, `requeue_rejected` in sync_manager.rs requests the same batch again and nothing ever stores the genesis filter header, so filter header sync never advances past height 0
+          decides: grade
+          consequence: true
+      posted: thread
+      state: resolved
+      description: "The fix stops treating `Some(0)` as empty in `start_download`, but `progress.current_height` still records an empty store (`None`) as 0 (lines 87 and 291), and `handle_new_headers` makes its decisions from that value. On a chain at genesis (fresh regtest or devnet), `BlockHeaderSyncComplete { tip_height: 0 }` hits the `current_height() >= block_header_tip_height()` early return and moves to `Synced` with no filter header at 0."
+      how_to_fix: Keep the tip as `Option<u32>` from storage. In `handle_new_headers`, read the next height from storage (`None` gives the header start height, `Some(n)` gives `n + 1`) for both the early return and the pipeline init, instead of using `progress.current_height()`. `progress.current_height` then only dr...
+      evidence_files:
+        - dash-spv/src/sync/filter_headers/sync_manager.rs
+        - dash-spv/src/client/lifecycle.rs
+        - dash-spv/src/sync/filter_headers/pipeline.rs
+    - id: P2
+      severity: note
+      title: Restart-after-fork fix has no dashd integration test
+      file: dash-spv/src/sync/filter_headers/manager.rs
+      line: 286
+      cell:
+        row: improvement
+        column: normal
+      posted: thread
+      state: fixed
+      description: The change fixes how filter header sync resumes after a restart that follows a fork truncated to genesis. The only test added is a unit test that writes filter headers into storage by hand. No test under `tests/dashd_sync/` covers following a fork down to genesis and restarting.
+      how_to_fix: Add a dashd test in `dash-spv/tests/dashd_sync/` that syncs, forces a fork back to genesis, and checks that filter header sync resumes without a panic.
+      evidence_files:
+        - dash-spv/src/client/lifecycle.rs
+    - id: P3
+      severity: note
+      title: The edited completion tests do not exercise the changed decision to start a download
+      file: dash-spv/src/sync/filter_headers/manager.rs
+      line: 483
+      cell:
+        row: improvement
+        column: normal
+      posted: thread
+      state: resolved
+      description: Both edited tests seed a filter header tip of `1000` and deliver a block header tip of `1000`. Reverting the storage-based guard at line `346` still takes the same caught-up branch and passes every assertion. The test named `during_active_download` does not start a download and instead sets the private progress target.
+      how_to_fix: Keep the caught-up case for event gating. Drive the active case through sync events with real pending work, and assert that an empty store at tip `0` requests the genesis filter header before reporting completion.
+must_catch: []
+nice_to_have: []
