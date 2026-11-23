@@ -1534,13 +1534,14 @@ describe('handleReviewCommentReply', () => {
     ['an unverified reply after a verdict the review of the head gave', 'Unverified', '14:34:11', 'head', 'warning', 'none', false],
     ['a withdrawal by a reader after a verdict the review of the head gave', 'Withdrawn', '14:34:11', 'head', 'warning', 'reader', false],
     ['a withdrawal whose resolve fails after a verdict the review of the head gave', 'Withdrawn', '14:34:11', 'head', 'warning', 'resolve fails', false],
-    // The review reads the reply in a guarded thread, so its verdict stands there.
-    ['a withdrawal in a blocker thread after a verdict the review of the head gave', 'Withdrawn', '14:34:11', 'head', 'blocker', 'none', false],
+    // A maintainer's withdrawal clears a blocker thread and replaces the verdict there too, but the PR author's leaves it open.
+    ['a withdrawal in a blocker thread after a verdict the review of the head gave', 'Withdrawn', '14:34:11', 'head', 'blocker', 'none', true],
+    ['a withdrawal by the PR author in a blocker thread after a verdict the review of the head gave', 'Withdrawn', '14:34:11', 'head', 'blocker', 'author', false],
   ] as const)('answers %s, and says only when it replaces that verdict', async (_case, outcome, verdictAt, verdictHead, kind, trouble, replaces) => {
     const head = 'a'.repeat(40);
     setContext({
       comment: { id: 1, body: 'Fixed in d2c4380.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'MEMBER', created_at: '2026-11-06T14:32:05Z' },
-      pull_request: { number: 1, head: { sha: head } },
+      pull_request: { number: 1, head: { sha: head }, ...(trouble === 'author' && { user: { login: 'someone' } }) },
       sender: { login: trouble === 'reader' ? 'reader' : 'someone' },
     });
     const octokit = createMockOctokit();
