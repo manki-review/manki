@@ -2437,9 +2437,9 @@ describe('runJudgeAgent', () => {
         title: 'Rows lost on retry', row: 'severe', column: 'normal', gradeIfConfirmed: 'blocker', reasoning: 'warning. The retry path sits outside the code shown.',
         doubts: [{ premise: 'The retry skips the rows already sent', decides: 'defect' }, { premise: 'The stored table misses those rows', decides: 'consequence' }],
       };
-      const judgeSplit = async (order: readonly Finding['severity'][], consequenceAnswer: object, reviewers?: string[][], finderNames?: string[], judged: object = {}) => {
+      const judgeSplit = async (order: readonly Finding['severity'][], consequenceAnswer: object, reviewers?: string[][], finderNames?: string[], judged: { doubts?: object[]; security?: boolean } = {}) => {
         mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 's', findings: order.map((_, i) => ({ id: i + 1, ...doubted, ...judged })) }) });
-        replies['Rows lost on retry'] = { ...skips, premises: [skips, consequenceAnswer] };
+        replies['Rows lost on retry'] = { ...skips, premises: judged.doubts?.length === 0 ? [consequenceAnswer] : [skips, consequenceAnswer] };
         const findings = order.map((severity, i) => copy(severity, reviewers?.[i]));
         const split = await runJudgeAgent(mockClient, makeConfig(), { findings, diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, finderNames, refutation: { client: refuter, workspace } });
         return split.findings.map(f => [f.severity, f.lowestReviewerSeverity, f.doubts?.filter(d => d.consequence).length, f.gradePath?.find(step => step.by === 'judge')?.reason]);
@@ -2462,9 +2462,17 @@ describe('runJudgeAgent', () => {
       // Both finders, or a finder and another check, reported it, so the confirmation gives the blocker as before.
       expect(await judgeSplit(['blocker', 'blocker'], unsettled, [['Finder A'], ['Finder B']], pair)).toEqual([['blocker', undefined, 0, undefined]]);
       expect(await judgeSplit(['blocker', 'blocker'], unsettled, [['Finder A'], ['Sibling code']], pair)).toEqual([['blocker', undefined, 0, undefined]]);
+      // Without any doubt of the judge's, the one finder is the doubt: the blocker waits for a check of the row's damage.
+      expect(await judgeSplit(['blocker'], missing, [['Finder A']], pair, { doubts: [] })).toEqual([['blocker', undefined, 1, alone]]);
+      expect(refuterMessages.at(-1)).toContain('1. Once the failure happens, it does the damage of the');
+      expect(await judgeSplit(['blocker'], unsettled, [['Finder A']], pair, { doubts: [] })).toEqual([['warning', undefined, 1, alone]]);
+      // Both finders reporting it leave such a blocker as it was.
+      expect(await judgeSplit(['blocker', 'blocker'], unsettled, [['Finder A'], ['Finder B']], pair, { doubts: [] })).toEqual([['blocker', undefined, undefined, undefined]]);
       // A round with one finder and a security finding are unchanged.
       expect(await judgeSplit(['blocker'], unsettled, [['Finder A']], ['Finder A'])).toEqual([['blocker', undefined, 0, undefined]]);
       expect(await judgeSplit(['blocker'], unsettled, [['Finder A']], pair, { security: true })).toEqual([['blocker', undefined, 0, undefined]]);
+      expect(await judgeSplit(['blocker'], unsettled, [['Finder A']], ['Finder A'], { doubts: [] })).toEqual([['blocker', undefined, undefined, undefined]]);
+      expect(await judgeSplit(['blocker'], unsettled, [['Finder A']], pair, { doubts: [], security: true })).toEqual([['blocker', undefined, undefined, undefined]]);
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
     }

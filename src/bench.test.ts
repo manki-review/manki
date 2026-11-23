@@ -648,6 +648,8 @@ describe('scoreRun', () => {
     // every finding no stage names, the twin the record holds once among them.
     expect((await exits({ dedup: { ...parts.dedup, testNitSuppressedCount: 1 } }))[11]).toBe('unknown');
     expect((await exits({ judge: { ...parts.judge, mergedDuplicates: 1 } }))[11]).toBe('unknown');
+    // A warning left out because one finder alone reported it and no check confirmed it has its own exit.
+    expect((await exits({ unposted: [makeFinding({ ...place('Unproven'), unpostedReason: 'one_finder_unconfirmed' })] }))[1]).toBe('one_finder_unconfirmed');
     // A lead no stage names may be one the sweep's judge left unsettled, which the record keeps nowhere.
     const unnamedLead = rawRecord([{ title: 'Sweep lead', lead: { checked: '', left: '' } }], [], { judge: { mergedDuplicates: 1 } });
     expect((await scoreRun(benchCase, makeReview('READY', [], true, unnamedLead), matcher)).raw!.findings.map(f => f.exit)).toEqual(['unknown']);

@@ -1057,6 +1057,10 @@ describe('refuteBlockers', () => {
       { ...doubted('Linked to an open thread', 'warning'), sameAs: 'src/math.ts:1:earlier' },
       doubted('Matches an earlier finding', 'warning'),
       doubted('Doubted warning 1', 'warning'),
+      // A warning one finder of several alone reported needs a check too, and takes only a check the others leave, so this one is past the limit.
+      finding('One finder warning', { severity: 'warning', soleFinder: true }),
+      // A security finding is posted without one.
+      finding('One finder security warning', { severity: 'warning', soleFinder: true, tags: ['security'] }),
       doubted('Doubted warning 2', 'warning'),
       doubted('Doubted warning 3', 'warning'),
       // Blockers are always checked and take none of the eight.
@@ -1091,7 +1095,7 @@ describe('refuteBlockers', () => {
     const options = { workspace, diff, unpostedLater: (f: Finding) => f.title.startsWith('Left out later'), restatesEarlier, doubtBudget: { left: 8 }, rules: 'warn' as const };
     const judged = await refuteBlockers(client, findings, options);
     // A judge call marks none of the warnings whose check waits for the round's end, since a check may be left for them then.
-    expect(judged.filter(f => f.overCheckLimit).map(f => f.title)).toEqual(['Doubted warning 8', 'Second warning without proof', 'Blocker cell no finder filed']);
+    expect(judged.filter(f => f.overCheckLimit).map(f => f.title)).toEqual(['One finder warning', 'Doubted warning 8', 'Second warning without proof', 'Blocker cell no finder filed']);
     // The call at the round's end checks no finding a second time, and finds the limit used up.
     const result = await refuteBlockers(client, judged, { ...options, roundEnd: true });
 
@@ -1113,7 +1117,7 @@ describe('refuteBlockers', () => {
       'Doubt in a deleted file': undefined, 'Doubt with no file': undefined, 'No proof in a deleted file': 'no_proof',
       'Left out later with a doubt': undefined, 'Left out later without proof': 'no_proof',
       'Tool alert without proof': 'no_proof', 'Security warning without proof': 'no_proof', 'Security warning with a doubt': 'not_checked',
-      'Rule warning without proof': 'no_proof',
+      'Rule warning without proof': 'no_proof', 'One finder warning': 'one_finder_unconfirmed', 'One finder security warning': undefined,
     });
     // With `auto`, the default, the rule gives no grade, so the rule warning needs proof like any other warning.
     const ruleWarning = findings.find(f => f.title === 'Rule warning without proof')!;
@@ -1126,6 +1130,16 @@ describe('refuteBlockers', () => {
     const later = await refuteBlockers(shared, pairOf('Second call'), { workspace, diff, doubtBudget });
     expect(shared.calls.map(([title]) => title).sort()).toEqual(['First call 1', 'First call 2', 'Second call 1']);
     expect([reasons(later), doubtBudget]).toEqual([{ 'Second call 1': 'unsettled_check', 'Second call 2': 'not_checked' }, { left: 0 }]);
+    // A checked warning one finder alone reported is posted only when a check confirms it, and a disproof drops it.
+    const alone = ['Confirmed', 'Unsettled', 'Disproved'].map(title => finding(`One finder, ${title}`, { severity: 'warning', soleFinder: true }));
+    const aloneChecked = await refuteBlockers(fakeClient({
+      'One finder, Confirmed': { outcome: 'confirmed', defect: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] },
+      'One finder, Unsettled': unsettled,
+      'One finder, Disproved': { outcome: 'disproved', reason: 'The caller bounds it.', proof: ['src/math.ts:1'] },
+    }), alone, { workspace, diff });
+    expect(aloneChecked.map(f => [f.title, f.severity, f.severity === 'warning' ? unprovenReason(f) : undefined])).toEqual([
+      ['One finder, Confirmed', 'warning', undefined], ['One finder, Unsettled', 'warning', 'one_finder_unconfirmed'], ['One finder, Disproved', 'ignore', undefined],
+    ]);
     // With a check left after the others, a linked warning and one that matches an earlier finding are checked too.
     const mixed = findings.filter(f => ['Linked to an open thread', 'Matches an earlier finding', 'Doubted warning 1'].includes(f.title));
     const checkedWith = async (left: number) => {

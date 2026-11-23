@@ -1917,7 +1917,8 @@ export function mapJudgedToFindings(
     const match = aligned[i];
     if (!match) throw new Error(`Finding ${i + 1} "${safeTruncate(o.title, 80)}" has no judge entry`);
     if (!match.preExisting) delete finding.preExisting;
-    Object.assign(finding, gradeByCell(o, match, filedBlocker(i), dropCheckable(i), soleFinder(i)));
+    // Without a refuter no check could settle a blocker held for one finder, so the cell then grades it as before.
+    Object.assign(finding, gradeByCell(o, match, filedBlocker(i), dropCheckable(i), dropsChecked && soleFinder(i)));
     if (soleFinder(i)) finding.soleFinder = true;
     if (finding.severity !== o.severity) finding.reviewerSeverity = o.severity;
     finding.judgeNotes = match.reasoning;

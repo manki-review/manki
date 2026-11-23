@@ -356,7 +356,8 @@ export interface Finding {
   lowestReviewerSeverity?: FindingSeverity;
   /**
    * Set when two or more finders ran and one of them alone reported the finding, with no other check beside it. Its
-   * blocker cell then needs a confirmed consequence, as one that not every finder filed as a blocker does.
+   * blocker cell then needs a confirmed consequence, as one that not every finder filed as a blocker does. Such a warning
+   * needs a check that confirms it, and such a note follows the others of its group.
    */
   soleFinder?: boolean;
   /** Each change of the finding's severity after the reviewer graded it, in order, with what changed it. */
@@ -1322,7 +1323,7 @@ export function overruledDisproof(finding: Pick<Finding, 'severity' | 'rule' | '
 /** `earlier` restates a finding an earlier round listed in its review body, whatever code it sits on. */
 export type FindingOrigin = 'new' | 'reviewed' | 'earlier';
 
-/** Why a review leaves out a finding the judge kept, with the words that say it to a reader. The first four are set on a note, `listed_earlier` also on a finding that restates an earlier blocker the round lists again, `no_trigger` on a warning with no realistic trigger, and the last three on a warning nothing proves. */
+/** Why a review leaves out a finding the judge kept, with the words that say it to a reader. The first four are set on a note, `listed_earlier` also on a finding that restates an earlier blocker the round lists again, `no_trigger` on a warning with no realistic trigger, and the last four on a warning nothing proves. */
 export const UNPOSTED_REASONS = {
   reviewed_code: 'on code an earlier round reviewed',
   listed_earlier: 'listed by an earlier round',
@@ -1335,6 +1336,7 @@ export const UNPOSTED_REASONS = {
   unsettled_check: 'a check of the code could not confirm it',
   not_checked: 'nothing proves it, and no check of the code ran on it',
   no_proof: 'it cites no lines that prove it',
+  one_finder_unconfirmed: 'only one of the finders reported it, and no check of the code confirmed it',
 } as const;
 export type UnpostedReason = keyof typeof UNPOSTED_REASONS;
 /** The `revertGap` the judge states on a `testing` finding whose missing test an existing test already provides. */
@@ -1344,7 +1346,7 @@ export type LaterDrop = Extract<GradeChange, 'refutation' | 'in_pr_suppression' 
 /** Why a finding the judge kept, or one added after it, is only in the round record. */
 export type RecordOnlyReason = UnpostedReason | LaterDrop;
 /** Why nothing proves a warning: a check ran and settled nothing, the round's checks did not reach it, or no check could decide and no line is cited. */
-const UNPROVEN_REASONS = ['unsettled_check', 'not_checked', 'no_proof'] as const satisfies readonly UnpostedReason[];
+const UNPROVEN_REASONS = ['unsettled_check', 'not_checked', 'no_proof', 'one_finder_unconfirmed'] as const satisfies readonly UnpostedReason[];
 export type UnprovenReason = typeof UNPROVEN_REASONS[number];
 
 /** How a blocker or a warning was checked, with the words that say it to a reader. */

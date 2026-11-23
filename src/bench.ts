@@ -500,7 +500,7 @@ function raisedBy(reviewer: string, f: Finding): RaisedBy {
 }
 
 /** Where a finding a finder reported left the review, by the round record. */
-type RawExit = 'posted' | 'open_lead' | 'dedup' | 'merged' | 'judge' | 'refuter' | 'earlier_round' | 'unproven' | Exclude<UnpostedReason, UnprovenReason> | 'unknown';
+type RawExit = 'posted' | 'open_lead' | 'dedup' | 'merged' | 'judge' | 'refuter' | 'earlier_round' | 'unproven' | 'one_finder_unconfirmed' | Exclude<UnpostedReason, UnprovenReason> | 'unknown';
 
 const RAW_EXITS: Record<RawExit, string> = {
   posted: "posted, but matched only among the finders' findings",
@@ -511,6 +511,7 @@ const RAW_EXITS: Record<RawExit, string> = {
   refuter: 'disproved by a tool check',
   earlier_round: 'suppressed by an earlier round',
   unproven: 'left out as an unproven warning',
+  one_finder_unconfirmed: 'left out as a warning one finder reported and no check confirmed',
   pre_existing: UNPOSTED_REASONS.pre_existing,
   memory_suppression: UNPOSTED_REASONS.memory_suppression,
   static_signal_match: UNPOSTED_REASONS.static_signal_match,
@@ -789,6 +790,7 @@ function laterExit(f: RecordedPlace, context: RoundContext): RawExit | undefined
   const { findings, judge, memory, dedup, leads } = context;
   if (findings.entries.some(e => !e.relisted && samePlace(entryPlace(e), f))) return 'posted';
   const left = findings.unposted?.find(e => samePlace(entryPlace(e), f));
+  if (left?.unpostedReason === 'one_finder_unconfirmed') return left.unpostedReason;
   if (left?.unpostedReason) return leftOutUnproven(left) ? 'unproven' : left.unpostedReason as Exclude<UnpostedReason, UnprovenReason>;
   if (left) return left.tags?.includes(PRE_EXISTING_TAG) ? 'pre_existing' : 'unknown';
   const dropped = judge.dropped?.find(d => samePlace(d, f));

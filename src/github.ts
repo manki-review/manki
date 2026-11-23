@@ -1106,6 +1106,7 @@ const RECORD_ONLY_NAMES: Record<RecordOnlyReason, string> = {
   unsettled_check: 'no proof',
   not_checked: 'no proof',
   no_proof: 'no proof',
+  one_finder_unconfirmed: 'one finder, not confirmed',
   refutation: 'disproved by a check of the code',
   in_pr_suppression: 'suppressed in this PR',
   resolved_thread: 'matches a resolved thread',
@@ -2230,8 +2231,8 @@ function carriedBy(finding: Finding, matched: string | undefined): string | unde
  * Puts the notes of `result.findings` last and keeps the first `limit` of them. The others move to `result.unposted`,
  * marked `note_cap`. A note on a failure this PR fixes elsewhere (`fixedElsewhere`) comes first. Every note in the
  * `style` row of the severity table follows every other note, so a style note takes only a slot no other note fills.
- * Within each group the notes keep the judge's order, and a note the judge did not rank follows the ranked ones, in the
- * order returned. A tool alert is listed with the notes and counts toward no limit. A note an earlier thread carries is
+ * Within each group a `soleFinder` note follows the notes more than one finder or check reported, and then the notes keep
+ * the judge's order. A note the judge did not rank follows the ranked ones, in the order returned. A tool alert is listed with the notes and counts toward no limit. A note an earlier thread carries is
  * not listed, so it stays in place and counts toward no limit. A `testing` note without a `revertGap` follows every
  * other note except the style notes. One whose `revertGap` is `REVERT_CAUGHT` claims a gap a test already covers, so it
  * moves to `result.unposted` before the limit, marked `caught_by_test`.
@@ -2241,7 +2242,7 @@ export function capNotes(result: ReviewResult, existingThreads: PreviousFinding[
   const caught = new Set([...listable].filter(f => f.category === 'testing' && f.revertGap === REVERT_CAUGHT && canLeaveOut(f)));
   const group = (f: Finding): number => (f.fixedElsewhere ? -1 : f.cell?.row === 'style' ? 2 : f.category === 'testing' && !f.revertGap ? 1 : 0);
   const rank = (f: Finding): number => f.noteRank ?? Number.MAX_SAFE_INTEGER;
-  const ordered = [...listable].filter(f => !caught.has(f)).sort((a, b) => group(a) - group(b) || rank(a) - rank(b));
+  const ordered = [...listable].filter(f => !caught.has(f)).sort((a, b) => group(a) - group(b) || Number(!!a.soleFinder) - Number(!!b.soleFinder) || rank(a) - rank(b));
   const capped = new Set(ordered.filter(canLeaveOut).slice(limit));
   result.findings = [...result.findings.filter(f => !listable.has(f)), ...ordered.filter(f => !capped.has(f))];
   const unposted = [

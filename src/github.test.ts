@@ -6365,6 +6365,10 @@ describe('postReview non-blocking findings', () => {
     capNotes(improvementsFirst, []);
     expect(titles(improvementsFirst.findings)).toEqual(['Test the empty list', 'Document the limit', 'Reuse the parser']);
     expect(titles(improvementsFirst.unposted)).toEqual(['Rename the flag', 'Fix the comment wording']);
+    // Within a group a note one finder alone reported follows the others, whatever the judge's order, and stays before the style notes.
+    const shared = buildResult(rows.map(f => (f.title === 'Test the empty list' ? { ...f, soleFinder: true } : f)));
+    capNotes(shared, [], 4);
+    expect(titles(shared.findings)).toEqual(['Document the limit', 'Reuse the parser', 'Test the empty list', 'Rename the flag']);
     // With fewer improvement notes than places, the style notes fill the rest in the judge's order.
     const styleFills = buildResult([...rows]);
     capNotes(styleFills, [], 4);

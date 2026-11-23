@@ -2279,7 +2279,8 @@ describe('runReview', () => {
         fetched(join(stateDir, 'dependencies'), 'crates.io/demo@1.0.0');
         writeFileSync(join(stateDir, 'dependencies', `${encodeURIComponent('crates.io/demo@1.0.0')}.from`), JSON.stringify({ registry: 'crates.io', name: 'demo', version: '1.0.0', source: 'lockfile', file: 'Cargo.lock' }));
         const proof = ['src/queue.ts:6', 'acme/billing:src/import.ts:2', 'crates.io/demo@1.0.0:src/import.ts:1'];
-        return { content: JSON.stringify({ outcome: 'confirmed', reason: 'It does.', proof }), relatedReads: { 'acme/billing': 2, 'crates.io/demo@1.0.0': 1 } };
+        // One finder of two reported the blocker, so the check confirms its damage too.
+        return { content: JSON.stringify({ outcome: 'confirmed', reason: 'It does.', proof, premises: [{ outcome: 'confirmed', reason: 'The id runs twice.', proof: ['src/queue.ts:6'] }] }), relatedReads: { 'acme/billing': 2, 'crates.io/demo@1.0.0': 1 } };
       });
       mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
       try {
@@ -3789,7 +3790,9 @@ describe('runReview', () => {
           return { model, content: JSON.stringify({ origin, reason: 'The loop before this PR also only read the entry.', head: ['src/queue.ts:3', 'src/queue.ts:4'], base: baseProof }) };
         }
         refuterMessages.push(user);
-        return { model, content: JSON.stringify({ outcome: 'confirmed', reason: 'Nothing removes an entry.', proof: ['src/queue.ts:4'] }) };
+        // One finder of two reported the blocker, so the check confirms its damage too.
+        const confirmed = { outcome: 'confirmed', reason: 'Nothing removes an entry.', proof: ['src/queue.ts:4'] };
+        return { model, content: JSON.stringify({ ...confirmed, premises: [confirmed] }) };
       };
       const pair = pairModel === null ? undefined : {
         repoTools: true, sendMessage: pairModel === 'failed' ? jest.fn().mockRejectedValue(new Error('timed out')) : jest.fn(reply(pairModel)),
@@ -3824,7 +3827,8 @@ describe('runReview', () => {
     expect(originMessages[0]).toContain("- **A reviewer's claim that it is older than this PR**, to check: The loop read the queue the same way before this PR.");
     expect(result.outcome).toBe('READY');
     expect(result.findings.map(f => [f.title, f.severity, f.originalSeverity, f.tags, f.preExistingCheck])).toEqual([[title, 'warning', 'blocker', ['pre-existing', 'follow-up'], 'touches_diff']]);
-    expect(result.findings[0].gradePath?.map(step => [step.from, step.to, step.by])).toEqual([['blocker', 'warning', 'pre_existing']]);
+    // The judge held the blocker for its one finder until the checks confirmed its damage.
+    expect(result.findings[0].gradePath?.map(step => [step.from, step.to, step.by])).toEqual([['blocker', 'warning', 'judge'], ['warning', 'blocker', 'refutation'], ['blocker', 'warning', 'pre_existing']]);
     expect(result.findings[0].originCheck?.answers.map(a => [a.model, a.verdict, a.base])).toEqual([['judge-model', 'pre_existing', baseProofDefault], ['pair-model', 'pre_existing', baseProofDefault]]);
     expect(formatFindingComment(result.findings[0], TEST_LINKS)).toContain('**Already broken before this PR.** Two checks found the same problem on the base branch at ');
 
@@ -3852,7 +3856,7 @@ describe('runReview', () => {
     for (const [origin, options] of kept) {
       const round = await run(origin, options);
       expect([options, round.result.outcome, round.result.findings.map(f => [f.severity, f.gradeIfConfirmed, f.tags?.filter(t => t !== 'security')])])
-        .toEqual([options, 'ADDRESS_FIRST', [['blocker', undefined, options.security ? [] : undefined]]]);
+        .toEqual([options, 'ADDRESS_FIRST', [['blocker', options.repoTools === false || options.security ? undefined : 'blocker', options.security ? [] : undefined]]]);
       expect(round.originMessages).toHaveLength(options.repoTools === false || options.readsBase === false ? 0 : 2);
     }
     // Both models lower a security blocker.
@@ -3878,12 +3882,13 @@ describe('runReview', () => {
       };
       const refuterPair = pair ? { repoTools: true, sendMessage: jest.fn(reply('pair-model')) } as unknown as LLMClient : undefined;
       const clients = { ...makeClients(), ...(refuterPair && { refuterPair }) };
-      jest.mocked(clients.reviewer.sendMessage).mockResolvedValueOnce({ content: JSON.stringify(found) });
+      // Both finders report them, so each is graded as a blocker every finder filed.
+      jest.mocked(clients.reviewer.sendMessage).mockResolvedValueOnce({ content: JSON.stringify(found) }).mockResolvedValueOnce({ content: JSON.stringify(found) });
       Object.assign(clients.judge, { repoTools: true });
       const refute = reply('judge-model');
       jest.mocked(clients.judge.sendMessage).mockImplementation(async (system: string, user: string) => {
         if (system.startsWith('You are a code review judge')) {
-          return { content: JSON.stringify({ summary: 's', findings: fixture.findings.map((f, i) => ({ id: i + 1, title: f.title, row: 'severe', ...(f.security && { security: true }), reasoning: 'r' })) }) };
+          return { content: JSON.stringify({ summary: 's', findings: [...fixture.findings, ...fixture.findings].map((f, i) => ({ id: i + 1, title: f.title, row: 'severe', ...(f.security && { security: true }), reasoning: 'r' })) }) };
         }
         if (!system.startsWith('You check one finding') && !system.startsWith('You decide whether')) return { content: READY_VERDICT };
         return refute(system, user);
@@ -4089,7 +4094,8 @@ describe('runReview', () => {
     // second call without them either. Neither refused call counts as a retry.
     const refuted = (r: ReviewResult) => r.allJudgedFindings?.map(f => [f.title, f.severity, f.refutation, f.checkStatus]);
     expect(lateResults[0]).toMatchObject({ ...notStartedRound({ stage: 'judge', agent: 'refute' }, 'refuter call'), judgeRetryCount: 0 });
-    expect(refuted(lateResults[0])).toEqual([[blocker.title, 'blocker', undefined, undefined], ...old.map(f => [f.title, 'warning', undefined, undefined])]);
+    // One finder of two reported the blocker, so the judge holds it at a warning until a check confirms its damage.
+    expect(refuted(lateResults[0])).toEqual([[blocker.title, 'warning', undefined, undefined], ...old.map(f => [f.title, 'warning', undefined, undefined])]);
     // The round ends after that judge call, so its blocker starts no sweep.
     expect(lateResults[0].sweeps).toBeUndefined();
     expect(lateResults[1]).toMatchObject({ ...notStartedRound({ stage: 'judge' }, 'judge call'), judgeRetryCount: 0 });
@@ -4643,6 +4649,11 @@ describe('runReview', () => {
         'The check confirmed it without cited lines': checked('confirmed'),
         'The check settled nothing': { ...proof, doubts, ...checked('unsettled') },
         'Doubted and past the limit of checks': { ...proof, doubts, overCheckLimit: true },
+        // A warning one finder of several alone reported needs a check that confirms it, unless no check could run.
+        'One finder, confirmed': { ...proof, soleFinder: true, ...checked('confirmed') },
+        'One finder, the check settled nothing': { ...proof, soleFinder: true, ...checked('unsettled') },
+        'One finder, past the limit of checks': { ...proof, soleFinder: true, overCheckLimit: true },
+        'One finder, no check could run': { ...proof, soleFinder: true },
         // No check could decide, as when the refuter's call fails or it cannot read the file, so the cited lines do.
         'Doubted and no check could run': { ...proof, doubts },
         'No cited lines and no check could run': {},
@@ -4672,7 +4683,7 @@ describe('runReview', () => {
 
       expect(shown(result)).toEqual([
         ['Cited lines show it', 'proven'], ['The check confirmed the doubt', 'confirmed'], ['The check confirmed the defect and the premise that decides it', 'confirmed'],
-        ['The check confirmed it without cited lines', 'confirmed'],
+        ['The check confirmed it without cited lines', 'confirmed'], ['One finder, confirmed', 'confirmed'], ['One finder, no check could run', 'proven'],
         // Only a blocker or a warning says how it was checked. A doubt no check could settle leaves a posted warning unconfirmed.
         ['Doubted and no check could run', 'unconfirmed'], ['A doubted note', undefined], ['A blocker', 'proven'],
         ['Proven cost with a trigger', 'proven'], ['Rare wrong result without a trigger', 'proven'], ['Cost a finder filed as a blocker', 'proven'], ['Security cost without a trigger', 'proven'],
@@ -4684,6 +4695,8 @@ describe('runReview', () => {
         ['The check disproved the premise that decides the defect', 'warning', 'unsettled_check'],
         ['The check settled nothing', 'warning', 'unsettled_check'],
         ['Doubted and past the limit of checks', 'warning', 'not_checked'],
+        ['One finder, the check settled nothing', 'warning', 'one_finder_unconfirmed'],
+        ['One finder, past the limit of checks', 'warning', 'one_finder_unconfirmed'],
         ['No cited lines and no check could run', 'warning', 'no_proof'],
         ['Names an earlier finding no round still shows', 'warning', 'no_proof'],
         // A missing trigger is the reason whatever proves the warning.
