@@ -356,8 +356,8 @@ export interface Finding {
   lowestReviewerSeverity?: FindingSeverity;
   /**
    * Set when two or more finders ran and one of them alone reported the finding, with no other check beside it. Its
-   * blocker cell then needs a confirmed consequence, as one that not every finder filed as a blocker does. Such a warning
-   * needs a check that confirms it, and such a note follows the others of its group.
+   * blocker cell then needs a confirmed consequence, as one that not every finder filed as a blocker does. Such a blocker
+   * or warning gets the other finder's vote (`otherFinderVote`), and such a note follows the others of its group.
    */
   soleFinder?: boolean;
   /** Each change of the finding's severity after the reviewer graded it, in order, with what changed it. */
@@ -446,6 +446,8 @@ export interface Finding {
   pairRefutation?: Refutation;
   /** The origin checks of whether the PR caused the failure. Set on blockers and warnings the round checked. */
   originCheck?: OriginCheck;
+  /** The vote of a finder that did not report the finding, which `otherFinderVotes` asks on a `soleFinder` blocker or warning. */
+  otherFinderVote?: OtherFinderVote;
   /** The line of an origin answer's `fixedElsewhere`, on a pre-existing finding posted as a note because the PR fixes the same failure there. */
   fixedElsewhere?: string;
   /** The id of the memory suppression that hid the finding. */
@@ -966,7 +968,7 @@ export interface RoundSlicing {
 /** What changed a finding's severity. */
 export type GradeChange =
   | 'judge' | 'rule' | 'unproven' | 'build_claim' | 'refutation' | 'in_pr_suppression' | 'own_proposal' | 'ratchet'
-  | 'resolved_thread' | 'pre_existing' | 'own_fix';
+  | 'resolved_thread' | 'pre_existing' | 'own_fix' | 'other_finder';
 
 /** One change of a finding's severity. */
 export interface GradeStep {
@@ -1121,6 +1123,21 @@ export interface OriginAnswer {
 }
 
 /** The origin checks of a finding. */
+/** The answer of a finder that did not report a `soleFinder` finding, asked for the harm the finding causes. */
+export interface OtherFinderVote {
+  /** The finder whose model answered. */
+  finder: string;
+  harm: string;
+  /** The realistic situation in normal use where the harm happens. */
+  situation: string;
+  /** Where the harm happens, as `path:line`, and the code quoted from it. Missing when the answer named no line. */
+  line?: string;
+  quote?: string;
+  /** Whether the answer named no line, or one the head does not hold with the quoted code. */
+  declined: boolean;
+  model?: string;
+}
+
 export interface OriginCheck {
   /** Whether the PR added or changed the flagged line, so the line has no place at the base. */
   lineChanged: boolean;
@@ -1323,7 +1340,7 @@ export function overruledDisproof(finding: Pick<Finding, 'severity' | 'rule' | '
 /** `earlier` restates a finding an earlier round listed in its review body, whatever code it sits on. */
 export type FindingOrigin = 'new' | 'reviewed' | 'earlier';
 
-/** Why a review leaves out a finding the judge kept, with the words that say it to a reader. The first four are set on a note, `listed_earlier` also on a finding that restates an earlier blocker the round lists again, `no_trigger` on a warning with no realistic trigger, and the last four on a warning nothing proves. */
+/** Why a review leaves out a finding the judge kept, with the words that say it to a reader. The first four are set on a note, `listed_earlier` also on a finding that restates an earlier blocker the round lists again, `no_trigger` on a warning with no realistic trigger, the next three on a warning nothing proves, and `other_finder_declined` on a warning one finder reported that the other finder's vote declined. */
 export const UNPOSTED_REASONS = {
   reviewed_code: 'on code an earlier round reviewed',
   listed_earlier: 'listed by an earlier round',
@@ -1336,7 +1353,7 @@ export const UNPOSTED_REASONS = {
   unsettled_check: 'a check of the code could not confirm it',
   not_checked: 'nothing proves it, and no check of the code ran on it',
   no_proof: 'it cites no lines that prove it',
-  one_finder_unconfirmed: 'only one of the finders reported it, and no check of the code confirmed it',
+  other_finder_declined: 'only one of the finders reported it, and the other finder named no harm it causes in realistic use',
 } as const;
 export type UnpostedReason = keyof typeof UNPOSTED_REASONS;
 /** The `revertGap` the judge states on a `testing` finding whose missing test an existing test already provides. */
@@ -1346,7 +1363,7 @@ export type LaterDrop = Extract<GradeChange, 'refutation' | 'in_pr_suppression' 
 /** Why a finding the judge kept, or one added after it, is only in the round record. */
 export type RecordOnlyReason = UnpostedReason | LaterDrop;
 /** Why nothing proves a warning: a check ran and settled nothing, the round's checks did not reach it, or no check could decide and no line is cited. */
-const UNPROVEN_REASONS = ['unsettled_check', 'not_checked', 'no_proof', 'one_finder_unconfirmed'] as const satisfies readonly UnpostedReason[];
+const UNPROVEN_REASONS = ['unsettled_check', 'not_checked', 'no_proof'] as const satisfies readonly UnpostedReason[];
 export type UnprovenReason = typeof UNPROVEN_REASONS[number];
 
 /** How a blocker or a warning was checked, with the words that say it to a reader. */
@@ -3173,6 +3190,8 @@ export interface FindingFingerprintEntry {
   pairRefutation?: Refutation;
   /** Mirrors `Finding.originCheck`. */
   originCheck?: OriginCheck;
+  /** Mirrors `Finding.otherFinderVote`. */
+  otherFinderVote?: OtherFinderVote;
   /** Mirrors `Finding.gradeIfConfirmed`. */
   gradeIfConfirmed?: FindingSeverity;
   /** Mirrors `Finding.judgeIfConfirmed`. */
@@ -3323,7 +3342,7 @@ export interface ReplyDecision {
 export interface RoundUsage extends RoundUsageStage {
   /** Wall-clock time of the review run, from its start to the review it posts. `durationMs` is the time spent in model calls. */
   wallClockMs?: number;
-  perStage?: Partial<Record<'planner' | 'reviewer' | 'compare' | 'claims' | 'claim_terms' | 'claim_check' | 'fixes' | 'fix_check' | 'related_check' | 'pattern_check' | 'sweep' | 'judge' | 'dedup' | 'verdict' | 'scope' | 'related' | 'translate', RoundUsageStage>>;
+  perStage?: Partial<Record<'planner' | 'reviewer' | 'compare' | 'claims' | 'claim_terms' | 'claim_check' | 'fixes' | 'fix_check' | 'related_check' | 'pattern_check' | 'sweep' | 'judge' | 'vote' | 'dedup' | 'verdict' | 'scope' | 'related' | 'translate', RoundUsageStage>>;
   perModel?: Record<string, RoundUsageStage>;
   llmCalls?: LLMCall[];
   /** The newest reading of each subscription usage window the round's calls reported. */

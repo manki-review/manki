@@ -2439,7 +2439,7 @@ describe('runJudgeAgent', () => {
       };
       const judgeSplit = async (order: readonly Finding['severity'][], consequenceAnswer: object, reviewers?: string[][], finderNames?: string[], judged: { doubts?: object[]; security?: boolean } = {}) => {
         mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 's', findings: order.map((_, i) => ({ id: i + 1, ...doubted, ...judged })) }) });
-        replies['Rows lost on retry'] = { ...skips, premises: judged.doubts?.length === 0 ? [consequenceAnswer] : [skips, consequenceAnswer] };
+        replies['Rows lost on retry'] = judged.doubts?.length === 0 ? { ...consequenceAnswer, premises: [consequenceAnswer] } : { ...skips, premises: [skips, consequenceAnswer] };
         const findings = order.map((severity, i) => copy(severity, reviewers?.[i]));
         const split = await runJudgeAgent(mockClient, makeConfig(), { findings, diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, finderNames, refutation: { client: refuter, workspace } });
         return split.findings.map(f => [f.severity, f.lowestReviewerSeverity, f.doubts?.filter(d => d.consequence).length, f.gradePath?.find(step => step.by === 'judge')?.reason]);
@@ -2466,6 +2466,8 @@ describe('runJudgeAgent', () => {
       expect(await judgeSplit(['blocker'], missing, [['Finder A']], pair, { doubts: [] })).toEqual([['blocker', undefined, 1, alone]]);
       expect(refuterMessages.at(-1)).toContain('1. Once the failure happens, it does the damage of the');
       expect(await judgeSplit(['blocker'], unsettled, [['Finder A']], pair, { doubts: [] })).toEqual([['warning', undefined, 1, alone]]);
+      // A disproof lowers it no further than it lowers any blocker: it stays a warning and is not dropped.
+      expect(await judgeSplit(['blocker'], { outcome: 'disproved', reason: 'A later sync restores them.', proof: ['src/index.ts:19'] }, [['Finder A']], pair, { doubts: [] })).toEqual([['warning', undefined, 1, alone]]);
       // Both finders reporting it leave such a blocker as it was.
       expect(await judgeSplit(['blocker', 'blocker'], unsettled, [['Finder A'], ['Finder B']], pair, { doubts: [] })).toEqual([['blocker', undefined, undefined, undefined]]);
       // A round with one finder and a security finding are unchanged.

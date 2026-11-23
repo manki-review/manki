@@ -1106,7 +1106,7 @@ const RECORD_ONLY_NAMES: Record<RecordOnlyReason, string> = {
   unsettled_check: 'no proof',
   not_checked: 'no proof',
   no_proof: 'no proof',
-  one_finder_unconfirmed: 'one finder, not confirmed',
+  other_finder_declined: 'declined by the other finder',
   refutation: 'disproved by a check of the code',
   in_pr_suppression: 'suppressed in this PR',
   resolved_thread: 'matches a resolved thread',

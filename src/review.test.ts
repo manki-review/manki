@@ -2253,6 +2253,10 @@ describe('runReview', () => {
           tools.set('claim', options?.repoTools);
           return { content: JSON.stringify({ status: 'unchecked', reason: 'The importer was not read.' }) };
         }
+        // The other finder backs the blocker only one finder reported.
+        if (system.startsWith('You test a claim')) {
+          return { content: JSON.stringify({ harm: 'An id runs twice.', situation: 'The importer starts a finished id.', line: 'src/queue.ts:6', quote: 'if (this.pending.has(id)) return;' }) };
+        }
         tools.set('finder', options?.repoTools);
         // A finder reads one repo, which fetches it.
         if (options?.repoTools?.related) fetched(options.repoTools.related.stateDir, 'acme/reports');
@@ -4035,6 +4039,8 @@ describe('runReview', () => {
     let reported = false;
     jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string) => {
       if (sweeping(system)) return { content: JSON.stringify({ class: 'a cache key leaves out a field the value depends on', general: true, findings: [swept] }) };
+      // The other finder backs each finding only one finder reported.
+      if (system.startsWith('You test a claim')) return { content: JSON.stringify({ harm: 'A wrong entry is served.', situation: 'Two locales share a key.', line: 'src/app.ts:3', quote: 'new 3' }) };
       const content = reported ? '[]' : JSON.stringify([blocker, ...old]);
       reported = true;
       return { content };
@@ -4478,6 +4484,64 @@ describe('runReview', () => {
     expect(mockedRunJudgeAgent.mock.calls[3][2].toolSteps).toBe(30);
   });
 
+  it('asks a finder that did not report a blocker or warning one finder alone reported for its harm, and lowers it when the answer names no line the head holds', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'manki-vote-'));
+    mkdirSync(join(workspace, 'src'));
+    writeFileSync(join(workspace, 'src', 'a.ts'), Array.from({ length: 10 }, (_, i) => `const line${i + 1} = ${i + 1};`).join('\n'));
+    const titles = ['Backed blocker', 'Declined blocker', 'Declined warning', 'Misquoted warning', 'Backed warning', 'Security warning', 'Vote fails', 'Both finders found it', 'Restates a thread'];
+    const reported = titles.map((title, i) => ({ severity: i < 2 ? 'blocker' : 'warning', title, file: 'src/a.ts', line: i + 1, description: `${title}.`, evidence: [`src/a.ts:${i + 1} shows it`], proof: [`src/a.ts:${i + 1}`] }));
+    const answers: Record<string, unknown> = {
+      'Backed blocker': { harm: 'A total is wrong.', situation: 'Any export.', line: 'src/a.ts:1', quote: 'const line1 = 1;' },
+      'Declined blocker': { harm: '', situation: '', line: 'none' },
+      'Declined warning': { harm: '', situation: '', line: 'none' },
+      // The head holds other code on that line, so the answer names no harm it can show.
+      'Misquoted warning': { harm: 'A total is wrong.', situation: 'Any export.', line: 'src/a.ts:4', quote: 'const total = 0;' },
+      'Backed warning': { harm: 'A total is wrong.', situation: 'Any export.', line: 'src/a.ts:5', quote: 'line5 = 5' },
+      'Vote fails': 'not json',
+    };
+    const asked: string[] = [];
+    const clients = makeClients();
+    let finderCalls = 0;
+    jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string, user: string) => {
+      if (system.startsWith('You test a claim')) {
+        const title = titles.find(t => user.includes(`## Claim: ${t}\n`))!;
+        asked.push(title);
+        const answer = answers[title];
+        return { content: typeof answer === 'string' ? answer : JSON.stringify(answer) };
+      }
+      return { content: finderCalls++ === 0 ? JSON.stringify(reported) : '[]' };
+    });
+    // The judge marks each finding only the first finder reported, as `mapJudgedToFindings` does.
+    mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => ({
+      summary: 'ok', findings: input.findings.map(f => ({ ...f, ...(f.title !== 'Both finders found it' && { soleFinder: true }), ...(f.title === 'Security warning' && { tags: ['security'] }), ...(f.title === 'Restates a thread' && { threadId: 'T9' }) })),
+    }));
+    try {
+      const result = await runReview(clients, { config: makeConfig(), diff: diffChanging('src/a.ts'), rawDiff: 'raw diff', repoContext: '', workspace });
+      // A security finding, one more than one finder reported and one that restates a thread get no vote, and a failed call asks once more.
+      expect(asked.sort()).toEqual(['Backed blocker', 'Backed warning', 'Declined blocker', 'Declined warning', 'Misquoted warning', 'Vote fails', 'Vote fails']);
+      const reporter = result.findings[0].reviewers[0];
+      expect(result.findings.map(f => [f.title, f.severity, f.otherFinderVote?.declined, f.gradePath?.at(-1)?.reason])).toEqual([
+        ['Backed blocker', 'blocker', false, undefined],
+        // A blocker the other finder declines is posted as a warning, with the reason.
+        ['Declined blocker', 'warning', true, 'the other finder would not block on it'],
+        ['Backed warning', 'warning', false, undefined],
+        ['Security warning', 'warning', undefined, undefined],
+        ['Vote fails', 'warning', undefined, undefined],
+        ['Both finders found it', 'warning', undefined, undefined],
+        ['Restates a thread', 'warning', undefined, undefined],
+      ]);
+      // The other finder answered, never the one that reported it, and the record keeps its answer with the quoted line.
+      expect(result.findings[0].otherFinderVote).toEqual({ finder: expect.not.stringMatching(reporter), harm: 'A total is wrong.', situation: 'Any export.', line: 'src/a.ts:1', quote: 'const line1 = 1;', declined: false });
+      expect(result.llmCalls?.filter(c => c.stage === 'vote').length).toBe(7);
+      // A warning the other finder declines is kept in the round record only.
+      expect(result.unposted?.map(f => [f.title, f.unpostedReason, f.otherFinderVote?.line])).toEqual([
+        ['Declined warning', 'other_finder_declined', undefined], ['Misquoted warning', 'other_finder_declined', 'src/a.ts:4'],
+      ]);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   describe('open leads', () => {
     const leadOf = (severity: string, title: string, file: string, line: number) => ({ lead: true, severity, title, file, line, description: `${title}.`, checked: 'read the file', left: 'check the caller' });
     const refuted = (outcome: 'confirmed' | 'disproved' | 'unsettled') => ({ outcome, defect: outcome, reason: `It is ${outcome}.`, files: ['src/a.ts'], codeDigest: 'abc' });
@@ -4649,11 +4713,6 @@ describe('runReview', () => {
         'The check confirmed it without cited lines': checked('confirmed'),
         'The check settled nothing': { ...proof, doubts, ...checked('unsettled') },
         'Doubted and past the limit of checks': { ...proof, doubts, overCheckLimit: true },
-        // A warning one finder of several alone reported needs a check that confirms it, unless no check could run.
-        'One finder, confirmed': { ...proof, soleFinder: true, ...checked('confirmed') },
-        'One finder, the check settled nothing': { ...proof, soleFinder: true, ...checked('unsettled') },
-        'One finder, past the limit of checks': { ...proof, soleFinder: true, overCheckLimit: true },
-        'One finder, no check could run': { ...proof, soleFinder: true },
         // No check could decide, as when the refuter's call fails or it cannot read the file, so the cited lines do.
         'Doubted and no check could run': { ...proof, doubts },
         'No cited lines and no check could run': {},
@@ -4683,7 +4742,7 @@ describe('runReview', () => {
 
       expect(shown(result)).toEqual([
         ['Cited lines show it', 'proven'], ['The check confirmed the doubt', 'confirmed'], ['The check confirmed the defect and the premise that decides it', 'confirmed'],
-        ['The check confirmed it without cited lines', 'confirmed'], ['One finder, confirmed', 'confirmed'], ['One finder, no check could run', 'proven'],
+        ['The check confirmed it without cited lines', 'confirmed'],
         // Only a blocker or a warning says how it was checked. A doubt no check could settle leaves a posted warning unconfirmed.
         ['Doubted and no check could run', 'unconfirmed'], ['A doubted note', undefined], ['A blocker', 'proven'],
         ['Proven cost with a trigger', 'proven'], ['Rare wrong result without a trigger', 'proven'], ['Cost a finder filed as a blocker', 'proven'], ['Security cost without a trigger', 'proven'],
@@ -4695,8 +4754,6 @@ describe('runReview', () => {
         ['The check disproved the premise that decides the defect', 'warning', 'unsettled_check'],
         ['The check settled nothing', 'warning', 'unsettled_check'],
         ['Doubted and past the limit of checks', 'warning', 'not_checked'],
-        ['One finder, the check settled nothing', 'warning', 'one_finder_unconfirmed'],
-        ['One finder, past the limit of checks', 'warning', 'one_finder_unconfirmed'],
         ['No cited lines and no check could run', 'warning', 'no_proof'],
         ['Names an earlier finding no round still shows', 'warning', 'no_proof'],
         // A missing trigger is the reason whatever proves the warning.

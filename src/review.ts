@@ -26,6 +26,7 @@ import { EarlierAnswer, EarlierAnswers, runComparisons, runPatternChecks, runRel
 import { extractPrClaims, prClaimsRecord, runClaimChecks } from './pr-claims';
 import { concernsThread, fixesRecord, listFixes, pushedWorkarounds, runFixChecks, workaroundRemaining } from './fixes';
 import { citedBy, runSweeps, sharesCitedLine, startsSweep } from './sweep';
+import { otherFinderVotes, withVote } from './other-finder';
 import { confirmDoubt, placeScopeWarning, runScopeReader, scopeWarnings } from './scope';
 import { formatLockfileChanges, isLockfileAlert, LockfileDiff, withLockfiles } from './lockfile';
 
@@ -2118,24 +2119,28 @@ export async function runReview(
     Object.assign(recorded, { ...(suppressionCount > 0 && { suppressionCount }), ...(memorySuppressed.length > 0 && { memorySuppressed }) });
   }
   // Each judge call checked the warnings on changed code that nothing proves. Every other check that shares the limit waits until here, so none takes a check from a later judge call.
-  if (refutation) {
-    const earlier = earlierFindings(priorRounds ?? [], openThreads ?? [], judgeThreadEvaluations);
-    const kept = finalFindings;
-    // The origin checks run beside the refuter on the same findings, and only `markPreExisting` reads their answers.
-    const [refuted, origins] = await Promise.all([
-      refuteBlockers(refutation.client, kept, {
-        workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, doubtBudget: refutation.doubtBudget, progress: refutation.progress, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff,
-        outsideInput: config.review?.outside_input, restatesEarlier: finding => restatesEarlier(earlier, finding),
-        unpostedLater: finding => unchangedCheck(finding) === 'pre_existing' && !postedWhenPreExisting(finding), roundEnd: true, rules: config.review?.rules,
-      }),
-      originsOf(kept, finding => unchangedCheck(finding) === 'pre_existing'),
-    ]);
-    const checked = withOrigins(refuted, origins);
-    const after = new Map(kept.map((f, i) => [f, checked[i]]));
-    allJudgedFindings = allJudgedFindings?.map(f => after.get(f) ?? f);
-    finalFindings = checked.filter(f => f.severity !== 'ignore');
-    if (stopped) return incompleteAfterJudge(stopped);
-  }
+  const earlierForChecks = earlierFindings(priorRounds ?? [], openThreads ?? [], judgeThreadEvaluations);
+  const judged = finalFindings;
+  // The origin checks and the other finders' votes run beside the refuter on the same findings. A vote reads no grade,
+  // so it applies to the grade the refuter settles.
+  const [refuted, origins, votes] = await Promise.all([
+    refutation ? refuteBlockers(refutation.client, judged, {
+      workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, doubtBudget: refutation.doubtBudget, progress: refutation.progress, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff,
+      outsideInput: config.review?.outside_input, restatesEarlier: finding => restatesEarlier(earlierForChecks, finding),
+      unpostedLater: finding => unchangedCheck(finding) === 'pre_existing' && !postedWhenPreExisting(finding), roundEnd: true, rules: config.review?.rules,
+    }) : judged,
+    originsOf(judged, finding => unchangedCheck(finding) === 'pre_existing'),
+    workspace ? otherFinderVotes(judged, {
+      workspace, diff: diffWithLockfiles, restates: finding => restatesEarlier(earlierForChecks, finding),
+      finders: team.finders.map(f => ({ name: f.name, client: lateFallback(pickReviewerClient(clients, f.model), 'vote', f.name) })),
+    }) : judged.map(() => undefined),
+  ]);
+  const checked = withOrigins(refuted, origins).map((f, i) => withVote(f, votes[i]));
+  const after = new Map(judged.map((f, i) => [f, checked[i]]));
+  allJudgedFindings = allJudgedFindings?.map(f => after.get(f) ?? f);
+  const declined = checked.filter(f => f.unpostedReason === 'other_finder_declined');
+  finalFindings = checked.filter(f => f.severity !== 'ignore' && !declined.includes(f));
+  if (stopped) return incompleteAfterJudge(stopped);
   // After the suppressions, so a blocker the PR did not cause keeps their blocker guard.
   const preExisting = markPreExisting(finalFindings, unchangedCheck, { rules: config.review?.rules });
   finalFindings = preExisting.posted;
@@ -2265,7 +2270,7 @@ export async function runReview(
   // Listed after the judge and the refuter, so no model reads an earlier blocker a second time.
   const relisting = openThreads != null ? relistThreadlessBlockers(finalFindings, priorFindingsFlat, priorRoundLookup) : { findings: finalFindings, restated: [] };
   finalFindings = relisting.findings;
-  const unposted = [...proven.unposted, ...relisting.restated];
+  const unposted = [...proven.unposted, ...relisting.restated, ...declined];
   const decided = determineOutcome(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, threadEvaluations, priorRoundLookup);
   let outcome: RoundOutcome = decided.outcome;
   let { verdictReason, verdictTrace } = decided;
@@ -2501,6 +2506,7 @@ function secondReadNote(findings: readonly Finding[]): string {
 function lateCallName({ stage, agent }: Pick<RoundNotStarted, 'stage' | 'agent'>): string {
   if (stage === 'verdict') return 'verdict reader call';
   if (stage === 'sweep') return 'sweep call';
+  if (stage === 'vote') return 'vote call';
   if (stage === 'dedup') return agent === 'sweep' ? 'dedup call on the sweep\'s findings' : 'dedup call';
   if (agent === 'refute') return 'refuter call';
   if (agent === 'refute_pair') return 'second refuter call';

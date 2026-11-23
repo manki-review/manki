@@ -376,6 +376,13 @@ function needsConsequence(finding: Finding, restates: boolean): boolean {
 
 const namesConsequence = (finding: Pick<Finding, 'doubts'>): boolean => !!finding.doubts?.some(d => d.consequence);
 
+/**
+ * Whether the judge held the blocker cell of `finding` at a warning only because one finder alone reported it: it is
+ * `soleFinder` and its only doubts are its consequence. A disproof treats it as the blocker its cell gives.
+ */
+const heldForOneFinder = (finding: Finding): boolean => !!finding.soleFinder && finding.severity === 'warning' && pendingGrade(finding) === 'blocker'
+  && !!finding.doubts?.length && finding.doubts.every(d => d.consequence);
+
 /** Whether no confirmation gives `finding` the pending blocker of its cell: it `needsConsequence` and the judge named none. */
 function keepsWarning(finding: Finding, restates: boolean): boolean {
   return needsConsequence(finding, restates) && !namesConsequence(finding);
@@ -485,7 +492,8 @@ function disprovedGrade(
  * open lead or a capped blocker, and no check raises a finding beside one that disproves it. A finding with an
  * `overruledDisproof` stays at its grade, without its `cell`, `doubts`, `gradeIfConfirmed` and `lead`, so only a
  * confirmation gives a capped blocker back. A disproof lowers a blocker to the grade `disprovedGrade` gives and never
- * drops it. Such a finding loses its `cell`, so a later round does not restate the blocker from it. An unsettled outcome keeps the
+ * drops it, and neither does it drop a blocker cell the judge held only because one finder reported it (`heldForOneFinder`).
+ * Such a finding loses its `cell`, so a later round does not restate the blocker from it. An unsettled outcome keeps the
  * grade, and a security finding changes only when confirmed. A confirmation raises a finding only to the grade
  * `confirmedGrade` gives, so a finding that `isRareClaim` keeps its grade and its cell. One that `needsConsequence`
  * rises only when every check `confirmsAll`.
@@ -506,10 +514,11 @@ function applyRefutation(given: Finding, refutation: Refutation | undefined, pai
     const { cell: _cell, gradeIfConfirmed: _gradeIfConfirmed, doubts: _doubts, lead: _lead, notChecked: _notChecked, ...kept } = graded;
     return kept;
   }
-  const dropped = finding.severity === 'blocker' ? undefined : disproof(graded);
+  const held = heldForOneFinder(finding);
+  const dropped = finding.severity === 'blocker' || held ? undefined : disproof(graded);
   if (dropped) return { ...graded, ...gradeStep(finding, 'ignore', 'refutation', dropped.reason) };
   if (outcome === 'disproved') {
-    const lowered = disprovedGrade(finding, refutation, pairRefutation, restates, rules);
+    const lowered = disprovedGrade(held ? { ...finding, severity: 'blocker' } : finding, refutation, pairRefutation, restates, rules);
     if (!lowered) return graded;
     const { grade, reason, guarded } = lowered;
     core.info(`Posting blocker "${finding.title}" as a ${grade}: ${reason}`);
@@ -577,8 +586,7 @@ export function needsProof(finding: Finding, rules?: RulesMode): boolean {
  * Returns the warnings to check with tools, at most `limit`, and those `over` that limit. A check that decides whether
  * the review shows a warning comes before one that only changes the status it shows. First come the warnings on code
  * the PR changed that `needsProof` and that nothing proves yet, in the order given: one the judge kept with a doubt
- * whether the defect exists or its trigger happens, and one no cited line proves. After them come the other warnings that
- * `needsProof` and that are `soleFinder`, so they take only the checks the others leave. Then come such warnings that `restatesEarlier` accepts,
+ * whether the defect exists or its trigger happens, and one no cited line proves. Then come such warnings that `restatesEarlier` accepts,
  * which an earlier finding keeps posted. Last come the findings the judge doubts that are posted without
  * proof: a security finding and one `gradedByRule` under `rules`. A round can judge findings in several calls, so only the first group is returned for a judge
  * call, and every later group once the round's last judge call is over, with `roundEnd`. The `limit` counts refuter
@@ -593,10 +601,9 @@ function doubtsToCheck(
   roundEnd = false, rules?: RulesMode,
 ): { checked: Finding[]; reused: Finding[]; over: Finding[] } {
   const warnings = findings.filter(f => f.severity === 'warning' && !alwaysChecked(f) && !f.toolSource && !f.refutation && !f.pairRefutation);
-  const doubted = warnings.filter(f => needsProof(f, rules) && (doubtsDefect(f) || citesNoProof(f) || !!f.doubts?.some(isTriggerDoubt)));
-  const unproven = [...doubted, ...warnings.filter(f => needsProof(f, rules) && f.soleFinder && !doubted.includes(f))];
+  const unproven = warnings.filter(f => needsProof(f, rules) && (doubtsDefect(f) || citesNoProof(f) || !!f.doubts?.some(isTriggerDoubt)));
   const statusOnly = warnings.filter(f => !needsProof(f, rules) && doubtsDefect(f));
-  const groups = roundEnd ? [...doubted.filter(restatesEarlier), ...statusOnly] : unproven.filter(f => !restatesEarlier(f));
+  const groups = roundEnd ? [...unproven.filter(restatesEarlier), ...statusOnly] : unproven.filter(f => !restatesEarlier(f));
   const open = groups.filter(f => !noCheck(f));
   const reused = open.filter(needsNoCall);
   const ordered = open.filter(f => !reused.includes(f));
@@ -613,17 +620,14 @@ function doubtsToCheck(
  * unproven in two cases only: a check ran and did not settle it, or the warning is `overCheckLimit`. In every other
  * case no check could decide, as on a round without tools, a file the refuter cannot read or a call that failed, so
  * the cited lines decide. A blocker posted as a warning for want of proof stays unproven until a check confirms it.
- * A `soleFinder` warning that nothing else leaves unproven needs a check that confirms it as well, whenever a check ran
- * or the limit left it out. It gets `one_finder_unconfirmed`.
  */
 export function unprovenReason(finding: Finding): UnprovenReason | undefined {
   const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r);
   if (checks.some(check => confirmsDefect(asAnswered(check), finding))) return undefined;
   const lacksProof = citesNoProof(finding) || !!finding.tags?.some(tag => CHECKED_TAGS.includes(tag));
   const open = lacksProof || doubtsDefect(finding);
-  const sole = finding.soleFinder ? 'one_finder_unconfirmed' : undefined;
-  if (checks.length > 0) return open ? 'unsettled_check' : sole;
-  if (finding.overCheckLimit) return open ? 'not_checked' : sole;
+  if (checks.length > 0) return open ? 'unsettled_check' : undefined;
+  if (finding.overCheckLimit) return open ? 'not_checked' : undefined;
   return lacksProof ? 'no_proof' : undefined;
 }
 
@@ -658,8 +662,7 @@ export function unpostedForTrigger(finding: Finding, wouldBlock = wouldBlockIfTr
  * check answered that the defect exists and left open only premises no code in reach can show, by `confirmsCodePath`.
  * A confirmation that rests on outside behavior no cited line states is stored unsettled, so it never makes one `confirmed`.
  * It is `proven` when it cites proof lines and nothing says they were not enough: no check ran on it, the finder
- * finished checking it, the judge doubts no premise the defect rests on, and it is no `soleFinder` finding the limit
- * left unchecked. Neither holds for a finding a check
+ * finished checking it, and the judge doubts no premise the defect rests on. Neither holds for a finding a check
  * disproved, in its outcome or its `defect` answer, one that still carries a cap for want of proof, or a claimed build
  * failure no CI result reports. So a finding `unprovenReason` names is `unconfirmed` unless only such premises stay
  * open, and so is one a check ran on without confirming the defect, whatever lines that check added. The status only
@@ -679,7 +682,7 @@ function statusBy(finding: Finding, confirms: (check: Refutation, finding: Findi
   const refused = !!finding.tags?.some(tag => CHECKED_TAGS.includes(tag)) || isUnconfirmedBuildClaim(finding)
     || checks.some(check => outcomeOf(check) === 'disproved');
   const confirmed = !refused && checks.some(check => confirms(check, finding));
-  const unfinished = checks.length > 0 || !!finding.lead || !!finding.notChecked || doubtsDefect(finding) || (!!finding.soleFinder && !!finding.overCheckLimit);
+  const unfinished = checks.length > 0 || !!finding.lead || !!finding.notChecked || doubtsDefect(finding);
   const proven = !refused && !unfinished && !citesNoProof(finding);
   return confirmed ? 'confirmed' : proven ? 'proven' : 'unconfirmed';
 }
