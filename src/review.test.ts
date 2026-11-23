@@ -5876,6 +5876,7 @@ describe('runReview', () => {
       answer: 'Agreed. The ban is intended.', answerPlaces: ['src/x.ts:40-42', 'src/y.ts:5'],
     };
     const push = (file: string, line: number) => `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -${line} +${line} @@\n-a\n+b\n`;
+    let changedFor: ((threadId: string, finding: Finding) => boolean) | undefined;
     const run = async (interRoundDiff: string | undefined, thread = settled, judged = restated, priorRounds = [buildPriorRound(1, [makePriorWarningFinding()])]) => {
       mockedRunJudgeAgent.mockClear();
       mockedRunJudgeAgent.mockResolvedValue({ findings: [judged], summary: 's', threadEvaluations: [] });
@@ -5883,6 +5884,7 @@ describe('runReview', () => {
         config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true,
         openThreads: [], previousFindings: [thread], priorRounds, interRoundDiff, headSha: 'sha2',
       });
+      changedFor = mockedRunJudgeAgent.mock.calls[0][2].agreedCodeChanged;
       return [[...mockedRunJudgeAgent.mock.calls[0][2].settledThreadIds ?? []], result.findings.map(f => f.title)];
     };
 
@@ -5894,6 +5896,13 @@ describe('runReview', () => {
     expect(await run(push('src/x.ts', 205), settled, far)).toEqual([['T1'], [far.title]]);
     expect(await run(push('src/y.ts', 105), settled, { ...far, evidence: { checks: [], proof: ['src/y.ts:100'] } })).toEqual([['T1'], [far.title]]);
     expect(await run(push('src/x.ts', 300), settled, far)).toEqual([['T1'], []]);
+    // The ratchet and the in-PR suppression keep an agreed repeat only when the push certainly changed the code it cites,
+    // a thread without an answer by the thread's own lines. A push that cannot be checked keeps their drop.
+    expect([changedFor!('T1', far), changedFor!('T1', { ...far, line: 295 }), changedFor!('T9', far)]).toEqual([false, true, false]);
+    await run(push('src/x.ts', 15), { ...settled, answerPlaces: undefined });
+    expect(changedFor!('T1', restated)).toBe(true);
+    await run(undefined);
+    expect(changedFor!('T1', { ...far, line: 295 })).toBe(false);
     expect(await run(push('src/y.ts', 105), settled, { ...far, evidence: { checks: ['`src/y.ts:100` reads the ban.'], proof: ['src/x.ts:200'] } })).toEqual([['T1'], [far.title]]);
     // A file cited without a line, the thread's own on a whole-file thread or one of its `evidenceFiles`, changes with any hunk.
     expect(await run(push('src/x.ts', 600), { ...settled, line: 0 })).toEqual([[], [restated.title]]);
@@ -6896,6 +6905,9 @@ describe('runReview', () => {
       expect([thread.status, await afterPush(thread, push('src/b.ts'))]).toEqual([thread.status, [[cache], [wallet, log]]]);
       for (const unsure of [push('src/lib.ts'), undefined]) expect([thread.status, await afterPush(thread, unsure)]).toEqual([thread.status, [[], [wallet, cache, log]]]);
     }
+    // For a thread settled by an answer that cited lines, a push near one of them counts in any file, the answer's own included.
+    const cites = { ...threads[1], answerPlaces: ['src/caller.ts:1'] };
+    expect(await afterPush(cites, push('src/caller.ts'))).toEqual([[], [wallet, cache, log]]);
 
     // Finders that leave less than 30 seconds start no dedup call, and the round ends incomplete before the judge. Its
     // record keeps what the static dedup dropped before that call.

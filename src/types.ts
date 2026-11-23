@@ -1398,6 +1398,7 @@ export interface InPrSuppression extends ThreadGrade {
    * Absent for `resolved-thread` reasons. Used for audit-log attribution.
    */
   authorLogin?: string;
+  threadId?: string;
   /** Set when the PR author alone could not clear the thread. Only such an entry hides a security finding. */
   guarded?: boolean;
 }

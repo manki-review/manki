@@ -4663,6 +4663,13 @@ describe('applyInPrSuppression', () => {
       expect(applyInPrSuppression(findings, [suggestion])).toEqual({ findings, count: 0 });
     }
 
+    // An agreement hides nothing once the push certainly changed the code its thread and the finding cite.
+    const agreed = { ...makeSuppression({}, 'agree-reply'), threadId: 'T1' };
+    const finding = makeFinding({ severity: 'note' });
+    expect(applyInPrSuppression([finding], [agreed], false, (id, f) => id === 'T1' && f === finding).count).toBe(0);
+    expect(applyInPrSuppression([finding], [agreed], false, () => false).count).toBe(1);
+    expect(applyInPrSuppression([finding], [{ ...agreed, reason: 'resolved-thread' }], false, () => true).count).toBe(1);
+
     // A blocker cell the judge keeps at a warning is a warning here too, whatever its check answered.
     for (const reason of ['resolved-thread', 'agree-reply'] as const) {
       const hidden = applyInPrSuppression(keptWarnings(), [makeSuppression({}, reason)]);
@@ -5844,10 +5851,14 @@ describe('applyCrossRoundSuppression', () => {
     const linked = applyCrossRoundSuppression([{ ...findings[0], sameAs: stringifyFindingFingerprint(fingerprint) }], prior);
     expect(linked.suppressedCount).toBe(1);
     expect(linked.findings[0].severity).toBe('ignore');
-    // A link to a settled thread is left to `dropWaivedRestatements`, which also checks the lines the finding cites.
-    const settledPrior = [makePriorRound([{ fingerprint, severity: 'note', title: 'Unused variable', authorReply: 'agree', threadId: 'TH1' }])];
-    const toSettled = applyCrossRoundSuppression([{ ...findings[0], sameAs: stringifyFindingFingerprint(fingerprint) }], settledPrior, { settledThreadIds: new Set(['TH1']) });
-    expect([toSettled.suppressedCount, toSettled.findings[0].severity]).toEqual([0, 'note']);
+    // An agreement drops no repeat, linked or with the same title nearby, once the push certainly changed the code it and the repeat cite.
+    const agreedPrior = [makePriorRound([{ fingerprint, severity: 'note', title: 'Unused variable', authorReply: 'agree', threadId: 'TH1' }])];
+    for (const repeat of [{ ...findings[0], sameAs: stringifyFindingFingerprint(fingerprint) }, { ...findings[0], line: 12 }]) {
+      for (const changed of [true, false]) {
+        const after = applyCrossRoundSuppression([repeat], agreedPrior, { agreedCodeChanged: (id, f) => changed && id === 'TH1' && f.line === repeat.line });
+        expect([changed, after.findings[0].severity]).toEqual([changed, changed ? 'note' : 'ignore']);
+      }
+    }
   });
 
   it('ratchets a warning that matches an agreed prior, whatever words it uses', () => {

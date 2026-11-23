@@ -1940,6 +1940,8 @@ export async function runReview(
     })
     : Promise.resolve(findings));
   const settledCode = settledCodeUnchanged(priorRounds ?? [], interRoundDiff);
+  const codeChange = citedCodeChange(priorRounds ?? [], interRoundDiff);
+  const threadById = new Map((previousFindings ?? []).flatMap(p => (p.threadId ? [[p.threadId, p] as const] : [])));
   const judgeInput: JudgeInput = {
     findings: findingsForJudge,
     diff: diffWithLockfiles,
@@ -1962,6 +1964,7 @@ export async function runReview(
     interRoundDiff,
     resolvedThreadIds,
     settledThreadIds: new Set((previousFindings ?? []).filter(p => settledCode(p)).flatMap(p => p.threadId ? [p.threadId] : [])),
+    agreedCodeChanged: (threadId, f) => !!threadById.get(threadId) && codeChange(threadById.get(threadId)!, f) === 'changed',
     guardedThreadIds,
     ...(related?.repos.length && { relatedRepos: related.repos }),
     ...(refutation && { refutation }),
@@ -4054,7 +4057,7 @@ function threadMayHaveChanged(priorRounds: RoundContext[], interRoundDiff: strin
   const sorted = [...priorRounds].sort((a, b) => a.meta.round - b.meta.round);
   const unchanged = settledCodeUnchanged(priorRounds, interRoundDiff);
   return (prev, f) => {
-    if (f.file === prev.file && prev.answerPlaces) return !unchanged(prev, f);
+    if (prev.answerPlaces) return !unchanged(prev, f);
     const recorded = sorted.flatMap(r => r.findings.entries.filter(e => !!prev.threadId && e.threadId === prev.threadId).map(entry => ({ entry, round: r.meta.round })));
     const first = recorded[0]?.round;
     if (first === undefined || !prev.file) return true;
@@ -4067,32 +4070,32 @@ function threadMayHaveChanged(priorRounds: RoundContext[], interRoundDiff: strin
 const CITED_CODE_MARGIN = 10;
 
 /**
- * Returns a test of whether the push certainly left alone the code behind a thread Manki settled by agreeing with an
- * answer (`answerPlaces`): the thread's lines, the lines its round entries cite, and the lines the answer cited. It holds
- * only when the push is the only change since the thread was raised (`onlyPushSince`), and every hunk of the push in a
- * file with a cited line starts more than `CITED_CODE_MARGIN` lines after the last of them, before and after the push,
- * so no cited line moved either. With a repeat `f`, its line and the lines it cites count as cited too. A file cited
- * without a line, such as one of `evidenceFiles`, counts as changed by any hunk. A renamed file, a change GitHub shows no
- * hunk for, a detached thread, and a thread whose round records left out its findings' evidence or could not all be
- * read count as changed.
+ * Returns a test of whether the push changed the code behind the earlier thread `prev`: the thread's lines, the lines
+ * its round entries cite, and the lines Manki's answer cited (`answerPlaces`). It is `unchanged` only when every hunk of
+ * the push in a file with a cited line starts more than `CITED_CODE_MARGIN` lines after the last of them, before and
+ * after the push, so no cited line moved either. With a repeat `f`, its line and the lines it cites count as cited too.
+ * A file cited without a line, such as one of `evidenceFiles`, a renamed file and a change GitHub shows no hunk for
+ * count as `changed` by any hunk. It is `unknown` when the push is not the only change since the thread was raised
+ * (`onlyPushSince`), for a detached thread, and for a thread whose round records left out its findings' evidence or
+ * could not all be read.
  */
-function settledCodeUnchanged(priorRounds: RoundContext[], interRoundDiff: string | undefined): (prev: PreviousFinding, f?: Finding) => boolean {
+function citedCodeChange(priorRounds: RoundContext[], interRoundDiff: string | undefined): (prev: PreviousFinding, f?: Finding) => 'unchanged' | 'changed' | 'unknown' {
   const sorted = [...priorRounds].sort((a, b) => a.meta.round - b.meta.round);
   const push = interRoundDiff === undefined ? undefined : parsePRDiff(interRoundDiff);
   return (prev, f) => {
-    if (!push || !prev.threadId || !prev.answerPlaces || !prev.file || prev.detached || prev.gradeUnknown) return false;
+    if (!push || !prev.threadId || !prev.file || prev.detached || prev.gradeUnknown) return 'unknown';
     const rounds = sorted.filter(r => r.findings.entries.some(e => e.threadId === prev.threadId));
-    if (rounds.some(r => r.meta.omitted?.includes('findings.entries.evidence'))) return false;
+    if (rounds.some(r => r.meta.omitted?.includes('findings.entries.evidence'))) return 'unknown';
     const recorded = rounds.flatMap(r => r.findings.entries.filter(e => e.threadId === prev.threadId).map(entry => ({ entry, round: r.meta.round })));
     const first = recorded[0]?.round;
-    if (first === undefined || !onlyPushSince(first, sorted, interRoundDiff)) return false;
+    if (first === undefined || !onlyPushSince(first, sorted, interRoundDiff)) return 'unknown';
     const at = (file: string, line: number) => ({ file, end: line > 0 ? line : Infinity });
     const threadLines = [prev.line, prev.originalLine, prev.findingLine].filter((line): line is number => !!line && line > 0);
     const cited = [
       ...(threadLines.length > 0 ? threadLines : [0]).map(line => at(prev.file, line)),
       ...(prev.evidenceFiles ?? []).map(file => at(file, 0)),
       ...recorded.flatMap(({ entry }) => [at(entry.fingerprint.file, entry.fingerprint.lineEnd), ...citedLocations(entry.evidence)]),
-      ...prev.answerPlaces.flatMap(place => parseLocation(place) ?? []),
+      ...(prev.answerPlaces ?? []).flatMap(place => parseLocation(place) ?? []),
       ...(f ? [at(f.file, f.line), ...citedLocations(f.evidence)] : []),
     ];
     return push.files.every(file => {
@@ -4100,8 +4103,14 @@ function settledCodeUnchanged(priorRounds: RoundContext[], interRoundDiff: strin
       if (last === -Infinity) return true;
       const clear = (start: number) => start > last + CITED_CODE_MARGIN;
       return !file.oldPath && file.hunks.length > 0 && file.hunks.every(h => clear(h.oldStart) && clear(h.newStart));
-    });
+    }) ? 'unchanged' : 'changed';
   };
+}
+
+/** Returns a test of whether the push certainly left alone the code behind a thread Manki settled by agreeing with an answer, by `citedCodeChange`. */
+function settledCodeUnchanged(priorRounds: RoundContext[], interRoundDiff: string | undefined): (prev: PreviousFinding, f?: Finding) => boolean {
+  const change = citedCodeChange(priorRounds, interRoundDiff);
+  return (prev, f) => !!prev.answerPlaces && change(prev, f) === 'unchanged';
 }
 
 /** Whether `a` and `b` may name one defect in other words, so the dedup model is asked: they sit near each other in one file, or share a cited line in any file. */

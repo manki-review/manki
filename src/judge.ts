@@ -275,6 +275,8 @@ export interface JudgeInput {
    * alone. The judge may link a finding to theirs, so a restatement is dropped as a repeat of a settled thread.
    */
   settledThreadIds?: ReadonlySet<string>;
+  /** Whether the push certainly changed the code that the agreed thread `threadId` and `finding` cite, so an agreement drops no repeat. */
+  agreedCodeChanged?: (threadId: string, finding: Finding) => boolean;
   /** IDs of the threads the PR author alone cannot clear. Only a prior with such a thread hides a security finding. */
   guardedThreadIds?: Set<string>;
   /** The related repos the round's models could read with their tools. */
@@ -1749,7 +1751,7 @@ export async function runJudgeAgent(
   });
 
   const crossRoundOptions: CrossRoundSuppressionOptions = {
-    resolvedThreadIds, guardedThreadIds, threadEvaluations: threadEvaluations ?? input.evaluatedThreads?.evaluations, settledThreadIds: input.settledThreadIds,
+    resolvedThreadIds, guardedThreadIds, threadEvaluations: threadEvaluations ?? input.evaluatedThreads?.evaluations, agreedCodeChanged: input.agreedCodeChanged,
   };
 
   // A copy the judge merges or drops must pass every pre-existing check itself, since only the kept finding is checked later.
@@ -1764,7 +1766,7 @@ export async function runJudgeAgent(
     .map(f => (refutation ? doubtTrigger(f, input.finderNames ?? []) : f));
   const suppress = (list: Finding[], quiet = false) => {
     const crossRound = applyCrossRoundSuppression(list, priorRounds, crossRoundOptions);
-    return { ...crossRound, ...applyInPrSuppression(crossRound.findings, inPrSuppressions, quiet) };
+    return { ...crossRound, ...applyInPrSuppression(crossRound.findings, inPrSuppressions, quiet, input.agreedCodeChanged) };
   };
   const earlier = earlierFindings(priorRounds ?? [], openThreads ?? input.evaluatedThreads?.openThreads ?? [], crossRoundOptions.threadEvaluations);
   // `hideUnprovenWarnings` leaves out a warning with no trigger whatever a check says, unless an earlier finding may carry it or it would block if true and no check disproved its trigger.
@@ -1817,6 +1819,7 @@ export function applyInPrSuppression(
   findings: Finding[],
   suppressions: InPrSuppression[] | undefined,
   quiet = false,
+  agreedCodeChanged?: JudgeInput['agreedCodeChanged'],
 ): { findings: Finding[]; count: number } {
   if (!suppressions || suppressions.length === 0) {
     return { findings, count: 0 };
@@ -1827,7 +1830,8 @@ export function applyInPrSuppression(
     if (finding.tags?.includes(IN_PR_SUPPRESSED_TAG)) return finding;
     if (finding.severity === 'blocker') return finding;
     const guarded = isGuardedFinding(finding.tags);
-    const match = suppressions.find(s => (s.guarded || !guarded) && !gradedAbove(finding.severity, s) && matchesInPrSuppression(finding, s));
+    const changed = (s: InPrSuppression) => s.reason === 'agree-reply' && !!s.threadId && !!agreedCodeChanged?.(s.threadId, finding);
+    const match = suppressions.find(s => (s.guarded || !guarded) && !gradedAbove(finding.severity, s) && matchesInPrSuppression(finding, s) && !changed(s));
     if (!match) return finding;
     const next: Finding = { ...finding };
     if (finding.severity !== 'ignore') {
@@ -2307,11 +2311,8 @@ export interface CrossRoundSuppressionOptions {
    * without GitHub thread resolution or explicit author agreement.
    */
   threadEvaluations?: ThreadEvaluation[];
-  /**
-   * `JudgeInput.settledThreadIds`. A link to the finding of such a thread drops nothing here, since only
-   * `dropWaivedRestatements` checks the lines the repeat itself cites.
-   */
-  settledThreadIds?: ReadonlySet<string>;
+  /** `JudgeInput.agreedCodeChanged`. An agreed prior whose code the push changed drops no finding. */
+  agreedCodeChanged?: JudgeInput['agreedCodeChanged'];
 }
 
 /**
@@ -2331,7 +2332,7 @@ export function applyCrossRoundSuppression(
     return { findings, suppressedCount: 0 };
   }
 
-  const { resolvedThreadIds, guardedThreadIds, threadEvaluations, settledThreadIds } = options;
+  const { resolvedThreadIds, guardedThreadIds, threadEvaluations, agreedCodeChanged } = options;
   const useResolved = resolvedThreadIds !== undefined && resolvedThreadIds.size > 0;
   const judgeIndex = indexThreadEvaluations(threadEvaluations);
 
@@ -2381,8 +2382,8 @@ export function applyCrossRoundSuppression(
       if (isLockfileAlert(current.title) || isLockfileAlert(prior.title ?? '')) return prior.title === current.title;
       // Only the judge's link, or the same title on a nearby line, makes it the same finding.
       // A reworded or moved repeat of a resolved thread is left to the dedup model before the judge.
-      const settled = !!prior.threadId && !!settledThreadIds?.has(prior.threadId);
-      return (current.sameAs === stringifyFindingFingerprint(prior.fingerprint) && !settled) || (prior.fingerprint.slug === slug
+      if (source === 'agree' && prior.threadId && agreedCodeChanged?.(prior.threadId, current)) return false;
+      return current.sameAs === stringifyFindingFingerprint(prior.fingerprint) || (prior.fingerprint.slug === slug
         && current.line >= prior.fingerprint.lineStart - LINE_WINDOW
         && current.line <= prior.fingerprint.lineEnd + LINE_WINDOW);
     });

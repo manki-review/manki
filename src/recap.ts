@@ -525,6 +525,7 @@ function collectInPrSuppressions(
     const entry: InPrSuppression = {
       fingerprint: fingerprintFinding(pf.title, pf.file, lineStart, lineEnd),
       reason,
+      ...(pf.threadId && { threadId: pf.threadId }),
       ...(isGuarded(pf) && { guarded: true }),
       severity: pf.severity,
       ...(pf.recordedGrade && { recordedGrade: pf.recordedGrade }),
@@ -1401,7 +1402,7 @@ function deduplicateFindings(
       unique.push(resemblingFixed(finding, matched.prev));
     } else if (matched) {
       duplicates.push({ finding, matchedTitle: matched.prev.title, matchType: matched.matchType });
-    } else if (answeredMatch && changedFiles && !changedFiles.has(finding.file)) {
+    } else if (answeredMatch && !answeredMatch.prev.answerPlaces && changedFiles && !changedFiles.has(finding.file)) {
       core.info(`Dedup: "${finding.title}" repeats answered "${answeredMatch.prev.title}" on a file unchanged since the last round`);
       duplicates.push({ finding, matchedTitle: answeredMatch.prev.title, matchType: answeredMatch.matchType });
     } else if (answeredMatch) {

@@ -81,6 +81,8 @@ describe('deduplicateFindings', () => {
     const toJudge = [{ ...findings[0], answeredIn: { threadId: 'T1', answer: 'Withdrawn. `id` is checked first.', grade: { severity: answered.severity } } }];
     expect(deduplicateFindings(findings, [answered], new Set(['src/foo.ts'])).unique).toEqual(toJudge);
     expect(deduplicateFindings(findings, [answered]).unique).toEqual(toJudge);
+    // An answer that cited lines may rest on another file the push changed, so its repeat goes to the judge, where the lines are checked.
+    expect(deduplicateFindings(findings, [{ ...answered, answerPlaces: ['src/caller.ts:30'] }], new Set(['src/caller.ts'])).unique).toEqual(toJudge);
     expect(deduplicateFindings(findings, [{ ...answered, line: 0, originalLine: 41 }]).unique).toEqual(toJudge);
     expect(deduplicateFindings(findings, [{ ...answered, originalLine: 10 }]).unique).toEqual(toJudge);
     expect(deduplicateFindings(findings, [{ ...answered, answer: undefined }], new Set()).unique).toEqual(findings);
