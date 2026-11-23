@@ -1549,7 +1549,8 @@ export async function updateProgressDashboard(
  * Dismiss the bot's reviews in `state`, `CHANGES_REQUESTED` by default, on this PR, except `keepReviewId` and any
  * review on `keepCommit`. Call it only after the new review is posted, so a failed run leaves the merge
  * block in place. A failed dismissal only warns, since the new review already stands. Returns how many reviews it
- * dismissed. Throws the abort reason once GitHub writes are stopped.
+ * dismissed, and `failed` when the listing or any dismissal failed, so a review it should dismiss may still stand. Throws
+ * the abort reason once GitHub writes are stopped.
  */
 export async function dismissPreviousReviews(
   octokit: Octokit,
@@ -1560,7 +1561,7 @@ export async function dismissPreviousReviews(
   keepReviewId?: number,
   state: 'CHANGES_REQUESTED' | 'APPROVED' = 'CHANGES_REQUESTED',
   keepCommit?: string,
-): Promise<number> {
+): Promise<{ dismissed: number; failed: boolean }> {
   assertWritesAllowed();
   let reviews;
   try {
@@ -1572,9 +1573,10 @@ export async function dismissPreviousReviews(
     });
   } catch (error) {
     core.warning(`Failed to dismiss previous reviews: ${error instanceof Error ? error.message : error}`);
-    return 0;
+    return { dismissed: 0, failed: true };
   }
   let dismissed = 0;
+  let failed = false;
 
   for (const review of reviews) {
     const onKeptCommit = keepCommit !== undefined && reviewedCommit(review) === keepCommit;
@@ -1593,10 +1595,11 @@ export async function dismissPreviousReviews(
       } catch (e) {
         // A repository ruleset can restrict who may dismiss reviews, and the stale review then stays in force.
         core.warning(`Could not dismiss the previous review #${review.id}, it still ${state === 'APPROVED' ? 'approves' : 'requests changes'}: ${e instanceof Error ? e.message : e}`);
+        failed = true;
       }
     }
   }
-  return dismissed;
+  return { dismissed, failed };
 }
 
 function countOf(count: number, singular: string, pluralForm = `${singular}s`): string {

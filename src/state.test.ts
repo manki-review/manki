@@ -20,7 +20,7 @@ jest.mock('./auth', () => ({
 
 jest.mock('./github', () => ({
   ...jest.requireActual('./github'),
-  dismissPreviousReviews: jest.fn().mockResolvedValue(0),
+  dismissPreviousReviews: jest.fn().mockResolvedValue({ dismissed: 0, failed: false }),
   postAutoApproveProgressComment: jest.fn().mockResolvedValue(12345),
   deleteAutoApproveProgressComment: jest.fn().mockResolvedValue(undefined),
   markProgressCommentFailed: jest.fn().mockResolvedValue(undefined),
@@ -1102,7 +1102,7 @@ describe('checkAndAutoApprove', () => {
           dismissPreviousReviews.mockClear();
           jest.mocked(authModule.reportPrState).mockClear();
           checkRuns = { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) };
-          dismissPreviousReviews.mockResolvedValueOnce(1);
+          dismissPreviousReviews.mockResolvedValueOnce({ dismissed: 1, failed: false });
           await check([thread('t1', 'blocker')]);
           expect(dismissPreviousReviews.mock.calls).toEqual([[expect.anything(), TEST_BOT, 'owner', 'repo', 1, undefined, 'APPROVED']]);
           // The coordinator no longer records the approval.
@@ -1111,9 +1111,11 @@ describe('checkAndAutoApprove', () => {
           expect(checkRuns.create.mock.calls).toEqual([[expect.objectContaining({
             name: 'Manki', head_sha: HEAD, status: 'completed', conclusion: 'failure', output: expect.objectContaining({ title: 'Changes requested', summary: expect.stringMatching(/^A blocking thread is not cleared, so Manki withdrew its approval\. The next review round decides\./) }),
           })]]);
-          // A dismissal GitHub refused, as under a ruleset, leaves the approval, its check and the coordinator's record as they are.
+          // A dismissal GitHub refused, as under a ruleset, leaves that approval, its check and the coordinator's record as
+          // they are, also when another dismissal worked.
           checkRuns = { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) };
           jest.mocked(authModule.reportPrState).mockClear();
+          dismissPreviousReviews.mockResolvedValueOnce({ dismissed: 1, failed: true });
           await check([thread('t1', 'blocker')]);
           expect(checkRuns.create).not.toHaveBeenCalled();
           expect(authModule.reportPrState).not.toHaveBeenCalled();
@@ -1122,22 +1124,34 @@ describe('checkAndAutoApprove', () => {
           await check([fixed('t1'), thread('t2', 'warning', undefined, { title: 'Retry never stops' })]);
           expect(dismissPreviousReviews).not.toHaveBeenCalled();
         }
-        // Without the round records every thread counts as blocking, which proves no blocker, so an open warning thread withdraws nothing.
+        // Without the round records every thread counts as blocking, which proves no blocker, so an open warning thread
+        // withdraws nothing, and neither does a thread of a pre-existing defect, which can hold no approval.
         jest.spyOn(core, 'warning').mockImplementation(() => {});
-        const unread = setup([thread('t2', 'warning', undefined, { title: 'Retry never stops' })]);
-        jest.mocked(unread.paginate).mockRejectedValueOnce(new Error('rate limited'));
-        await withdrawBlockedApproval(unread, TEST_BOT, 'owner', 'repo', 1, 'author', undefined);
-        expect(dismissPreviousReviews).not.toHaveBeenCalled();
-        // A head that cannot be read still leaves the approval withdrawn and the coordinator told, and only the check is skipped.
+        const preExisting = makeGraphqlFetchThreadNode({ id: 'pe', body: formatFindingComment({ severity: 'blocker', title: 'Old race', file: 'src/a.ts', line: 3, description: 'd', reviewers: [], tags: ['pre-existing'] }, TEST_LINKS) });
+        for (const threads of [[thread('t2', 'warning', undefined, { title: 'Retry never stops' })], [preExisting]]) {
+          const unread = setup(threads);
+          jest.mocked(unread.paginate).mockRejectedValueOnce(new Error('rate limited'));
+          await withdrawBlockedApproval(unread, TEST_BOT, 'owner', 'repo', 1, 'author', undefined);
+          expect(dismissPreviousReviews).not.toHaveBeenCalled();
+        }
+        // A head that cannot be read still leaves the approval withdrawn and the coordinator told, and only the check is
+        // skipped after a second try.
         checkRuns = { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) };
         jest.mocked(authModule.reportPrState).mockClear();
         const headless = setup([thread('t1', 'blocker')]);
         jest.mocked(headless.rest.pulls.get).mockRejectedValue(new Error('Not Found'));
-        dismissPreviousReviews.mockResolvedValueOnce(1);
+        dismissPreviousReviews.mockResolvedValueOnce({ dismissed: 1, failed: false });
         await withdrawBlockedApproval(headless, TEST_BOT, 'owner', 'repo', 1, 'author', undefined);
         expect(jest.mocked(authModule.reportPrState).mock.calls).toEqual([['owner', 'repo', 1, { approval: null }]]);
+        expect(headless.rest.pulls.get).toHaveBeenCalledTimes(2);
         expect(checkRuns.create).not.toHaveBeenCalled();
-        expect(core.warning).toHaveBeenLastCalledWith('Withdrew Manki\'s approval, but could not read the head to fail its check: Not Found');
+        expect(core.warning).toHaveBeenCalledWith('Withdrew Manki\'s approval, but could not read the head to fail its check: Not Found');
+        expect(core.warning).toHaveBeenLastCalledWith('Withdrew Manki\'s approval, but could not fail its check, so a required check may pass until the next review round');
+        // A check write that fails once is tried again, so the check still fails.
+        checkRuns = { create: jest.fn().mockRejectedValueOnce(new Error('Bad Gateway')).mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) };
+        dismissPreviousReviews.mockResolvedValueOnce({ dismissed: 1, failed: false });
+        await withdrawBlockedApproval(setup([thread('t1', 'blocker')]), TEST_BOT, 'owner', 'repo', 1, 'author', undefined);
+        expect(checkRuns.create.mock.calls.map(([c]) => c.conclusion)).toEqual(['failure', 'failure']);
       }
     });
   });
