@@ -6,7 +6,7 @@ import * as core from '@actions/core';
 
 import { parsePRDiff } from './diff';
 import { LLMClient, SendMessageOptions } from './providers';
-import { checkStatus, confirmFixesElsewhere, disprovedTrigger, lacksTrigger, needsProof, RefuteOptions, refuteBlockers, unprovenReason } from './refute';
+import { checkStatus, confirmPushedFixes, disprovedTrigger, lacksTrigger, needsProof, PushedFix, RefuteOptions, refuteBlockers, unprovenReason } from './refute';
 import { repoToolsPrompt } from './providers/cli-utils';
 import { parseFindings } from './review';
 import { agreedOutcome, disproof, Finding, OpenThread, outcomeOf, ParsedDiff, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, RulesMode, staysWarningIfConfirmed, triggerDoubt, wouldBlockIfTrue } from './types';
@@ -67,7 +67,9 @@ describe('refuteBlockers', () => {
 
   it('confirms a fix in another changed file only when two refuters on different models disprove the failure from a line the push added there', async () => {
     const pushDiff = parsePRDiff('diff --git a/src/api.ts b/src/api.ts\n--- a/src/api.ts\n+++ b/src/api.ts\n@@ -8,1 +8,2 @@\n // handler\n+if (a > 1000 || b > 1000) throw new Error();\n');
-    const thread = (title: string): { thread: OpenThread; fixedIn: string } => ({ thread: { threadId: title, title, file: 'src/math.ts', line: 2, severity: 'blocker', description: 'Large inputs overflow.' }, fixedIn: 'src/api.ts' });
+    const thread = (title: string): PushedFix => ({
+      thread: { threadId: title, title, file: 'src/math.ts', line: 2, severity: 'blocker' }, title, description: 'Large inputs overflow. The push since the last review changed src/api.ts.', files: ['src/api.ts'],
+    });
     const answer = (outcome: RefutationOutcome, proof = ['src/api.ts:9']) => ({ outcome, reason: 'The caller rejects large inputs.', proof });
     const titles = ['Fixed in the caller', 'Pair unsure', 'Pair failed', 'Rests on other lines', 'Wide range', 'Still overflows'];
     const first = fakeClient({
@@ -80,7 +82,7 @@ describe('refuteBlockers', () => {
       'Rests on other lines': answer('disproved', ['src/api.ts:3', 'src/math.ts:2']), 'Wide range': answer('disproved', ['src/api.ts:1-9']),
       'Still overflows': answer('disproved'),
     };
-    const run = (pair: LLMClient | undefined) => confirmFixesElsewhere(first, pair, titles.map(thread), pushDiff, { workspace, diff });
+    const run = (pair: LLMClient | undefined) => confirmPushedFixes(first, pair, titles.map(thread), pushDiff, { workspace, diff });
 
     expect([...await run(fakeClient(replies, 'gpt-6.1-sol'))]).toEqual(['Fixed in the caller']);
     // The message names the changed file, and each refuter checks the thread's failure at the head.

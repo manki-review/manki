@@ -769,36 +769,44 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
   });
 }
 
+/** A fix of an open thread that a push may hold, as `confirmPushedFixes` checks it: the claim that the push lacks it, and the files its lines may sit in. */
+export interface PushedFix {
+  thread: OpenThread;
+  /** The title and description of the claim the refuters try to disprove. */
+  title: string;
+  description: string;
+  /** The files where a line the push added can show the fix. */
+  files: readonly string[];
+}
+
 /**
- * Returns the IDs of the `threads` whose fix the judge placed in another file the push changed, `fixedIn`, when both
- * refuters disprove the thread's failure at the head. Each disproof must come from its own model and cite a line that
- * `pushDiff` adds to `fixedIn`. Without a `pair`, an unsure or failed call, or a disproof that rests on other lines, the
- * thread stays open.
+ * Returns the IDs of the threads whose `fixes` the push holds: both refuters disprove the claim, each from its own model,
+ * and each cites a line that `pushDiff` adds to one of the fix's `files`. Without a `pair`, an unsure or failed call,
+ * or a disproof that rests on other lines, the fix is not confirmed.
  */
-export async function confirmFixesElsewhere(
+export async function confirmPushedFixes(
   client: LLMClient,
   pair: LLMClient | undefined,
-  threads: ReadonlyArray<{ thread: OpenThread; fixedIn: string }>,
+  fixes: readonly PushedFix[],
   pushDiff: ParsedDiff,
   options: Pick<RefuteOptions, 'workspace' | 'related' | 'diff' | 'effort'>,
 ): Promise<Set<string>> {
-  if (!pair || threads.length === 0) return new Set();
-  const findings = threads.map(({ thread, fixedIn }): Finding => ({
-    severity: 'blocker', title: thread.title, file: thread.file, line: thread.line, reviewers: [],
-    description: `${thread.description ?? thread.title} The push since the last review changed ${fixedIn}.`,
-  }));
+  if (!pair || fixes.length === 0) return new Set();
+  const findings = fixes.map(({ thread, title, description }): Finding => ({ severity: 'blocker', title, file: thread.file, line: thread.line, reviewers: [], description }));
   const checked = await refuteBlockers(client, findings, { ...options, pair });
-  const confirmed = threads.filter(({ thread, fixedIn }, i) => {
-    const changed = pushDiff.files.find(f => f.path === fixedIn);
-    const added = changed ? addedLines(changed) : new Map<number, string>();
+  const confirmed = fixes.filter(({ thread, files }, i) => {
+    const added = new Map(files.map(file => {
+      const changed = pushDiff.files.find(f => f.path === file);
+      return [file, changed ? [...addedLines(changed).keys()] : []] as const;
+    }));
     const citesFix = (check: Refutation | undefined): check is Refutation => check?.outcome === 'disproved' && !!check.model && (check.proof ?? []).some(at => {
       const [start, end] = locationLines(at);
       // A wide range could rest on any line in it, so only a narrow one counts as resting on the added code.
-      return locationFile(at) === fixedIn && end - start + 1 <= MAX_QUOTED_RANGE && [...added.keys()].some(line => start <= line && line <= end);
+      return end - start + 1 <= MAX_QUOTED_RANGE && (added.get(locationFile(at)) ?? []).some(line => start <= line && line <= end);
     });
     const { refutation, pairRefutation } = checked[i];
     const agreed = citesFix(refutation) && citesFix(pairRefutation) && refutation.model !== pairRefutation.model;
-    core.info(`The fix of the thread ${thread.threadId} in ${fixedIn} is ${agreed ? 'confirmed by two refuters' : 'not confirmed, so the thread stays open'}`);
+    core.info(`The fix of the thread ${thread.threadId} in ${files.join(' or ')} is ${agreed ? 'confirmed by two refuters' : 'not confirmed'}`);
     return agreed;
   });
   return new Set(confirmed.map(({ thread }) => thread.threadId));
