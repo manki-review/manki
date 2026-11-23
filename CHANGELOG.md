@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.7.4] - 2026-11-23
+
+Manki 7.7.4 takes an approval back when a blocking thread opens again, and keeps the required check and the token service in step with it. A "Tracked in #N" link now needs an issue that names the flagged code, and the round record says which findings the review body left out. Nothing breaks on the upgrade and no setting changes.
+
+### Review loop and verdicts
+
+- When a blocking thread is reopened after Manki approved, by a person or by Manki, Manki dismisses its round approval or auto-approval right away instead of keeping it until the next round. This also works with `auto_approve` off, after a thread event or a reply in a thread ([#1956](https://github.com/manki-review/manki/pull/1956)).
+- Once that dismissal went through, the `Manki` check on the head fails as "Changes requested" and says the next review round decides, so a required check no longer lets the PR merge beside the reopened blocker ([#1960](https://github.com/manki-review/manki/pull/1960)).
+- Each dismissal that removes every approval, after a reopened blocker, a too-big notice or a round where no model read any file, also tells the token service that no approval stands. This needs the token service from [token-service#139](https://github.com/manki-review/token-service/pull/139). An older token service refuses the report and Manki only logs it ([#1960](https://github.com/manki-review/manki/pull/1960), [#1963](https://github.com/manki-review/manki/pull/1963)).
+
+### Review format
+
+- A finding is linked to a tracking issue only when the issue's title or the start of its description names the code the finding cites: its file or a name the finding puts in a code span. A link that only shares a topic, such as review commands, is no longer made ([#1955](https://github.com/manki-review/manki/pull/1955)).
+- When the review body has no room for every finding, the round record lists the findings the body left out as kept in the round record only, instead of as posted in the body ([#1957](https://github.com/manki-review/manki/pull/1957)).
+
 ## [7.7.3] - 2026-11-23
 
 Manki 7.7.3 cuts review loops and unrelated findings. A maintainer's clear stays cleared, one blocker keeps one thread, a clean rebase keeps an auto-approval, and a fix in a renamed file is seen. A cost the PR only shares with existing code is no longer posted as its own, and the progress comment's counts add up. Split proposals now name side changes by purpose and by hunk. Nothing breaks on the upgrade and no setting changes.
