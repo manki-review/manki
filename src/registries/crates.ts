@@ -149,6 +149,8 @@ export function ignoredMemberLockfiles(files: readonly string[], read: (path: st
     const manifest = posix.join(dir, 'Cargo.toml');
     if (!tracked.has(manifest)) return null;
     if (!workspaces.has(manifest)) {
+      // Left undecided when the member test throws, such as for a pattern too long for `Minimatch`.
+      workspaces.set(manifest, undefined);
       const table = workspaceTable(read(manifest));
       workspaces.set(manifest, table ? memberTest(table, dir) : table);
     }
@@ -159,11 +161,15 @@ export function ignoredMemberLockfiles(files: readonly string[], read: (path: st
     const member = posix.dirname(file);
     // The nearest manifest up from the lockfile with a `[workspace]` decides. One that excludes the folder can leave it
     // to a workspace further up, so the lockfile is kept.
-    for (let dir = member; ; dir = posix.dirname(dir)) {
-      const isMember = workspaceIn(dir);
-      if (isMember === undefined) return false;
-      if (isMember !== null) return dir !== member && tracked.has(posix.join(dir, 'Cargo.lock')) && isMember(member);
-      if (dir === '.') return false;
+    try {
+      for (let dir = member; ; dir = posix.dirname(dir)) {
+        const isMember = workspaceIn(dir);
+        if (isMember === undefined) return false;
+        if (isMember !== null) return dir !== member && tracked.has(posix.join(dir, 'Cargo.lock')) && isMember(member);
+        if (dir === '.') return false;
+      }
+    } catch {
+      return false;
     }
   }));
 }

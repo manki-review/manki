@@ -484,6 +484,10 @@ describe('relatedRepoLoader', () => {
       'broken/Cargo.toml': '[workspace]\nmembers = [\n',
       'broken/Cargo.lock': cargo([]),
       'broken/m/Cargo.lock': cargo([['broken', `git+https://github.com/acme/broken#${b}`]]),
+      // A `members` pattern too long for Minimatch leaves its workspace undecided too.
+      'long/Cargo.toml': `[workspace]\nmembers = ["m", "${'x'.repeat(70_000)}"]\n`,
+      'long/Cargo.lock': cargo([]),
+      'long/m/Cargo.lock': cargo([['long', `git+https://github.com/acme/long#${c}`]]),
       // An npm git source names the repo with its own case and `.git`.
       'web/package-lock.json': npm(`git+ssh://git@github.com/Acme/Foo.git#${c}`),
       // A lockfile under `node_modules` or `target` is another project's.
@@ -506,13 +510,14 @@ describe('relatedRepoLoader', () => {
     const repos = [
       dependency('dashpay/rust-dashcore'), dependency('dashpay/grovedb'), dependency('acme/foo'), dependency('dashpay/dips'), dependency('tokio-rs/tokio', 'tokio-1.38.0'), DASH,
       dependency('acme/berry'), dependency('acme/tar'), dependency('acme/tabbed'), dependency('acme/standalone'), dependency('acme/other'), dependency('acme/broken'),
+      dependency('acme/long'),
     ];
     const tools = (await relatedRepoTools(repos, root))!;
     try {
       expect(tools.repos).toEqual([
         dependency('dashpay/rust-dashcore', a), dependency('dashpay/grovedb'), dependency('acme/foo', c), dependency('dashpay/dips'), repos[4], DASH,
         dependency('acme/berry', a), dependency('acme/tar', b), dependency('acme/tabbed', c), dependency('acme/standalone', c), dependency('acme/other', a),
-        dependency('acme/broken', b),
+        dependency('acme/broken', b), dependency('acme/long', c),
       ]);
       const locks = {
         'dashpay/rust-dashcore': { lockfile: 'Cargo.lock' },
@@ -525,6 +530,7 @@ describe('relatedRepoLoader', () => {
         'acme/standalone': { lockfile: 'crates/standalone/Cargo.lock' },
         'acme/other': { lockfile: 'other/x/Cargo.lock' },
         'acme/broken': { lockfile: 'broken/m/Cargo.lock' },
+        'acme/long': { lockfile: 'long/m/Cargo.lock' },
       };
       expect(tools.locks).toEqual(locks);
       expect(core.info).toHaveBeenCalledWith('Related repo dashpay/grovedb is read at its default branch: the lockfiles lock it at 2 different commits');
