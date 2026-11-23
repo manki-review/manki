@@ -946,7 +946,7 @@ export interface RoundSlicing {
 /** What changed a finding's severity. */
 export type GradeChange =
   | 'judge' | 'rule' | 'unproven' | 'build_claim' | 'refutation' | 'in_pr_suppression' | 'own_proposal' | 'ratchet'
-  | 'resolved_thread' | 'pre_existing';
+  | 'resolved_thread' | 'pre_existing' | 'own_fix';
 
 /** One change of a finding's severity. */
 export interface GradeStep {
@@ -2021,6 +2021,11 @@ export interface ThreadEvaluation {
   cell?: GradeCell;
   /** The cell the judge stated for what remains when the thread keeps another grade than that cell gives. Only for the record: no prompt shows it. */
   judgeCell?: GradeCell;
+  /**
+   * Set when a check confirmed that the push applies the fix the thread's finding suggested, so a blocker restating it
+   * was posted as a warning. A later round keeps that cap while its push changes none of the thread's files.
+   */
+  ownFix?: true;
 }
 
 /**
