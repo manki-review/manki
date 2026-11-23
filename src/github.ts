@@ -2184,10 +2184,11 @@ function formatReplyFinding(finding: Finding): string[] {
 /**
  * Returns the ID of the unresolved Manki thread already posted for this finding, unless the finding is posted on its own.
  * A thread graded below the finding never carries it, so a warning or a blocker is never left to a suggestion thread.
+ * Neither does a thread Manki closed because its finding continues in another thread.
  */
 function openThreadFor(finding: Finding, existingThreads: PreviousFinding[]): string | undefined {
   if (finding.ownThread) return undefined;
-  const open = existingThreads.filter(t => t.status !== 'resolved' && t.threadId && t.markerSlug && !gradedAbove(finding.severity, t));
+  const open = existingThreads.filter(t => t.status !== 'resolved' && !t.raised && t.threadId && t.markerSlug && !gradedAbove(finding.severity, t));
   const fingerprint = { file: finding.file, lineStart: finding.line, lineEnd: finding.line, slug: titleToSlug(finding.title) };
   return findPriorThreadId(fingerprint, open);
 }

@@ -467,6 +467,8 @@ interface PreviousFinding extends FindingMetadata {
    * allows. That resolve still holds, no reply of Manki's accepted or confirmed a fix, and no round's judge found it fixed.
    */
   decidedWithoutFix?: boolean;
+  /** Manki resolved the thread with `RAISED_MARKER`, since its finding continues in a thread of its own. It carries no later finding. */
+  raised?: true;
   /**
    * For a thread `decidedWithoutFix` by Manki's answer that accepted no fix, the lines of the PR that answer cited, set
    * only when each statement it checked cites one (`settlingPlaces`).
@@ -767,6 +769,7 @@ async function fetchRecapState(
         ...(t.settlement!.answerPlaces && { answerPlaces: t.settlement!.answerPlaces }),
         ...(t.settlement!.trackingIssues && { trackingIssues: t.settlement!.trackingIssues }),
       }),
+      ...(t.raised && { raised: true as const }),
       threadId: t.threadId,
       threadUrl: t.threadUrl,
       ...(t.markerSlug && { markerSlug: t.markerSlug }),
@@ -1143,6 +1146,8 @@ interface ReviewThread extends FindingMetadata {
   isSecurity: boolean;
   disprovedBlocker?: boolean;
   reopenedByManki: boolean;
+  /** Resolved, with Manki's reply that its finding continues in another thread. */
+  raised?: true;
   recordedOverride?: Omit<SecurityOverride, 'thread'>;
   fixClaim?: FixClaim;
   hasHumanReply: boolean;
@@ -1367,6 +1372,7 @@ async function fetchReviewThreads(
         isSecurity: isBotThread && isSecurityThread(body),
         ...(isBotThread && isDisprovedThread(body) && { disprovedBlocker: true }),
         reopenedByManki: thread.comments.nodes.slice(1).some(c => isBotLogin(bot, c.author?.login) && hasOwnMarker(c.body ?? '', REOPENED_MARKER, COMMENT_MARKER)),
+        ...(isBotThread && thread.isResolved && thread.comments.nodes.slice(1).some(c => isBotLogin(bot, c.author?.login) && hasOwnMarker(c.body ?? '', RAISED_MARKER, COMMENT_MARKER)) && { raised: true as const }),
         ...(recordedOverride && { recordedOverride }),
         ...(fixClaim && { fixClaim }),
         hasHumanReply,

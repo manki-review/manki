@@ -6407,6 +6407,8 @@ describe('postReview non-blocking findings', () => {
       { title: 'Retry leaks a timer', file: 'src/a.ts', line: 7, severity: 'warning' as const, status: 'open' as const, threadId: 'T4', markerSlug: 'Retry-leaks-a-timer' },
       { title: 'Retry never stops', file: 'src/a.ts', line: 9, severity: 'note' as const, status: 'open' as const, threadId: 'T5', markerSlug: 'Retry-never-stops' },
       { title: 'Lock order flips', file: 'src/a.ts', line: 40, severity: 'note' as const, status: 'open' as const, threadId: 'T6', markerSlug: 'Lock-order-flips' },
+      // Manki closed this one because its finding continues in a thread of its own.
+      { title: 'Retry spins', file: 'src/a.ts', line: 9, severity: 'warning' as const, status: 'auto-resolved' as const, raised: true as const, threadId: 'T7', markerSlug: 'Retry-spins' },
     ];
 
     const findings = [
@@ -6419,6 +6421,8 @@ describe('postReview non-blocking findings', () => {
       // diff's lines a file-level one.
       nonBlocking('warning', 'Retry never stops', 9, { tags: ['follow-up'] }),
       nonBlocking('blocker', 'Lock order flips', 40),
+      // A thread closed as raised carries no later finding with its title, which gets a thread of its own.
+      nonBlocking('warning', 'Retry spins', 9, { tags: ['follow-up'] }),
     ];
     // The record entry of the answered thread's finding has its thread already, as `buildRoundContext` writes it.
     const context = makeContext({
@@ -6427,7 +6431,7 @@ describe('postReview non-blocking findings', () => {
     await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult(findings), diff, context, undefined, { existingThreads });
 
     const review = createReview.mock.calls[0][0];
-    expect(review.comments.map((c: { line: number; body: string }) => [c.line, c.body.split('\n')[0]])).toEqual([[9, '\u26A0\uFE0F **Warning**'], [1, '\u{1F6AB} **Blocker**']]);
+    expect(review.comments.map((c: { line: number; body: string }) => [c.line, c.body.split('\n')[0]])).toEqual([[9, '\u26A0\uFE0F **Warning**'], [1, '\u{1F6AB} **Blocker**'], [9, '\u26A0\uFE0F **Warning**']]);
     expect(createReviewComment).not.toHaveBeenCalled();
     const visible = (review.body as string).slice(0, review.body.indexOf('<!-- manki-stats'));
     expect(visible).not.toContain('Extract helper');
@@ -6436,7 +6440,7 @@ describe('postReview non-blocking findings', () => {
     expect(visible).not.toContain('Retry leaks a timer');
     // The record says which thread carries each finding.
     const record = JSON.parse(extractReviewRecords(review.body as string).records[0]) as RoundContext;
-    expect(record.findings.entries.map(e => [e.posted, e.threadId])).toEqual([['earlier_thread', 'T1'], ['earlier_thread', 'T3'], ['earlier_thread', 'T2'], ['earlier_thread', 'T4'], ['thread', undefined], ['thread', undefined]]);
+    expect(record.findings.entries.map(e => [e.posted, e.threadId])).toEqual([['earlier_thread', 'T1'], ['earlier_thread', 'T3'], ['earlier_thread', 'T2'], ['earlier_thread', 'T4'], ['thread', undefined], ['thread', undefined], ['thread', undefined]]);
   });
 
   it('lists the closed threads Manki agreed to leave for later as follow-ups, one line each', async () => {
