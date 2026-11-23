@@ -1145,18 +1145,18 @@ async function collectLockfiles(target: RunTarget, fullDiff: ParsedDiff): Promis
 }
 
 /**
- * Dismisses the reviews `reviewId` replaces. Throws `SupersededError` instead when the head moved since,
- * so a review of an old commit never lifts the merge block on a new one. Past that check the round is final,
- * so a later push no longer stops it.
+ * Dismisses the reviews `reviewId` replaces and returns how many it dismissed. Throws `SupersededError` instead when
+ * the head moved since, so a review of an old commit never lifts the merge block on a new one. Past that check the
+ * round is final, so a later push no longer stops it.
  */
 async function replacePreviousReviews(
   target: RunTarget, progress: RunProgress, reviewId: number, state: 'CHANGES_REQUESTED' | 'APPROVED' = 'CHANGES_REQUESTED',
-): Promise<void> {
+): Promise<number> {
   const { octokit, bot, owner, repo, prNumber, commitSha } = target;
   progress.reviewPosted = true;
   await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
   progress.stopHeadWatch();
-  await dismissPreviousReviews(octokit, bot, owner, repo, prNumber, reviewId, state);
+  return dismissPreviousReviews(octokit, bot, owner, repo, prNumber, reviewId, state);
 }
 
 /**
@@ -1171,7 +1171,8 @@ async function postUnreviewedRound(
   await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
   const result = { verdict: 'COMMENT' as const, summary, findings: [], highlights: [], reviewComplete: true, agentNames: [] as string[] };
   const { id: reviewId } = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, undefined, undefined, { noVerdict: true });
-  await replacePreviousReviews(target, progress, reviewId, 'APPROVED');
+  // No approval stands any more, so the coordinator no longer records one.
+  if (await replacePreviousReviews(target, progress, reviewId, 'APPROVED') > 0) await reportPrState(owner, repo, prNumber, { approval: null });
   await updateProgressComment(octokit, owner, repo, commentId, { ...dashboard, totalDurationMs: metadata.timing.totalMs }, metadata, progressSettings(target, progress, 'up to date', { reviewed: true }));
   await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha, { noVerdict: true });
   return { conclusion: 'action_required', title: 'Not reviewed', summary };
@@ -1240,7 +1241,7 @@ async function replaceWithNotice(target: RunTarget, progress: RunProgress, marke
  */
 async function postTooBigNotice(target: RunTarget, progress: RunProgress, text: string, offerReview: boolean, lastRoundAt?: string): Promise<CheckReport> {
   const { octokit, bot, owner, repo, prNumber } = target;
-  await dismissPreviousReviews(octokit, bot, owner, repo, prNumber, undefined, 'APPROVED');
+  if (await dismissPreviousReviews(octokit, bot, owner, repo, prNumber, undefined, 'APPROVED') > 0) await reportPrState(owner, repo, prNumber, { approval: null });
   const offered = progressSettings(target, progress, offerReview ? 'too big for automatic review' : 'too big to review');
   // Above the hard limit no box can review the PR, so only Pause stays.
   const settings = offered && (offerReview ? offered : { ...offered, boxes: new Set<SettingsBox>(['pause']) });

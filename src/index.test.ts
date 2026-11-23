@@ -3215,6 +3215,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [file], excluded: [] });
     const warmupCLI = jest.fn().mockResolvedValue(undefined);
     jest.mocked(createLLMClient).mockImplementation(() => ({ sendMessage: jest.fn(), warmupCLI }));
+    if (notice) jest.mocked(ghUtils.dismissPreviousReviews).mockResolvedValueOnce(1);
 
     await runFullReview(baseArgs.owner, baseArgs.repo, baseArgs.prNumber, baseArgs.commitSha, baseArgs.baseRef, baseArgs.prContext, { forceReview });
 
@@ -3229,6 +3230,8 @@ describe('runFullReview orchestration', () => {
     // A request for changes stays, so a push cannot clear a blocker by making the PR too big. Approvals go.
     expect(ghUtils.postReview).not.toHaveBeenCalled();
     expect(jest.mocked(ghUtils.dismissPreviousReviews).mock.calls).toEqual([[expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42, undefined, 'APPROVED']]);
+    // The dismissed approval is no longer recorded by the coordinator.
+    expect(authModule.reportPrState).toHaveBeenCalledWith('test-owner', 'test-repo', 42, { approval: null });
     // The progress comment becomes the notice, so it keeps the settings block.
     expect(mockOctokitInstance.rest.issues.deleteComment).not.toHaveBeenCalled();
     expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalled();
@@ -3248,6 +3251,8 @@ describe('runFullReview orchestration', () => {
     await callRunFullReview();
 
     expect(mockOctokitInstance.rest.issues.updateComment).toHaveBeenCalledWith(expect.objectContaining({ comment_id: 71, body: expect.stringContaining('9000 reviewable lines') }));
+    // With no approval to dismiss, the coordinator's record stays as it is.
+    expect(authModule.reportPrState).not.toHaveBeenCalledWith('test-owner', 'test-repo', 42, { approval: null });
     expect(jest.mocked(mockOctokitInstance.rest.issues.createComment).mock.calls.filter(([c]) => (c as { body: string }).body.includes('**Too big'))).toEqual([]);
     jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([]);
   });
@@ -3338,6 +3343,7 @@ describe('runFullReview orchestration', () => {
     // The failed run of the same head keeps its report, since this round posts no verdict.
     const failed = { id: 31, body: '🔴 **Review failed** boom\n\n<!-- manki -->\n\n---\nNot reviewed yet · head `abc123` · review failed\n- [ ] Review again <!-- manki-box:again -->\n<!-- manki-settings -->', user: { login: 'manki-review[bot]' }, updated_at: '2026-11-18T09:00:00Z' };
     jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([failed]);
+    jest.mocked(ghUtils.dismissPreviousReviews).mockResolvedValueOnce(1);
 
     try {
       await callRunFullReview();
@@ -3358,6 +3364,7 @@ describe('runFullReview orchestration', () => {
     const { diff: analyzed, fullDiff: changed } = jest.mocked(staticSignalsModule.collectStaticSignals).mock.calls[0][1];
     expect([analyzed, changed]).toEqual([expect.objectContaining({ files: file ? [file] : [], binarySkipped }), analyzed]);
     expect(jest.mocked(ghUtils.dismissPreviousReviews).mock.calls).toEqual([[expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42, 123, 'APPROVED']]);
+    expect(authModule.reportPrState).toHaveBeenCalledWith('test-owner', 'test-repo', 42, { approval: null });
     expect(mockChecksUpdate).toHaveBeenCalledWith(expect.objectContaining({ conclusion: 'action_required', output: expect.objectContaining({ title: 'Not reviewed' }) }));
     expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)![4].totalDurationMs).toEqual(expect.any(Number));
     // Metadata is what makes the progress comment read as complete rather than failed.
