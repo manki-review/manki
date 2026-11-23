@@ -1782,13 +1782,18 @@ describe('refuteBlockers', () => {
       workspace, priorRounds: rounds({ refutation: premise('unsettled'), cell: { row: 'wrong', column: 'rare' }, doubts: [REACH_DOUBT] }), diff,
     });
     expect([lowered.severity, lowered.doubts, lowered.cell]).toEqual(['blocker', undefined, { row: 'wrong', column: 'normal' }]);
-    // A check that confirmed the defect and disproved a premise the defect rests on settled nothing, also as a record stored as a disproof.
+    // A check that confirmed the defect and disproved a premise the defect rests on settled nothing, also as a record
+    // stored as a disproof, and also when its confirmation rests on outside behavior no line states, stored unsettled.
     const exists = [{ premise: 'No caller bounds `a`', decides: 'defect' as const }];
-    for (const outcome of ['unsettled', 'disproved']) {
+    const contradictions: Record<string, unknown>[] = [
+      { ...premise('disproved'), defect: 'confirmed' }, { ...premise('disproved'), outcome: 'disproved', defect: 'confirmed' },
+      { ...premise('disproved'), defect: 'unsettled', outside: { behavior: 'The package manager rejects a stale lockfile.', stated: false } },
+    ];
+    for (const refutation of contradictions) {
       const [contradicted] = await refuteBlockers(client, [finding('Sum overflows', { severity: 'warning', line: 4, cell: stated })], {
-        workspace, priorRounds: rounds({ doubts: exists, refutation: { ...premise('disproved'), outcome, defect: 'confirmed' } }), diff,
+        workspace, priorRounds: rounds({ doubts: exists, refutation }), diff,
       });
-      expect([outcome, contradicted.gradeIfConfirmed, contradicted.doubts]).toEqual([outcome, 'blocker', exists]);
+      expect([refutation, contradicted.gradeIfConfirmed, contradicted.doubts]).toEqual([refutation, 'blocker', exists]);
     }
     // A blocker that rests on its consequence rises only when every check confirms the defect and every premise. So a
     // check that left the defect open, or a second check that left the consequence open, settled nothing.

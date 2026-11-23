@@ -685,7 +685,8 @@ function reopenCappedGrade(finding: Finding, priorRounds: readonly RoundContext[
   if (!pending || prior.severity !== finding.severity || rank(pending) >= rank(prior.severity)) return finding;
   // A check that confirmed the defect and disproved a premise the defect rests on contradicts itself, also as a record
   // stored as `disproved`. It settles a doubt only by confirming every premise or disproving one the grade rests on.
-  const settles = (r: Refutation): boolean => r.defect === 'confirmed'
+  // Whether it confirmed the defect is read `asAnswered`, and whether it confirmed every premise is read as stored.
+  const settles = (r: Refutation): boolean => asAnswered(r).defect === 'confirmed'
     ? r.outcome === 'confirmed' || !!r.premises?.some((p, i) => p.outcome === 'disproved' && prior.doubts?.[i]?.decides === 'grade')
     : r.outcome !== 'unsettled' || !!r.premises?.some(p => p.outcome === 'disproved');
   const checks = [prior.refutation, prior.pairRefutation].filter((r): r is Refutation => !!r);
