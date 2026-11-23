@@ -1036,8 +1036,8 @@ function beforeJudge(data: DashboardData): string {
   const leads = data.openLeadCount ?? 0;
   return ([
     [data.toolAlertCount ?? 0, 'tool alert added', 'tool alerts added'],
-    [data.carriedLeadCount ?? 0, 'lead carried over from the last round', 'leads carried over from the last round'],
-    [leads, 'lead not finished checking', 'leads not finished checking'],
+    [data.carriedLeadCount ?? 0, 'possible problem carried over from the last round', 'possible problems carried over from the last round'],
+    [leads, 'possible problem not finished checking', 'possible problems not finished checking'],
     [repeats, 'dropped as a repeat of an earlier resolved finding', 'dropped as repeats of earlier resolved findings'],
   ] as const).filter(([count]) => count > 0).map(([count, singular, plural]) => countOf(count, singular, plural)).join(', ');
 }
@@ -1861,7 +1861,7 @@ function baseNote(finding: Finding, links?: CodeLinks, oneLine = false): string 
     return at ? [linkedRange(at, linkTo)] : [];
   }).slice(0, oneLine ? 1 : undefined).join(', ');
   const branch = links?.baseBranch ? inlineCode(links.baseBranch) : 'the base branch';
-  if (security) return `**Already broken before this PR.** Two checks found the same problem on ${branch} at ${lines}. It is a security finding, so it stays until it is fixed or a maintainer resolves its thread.`;
+  if (security) return `**Already broken before this PR.** Two checks found the same problem on ${branch} at ${lines}. It is a security finding, so it stays until it is fixed or a maintainer clears it.`;
   return stopped
     ? `**Already broken before this PR.** Two checks found the same problem on ${branch} at ${lines}, so it doesn't block this PR.`
     : `**Possibly older than this PR.** One check found the same problem on ${branch} at ${lines}. If that is right, a maintainer can dismiss the finding.`;

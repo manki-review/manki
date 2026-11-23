@@ -659,7 +659,7 @@ describe('formatFindingComment', () => {
     // A pre-existing security blocker on code the PR did not touch still blocks. Both checks say it was already broken,
     // and that a maintainer decides, never that it does not block, and the summary agrees.
     const stillBlocking = onMain({ ...confirmedBefore, severity: 'blocker', tags: ['pre-existing', 'security'] });
-    expect(stillBlocking).toContain(`**${baseFinding.title}**\n\n**Already broken before this PR.** Two checks found the same problem on \`main\` at [\`src/main.ts:40\`](${baseLink}). It is a security finding, so it stays until it is fixed or a maintainer resolves its thread.\n\n`);
+    expect(stillBlocking).toContain(`**${baseFinding.title}**\n\n**Already broken before this PR.** Two checks found the same problem on \`main\` at [\`src/main.ts:40\`](${baseLink}). It is a security finding, so it stays until it is fixed or a maintainer clears it.\n\n`);
     expect(stillBlocking).not.toMatch(/Possibly older|doesn't block/);
     expect(stillBlocking).toContain('double-checked, same before this PR</summary>');
     expect(parseFindingFromComment(stillBlocking).description).toBe(baseFinding.description);
@@ -3851,7 +3851,7 @@ describe('buildDashboard', () => {
       .toContain(`${INDENT}grading 10 findings (2 dropped as repeats of earlier resolved findings)`);
     // The findings the round adds before the judge are named too, so the count graded adds up.
     expect(buildDashboard({ ...data, toolAlertCount: 1, carriedLeadCount: 2, openLeadCount: 1, staticDedupCount: 1, llmDedupCount: 0 }))
-      .toContain(`${INDENT}grading 10 findings (1 tool alert added, 2 leads carried over from the last round, 1 lead not finished checking, 1 dropped as a repeat of an earlier resolved finding)`);
+      .toContain(`${INDENT}grading 10 findings (1 tool alert added, 2 possible problems carried over from the last round, 1 possible problem not finished checking, 1 dropped as a repeat of an earlier resolved finding)`);
     // A round with nothing to judge shows the judge as skipped while it runs and once it is done, never as pending.
     for (const phase of ['reviewed', 'complete'] as const) {
       const skipped = buildDashboard({ ...data, phase, rawFindingCount: 1, judgeInputCount: 0, staticDedupCount: 1, llmDedupCount: 0, judgeSkipped: true });
@@ -3941,7 +3941,7 @@ describe('buildDashboard', () => {
     expect(everything).toContain(lines('> ✅ Second reads: 1 of 1 done, 1 finding (40s)', ''));
     expect(everything).toContain(lines(
       '**Judge** (2m 59s)',
-      '> before the judge: 1 tool alert added, 1 lead carried over from the last round, 1 lead not finished checking, 1 dropped as a repeat of an earlier resolved finding',
+      '> before the judge: 1 tool alert added, 1 possible problem carried over from the last round, 1 possible problem not finished checking, 1 dropped as a repeat of an earlier resolved finding',
       '> graded 4 findings: 2 kept · 1 dropped · 1 merged',
       '> dropped, as the finders filed them: 1 suggestion',
       '> sweeps: 1 of 1 done, 2 findings (30s)',
