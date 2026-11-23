@@ -2417,8 +2417,12 @@ export interface RoundSignalSourceRun {
   reason?: string;
 }
 
-/** Where the `review` block came from: the base branch, or the built-ins because the base has none, could not be read, or failed validation. */
-export type ConfigSource = 'base' | 'builtin' | 'base_unreadable' | 'base_invalid';
+/**
+ * Where the `review` block came from: the base branch, or the built-ins because the base has none, could not be read, or
+ * failed validation. `default_branch` says that the base has no config file, so the default branch's file gave every
+ * setting. When that file could not be read or failed validation, the source is `base_unreadable` or `base_invalid`.
+ */
+export type ConfigSource = 'base' | 'builtin' | 'default_branch' | 'base_unreadable' | 'base_invalid';
 
 export interface RoundRouting extends TeamRouting {
   configSource: ConfigSource;

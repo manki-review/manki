@@ -617,12 +617,23 @@ function eventBranch(ref: unknown, what: string): string {
 }
 
 /**
- * Loads the base branch's config at `ref` for an event that runs no review round. `held` says that it could not be
- * read or loaded. The config is then `fallbackConfig`, and the event must approve nothing. `closedUnknown` is set as
- * `loadBaseConfig` sets it.
+ * Loads the config at `ref` of the base branch `branch` with `loadBaseConfig`. A base without a config file takes the
+ * default branch's, unless the base is the default branch. Both are branches of the repository, never the PR's head.
  */
-async function loadEventConfig(octokit: Octokit, owner: string, repo: string, ref: string): Promise<{ config: ReviewConfig; held: boolean; closedUnknown?: string }> {
-  const { config, source, closedUnknown } = await loadBaseConfig(() => readConfigFile(octokit, owner, repo, ref, CONFIG_PATH), CONFIG_PATH, failureReason);
+function loadConfigAt(octokit: Octokit, owner: string, repo: string, ref: string, branch = ref): ReturnType<typeof loadBaseConfig> {
+  const defaultBranch: unknown = github.context.payload.repository?.default_branch;
+  const read = (at: string) => () => readConfigFile(octokit, owner, repo, at, CONFIG_PATH);
+  const readDefault = typeof defaultBranch === 'string' && defaultBranch && defaultBranch !== branch ? read(defaultBranch) : undefined;
+  return loadBaseConfig(read(ref), CONFIG_PATH, failureReason, readDefault);
+}
+
+/**
+ * Loads the base branch's config at `ref` for an event that runs no review round, as `loadConfigAt` does. `held` says
+ * that it could not be read or loaded. The config is then `fallbackConfig`, and the event must approve nothing.
+ * `closedUnknown` is set as `loadBaseConfig` sets it.
+ */
+async function loadEventConfig(octokit: Octokit, owner: string, repo: string, ref: string, branch = ref): Promise<{ config: ReviewConfig; held: boolean; closedUnknown?: string }> {
+  const { config, source, closedUnknown } = await loadConfigAt(octokit, owner, repo, ref, branch);
   return { config, held: configFailed(source), ...(closedUnknown && { closedUnknown }) };
 }
 
@@ -705,7 +716,7 @@ async function handleMergedPullRequest(): Promise<void> {
     return;
   }
   // The merged base branch holds the PR's own config. `base.sha` is a commit of the base branch from before the merge.
-  const before = pr.base.sha ? (await loadEventConfig(octokit, owner, repo, pr.base.sha)).config : fallbackConfig();
+  const before = pr.base.sha ? (await loadEventConfig(octokit, owner, repo, pr.base.sha, pr.base.ref)).config : fallbackConfig();
 
   const { store: memory } = await openMemoryStore(octokit, config.memory, owner, repo, pr.number);
   if (!memory) core.info('The fix rate goes to the job summary only');
@@ -999,7 +1010,7 @@ async function loadRunConfig(target: RunTarget): Promise<{ config: ReviewConfig;
   } catch (error) {
     core.warning(`Could not read or load the PR's ${CONFIG_PATH}, this round uses the base branch's settings: ${failureReason(error)}`);
   }
-  const { config, source, closedUnknown } = await loadBaseConfig(() => readConfigFile(octokit, owner, repo, baseRef, CONFIG_PATH), CONFIG_PATH, failureReason);
+  const { config, source, closedUnknown } = await loadConfigAt(octokit, owner, repo, baseRef);
   const unknown = closedUnknown ? { closedUnknown } : {};
   if (!headConfig) return { config, reviewSource: source, brokenHead: { changed: await changesConfig(target, headContent) }, ...unknown };
   const changed = editedKeys(headConfig, { config, source });

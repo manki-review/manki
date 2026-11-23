@@ -602,10 +602,11 @@ export function configFailed(source: ConfigSource): boolean {
 
 /**
  * Returns the top-level keys the change's own config `head` edits against the base branch's. A base config that could
- * not be read or loaded gives none, since the defaults that stand in for it are not what the change edits.
+ * not be read or loaded gives none, since the defaults that stand in for it are not what the change edits. Neither does
+ * one taken from the default branch, which the change does not edit.
  */
 export function editedKeys(head: ReviewConfig, base: { config: ReviewConfig; source: ConfigSource }): string[] {
-  return configFailed(base.source) ? [] : changedKeys(head, base.config);
+  return configFailed(base.source) || base.source === 'default_branch' ? [] : changedKeys(head, base.config);
 }
 
 /**
@@ -619,35 +620,47 @@ export function brokenConfig(source: ConfigSource, brokenOwnCopy: boolean): Conf
 }
 
 /**
- * Loads the base branch's config, which `read` returns, or the built-in defaults when there is no file. A read that fails
- * is tried once more. A file that does not load gives the defaults, with the source saying why, so the change that fixes
- * it is still reviewed. The defaults keep the `closed_paths` the file sets, as `readClosedPaths` reads them. When the file
- * cannot say which paths it closes, because both reads fail or `readClosedPaths` reads nothing, `closedUnknown` is the
- * note to post in place of anything a model would read. `describe` words the error in the warning.
+ * Loads the base branch's config, which `read` returns. When the base has no file, `readDefault` reads the default
+ * branch's in its place, and without one either the built-in defaults apply. A read that fails is tried once more. A
+ * file that does not load gives the defaults, with the source saying why, so the change that fixes it is still reviewed.
+ * The defaults keep the `closed_paths` the file sets, as `readClosedPaths` reads them. When the file cannot say which
+ * paths it closes, because both reads fail or `readClosedPaths` reads nothing, `closedUnknown` is the note to post in
+ * place of anything a model would read. `describe` words the error in the warning.
  */
 export async function loadBaseConfig(
   read: () => Promise<string | null>,
   configPath: string,
   describe: (error: unknown) => string,
+  readDefault?: () => Promise<string | null>,
 ): Promise<{ config: ReviewConfig; source: ConfigSource; closedUnknown?: string }> {
+  let branch = 'base branch';
   const fallBack = (source: ConfigSource, problem: string, error: unknown, closedPaths?: string[]) => {
-    core.warning(`${problem} ${configPath} on the base branch, using the defaults and no approval: ${describe(error)}`);
+    core.warning(`${problem} ${configPath} on the ${branch}, using the defaults and no approval: ${describe(error)}`);
     if (closedPaths) return { config: fallbackConfig(closedPaths), source };
     const why = source === 'base_unreadable' ? 'could not be read' : 'names `closed_paths` but does not parse, or its `closed_paths` is not a list of paths';
-    const closedUnknown = `The base branch's \`${configPath}\` ${why}, so Manki cannot tell which paths \`closed_paths\` keeps from every model, and reads no code until it is fixed.`;
+    const closedUnknown = `The ${branch}'s \`${configPath}\` ${why}, so Manki cannot tell which paths \`closed_paths\` keeps from every model, and reads no code until it is fixed.`;
     return { config: fallbackConfig(), source, closedUnknown };
   };
+  const readTwice = (reader: () => Promise<string | null>) => reader().catch((error: unknown) => {
+    core.info(`Could not read ${configPath} on the ${branch}, trying once more: ${describe(error)}`);
+    return reader();
+  });
   let content: string | null;
   try {
-    content = await read().catch((error: unknown) => {
-      core.info(`Could not read ${configPath} on the base branch, trying once more: ${describe(error)}`);
-      return read();
-    });
+    content = await readTwice(read);
+    if (content === null && readDefault) {
+      branch = 'default branch';
+      content = await readTwice(readDefault);
+    }
   } catch (error) {
     return fallBack('base_unreadable', 'Could not read', error);
   }
   try {
     const config = loadConfig(content ?? undefined, configPath);
+    if (content !== null && branch === 'default branch') {
+      core.info(`The base branch has no ${configPath}, so this run uses the default branch's`);
+      return { config, source: 'default_branch' };
+    }
     return { config, source: config.review ? 'base' : 'builtin' };
   } catch (error) {
     return fallBack('base_invalid', 'Could not load', error, readClosedPaths(content));
