@@ -1,9 +1,9 @@
 import * as core from '@actions/core';
-import { approveOrSayWhy, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, checkAndAutoApprove, holdApproval, pauseState, reopenAuthorResolvedThreads, retireStaleNotices, BOT_MARKER, ReviewThread, TRACKED_MARKER, unclearedThreads, warningHoldNote } from './state';
+import { approveOrSayWhy, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, checkAndAutoApprove, holdApproval, pauseState, reopenAuthorResolvedThreads, retireStaleNotices, BOT_MARKER, ReviewThread, TRACKED_MARKER, unclearedThreads, warningHoldNote, withdrawBlockedApproval } from './state';
 import { clearRecordMarker, dismissRecordMarker, FOUND_AGAIN_MARKER, PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './recap';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, namingCommit, paginateSinglePage, reviewedLine, TEST_BOT, TEST_LINKS, testSha } from './test-utils';
 import { APPROVED_LINE, autoApproveHeadMarker, formatFindingComment, postReview, reviewedCommit, titleToSlug } from './github';
-import { extractApprovalRecords, formatReplyRecord, formatReviewRecord } from './review-record';
+import { extractApprovalRecords, formatApprovalRecord, formatReplyRecord, formatReviewRecord } from './review-record';
 import { DEFAULT_CONFIG, fallbackConfig } from './config';
 import { determineOutcome } from './review';
 import { ApprovalRecord, AuthorClearRole, Finding, FindingFingerprintEntry, ReplyDecision, RoundContext, ThreadEvaluation, VerdictTraceEntry } from './types';
@@ -1044,7 +1044,7 @@ describe('checkAndAutoApprove', () => {
       ['a draft head no review covers, with `auto_approve` off', { draft: true, existingReviews: [{ id: 7, body: roundBody(blockingRound(testSha('01d'))), state: 'CHANGES_REQUESTED', commit_id: testSha('01d'), user }] },
         `${NOT_REVIEWED_YET}${AGAIN_BOX}\n\n**Approval held:** this PR is a draft. Mark it ready for review, then tick the review box in the settings block. \`auto_approve\` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.`, { auto_approve: false }, 'draft'],
       ['an approval that already stands', { existingReviews: [{ id: 7, body: roundBody(roundThatPosted(HEAD, [])), state: 'APPROVED', commit_id: HEAD, user }] }, { approved: true, standing: true }],
-      // An open blocking or warning thread declines beside an approval that stands, and neither dismisses that approval.
+      // An open blocking or warning thread declines beside an approval that stands.
       ['an open blocking thread beside an approval that stands', { threads: [thread('t1', 'blocker')], existingReviews: [{ id: 7, body: roundBody(roundThatPosted(HEAD, [])), state: 'APPROVED', commit_id: HEAD, user }] },
         `1 thread blocks the approval:\n- Lock is never released\n\n${FOLLOWS}`],
       ['an open warning thread beside an approval that stands', { threads: [thread('t1', 'warning')], existingReviews: [{ id: 7, body: roundBody(roundThatPosted(HEAD, [])), state: 'APPROVED', commit_id: HEAD, user }] },
@@ -1082,6 +1082,31 @@ describe('checkAndAutoApprove', () => {
       // Only the hold the check stopped at is named, so a block by a thread or by the review names none.
       expect(result.approved ? undefined : result.held).toBe(hold);
       expect(createReviewMock).not.toHaveBeenCalled();
+    });
+
+    it('withdraws a round approval or an auto-approval once a blocking thread is open again, and never for a warning thread', async () => {
+      jest.spyOn(core, 'info').mockImplementation(() => {});
+      const autoApproval = `${APPROVED_LINE} All blocking threads are resolved.\n\n<!-- manki -->\n<!-- manki-auto-approve -->\n${formatApprovalRecord({
+        decision: 'approved', reason: 'all blocking threads are resolved', head: HEAD, threads: { total: 1, resolved: 1 }, timestamp: '2026-11-23T00:00:00Z', mankiVersion: '7.7.3',
+      })}`;
+      const approvals = [roundBody(roundThatPosted(HEAD, [])), autoApproval];
+      for (const body of approvals) {
+        const setup = (threads: ReturnType<typeof thread>[]) => makeMockOctokit({ threads, prHeadSha: HEAD, mergeable: true, existingReviews: [{ id: 7, body, state: 'APPROVED', commit_id: HEAD, user }] });
+        // The check that runs after a reopen, with `auto_approve` on, and the one that runs with it off.
+        const checks = [
+          async (threads: ReturnType<typeof thread>[]) => { await approveOrSayWhy(setup(threads), TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG); },
+          (threads: ReturnType<typeof thread>[]) => withdrawBlockedApproval(setup(threads), TEST_BOT, 'owner', 'repo', 1, 'author', undefined),
+        ];
+        for (const check of checks) {
+          dismissPreviousReviews.mockClear();
+          await check([thread('t1', 'blocker')]);
+          expect(dismissPreviousReviews.mock.calls).toEqual([[expect.anything(), TEST_BOT, 'owner', 'repo', 1, undefined, 'APPROVED']]);
+          // A blocking thread someone allowed to clear it resolved, and an open warning thread, leave the approval to stand.
+          dismissPreviousReviews.mockClear();
+          await check([fixed('t1'), thread('t2', 'warning', undefined, { title: 'Retry never stops' })]);
+          expect(dismissPreviousReviews).not.toHaveBeenCalled();
+        }
+      }
     });
   });
 

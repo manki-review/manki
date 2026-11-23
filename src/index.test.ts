@@ -290,6 +290,7 @@ jest.mock('./state', () => ({
   findUnchangedVerdict: jest.requireActual('./state').findUnchangedVerdict,
   fetchBotReviewThreads: jest.requireActual('./state').fetchBotReviewThreads,
   fixedMarker: jest.requireActual('./state').fixedMarker,
+  withdrawBlockedApproval: jest.fn().mockResolvedValue(undefined),
 }));
 
 jest.mock('./fix-rate', () => ({
@@ -8466,7 +8467,7 @@ describe('handleReviewStateCheck', () => {
     _resetOctokitCache();
   });
 
-  it('reopens the threads the PR author resolved, then skips the approval when auto_approve is disabled', async () => {
+  it('reopens the threads the PR author resolved, then skips the approval but withdraws one beside a blocker when auto_approve is disabled', async () => {
     setContext({
       eventName: 'pull_request_review_thread',
       payload: {
@@ -8496,6 +8497,8 @@ describe('handleReviewStateCheck', () => {
       'auto_approve is disabled — skipping state check',
     );
     expect(jest.mocked(stateModule.checkAndAutoApprove)).not.toHaveBeenCalled();
+    // Only a round approves then, but its approval still goes when a blocking thread is open again.
+    expect(jest.mocked(stateModule.withdrawBlockedApproval)).toHaveBeenCalledWith(expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 1, 'author', 'admin');
 
     // A thread resolved after the merge, or on a closed PR, reopens nothing and approves nothing, with `auto_approve` on too.
     jest.mocked(configModule.loadConfig).mockReturnValue({ auto_review: true, auto_approve: true, max_diff_lines: 5000, exclude_paths: [], instructions: '', memory: { enabled: false, repo: '' } });
