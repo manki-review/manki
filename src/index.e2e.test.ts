@@ -1333,7 +1333,7 @@ describe('runFullReview end to end', () => {
     // The rebase left the PR's own change as it was, so the round saw no change since the last one.
     expect(mockGitHub.roundContext(rebased).judge.interRoundDiffState).toBe('empty');
     expect(rebased.body).toContain('**Still open from earlier reviews:**\n- `src/math.ts:2`: Sum is never range checked ([view thread](https://github.com/acme/widgets/pull/42#discussion_PRRT_1))');
-    expect(mockGitHub.threads).toHaveLength(1);
+    expect(mockGitHub.threads.map(t => [t.isResolved, t.comments.length])).toEqual([[false, 1]]);
 
     // A push rewrites the thread's lines and bounds only one input, so GitHub shows the thread outdated, without a line.
     // The judge calls what remains rare. Nothing checks that claim on a thread, so the thread keeps blocking.
@@ -1458,6 +1458,156 @@ describe('runFullReview end to end', () => {
     expect(mockGitHub.threads[0].comments.at(-1)?.body).not.toContain('This warning holds the approval');
     expect(mockGitHub.threads[0].isResolved).toBe(true);
     expect(postedReviews().at(-1)!.state).toBe('APPROVED');
+  });
+
+  describe('a later round that raises a warning thread', () => {
+    const warning = { ...BLOCKER, severity: 'warning' };
+    const raisedTo = (url: string) => `Raised to a blocker, continued in [this thread](${url}).`;
+    const restated = (cell: Record<string, unknown>, sameAs?: string, title = BLOCKER.title, threadId = 'PRRT_1') => JSON.stringify({
+      summary: 'The range check is still missing.',
+      findings: [{ id: 1, title, reasoning: 'Reachable from any caller.', ...cell, ...(sameAs && { sameAs }) }],
+      threadEvaluations: [{ threadId, status: 'not_addressed', reason: 'No range check yet.' }],
+    });
+
+    /** Runs a first round that posts the warning in `PRRT_1`. */
+    async function warnFirst(): Promise<void> {
+      Object.assign(mockLLM.replies, {
+        reviewer: JSON.stringify([warning]),
+        judge: JSON.stringify({ summary: 'One warning.', findings: [{ id: 1, title: warning.title, row: 'degraded', trigger: 'When an invoice sums very large amounts', reasoning: 'Only very large sums are off.' }] }),
+      });
+      await reviewRound();
+      expect(mockGitHub.threads.map(t => t.id)).toEqual(['PRRT_1']);
+    }
+
+    it('resolves it with a link to the blocker\'s new thread, which alone blocks until a fix lifts every hold', async () => {
+      await warnFirst();
+
+      Object.assign(mockLLM.replies, BLOCKER_REPLIES, { judge: restated({ row: 'wrong' }, 'P1') });
+      await forcedRound();
+
+      const [old, raised] = mockGitHub.threads;
+      expect(raised).toMatchObject({ id: 'PRRT_2', isResolved: false });
+      expect(old.isResolved).toBe(true);
+      expect(old.comments.map(c => c.body.split('\n\n<!--')[0])).toEqual([expect.any(String), raisedTo(raised.comments[0].url)]);
+      expect(postedReviews().at(-1)!.state).toBe('CHANGES_REQUESTED');
+
+      // The next round names the blocker again. It stays in the new thread, and the resolved warning drops nothing.
+      mockLLM.replies.judge = restated({ row: 'wrong' });
+      await forcedRound();
+      const again = postedReviews().at(-1)!;
+      expect(again.state).toBe('CHANGES_REQUESTED');
+      expect(mockGitHub.roundContext(again).findings.entries).toEqual([expect.objectContaining({ severity: 'blocker', posted: 'earlier_thread', threadId: 'PRRT_2' })]);
+      expect(mockGitHub.threads).toHaveLength(2);
+      expect(old.comments).toHaveLength(2);
+
+      // A push fixes it. The warning thread holds nothing, so the round approves.
+      mockGitHub.headSha = 'c3'.repeat(20);
+      mockGitHub.prDiffs[mockGitHub.headSha] = FIXED_PR_DIFF;
+      Object.assign(mockLLM.replies, READY_REPLIES, {
+        judge: JSON.stringify({ summary: 'The range check is in place.', findings: [], threadEvaluations: [{ threadId: 'PRRT_2', status: 'addressed', reason: 'The sum is checked now.' }] }),
+      });
+      await reviewRound();
+      expect(postedReviews().at(-1)!.state).toBe('APPROVED');
+      expect(raised.isResolved).toBe(true);
+      expect(old.comments).toHaveLength(2);
+    });
+
+    it('resolves a plain warning thread for a security warning, and leaves a security warning thread open for a security blocker', async () => {
+      await warnFirst();
+      const secure = { ...warning, title: 'Unbounded sum reaches the invoice total' };
+      Object.assign(mockLLM.replies, {
+        reviewer: JSON.stringify([secure]),
+        judge: restated({ row: 'degraded', trigger: 'When an invoice sums very large amounts', security: true }, 'P1', secure.title),
+      });
+      await forcedRound();
+      expect(mockGitHub.threads.map(t => [t.id, t.isResolved])).toEqual([['PRRT_1', true], ['PRRT_2', false]]);
+      // The review counts the warning once, since Manki closes the plain thread right after posting it.
+      expect(postedReviews().at(-1)!.body).toMatch(/^⚠️ \*\*1 warning to address\.\*\*/);
+      expect(postedReviews().at(-1)!.body).not.toContain('Still open from earlier reviews');
+      expect(mockGitHub.threads[0].comments.at(-1)!.body).toMatch(/^Raised to a security warning, continued in \[this thread\]\(https:\/\/github\.com\/acme\/widgets\/pull\/42#discussion_PRRT_2\)\./);
+
+      // A guarded thread clears only by a fix or a person, so it stays open beside the blocker's thread.
+      Object.assign(mockLLM.replies, { reviewer: JSON.stringify([{ ...secure, severity: 'blocker' }]), judge: restated({ row: 'severe', security: true }, 'P1', secure.title, 'PRRT_2') });
+      await forcedRound();
+      expect(mockGitHub.threads.map(t => [t.id, t.isResolved, t.comments.length])).toEqual([['PRRT_1', true, 2], ['PRRT_2', false, 1], ['PRRT_3', false, 1]]);
+      expect(core.info).toHaveBeenCalledWith('Thread PRRT_2 stays as it is: it is resolved or guarded');
+    });
+
+    /** Runs a round on a push that changes the warning's line, where the judge restates the warning as `cell` and adds `more`. */
+    async function restateAfterPush(cell: Record<string, unknown>, more: Record<string, unknown>[] = []): Promise<void> {
+      const restating = { ...BLOCKER, title: 'Unbounded sum reaches the invoice total' };
+      const judge = JSON.parse(restated(cell, 'P1', restating.title));
+      judge.findings.push(...more);
+      Object.assign(mockLLM.replies, { reviewer: JSON.stringify([restating, ...more.map(m => ({ ...warning, title: m.title, line: 3, proof: ['src/math.ts:3'] }))]), judge: JSON.stringify(judge) });
+      // On a changed line, a security suggestion gets a thread.
+      mockGitHub.headSha = 'c3'.repeat(20);
+      mockGitHub.prDiffs[mockGitHub.headSha] = PR_DIFF.replace('a + b;', 'b + a;');
+      await reviewRound();
+    }
+    const variant = { id: 2, title: 'Return value is never range checked', variantOf: 'P1', row: 'degraded', trigger: 'When an invoice sums very large amounts', reasoning: 'Same missing check.' };
+
+    // The reply lifts the warning's hold, so the thread stays open while the new thread holds less or this round put a finding into it.
+    it.each([
+      ['a security suggestion', { row: 'improvement', security: true }, [], 'PRRT_2 holds less than it does'],
+      ['a blocker beside a variant posted into the thread', { row: 'wrong' }, [variant], 'a finding of this round went into it'],
+      ['a blocker beside a warning the thread carries by its title', { row: 'wrong' }, [{ id: 2, title: warning.title, row: 'degraded', trigger: 'When an invoice sums very large amounts', reasoning: 'Still reachable.' }], 'a finding of this round went into it'],
+    ])('leaves the warning thread open for %s', async (_label, cell, more, why) => {
+      await warnFirst();
+      await restateAfterPush(cell, more);
+
+      expect(mockGitHub.threads.map(t => [t.id, t.isResolved])).toEqual([['PRRT_1', false], ['PRRT_2', false]]);
+      expect(mockGitHub.threads[0].comments.map(c => c.body)).not.toContainEqual(expect.stringMatching(/^Raised to/));
+      expect(core.info).toHaveBeenCalledWith(`Thread PRRT_1 stays as it is: ${why}`);
+    });
+
+    it('keeps the warning thread open and counted when the security warning that raises it rides on its own earlier thread', async () => {
+      await warnFirst();
+      const secure = { row: 'degraded', trigger: 'When an invoice sums very large amounts', security: true };
+      await restateAfterPush(secure, [variant]);
+      expect(mockGitHub.threads.map(t => [t.id, t.isResolved])).toEqual([['PRRT_1', false], ['PRRT_2', false]]);
+
+      const title = 'Unbounded sum reaches the invoice total';
+      Object.assign(mockLLM.replies, { reviewer: JSON.stringify([{ ...warning, title }]), judge: restated(secure, 'P1', title) });
+      await forcedRound();
+      const review = postedReviews().at(-1)!;
+      expect(mockGitHub.threads.map(t => [t.id, t.isResolved])).toEqual([['PRRT_1', false], ['PRRT_2', false]]);
+      expect(review.body).toMatch(/^⚠️ \*\*2 warnings to address\.\*\*/);
+      expect(review.body).toContain('**Still open from earlier reviews:**\n- `src/math.ts:2`: Sum is never range checked');
+    });
+
+    it('resolves a suggestion thread for a security suggestion, since the suggestion held nothing', async () => {
+      Object.assign(mockLLM.replies, {
+        reviewer: JSON.stringify([warning]),
+        judge: JSON.stringify({ summary: 'One suggestion.', findings: [{ id: 1, title: warning.title, row: 'improvement', reasoning: 'A guard would be clearer.' }] }),
+      });
+      await reviewRound();
+      await restateAfterPush({ row: 'improvement', security: true });
+
+      expect(mockGitHub.threads.map(t => [t.id, t.isResolved])).toEqual([['PRRT_1', true], ['PRRT_2', false]]);
+      expect(mockGitHub.threads[0].comments.at(-1)!.body).toMatch(/^Raised to a security suggestion, continued in \[this thread\]\(https:\/\/github\.com\/acme\/widgets\/pull\/42#discussion_PRRT_2\)\./);
+    });
+
+    it('leaves the warning thread alone when posting the review fails', async () => {
+      await warnFirst();
+      Object.assign(mockLLM.replies, BLOCKER_REPLIES, { judge: restated({ row: 'wrong' }, 'P1') });
+      mockGitHub.failures.push({ method: 'POST', path: /\/pulls\/\d+\/reviews$/, status: 502 });
+      await forcedRound();
+
+      expect(core.setFailed).toHaveBeenCalledWith(expect.stringContaining('Review failed'));
+      expect(mockGitHub.threads.map(t => [t.id, t.isResolved, t.comments.length])).toEqual([['PRRT_1', false, 1]]);
+    });
+
+    it('keeps the round when the warning thread cannot be resolved', async () => {
+      await warnFirst();
+      Object.assign(mockLLM.replies, BLOCKER_REPLIES, { judge: restated({ row: 'wrong' }, 'P1') });
+      mockGitHub.refuseResolve = true;
+      await forcedRound();
+
+      expect(core.setFailed).not.toHaveBeenCalled();
+      expect(postedReviews().at(-1)!.state).toBe('CHANGES_REQUESTED');
+      expect(mockGitHub.threads.map(t => [t.id, t.isResolved, t.comments.length])).toEqual([['PRRT_1', false, 2], ['PRRT_2', false, 1]]);
+      expect(core.warning).toHaveBeenCalledWith(expect.stringMatching(/^Failed to close thread PRRT_1, which "Sum is never range checked" continues in PRRT_2: /));
+    });
   });
 
   // A finding below `warning` gets a thread only when it is a security finding.

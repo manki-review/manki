@@ -21,9 +21,9 @@ import { isParsedLockfile, LockfileDiff, lockfilesLast, readLockfileChanges, wit
 import { loadMemory, MemoryRefusedError, MemorySkip, openMemoryStore, RepoMemory } from './memory';
 import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
 import { findRelatedWork } from './related-work';
-import { currentFindingLine, fetchRecapState, FOUND_AGAIN_MARKER, parseContextBlocks, PreviousFinding, pushTouchesThread, RecapState, replyClassOf, replyShownToJudge, securityOverridesIn } from './recap';
+import { currentFindingLine, fetchRecapState, FOUND_AGAIN_MARKER, isGuarded, parseContextBlocks, PreviousFinding, pushTouchesThread, RAISED_MARKER, RecapState, replyClassOf, replyShownToJudge, securityOverridesIn } from './recap';
 import { carryBodyWarnings, citedPlaces, filesChangedByPush, RETRY_HINT, ReviewClients, ReviewOptions, ROUND_TIME_MS, runReview } from './review';
-import { stringifyFindingFingerprint } from './finding-fingerprint';
+import { findPriorThreadId, stringifyFindingFingerprint } from './finding-fingerprint';
 import { buildReviewClients, warmUpClients } from './review-clients';
 import { roundReplyMarker } from './review-record';
 import { buildRoundContext, mergedDuplicateCount, RoundRecordInput } from './round-context';
@@ -34,7 +34,7 @@ import { fetchWorkspace } from './workspace';
 import { messageBox, tickedIssueBoxes, tickedMessageBoxes, withMessageBoxes } from './issue-box';
 import { handleIssueBoxTick, handleReviewBoxTick, settleTickedBox, TickedMessage } from './issue-tick';
 import { parseSettingsBlock, SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
-import { ConfigSource, DashboardData, disproof, DisprovedFinding, EarlierAttempt, Finding, findingKey, fixThreadFiles, FullReviewOptions, LaterDrop, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RecordOnlyReason, RoundTrigger, StateReport, StaticSignal, UnpostedReason, roundContextToFlatAliases, SCOPE_READER_NAME, SEVERITY_NAME, threadBlocks, SkippedFile } from './types';
+import { ConfigSource, DashboardData, disproof, DisprovedFinding, EarlierAttempt, Finding, findingKey, fixThreadFiles, FullReviewOptions, isSecurityFinding, LaterDrop, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RecordOnlyReason, RoundTrigger, StateReport, StaticSignal, UnpostedReason, roundContextToFlatAliases, SCOPE_READER_NAME, SEVERITY_NAME, threadBlocks, SkippedFile } from './types';
 import {
   fetchPRDiff,
   brokenConfig,
@@ -66,6 +66,8 @@ import {
   dismissPreviousReviews,
   postReview,
   capNotes,
+  earlierPlaces,
+  holdsApproval,
   limitFallbackLines,
   formatOpenBlockers,
   unreadRecordsLine,
@@ -104,9 +106,9 @@ import {
   skippedFiles,
   wasEdited,
 } from './github';
-import type { ApprovalHeld, BotIdentity, LinkedIssue, StandingVerdict } from './github';
+import type { ApprovalHeld, BotIdentity, EarlierPlace, LinkedIssue, StandingVerdict } from './github';
 import { announceSecurityOverrides, approveOrSayWhy, authorClearLine, autoReviewHalt, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, findUnchangedVerdict, fixedMarker, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread, withdrawBlockedApproval } from './state';
-import type { PauseState } from './state';
+import type { PauseState, ReviewThread } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -1765,6 +1767,79 @@ async function replyFixedThreads(run: ReviewRun, threads: OpenThread[]): Promise
 }
 
 /**
+ * Points each earlier thread a finding `raises` to the thread the round posted for that finding, and resolves it, so the
+ * PR shows the defect once. The reply lifts a warning's hold, so the earlier thread stays open, with no reply, unless the
+ * new thread blocks whenever it blocked and blocks or warns whenever it warned, and no finding of this round went into it.
+ * A guarded thread stays open too, since only a fix or a person clears it.
+ */
+async function closeRaisedThreads(run: ReviewRun, result: ReviewResult, placements: ReadonlyMap<Finding, EarlierPlace | undefined>): Promise<void> {
+  const raising = result.findings.filter(f => f.raises);
+  if (raising.length === 0) return;
+  const { octokit, bot, owner, repo, prNumber, commitSha } = run;
+  let live: ReviewThread[];
+  try {
+    live = await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber);
+  } catch (error) {
+    core.warning(`Could not read the review threads, so the threads a finding raised stay open: ${error}`);
+    return;
+  }
+  const earlier = new Set(run.recap.previousFindings.map(t => t.threadId));
+  const posted = live.flatMap(t => t.place?.commit === commitSha && !earlier.has(t.id) ? [{ threadId: t.id, thread: t, ...t.place }] : []);
+  const raised = raisedThreads(result, placements);
+  const closed = new Set<string>();
+  for (const f of raising) {
+    const old = live.find(t => t.id === f.raises);
+    const fresh = posted.find(t => t.threadId === findPriorThreadId({ file: f.file, lineStart: f.line, lineEnd: f.line, slug: titleToSlug(f.title) }, posted))?.thread;
+    const keeps = !fresh?.threadUrl ? `"${f.title}" got no thread of its own`
+      : !old || old.isResolved || isGuarded(old) ? 'it is resolved or guarded'
+      : !raised.has(old.id) ? 'a finding of this round went into it'
+      : !holdsAtLeast(fresh, old) ? `${fresh.id} holds less than it does`
+      : undefined;
+    if (keeps || !old || !fresh?.threadUrl) {
+      core.info(`Thread ${f.raises} stays as it is: ${keeps}`);
+      continue;
+    }
+    const kind = `${isSecurityFinding(f.tags, f.reviewers) ? 'security ' : ''}${SEVERITY_NAME[f.severity]}`;
+    try {
+      await replyToReviewThread(octokit, old.id, `Raised to a ${kind}, continued in [this thread](${fresh.threadUrl}).`, RAISED_MARKER);
+      await resolveReviewThread(octokit, old.id, 'WONT_FIX');
+      closed.add(old.id);
+      core.info(`Thread ${old.id} continues in ${fresh.id}, so it is resolved`);
+    } catch (error) {
+      core.warning(`Failed to close thread ${old.id}, which "${f.title}" continues in ${fresh.id}: ${error}`);
+    }
+  }
+  if (result.verdict !== 'APPROVE') return;
+  for (const t of live.filter(t => !closed.has(t.id) && t.isWarning && leftOutOfHeld(t, raised))) {
+    core.warning(`Thread ${t.id} still holds the approval, though the review did not count it, since it was to be closed`);
+  }
+}
+
+/**
+ * Returns the findings that raise each earlier thread, which `closeRaisedThreads` may close. By the review's `placements`,
+ * only a finding the review posts on its own counts, and only for a thread that takes no finding of the round.
+ */
+function raisedThreads(result: ReviewResult, placements: ReadonlyMap<Finding, EarlierPlace | undefined>): Map<string, Finding[]> {
+  const taking = new Set([...placements.values()].map(p => p?.threadId));
+  const raised = new Map<string, Finding[]>();
+  for (const f of result.findings) {
+    if (!f.raises || taking.has(f.raises) || placements.get(f)) continue;
+    raised.set(f.raises, [...raised.get(f.raises) ?? [], f]);
+  }
+  return raised;
+}
+
+/** Whether the review leaves warning thread `t` out of the warnings that hold, since a finding that blocks or holds the approval continues it and Manki closes it after posting. */
+function leftOutOfHeld(t: ReviewThread, raised: Map<string, Finding[]>): boolean {
+  return !!raised.get(t.id)?.some(f => f.severity === 'blocker' || holdsApproval(f)) && !isGuarded(t);
+}
+
+/** Whether thread `to` holds the approval whenever thread `from` does: it blocks when `from` blocks, and blocks or warns when `from` warns. */
+function holdsAtLeast(to: ReviewThread, from: ReviewThread): boolean {
+  return (!from.isBlocking || to.isBlocking) && (!from.isWarning || !!to.isWarning || to.isBlocking);
+}
+
+/**
  * Tells each thread whose grade a partial fix sets or changes what happened. The round record keeps the grade, so a
  * reply that fails loses only the note. A partly fixed thread hears what remains, but not again while it already
  * carries that grade and the push changes neither its file nor a file its finding cited. A thread an earlier partial
@@ -1940,7 +2015,7 @@ function blockOnOpenThreads(result: ReviewResult, threads: OpenThread[]): void {
 const WARNINGS_ALSO_HOLD_LINE = 'Warnings also hold the approval. The review names each one and what clears it.';
 
 /** Posts the round's review and dismisses the previous one. Returns the new review's id, whether its approval was held, and whether warnings hold it. */
-async function postRound(run: ReviewRun, result: ReviewResult, context: RoundContext, reviewTimeMs: number, restart?: string, unreadRecords?: string[]): Promise<{ id: number; approvalHeld: ApprovalHeld; warningsHeld: boolean }> {
+async function postRound(run: ReviewRun, result: ReviewResult, context: RoundContext, reviewTimeMs: number, restart?: string, unreadRecords?: string[]): Promise<{ id: number; approvalHeld: ApprovalHeld; warningsHeld: boolean; placements: ReadonlyMap<Finding, EarlierPlace | undefined> }> {
   const { octokit, bot, owner, repo, prNumber, commitSha, diff, recap } = run;
   // A finding on a parsed lockfile gets a thread on its line like any other.
   const disproved = (result.allJudgedFindings ?? []).flatMap((f): DisprovedFinding[] => {
@@ -1948,13 +2023,17 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
     return by ? [{ title: f.title, file: f.file, line: f.line, reason: by.reason }] : [];
   });
   // Read after the round resolved the threads it found fixed, and with its own grades, which can lower a blocker thread to a warning.
+  const postedDiff = withLockfiles(diff, run.lockfiles);
+  const placements = earlierPlaces(result.findings, recap.previousFindings, postedDiff);
+  const raised = raisedThreads(result, placements);
   const openWarnings = result.verdict === 'APPROVE'
-    ? await fetchHeldWarnings(octokit, bot, owner, repo, prNumber, run.options.prAuthorLogin, run.config.author_clear_role, context).catch((error: unknown) => {
+    ? await fetchHeldWarnings(octokit, bot, owner, repo, prNumber, run.options.prAuthorLogin, run.config.author_clear_role, context).then(held => held.filter(t => !leftOutOfHeld(t, raised)), (error: unknown) => {
       core.warning(`Could not read the warning threads, so the approval is held: ${error instanceof Error ? error.message : error}`);
       return 'unread' as const;
     }) : [];
-  const posted = await postReview(octokit, owner, repo, prNumber, commitSha, result, withLockfiles(diff, run.lockfiles), context, reviewTimeMs, {
+  const posted = await postReview(octokit, owner, repo, prNumber, commitSha, result, postedDiff, context, reviewTimeMs, {
     existingThreads: recap.previousFindings,
+    placements,
     openWarnings,
     disproved,
     draft: run.options.draft,
@@ -1972,7 +2051,7 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
   // A held approval posts a COMMENT, which leaves an approval of an older commit standing unless it is dismissed. A warning
   // also takes back an approval of this commit, as a round run again on it can find one.
   if (posted.approvalHeld) await dismissPreviousReviews(octokit, bot, owner, repo, prNumber, posted.id, 'APPROVED', posted.warningsHeld ? undefined : commitSha);
-  return posted;
+  return { ...posted, placements };
 }
 
 function metadataConfig(config: ReviewConfig, models: ReviewModels, triage: string, teamAgents: string[], reviewerModel?: string, memorySkip?: MemorySkip): ReviewMetadata['config'] {
@@ -2415,6 +2494,7 @@ async function runFullReview(
       pause: pauseReport(pauseAfter),
     });
     await replyFixedThreads(run, resolved);
+    await closeRaisedThreads(run, result, posted.placements);
     await replyPartlyFixedThreads(run, result);
     await replyFixedElsewhere(run, result);
     await replyAnsweredThreads(run, result);

@@ -1,5 +1,5 @@
 import { AuthorReplyClass, Finding, FindingFingerprintEntry, ReplyDecision, RoundContext, SECURITY_TAG, ThreadEvaluation, threadBlocks } from './types';
-import { clearRecordMarker, collectGuardedThreadIds, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, currentFindingLine, deduplicateFindings, dismissRecordMarker, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, parseFindingFromComment, threadSeverity } from './recap';
+import { clearRecordMarker, collectGuardedThreadIds, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, currentFindingLine, deduplicateFindings, dismissRecordMarker, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, parseFindingFromComment, RAISED_MARKER, threadSeverity } from './recap';
 import { AUTO_APPROVE_MARKER, BOT_LOGIN, formatFindingComment, titleToSlug } from './github';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { determineOutcome } from './review';
@@ -1515,10 +1515,23 @@ describe('fetchRecapState', () => {
         // A reopen by Manki ends the waiver before it, and only a waiver after it counts.
         ['waived, then reopened', [answer('Withdrawn'), `Reopened.\n\n<!-- manki -->\n${REOPENED_MARKER}`], undefined, false],
         ['reopened, then waived', [`Reopened.\n\n<!-- manki -->\n${REOPENED_MARKER}`, answer('Withdrawn')], undefined, true],
+        // So does a raise, which moves the finding to another thread.
+        ['waived, then raised', [answer('Withdrawn'), `Raised to a blocker, continued in [this thread](https://github.com/o/r/pull/1#discussion_T2).\n\n<!-- manki -->\n${RAISED_MARKER}`], undefined, false],
       ];
       for (const [why, replies, people, without] of decided) {
         const read = await fetchRecapState(withWriter(mockOctokit([answeredWith('T_BOT', files.bot, replies, people)], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }])), TEST_BOT, 'owner', 'repo', 1, 'author');
         expect([why, read.previousFindings.map(f => [f.status, f.decidedWithoutFix ?? false])]).toEqual([why, [['auto-resolved', without]]]);
+      }
+      // A raise ends every answer before it too, so no repeat goes back to the thread as answered there, and no filed issue
+      // is listed from it. The thread is marked raised, so it carries no later finding either.
+      const filed = '**Agreed.** Filed as #12 for later work.\n\n<!-- manki -->\n<!-- manki-tracked -->';
+      const raisedReply = `Raised to a blocker, continued in [this thread](https://github.com/o/r/pull/1#discussion_T2).\n\n<!-- manki -->\n${RAISED_MARKER}`;
+      for (const [why, replies, kept] of [
+        ['not raised', [filed, answer('Withdrawn')], ['**Withdrawn.** The caller checks it.', 12, undefined]],
+        ['raised', [filed, answer('Withdrawn'), raisedReply], [undefined, undefined, true]],
+      ] as Array<[string, string[], [string | undefined, number | undefined, true | undefined]]>) {
+        const read = await fetchRecapState(withWriter(mockOctokit([answeredWith('T_BOT', files.bot, replies)], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }])), TEST_BOT, 'owner', 'repo', 1, 'author');
+        expect([why, read.previousFindings.map(f => [f.answer, f.filedIssue, f.raised])]).toEqual([why, [kept]]);
       }
       // A dismiss command after Manki's answer cancels nothing, whoever sent it.
       const dismissedLater = answeredWith('T_BOT', files.bot, [answer('Withdrawn')]);

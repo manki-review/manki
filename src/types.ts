@@ -365,6 +365,11 @@ export interface Finding {
    * variant goes there as a reply, and a blocker is listed under a link to that thread.
    */
   threadId?: string;
+  /**
+   * ID of the open thread of an earlier finding this one restates but may not join, since that thread is graded below
+   * it or lacks its guard. Once this finding has a thread of its own, Manki points the earlier thread there and resolves it.
+   */
+  raises?: string;
   /** Round that listed this finding in its review body first, when the finding restates it. */
   raisedIn?: number;
   /** Whether the round lists an earlier blocker again that no thread carries, so it gets a thread. No model raised it this round. */

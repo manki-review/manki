@@ -6113,6 +6113,8 @@ describe('runReview', () => {
       ['Cache never cleared', undefined, 'src/x.ts:40:40:cache-never-cleared', undefined],
       ['Backoff overflows', undefined, undefined, undefined],
     ]);
+    // Only the blocker that restates the warning thread's own finding keeps that thread to close it once posted.
+    expect(result.findings.filter(f => f.raises).map(f => [f.title, f.raises])).toEqual([['Retry spins the CPU', 'T1']]);
     // A restatement of a review body finding names it, whichever check made the link.
     expect(result.findings.filter(f => f.raisedIn).map(f => f.sameAs)).toEqual(['src/y.ts:5:5:name-is-vague', 'src/y.ts:5:5:name-is-vague', 'src/y.ts:5:5:name-is-vague']);
     // Three warnings cite no proving line. Only the one no earlier finding is linked to is left out for it.
@@ -6213,6 +6215,17 @@ describe('runReview', () => {
       ['Retry also ignores the backoff field', 'T1', undefined],
       ['Retry also ignores the jitter field', 'T1', 'src/x.ts:10:10:retry-never-ends'],
     ]);
+    // A blocker that names the variant the thread took restates the variant, not the thread's own finding, so it keeps no thread to close.
+    mockedRunJudgeAgent.mockResolvedValue({
+      summary: 'One blocker.',
+      findings: [finding('blocker', 'Retry also ignores the backoff field', 'src/x.ts', 11, { sameAs: 'src/x.ts:11:11:retry-also-ignores-the-backoff-field' })],
+    });
+    const namedVariant = await runReview(makeClients(), {
+      config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true,
+      openThreads: [makePriorOpenThread({ title: 'Retry never ends' })], previousFindings: [], priorRounds: [prior, taken], headSha: 'sha3',
+    });
+    expect(namedVariant.findings).toEqual([expect.objectContaining({ severity: 'blocker', sameAs: 'src/x.ts:11:11:retry-also-ignores-the-backoff-field' })]);
+    expect(namedVariant.findings[0]).not.toHaveProperty('raises');
 
     // A suggestion thread takes only a suggestion, so a warning the judge links to it, as a restatement or a variant, is
     // posted on its own and never hides behind the suggestion label.
@@ -6243,6 +6256,8 @@ describe('runReview', () => {
       ['Cache grows without bound', undefined, undefined, undefined],
       ['Cache could have a limit', undefined, undefined, 1],
     ]);
+    // A variant the suggestion thread may not take is another place, so the thread stays open for its own finding.
+    expect(onSuggestion.findings.filter(f => f.raises).map(f => [f.title, f.raises])).toEqual([['Retry loop has no cap', 'T1']]);
     // The refuter checks a warning that restates a suggestion like any other, whether the judge linked them or not, since
     // no suggestion keeps it posted.
     const earlierOnes = earlierFindings([suggestionRound], [suggestionThread], undefined);
