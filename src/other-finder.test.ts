@@ -51,7 +51,7 @@ describe('withVote', () => {
 });
 
 describe('otherFinderVotes', () => {
-  it('asks a finding only second reads reported of a finder on another model than every read that reported it, and of none when no such finder ran', async () => {
+  it('asks a finding only second reads reported of a finder on another model than every read, of none without one, and gives a voter with tools the refuter\'s tools', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'manki-vote-'));
     mkdirSync(join(workspace, 'src'));
     writeFileSync(join(workspace, 'src', 'a.ts'), 'let total = 0;\ntotal += 1;\ntotal += 1;\n');
@@ -82,6 +82,15 @@ describe('otherFinderVotes', () => {
         title: 'Totals drift', file: 'src/a.ts', line: 3, grade: 'warning', finder: 'Finder B', model: 'sol', answer: 'declines',
         calls: [{ outcome: 'answered', durationMs: 4000, model: 'claude-opus-5-5', toolSteps: 0, costUsd: expect.any(Number) }],
       }]);
+      // A voter whose client has repository tools gets the refuter's read-only tools and is told to open the code it needs.
+      const sent = async (repoTools: boolean) => {
+        const voter = { ...client(), repoTools } as LLMClient;
+        await otherFinderVotes([finding({})], { workspace, restates: () => false, finders: [{ name: 'Finder A', model: 'opus', client: client() }, { name: 'Finder B', model: 'sol', client: voter }] });
+        const [system, , options] = jest.mocked(voter.sendMessage).mock.calls[0];
+        return [system.includes('Open the code you need with your tools'), system.includes('You have no tools'), options?.repoTools];
+      };
+      expect(await sent(true)).toEqual([true, false, { root: workspace, steps: 8, checking: true }]);
+      expect(await sent(false)).toEqual([false, true, undefined]);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }

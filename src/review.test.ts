@@ -4666,7 +4666,7 @@ describe('runReview', () => {
         expect(late.asked).toEqual([]);
         expect(late.result.reviewComplete).toBe(true);
         expect(late.result.findings.map(f => [f.title, f.severity, f.otherFinderVote])).toContainEqual(['Declined blocker', 'blocker', undefined]);
-        expect(late.result.notStarted).toContainEqual(expect.objectContaining({ kind: 'call', stage: 'vote', reason: 'the round has 3m 0s left, less than the 4m 0s a vote call starts with' }));
+        expect(late.result.notStarted).toContainEqual(expect.objectContaining({ kind: 'call', stage: 'vote', reason: 'the round has 3m 0s left, less than the 6m 0s a vote call starts with' }));
       } finally {
         clock.mockRestore();
       }

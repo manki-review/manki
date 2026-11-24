@@ -2168,7 +2168,7 @@ export async function runReview(
     const reads = (replay ? replay.reads : recorded.secondReads?.reads)?.filter(read => !carried.some(f => f.reviewers.includes(read.reviewer)));
     const logs = new Map<Finding, VoteLog>();
     const votes = await otherFinderVotes(kept, {
-      workspace, diff: diffWithLockfiles, restates: finding => restatesEarlier(earlierForChecks, finding), rules: config.review?.rules, reads, onVote: (log, finding) => logs.set(finding, log),
+      workspace, diff: diffWithLockfiles, restates: finding => restatesEarlier(earlierForChecks, finding), rules: config.review?.rules, reads, related: relatedTools, onVote: (log, finding) => logs.set(finding, log),
       // A vote only ever lowers a grade, so one without the time to start is skipped and the round goes on.
       // It has no fallback model, which can be the model that reported the finding.
       finders: team.finders.map(f => ({ name: f.name, model: f.model, client: lateFallback({ client: pickReviewerClient(clients, f.model).client }, 'vote', f.name, false) })),
