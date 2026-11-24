@@ -183,6 +183,9 @@
 #                                    # topics, is listed in the review body. `true` posts each as a warning,
 #                                    # a doubt only once the refuter confirms it, which holds the approval
 #                                    # until its thread is resolved
+#   calibrate: true                  # with memory on, a warning of a kind this repo fixed less than 30% of
+#                                    # the time over at least 20 posted is posted as a note. `false` only
+#                                    # records the fix rate
 
 # CI results the reviewers read as evidence (default: all on), and the
 # analyzers Manki runs itself.

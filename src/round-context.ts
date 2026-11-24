@@ -296,7 +296,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(f.unpostedReason && { unpostedReason: f.unpostedReason }),
   });
   const unposted = [...(result.unpostedPreExisting ?? []), ...(result.unposted ?? [])].map((f): FindingFingerprintEntry => ({ ...toEntry(f), posted: 'record' }));
-  const calibrations = fixRates ? result.findings.map(f => calibrate(fixRates, f)) : [];
+  const calibrations = fixRates ? result.findings.map(f => f.calibration ?? calibrate(fixRates, f)) : [];
   return {
     meta: {
       prNumber,
@@ -313,7 +313,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
       ...(!result.reviewComplete && { incomplete: true as const }),
       ...(result.retryAfter && { retryAfter: result.retryAfter }),
       ...(result.reused && { reusedFrom: result.reused.from }),
-      ...(fixRates && { calibrationLowered: calibrations.filter(c => c?.wouldLower).length }),
+      ...(fixRates && { calibrationLowered: result.findings.filter(f => f.gradePath?.some(step => step.by === 'calibration')).length }),
     },
     config: {
       memoryEnabled: config.memory?.enabled ?? false,

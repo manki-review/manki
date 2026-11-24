@@ -4842,7 +4842,7 @@ describe('runFullReview orchestration', () => {
       expect(metadata?.config.memoryRepo).toBe(`skipped: ${reason}`);
     });
 
-    it('records the fix rate of each posted finding\'s class from the history memory holds, and posts the finding unchanged', async () => {
+    it('hands the fix-rate history memory holds to the review, and records the class of each posted finding and the warnings it lowered', async () => {
       jest.mocked(configModule.loadConfig).mockReturnValue({
         auto_review: true, auto_approve: false, exclude_paths: [], max_diff_lines: 10000,
         instructions: '',
@@ -4850,24 +4850,28 @@ describe('runFullReview orchestration', () => {
       });
       jest.mocked(memoryModule.openMemoryStore).mockResolvedValue({ store: MEMORY_STORE });
       jest.mocked(memoryModule.loadMemory).mockResolvedValue({ learnings: [], suppressions: [] });
-      jest.mocked(fixRateModule.readFixRateHistory).mockResolvedValueOnce(fixRateModule.aggregateFixRates([
+      const history = fixRateModule.aggregateFixRates([
         JSON.stringify({ pr: 1, counts: [{ severity: 'warning', specialist: 'GPT 6.2 Sol · high', posted: 40, fixed: 10 }] }),
-      ]));
+      ]);
+      jest.mocked(fixRateModule.readFixRateHistory).mockResolvedValueOnce(history);
       const warning = { severity: 'warning' as const, title: 'Race', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['GPT 6.2 Sol · high'] };
+      const lowered = fixRateModule.lowerByFixRate(history, warning);
       jest.mocked(reviewModule.runReview).mockResolvedValue({
         verdict: 'COMMENT', outcome: 'READY' as const, summary: 'done',
-        findings: [warning], highlights: [], reviewComplete: true,
+        findings: [lowered], highlights: [], reviewComplete: true,
         agentNames: ['GPT 6.2 Sol · high'],
       });
 
       await callRunFullReview();
 
-      const call = jest.mocked(ghUtils.postReview).mock.calls[0];
       expect(fixRateModule.readFixRateHistory).toHaveBeenCalledWith(MEMORY_STORE);
-      expect(call[5].findings).toEqual([warning]);
-      expect(call[7]!.findings.entries[0].calibration).toEqual({ class: 'warning · GPT 6.2 Sol', posted: 40, fixed: 10, rate: 0.25, wouldLower: true });
+      expect(jest.mocked(reviewModule.runReview).mock.calls[0][1].fixRates).toBe(history);
+      const call = jest.mocked(ghUtils.postReview).mock.calls[0];
+      expect(call[7]!.findings.entries[0]).toMatchObject({
+        severity: 'note', calibration: { class: 'warning · GPT 6.2 Sol', posted: 40, fixed: 10, rate: 0.25, wouldLower: true },
+      });
       expect(call[7]!.meta.calibrationLowered).toBe(1);
-      expect(core.info).toHaveBeenCalledWith('Fix-rate calibration: 1 of 1 calibrated findings would be lowered, nothing changed');
+      expect(core.info).toHaveBeenCalledWith('Fix-rate calibration: lowered 1 of 1 calibrated findings to notes');
     });
 
     it('records why the round paused, the prompt versions, what memory loaded and hid, the related repos and work, the sibling comparisons, the claims of the PR text, the scope answer and the token service calls', async () => {

@@ -473,7 +473,7 @@ interface GradeRoute {
 }
 
 // The steps that only come after the vote, so the first of them starts from the grade the vote saw.
-const AFTER_VOTE: readonly GradeChange[] = ['other_finder', 'pre_existing', 'own_fix'];
+const AFTER_VOTE: readonly GradeChange[] = ['other_finder', 'pre_existing', 'own_fix', 'calibration'];
 
 /** The kinds of step that report findings, in pipeline order, by the label a report prints. */
 const RAISED_BY = {
