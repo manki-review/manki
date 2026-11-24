@@ -1774,39 +1774,57 @@ function namedSibling(tree: Tree, node: SgNode, side: 'prev' | 'next'): SgNode |
   return undefined;
 }
 
+/** What `Tree.idOf` returns. */
+type NodeId = number | string;
+
 /**
  * Each node's parent and neighbours, recorded in one walk of the syntax tree. Tree-sitter finds a parent or neighbour
  * by scanning the parent's children from the start, so asking it per node grows with the square of a flat file.
  */
 class Tree {
-  private readonly links = new Map<number, { parent: SgNode; prev?: SgNode; next?: SgNode }>();
+  private readonly links = new Map<NodeId, { parent: SgNode; prev?: SgNode; next?: SgNode }>();
+
+  private constructor(private readonly sharedIds: boolean) {}
 
   /** Returns the tree under `root`, or `undefined` when it nests deeper than `limit` levels. */
-  static build(root: SgNode, limit: number): Tree | undefined {
-    const tree = new Tree();
+  static build(root: SgNode, limit: number, sharedIds = false): Tree | undefined {
+    const tree = new Tree(sharedIds);
+    let nodes = 0;
     const stack: Array<[SgNode, number]> = [[root, 0]];
     for (let next = stack.pop(); next; next = stack.pop()) {
       const [node, depth] = next;
       if (depth > limit) return undefined;
       const children = node.children();
       children.forEach((child, i) => {
-        tree.links.set(child.id(), { parent: node, prev: i > 0 ? children[i - 1] : undefined, next: children.at(i + 1) });
+        tree.links.set(tree.idOf(child), { parent: node, prev: i > 0 ? children[i - 1] : undefined, next: children.at(i + 1) });
         stack.push([child, depth + 1]);
+        nodes++;
       });
     }
-    return tree;
+    const shared = tree.links.size < nodes || tree.links.has(tree.idOf(root));
+    return shared && !sharedIds ? Tree.build(root, limit, true) : tree;
+  }
+
+  /**
+   * Returns an id no other node of the tree has. `SgNode.id` is the low 32 bits of the node's address, which two nodes
+   * of a large tree can share, so such a tree adds the node's kind and range. Without them `id` alone is cheaper to read.
+   */
+  idOf(node: SgNode): NodeId {
+    if (!this.sharedIds) return node.id();
+    const { start, end } = node.range();
+    return `${node.id()}:${node.kind()}:${start.index}:${end.index}`;
   }
 
   parent(node: SgNode): SgNode | undefined {
-    return this.links.get(node.id())?.parent;
+    return this.links.get(this.idOf(node))?.parent;
   }
 
   prev(node: SgNode): SgNode | undefined {
-    return this.links.get(node.id())?.prev;
+    return this.links.get(this.idOf(node))?.prev;
   }
 
   next(node: SgNode): SgNode | undefined {
-    return this.links.get(node.id())?.next;
+    return this.links.get(this.idOf(node))?.next;
   }
 
   /** Drops the links once the file that owns them has read what it needs. */
@@ -1865,8 +1883,8 @@ class ParsedFile {
   private readonly enclosing: number[] = [];
   private readonly listings = new Map<string, Omit<StructListing, 'file'> | undefined>();
   private readonly groups = new Map<string, number>();
-  private readonly marked = new Map<number, boolean>();
-  private readonly testModules = new Map<number, boolean>();
+  private readonly marked = new Map<NodeId, boolean>();
+  private readonly testModules = new Map<NodeId, boolean>();
 
   /** `touched` holds the head lines the diff changes in a changed file, whose reads and lookups are collected, and with `reliedOn` the names in `reliedOn`. */
   constructor(root: SgRoot, private readonly rules: FamilyRules, private readonly lines: string[], private readonly tree: Tree, touched = new Set<number>(), reliedOn = false) {
@@ -1902,12 +1920,12 @@ class ParsedFile {
       if (owner && TYPE_PATH.test(owner)) this.owners.set(decl, owner);
     }
     const selfMethods = this.methods.filter(m => m.self);
-    const methodNodes = new Set(selfMethods.map(m => m.decl.node.id()));
+    const methodNodes = new Set(selfMethods.map(m => this.tree.idOf(m.decl.node)));
     const { kinds: rebinders = [], byParameter } = rules.rebinds ?? {};
     const rebinding = rebinders.length > 0 && selfMethods.length > 0 ? root.root().findAll({ rule: { any: rebinders.map(kind => ({ kind })) } }) : [];
     this.selfScopes = [
       ...selfMethods.map(method => ({ start: method.decl.start, end: method.decl.end, from: method.decl.node.range().start.index, method })),
-      ...rebinding.filter(n => !methodNodes.has(n.id())).map(n => ({
+      ...rebinding.filter(n => !methodNodes.has(this.tree.idOf(n))).map(n => ({
         start: lineOf(n), end: n.range().end.line + 1, from: n.range().start.index, ...(byParameter && { binds: parameterNames(n) }),
       })),
     ].sort((a, b) => a.start - b.start || a.from - b.from);
@@ -2108,15 +2126,16 @@ class ParsedFile {
     const scope = this.tree.ancestors(node).find(a => this.rules.owners[a.kind()] || this.rules.declarations[a.kind()] === 'function');
     const fields = scope && this.rules.owners[scope.kind()];
     if (!scope || !fields) return {};
-    if (!this.scopes.has(scope.id())) {
+    const id = this.tree.idOf(scope);
+    if (!this.scopes.has(id)) {
       const traitText = fields.trait && scope.field(fields.trait)?.text();
-      this.scopes.set(scope.id(), { owner: shortTypeName(scope.field(fields.type)?.text() ?? ''), trait: traitText ? shortTypeName(traitText) : undefined, bases: this.basesOf(scope) });
+      this.scopes.set(id, { owner: shortTypeName(scope.field(fields.type)?.text() ?? ''), trait: traitText ? shortTypeName(traitText) : undefined, bases: this.basesOf(scope) });
     }
-    return this.scopes.get(scope.id())!;
+    return this.scopes.get(id)!;
   }
 
-  private readonly scopes = new Map<number, { owner: string; trait?: string; bases: string[] }>();
-  private readonly lineageBases = new Map<number, string[] | undefined>();
+  private readonly scopes = new Map<NodeId, { owner: string; trait?: string; bases: string[] }>();
+  private readonly lineageBases = new Map<NodeId, string[] | undefined>();
   private readonly lineages = new Map<string, Lineage>();
 
   /** Returns the first `MAX_BASES` bases `scope` names. */
@@ -2139,8 +2158,9 @@ class ParsedFile {
   private inTests(node: SgNode): boolean {
     const test = this.rules.testModule;
     return !!test && this.tree.ancestors(node).some(around => {
-      if (!this.testModules.has(around.id())) this.testModules.set(around.id(), test(around));
-      return this.testModules.get(around.id())!;
+      const id = this.tree.idOf(around);
+      if (!this.testModules.has(id)) this.testModules.set(id, test(around));
+      return this.testModules.get(id)!;
     });
   }
 
@@ -2150,12 +2170,13 @@ class ParsedFile {
    */
   private inTestCode(node: SgNode): boolean {
     return [node, ...this.tree.ancestors(node)].some(n => {
-      if (!this.marked.has(n.id())) {
+      const id = this.tree.idOf(n);
+      if (!this.marked.has(id)) {
         let found = false;
         for (let prev = this.tree.prev(n); prev && !found && /attribute_item|comment/.test(String(prev.kind())); prev = this.tree.prev(prev)) found = TEST_ATTRIBUTE.test(prev.text());
-        this.marked.set(n.id(), found);
+        this.marked.set(id, found);
       }
-      return this.marked.get(n.id())!;
+      return this.marked.get(id)!;
     });
   }
 
@@ -2226,13 +2247,14 @@ class ParsedFile {
    * no plain name, such as a call that makes a base.
    */
   private allBases(scope: SgNode): string[] | undefined {
-    if (!this.lineageBases.has(scope.id())) {
+    const id = this.tree.idOf(scope);
+    if (!this.lineageBases.has(id)) {
       const nodes = this.rules.bases?.(scope) ?? [];
       const names = nodes.length > MAX_BASES ? [] : nodes.map(n => n.range().end.index - n.range().start.index <= MAX_ITEM_CHARS ? typeName(n.text()) : '');
       const plain = nodes.length <= MAX_BASES && names.every(n => BASE_PATH.test(n));
-      this.lineageBases.set(scope.id(), plain ? names : undefined);
+      this.lineageBases.set(id, plain ? names : undefined);
     }
-    return this.lineageBases.get(scope.id());
+    return this.lineageBases.get(id);
   }
 
   /** Whether `node` is a function, named or not, so a declaration inside it is local to it. */

@@ -735,6 +735,27 @@ describe('listUsesOutsideDiff', () => {
     }
   });
 
+  it('names each declaration with its own type when nodes of one tree share an id', async () => {
+    const code = (value: number) => `export const early = 1;\n\nexport class Cart {\n${['size', 'total', 'cost'].map(m => `  ${m}() {\n    return ${value};\n  }\n`).join('')}}\n`;
+    const { id: realId } = napi.SgNode.prototype;
+    // Like two addresses with the same low 32 bits: the changed method, or the root, has the id of the name `early`.
+    for (const kind of ['method_definition', 'program']) {
+      const id = jest.spyOn(napi.SgNode.prototype, 'id').mockImplementation(function (this: napi.SgNode) {
+        const text = this.text();
+        return text === 'early' || (this.kind() === kind && text.includes('return 2') && (kind === 'program' || text.startsWith('total'))) ? 7 : realId.call(this);
+      });
+      try {
+        const { changes } = await usesFor({ 'src/cart.ts': code(1) }, { 'src/cart.ts': code(2) });
+        expect([kind, changes]).toEqual([kind, [
+          { file: 'src/cart.ts', symbol: 'type Cart', change: 'body changed' },
+          ...['size', 'total', 'cost'].map(m => ({ file: 'src/cart.ts', symbol: `function Cart.${m}`, change: 'body changed' })),
+        ]]);
+      } finally {
+        id.mockRestore();
+      }
+    }
+  });
+
   it('leaves out generic names and names longer than an identifier, and caps the uses per symbol, in total and for names too common to list, but lists a redefined field', async () => {
     const callers: Record<string, string> = {};
     const fns = Array.from({ length: 18 }, (_, i) => `compute_part_${i}`);
