@@ -1111,11 +1111,31 @@ describe('runBench and buildReport', () => {
     await expect(runBench([benchCase], { ...options, findingsFrom: two, variants: [{ name: 'other', overrides: {} }] })).rejects.toThrow('The report to replay holds no variant other and more than one other');
     expect(review).not.toHaveBeenCalled();
 
+    // With `replayJudge`, a case whose stored runs lack an answer gets no review, and one whose runs hold them all gives them to the review.
+    const answers = { translate: null, dedup: { input: {} }, judge: { input: { message: 'm' }, answer: { summary: 's', findings: [] } } };
+    const withAnswers = (list: Array<unknown>) => ({ ...stored, variants: [{ ...stored.variants[0], cases: [{ ...stored.variants[0].cases[0], runs: list.map(a => ({ ...first, replay: { ...first.replay!, ...(a ? { answers: a } : {}) } as typeof first.replay })) }] }] });
+    const { dedup: _, ...undecided } = answers;
+    for (const list of [[undefined], [answers, undefined], [undecided], [{ ...answers, judge: { input: {} } }]]) {
+      const [{ results: [refused] }] = await runBench([benchCase], { ...options, runs: 1, findingsFrom: withAnswers(list), replayJudge: true });
+      expect(refused.runs).toEqual([expect.objectContaining({ outcome: 'FAILED', error: 'The report to replay holds a complete run of this case without its judge, dedup and name translation answers.' })]);
+    }
+    expect(review).not.toHaveBeenCalled();
+    const [{ results: [judged] }] = await runBench([benchCase], { ...options, runs: 1, findingsFrom: withAnswers([answers]), replayJudge: true });
+    expect(review.mock.calls[0][0].replay).toEqual(replayOf('First'));
+    const ask = () => Promise.reject(new Error('asked live'));
+    await expect(review.mock.calls[0][0].answers!.ask('translate', {}, ask)).rejects.toThrow('The stored round made no translate call');
+    expect(judged.runs[0].replay?.answers).toBeDefined();
+    // Without it the review asks live, even when the report holds the answers.
+    await runBench([benchCase], { ...options, runs: 1, findingsFrom: withAnswers([answers]) });
+    await expect(review.mock.calls[1][0].answers!.ask('judge', { message: 'm' }, ask)).rejects.toThrow('asked live');
+    review.mockClear();
+
     // The report of a replay says what it kept, keeps it when merged, and decides no release.
     const findingsFrom = { commit: SHA_C, startedAt: stored.startedAt };
     const report = buildReport({ startedAt: '2026-11-21T00:00:00.000Z', runsPerCase: 3, matcherModel: 'model-a', findingsFrom }, [{ variant, results: [replayed] }]);
     expect(formatBenchSummary(report)).toMatch(new RegExp(`^Finder output kept from the run started at 2026-11-20T00:00:00.000Z on ${SHA_C}. The planner, finders and checks beside them did not run.\n\n== tuned\n`));
     expect(mergeReports([report], [benchCase], {}).findingsFrom).toEqual(findingsFrom);
+    expect(formatBenchSummary({ ...report, findingsFrom: { ...findingsFrom, live: ['refuter', 'scope reader'] } })).toContain('did not run. The name translation, dedup and judge answers were kept too. Live: refuter, scope reader.\n');
     expect(() => gateReports([stored], [report])).toThrow('The report started at 2026-11-21T00:00:00.000Z kept the finder output of an earlier run, so it decides no release');
   });
 
@@ -1669,10 +1689,10 @@ describe('parseBenchArgs', () => {
     const args = parseBenchArgs([
       '--checkout', 'owner/demo=/src/a=b', '--case', 'x', '--case', 'y', '--runs', '1', '--out', 'r.json', '--matcher-model', 'm', '--cache', 'c.json',
       '--holdout', '--variant', 'base', '--variant', 'opus=bench/opus.yml', '--set', 'models.judge=claude-sonnet-5-5', '--set', 'max_diff_lines=2000', '--set', 'exclude_paths=[a, b]',
-      '--findings-from', 'earlier.json',
+      '--findings-from', 'earlier.json', '--replay-judge',
     ]);
     expect(args).toMatchObject({
-      holdout: true, only: ['x', 'y'], runs: 1, out: 'r.json', matcherModel: 'm', cache: 'c.json', findingsFrom: 'earlier.json',
+      holdout: true, only: ['x', 'y'], runs: 1, out: 'r.json', matcherModel: 'm', cache: 'c.json', findingsFrom: 'earlier.json', replayJudge: true,
       variants: [{ name: 'base' }, { name: 'opus', file: 'bench/opus.yml' }],
       sets: [{ models: { judge: 'claude-sonnet-5-5' } }, { max_diff_lines: 2000 }, { exclude_paths: ['a', 'b'] }],
     });
@@ -1782,6 +1802,8 @@ describe('runBenchCommand', () => {
       expect(stderr).toHaveBeenCalledWith(expect.stringContaining('--case does not apply to --rescore'));
       expect(await runBenchCommand(['--rescore', report, '--cases', cases, '--findings-from', report], dir)).toBe(2);
       expect(stderr).toHaveBeenLastCalledWith('manki bench: --findings-from does not apply to --rescore, which reviews nothing\n');
+      expect(await runBenchCommand(['--cases', cases, '--replay-judge'], dir)).toBe(2);
+      expect(stderr).toHaveBeenLastCalledWith('manki bench: --replay-judge needs --findings-from, whose runs hold the answers to keep\n');
       writeFileSync(join(dir, 'cut.json'), '{"variants": [{"title": "HOLDOUT-TEXT');
       expect(await runBenchCommand(['--rescore', join(dir, 'cut.json'), '--cases', cases], dir)).toBe(2);
       expect(stderr).toHaveBeenLastCalledWith(`manki bench: The report ${join(dir, 'cut.json')} is not valid JSON\n`);

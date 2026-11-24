@@ -16,6 +16,7 @@ import { carryBodyWarnings, citedPlaces, ReviewProgress, runReview } from './rev
 import { buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext } from './round-context';
 import { makeScratchDir } from './tool-install';
+import type { AnswerStore } from './stored-answers';
 import { DISPROVED_TAG, SECURITY_TAG, threadWarns } from './types';
 import type { ConfigSource, Doubt, Finding, FinderReplay, FindingSeverity, GradeCell, OpenThread, ParsedDiff, ReviewConfig, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RulesMode } from './types';
 import { closePaths, fetchWorkspace, gitEnv, runGit } from './workspace';
@@ -123,6 +124,8 @@ export interface LocalReviewInput {
   relatedReposAsOf?: string;
   /** Keeps the planner's answer and the finder stage's findings of an earlier review in place of running them. */
   replay?: FinderReplay;
+  /** Keeps the answers of the name translation, the dedup and the judge, or gives stored ones in place of making the calls. */
+  answers?: AnswerStore;
   providerInputs: ProviderInputs;
   onProgress?: (progress: ReviewProgress) => void;
   signal?: AbortSignal;
@@ -392,6 +395,7 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
       signal,
       ...(input.relatedReposAsOf && { relatedReposAsOf: input.relatedReposAsOf }),
       ...(input.replay && { replay: input.replay }),
+      ...(input.answers && { answers: input.answers }),
       // A local review without an earlier round has no thread, so a round with nothing to judge skips the judge.
       openThreads: followUp?.openThreads ?? [],
       ...(followUp && {

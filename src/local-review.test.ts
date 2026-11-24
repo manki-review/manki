@@ -7,8 +7,10 @@ import * as core from '@actions/core';
 
 import { formatLockfileChanges } from './lockfile';
 import { EarlierFinding, overlayConfig, reviewLocal } from './local-review';
+import { createLLMClient } from './providers';
 import { pushTouchesThread } from './recap';
 import { filesChangedByPush, runReview } from './review';
+import { AnswerStore, holdsEveryCall, StoredAnswers } from './stored-answers';
 import { GIT_TEST_TIMEOUT_MS } from './test-utils';
 import { REACH_DOUBT } from './types';
 import type { Finding, ReviewResult, RoundOutcome, ThreadEvaluation } from './types';
@@ -20,6 +22,7 @@ jest.mock('./providers', () => ({
   // As with the real clients, only an OAuth token gives repository tools.
   createLLMClient: jest.fn((_provider: string, _model: string, auth: { kind: string }) => ({ repoTools: auth.kind === 'oauth', sendMessage: jest.fn() })),
 }));
+jest.mock('./ast-grep', () => ({ ...jest.requireActual('./ast-grep'), loadAstGrep: async () => jest.requireActual('@ast-grep/napi') }));
 jest.mock('./review', () => ({
   ...jest.requireActual('./review'),
   runReview: jest.fn(),
@@ -135,6 +138,57 @@ describe('reviewLocal', () => {
     jest.mocked(runReview).mockResolvedValueOnce({ verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'] });
     expect((await reviewLocal({ repoRoot: repo, base: later, head: 'binary', providerInputs: inputs })).approvalHeld).toBe('unread');
     expect(jest.mocked(runReview).mock.calls.at(-1)![1].excludedPaths).toEqual([]);
+  }, GIT_TEST_TIMEOUT_MS);
+
+  it('gives the dedup and the judge the same input in two reviews, so their stored answers stand for both calls, and refuses any other', async () => {
+    const judgeCalls: string[] = [];
+    let dedupCalls = 0;
+    jest.mocked(createLLMClient).mockImplementation(() => ({
+      repoTools: true,
+      sendMessage: jest.fn(async (system: string, message: string) => {
+        if (system.startsWith('You are deduplicating')) {
+          dedupCalls++;
+          return { content: '[{"index": 2, "matchedResolved": 1}]' };
+        }
+        if (!message.includes('## Findings to Evaluate')) throw new Error('no answer');
+        judgeCalls.push(message);
+        return { content: JSON.stringify({ summary: 'Judged.', findings: [{ id: 1, title: 'Off by one', row: 'degraded', column: 'common', reasoning: 'r' }] }) };
+      }),
+    }));
+    jest.mocked(runReview).mockImplementation(jest.requireActual<typeof import('./review')>('./review').runReview);
+    const raised = { title: 'Off by one', file: 'src/a.ts', line: 2, severity: 'warning' as const, description: 'Reads `b` past the end.', reviewers: ['Claude Opus 5.5 · high'], evidence: { proof: ['AGENTS.md:1'], checks: [] } };
+    const findings = [raised, { ...raised, title: 'Repeat', line: 1 }];
+    const earlier = { head: 'feature~1', findings: [{ id: 'T1', severity: 'warning' as const, title: 'Settled before', file: 'src/a.ts', line: 1, description: 'd', thread: 'resolved' as const }] };
+    const run = async (answers: AnswerStore, body = 'Body.') => reviewLocal({
+      repoRoot: repo, base: 'main', head: 'feature', title: 'T', body, providerInputs: inputs, earlier, answers,
+      replay: { planner: null, finders: ['Claude Sonnet 5.5 · high', 'Claude Opus 5.5 · high'], findings },
+    });
+
+    const live = new AnswerStore();
+    const first = await run(live);
+    expect([judgeCalls.length, dedupCalls]).toEqual([1, 1]);
+    expect(judgeCalls[0]).toContain('Off by one');
+    expect(holdsEveryCall(live.answers)).toBe(true);
+    const kept = JSON.parse(JSON.stringify(live.answers)) as StoredAnswers;
+
+    const stored = new AnswerStore(kept);
+    const second = await run(stored);
+    expect([judgeCalls.length, dedupCalls]).toEqual([1, 1]);
+    expect(second.result.allJudgedFindings).toEqual(first.result.allJudgedFindings);
+    expect([first, second].map(r => r.result.llmDedupCount)).toEqual([1, 1]);
+    expect(stored.answers).toEqual(kept);
+
+    // Another input, or a call the stored round did not make, is refused before the call, naming parts and no content.
+    await expect(run(new AnswerStore(kept), 'Another body.')).rejects.toThrow(/^The stored judge answer does not fit, since its input differs in: message\.$/);
+    findings[1].title = 'Reworded';
+    await expect(run(new AnswerStore(kept))).rejects.toThrow('The stored dedup answer does not fit, since its input differs in: message.');
+    findings[1].title = 'Repeat';
+    await expect(run(new AnswerStore({ ...kept, dedup: null }))).rejects.toThrow('The stored round made no dedup call, and this one needs its answer.');
+    await expect(run(new AnswerStore({ ...kept, judge: { ...kept.judge!, input: { ...kept.judge!.input, effort: 'x', model: 'x' } } }))).rejects.toThrow('input differs in: effort, model.');
+    expect([judgeCalls.length, dedupCalls]).toEqual([1, 1]);
+    // A dedup call that failed in the stored round fails again, so both findings reach the judge, whose stored answer then does not fit.
+    await expect(run(new AnswerStore({ ...kept, dedup: { input: kept.dedup!.input } }))).rejects.toThrow('The stored judge answer does not fit, since its input differs in: ');
+    expect([judgeCalls.length, dedupCalls]).toEqual([1, 1]);
   }, GIT_TEST_TIMEOUT_MS);
 
   it('reviews a follow-up round from an earlier round: its threads with the code now, its record, and the diff since', async () => {
