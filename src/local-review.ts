@@ -17,7 +17,7 @@ import { buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext } from './round-context';
 import { makeScratchDir } from './tool-install';
 import { DISPROVED_TAG, SECURITY_TAG, threadWarns } from './types';
-import type { ConfigSource, Doubt, Finding, FindingSeverity, GradeCell, OpenThread, ParsedDiff, ReviewConfig, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RulesMode } from './types';
+import type { ConfigSource, Doubt, Finding, FinderReplay, FindingSeverity, GradeCell, OpenThread, ParsedDiff, ReviewConfig, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RulesMode } from './types';
 import { closePaths, fetchWorkspace, gitEnv, runGit } from './workspace';
 
 
@@ -121,6 +121,8 @@ export interface LocalReviewInput {
   earlier?: EarlierRound;
   /** Reads the related repos as they were at this ISO 8601 time, for a change reviewed after it was made. Defaults to their newest commit. */
   relatedReposAsOf?: string;
+  /** Keeps the planner's answer and the finder stage's findings of an earlier review in place of running them. */
+  replay?: FinderReplay;
   providerInputs: ProviderInputs;
   onProgress?: (progress: ReviewProgress) => void;
   signal?: AbortSignal;
@@ -389,6 +391,7 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
       changeDigest: changeDigest(fullDiff),
       signal,
       ...(input.relatedReposAsOf && { relatedReposAsOf: input.relatedReposAsOf }),
+      ...(input.replay && { replay: input.replay }),
       // A local review without an earlier round has no thread, so a round with nothing to judge skips the judge.
       openThreads: followUp?.openThreads ?? [],
       ...(followUp && {

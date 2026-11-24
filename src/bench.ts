@@ -15,7 +15,7 @@ import type { LLMClient, ProviderInputs } from './providers';
 import { formatFinderError, NAMED_AGAIN_REASON, UNCONFIRMED_FIX_ENDING, WORKAROUND_REASON } from './review';
 import { buildLLMClient } from './review-clients';
 import {
-  CELL_GRADES, CheckStatus, Doubt, Finding, finderGrade, FinderError, FindingFingerprintEntry, FindingSeverity, GradeCell, GradeChange, GradeStep, gradedAbove, isGradeCell, isSecondReadName, isSecurityFinding, isSweepName, leftOutUnproven,
+  CELL_GRADES, CheckStatus, Doubt, Finding, finderGrade, FinderReplay, FinderError, FindingFingerprintEntry, FindingSeverity, GradeCell, GradeChange, GradeStep, gradedAbove, isGradeCell, isSecondReadName, isSecurityFinding, isSweepName, leftOutUnproven,
   migrateLegacySeverity, migrateStoredSeverities, PRE_EXISTING_TAG, Refutation, RoundContext, RoundRawFinding, RoundRelatedRepo, SCOPE_READER_NAME, SEVERITY_ORDER, SideCheckKind, ThreadEvaluation, UNPOSTED_REASONS, UnpostedReason,
   UnprovenReason, VERDICT_READER_NAME, VerdictReason,
 } from './types';
@@ -527,8 +527,11 @@ const IGNORED_BY: Partial<Record<GradeChange, RawExit>> = {
   judge: 'judge', refutation: 'refuter', in_pr_suppression: 'earlier_round', own_proposal: 'earlier_round', ratchet: 'earlier_round', resolved_thread: 'earlier_round',
 };
 
-/** A finding as a finder reported it, with the text the matcher reads, the reviewers that reported it and where it left the review. */
-type RawFinding = MatchedFinding & { reviewers: string[]; exit: RawExit };
+/**
+ * A finding as a finder reported it, with the text the matcher reads, the rest of what the later stages read of it, the
+ * reviewers that reported it and where it left the review. A report from a ref that does not store the rest has none of it.
+ */
+type RawFinding = MatchedFinding & Pick<RoundRawFinding, 'evidence' | 'notChecked' | 'lead' | 'preExisting' | 'rule'> & { reviewers: string[]; exit: RawExit };
 
 /** A must-catch item a raw finding matched. */
 interface RawCatch {
@@ -621,6 +624,8 @@ interface RunScore {
   followUp?: FollowUpScore;
   /** Set on a complete run. A report from a ref that does not score the finders' findings has none. */
   raw?: RawScore;
+  /** What a replay of the run reads besides `raw.findings`. Set on a complete run. A report from a ref that does not store it has none. */
+  replay?: Omit<FinderReplay, 'findings'>;
   finders: FinderSteps[];
   /** The tool use of each second read, apart from the finders'. Set only on a run with second reads. */
   secondReads?: FinderSteps[];
@@ -833,8 +838,9 @@ function rawExits(context: RoundContext): RawExit[] {
 /** Returns the findings the finders reported in the round `context` records, each with where it left the review. */
 function rawFindings(context: RoundContext): RawFinding[] {
   const exits = rawExits(context);
-  return (context.reviewers.rawFindings ?? []).map(({ severity, title, file, line, description, howToFix, suggestedFix, reviewers }, i) => ({
-    severity, title, file, line, description: description ?? '', ...(howToFix && { howToFix }), ...(suggestedFix && { suggestedFix }), reviewers, exit: exits[i],
+  return (context.reviewers.rawFindings ?? []).map(({ severity, title, file, line, description, howToFix, suggestedFix, evidence, notChecked, lead, preExisting, rule, reviewers }, i) => ({
+    severity, title, file, line, description: description ?? '', ...(howToFix && { howToFix }), ...(suggestedFix && { suggestedFix }),
+    ...(evidence && { evidence }), ...(notChecked && { notChecked }), ...(lead && { lead }), ...(preExisting && { preExisting }), ...(rule && { rule }), reviewers, exit: exits[i],
   }));
 }
 
@@ -876,8 +882,35 @@ export async function scoreRun(benchCase: BenchCase, review: LocalReview, matche
     complete,
     ...(!complete && { error: review.result.summary || 'The review did not complete.' }),
     ...key,
-    ...(complete && { raw: await scoreRaw(benchCase, rawFindings(review.context), key.matches, matcher) }),
+    ...(complete && { raw: await scoreRaw(benchCase, rawFindings(review.context), key.matches, matcher), replay: storedReplay(review) }),
   };
+}
+
+function storedReplay({ result }: LocalReview): Omit<FinderReplay, 'findings'> {
+  return { planner: result.plannerAnswer ?? result.plannerResult ?? null, finders: result.agentNames, ...(result.fixes?.fixes && { fixes: result.fixes.fixes }) };
+}
+
+/** Returns a digest of what a review of the case reads of its file: its commits, text, config and earlier round. The key is left out. */
+function reviewedDigest({ repo, base, head, title, body, config, priorRound }: BenchCase): string {
+  return createHash('sha256').update(JSON.stringify([repo, base, head, title, body, config ?? null, priorRound ?? null])).digest('hex');
+}
+
+/**
+ * Returns what each complete run of `benchCase` stored in `variant` for a replay, in the order of the runs, or why none
+ * may be replayed. A run from a ref that stored none is left out.
+ */
+function storedReplays(variant: VariantReport, benchCase: BenchCase): FinderReplay[] | string {
+  const stored = variant.cases.find(c => c.id === benchCase.id);
+  if (stored && stored.reviewedDigest !== reviewedDigest(benchCase)) return 'The case\'s commits, title, body, config or earlier round changed since the report to replay, or it does not record them.';
+  const replays = (stored?.runs ?? []).flatMap(run => (run.complete && run.raw && run.replay
+    ? [{ ...run.replay, findings: run.raw.findings.map(({ exit: _exit, ...finding }) => finding) }]
+    : []));
+  return replays.length > 0 ? replays : 'The report to replay holds no complete run of this case with its finder output.';
+}
+
+/** Returns the variant of `report` whose finder output variant `name` replays: the one of the same name, or else its only variant. */
+function replayedVariant(report: BenchReport, name: string): VariantReport | undefined {
+  return report.variants.find(v => v.name === name) ?? (report.variants.length === 1 ? report.variants[0] : undefined);
 }
 
 /**
@@ -993,6 +1026,8 @@ interface CaseReport {
   set: CaseSet;
   source: string;
   keyVersion: number;
+  /** The `reviewedDigest` of the case its runs reviewed. A report from a ref that does not store it has none. */
+  reviewedDigest?: string;
   items: ItemReport[];
   runs: RunScore[];
 }
@@ -1069,6 +1104,8 @@ export interface BenchReport {
   startedAt: string;
   runsPerCase: number;
   matcherModel: string;
+  /** Set on a report whose reviews kept the finder output of an earlier report: that report's commit and start time. */
+  findingsFrom?: Pick<BenchReport, 'commit' | 'startedAt'>;
   variants: VariantReport[];
 }
 
@@ -1093,7 +1130,7 @@ function caseReport(benchCase: BenchCase, runs: RunScore[]): CaseReport {
   const repeated = (id: string, run: RunScore) => restatedFindings(run.matches.filter(m => m.item === id), n => run.findings[n]?.foldedInto).size > 0;
   const earlier = (id: string) => benchCase.priorRound!.findings.find(f => f.id === id)! as Pick<KeyItem, 'id' | 'severity'>;
   return {
-    id: benchCase.id, set: benchCase.set, source: benchCase.source, keyVersion: benchCase.keyVersion,
+    id: benchCase.id, set: benchCase.set, source: benchCase.source, keyVersion: benchCase.keyVersion, reviewedDigest: reviewedDigest(benchCase),
     items: [
       ...benchCase.mustCatch.map(item => report(item, 'must_catch', caught(item))),
       ...benchCase.niceToHave.map(item => report(item, 'nice_to_have', caught(item))),
@@ -1201,7 +1238,7 @@ function unexpectedWarningFindings(c: CaseReport, run: RunScore): RunScore['find
   return run.unexpectedWarnings === 0 ? [] : unmatchedFindings(c, run).filter(f => f.severity === 'warning');
 }
 
-export function buildReport(meta: Pick<BenchReport, 'startedAt' | 'runsPerCase' | 'matcherModel'>, variants: VariantResults[]): BenchReport {
+export function buildReport(meta: Pick<BenchReport, 'startedAt' | 'runsPerCase' | 'matcherModel' | 'findingsFrom'>, variants: VariantResults[]): BenchReport {
   return {
     mankiVersion: MANKI_VERSION, ...meta,
     variants: variants.map(({ variant, results }) => variantReport(variant, results.map(({ benchCase, runs }) => caseReport(benchCase, runs)))),
@@ -1227,7 +1264,7 @@ export function mergeReports(parts: BenchReport[], cases: BenchCase[], meta: Pic
   });
   return {
     ...meta, mankiVersion: parts[0].mankiVersion, startedAt: parts.map(p => p.startedAt).sort()[0], runsPerCase: parts[0].runsPerCase,
-    matcherModel: parts[0].matcherModel, variants,
+    matcherModel: parts[0].matcherModel, ...(parts[0].findingsFrom && { findingsFrom: parts[0].findingsFrom }), variants,
   };
 }
 
@@ -1321,7 +1358,9 @@ export async function rescoreReport(report: BenchReport, cases: BenchCase[], mat
         continue;
       }
       rescored.add(c.id);
-      again.push(caseReport(benchCase, runs));
+      // The runs reviewed the case as it was, so a case whose commits changed since stays unreplayable.
+      const { reviewedDigest: _current, ...scoredAgain } = caseReport(benchCase, runs);
+      again.push({ ...scoredAgain, ...(c.reviewedDigest && { reviewedDigest: c.reviewedDigest }) });
     }
     variants.push(variantReport({ name, overrides }, again));
   }
@@ -1488,6 +1527,8 @@ function itemCount(items: GateItem[]): string {
  */
 export function gateReports(baseline: BenchReport[], candidate: BenchReport[]): GateResult[] {
   if (baseline.length === 0 || candidate.length === 0) throw new Error('The gate needs a baseline and a candidate report');
+  const replayed = [...baseline, ...candidate].find(r => r.findingsFrom);
+  if (replayed) throw new Error(`The report started at ${replayed.startedAt} kept the finder output of an earlier run, so it decides no release`);
   [baseline, candidate] = repeatsScoredAlike(baseline, candidate);
   const all = [...baseline, ...candidate];
   for (const [side, reports] of [['baseline', baseline], ['candidate', candidate]] as const) {
@@ -1800,6 +1841,8 @@ function formatRawSummary(raw: RawSummary): string {
  */
 export function formatBenchSummary(report: BenchReport): string {
   const lines: string[] = [];
+  const from = report.findingsFrom;
+  if (from) lines.push(`Finder output kept from the run started at ${from.startedAt}${from.commit ? ` on ${from.commit}` : ''}. The planner, finders and checks beside them did not run.`, '');
   for (const variant of report.variants) {
     lines.push(`== ${variant.name}`);
     for (const c of variant.cases) {
@@ -1848,6 +1891,11 @@ interface BenchOptions {
   signal?: AbortSignal;
   /** Called after each case with every variant's results so far, so they can be saved before the next case. */
   onCase?: (variants: VariantResults[]) => void;
+  /**
+   * A report whose finder output each review keeps, from the variant of the same name or its only variant. Run `n` of a
+   * case replays its complete run `n` modulo their count.
+   */
+  findingsFrom?: BenchReport;
 }
 
 /**
@@ -1896,7 +1944,9 @@ async function changeDate(checkout: string, c: BenchCase): Promise<string> {
  * starts. Only an abort through `signal` stops the bench.
  */
 export async function runBench(cases: BenchCase[], options: BenchOptions): Promise<VariantResults[]> {
-  const { checkouts, variants = [{ name: 'base', overrides: {} }] } = options;
+  const { checkouts, variants = [{ name: 'base', overrides: {} }], findingsFrom } = options;
+  const unreplayed = findingsFrom && variants.find(v => !replayedVariant(findingsFrom, v.name));
+  if (unreplayed) throw new Error(`The report to replay holds no variant ${unreplayed.name} and more than one other`);
   for (const c of cases) {
     const checkout = checkouts.get(c.repo);
     if (!checkout) throw new Error(`No checkout for ${c.repo}, which case ${c.id} needs. Pass --checkout ${c.repo}=<dir>.`);
@@ -1934,9 +1984,14 @@ export async function runBench(cases: BenchCase[], options: BenchOptions): Promi
       const runs: RunScore[] = [];
       const configError = invalid.get(benchCase.id);
       const review = (input: LocalReviewInput) => quietly(benchCase, () => (options.review ?? reviewLocal)(input));
+      const replays = findingsFrom && storedReplays(replayedVariant(findingsFrom, variant.name)!, benchCase);
       for (let i = 0; i < options.runs; i++) {
         if (configError) {
           runs.push(failedRun(configError, undefined, CONFIG_INVALID));
+          continue;
+        }
+        if (typeof replays === 'string') {
+          runs.push(failedRun(new Error(replays)));
           continue;
         }
         let local: LocalReview | undefined;
@@ -1947,7 +2002,7 @@ export async function runBench(cases: BenchCase[], options: BenchOptions): Promi
             ...(benchCase.priorRound && { earlier: benchCase.priorRound }),
             // Only a case with related repos needs a date, so a change that cannot be dated fails no other case.
             ...(config.related_repos?.length && { relatedReposAsOf: await changeDate(checkouts.get(benchCase.repo)!, benchCase) }),
-            providerInputs: options.providerInputs, signal: options.signal,
+            providerInputs: options.providerInputs, signal: options.signal, ...(replays && { replay: replays[i % replays.length] }),
             // The case's own config replaces the repository's. Without one, the overrides are set on the repository's.
             ...(benchCase.config ? { config } : Object.keys(variant.overrides).length > 0 && { configOverrides: variant.overrides }),
           });
@@ -1981,6 +2036,8 @@ interface BenchArgs {
   cache: string;
   /** A stored report to score again against the cases, instead of reviewing them. */
   rescore?: string;
+  /** A stored report whose finder output the reviews keep. */
+  findingsFrom?: string;
   help: boolean;
 }
 
@@ -2011,6 +2068,9 @@ Options:
   --cache <file>                 Matcher decisions kept between runs (default bench/.matcher-cache.json).
   --out <file>                   Report path (default bench/results/<time>.json, or <report>.rescored.json).
   --rescore <report.json>        Score this report again against the cases, with the model that matched it.
+  --findings-from <report.json>  Keep the planner's answer and the finder output this report stored, and run only the
+                                 stages after the finders. Run n of a case replays the report's complete run n
+                                 modulo their count. Such a report decides no release.
   --help                         Print this message.
 
 Exits 0 when every variant completed at least one review of each set, and 2 when one did not or the bench could
@@ -2054,6 +2114,7 @@ export function parseBenchArgs(argv: string[]): BenchArgs {
     else if (arg === '--matcher-model') args.matcherModel = value();
     else if (arg === '--cache') args.cache = value();
     else if (arg === '--rescore') args.rescore = value();
+    else if (arg === '--findings-from') args.findingsFrom = value();
     else if (arg === '--help' || arg === '-h') args.help = true;
     else throw new Error(`Unknown argument ${arg}`);
   }
@@ -2127,6 +2188,7 @@ export function runBenchCommand(argv: string[], root = '.'): Promise<number> {
     const providerInputs = readProviderInputsFromEnv();
     if (!hasAnyProviderCredentials(providerInputs)) throw new Error(`No credentials set.\n\n${USAGE}`);
     if (args.rescore && args.only.length > 0) throw new Error('--case does not apply to --rescore, which scores every case with a changed key again');
+    if (args.rescore && args.findingsFrom) throw new Error('--findings-from does not apply to --rescore, which reviews nothing');
     const cases = loadCases([args.cases, ...(args.holdout ? [join(root, CASE_DIRS.holdout)] : [])], args.only, root);
     const cache = loadMatcherCache(args.cache);
     const matcher = llmMatcher(buildLLMClient(args.matcherModel, providerInputs), args.matcherModel, cache);
@@ -2145,11 +2207,15 @@ export function runBenchCommand(argv: string[], root = '.'): Promise<number> {
       return failed.length > 0 ? 2 : 0;
     }
     const variants = resolveVariants(args);
+    const findingsFrom = args.findingsFrom ? readReport(args.findingsFrom, root).report : undefined;
     const startedAt = new Date().toISOString();
-    const meta = { startedAt, runsPerCase: args.runs, matcherModel: args.matcherModel };
+    const meta = {
+      startedAt, runsPerCase: args.runs, matcherModel: args.matcherModel,
+      ...(findingsFrom && { findingsFrom: { ...(findingsFrom.commit && { commit: findingsFrom.commit }), startedAt: findingsFrom.startedAt } }),
+    };
     const outPath = args.out ?? join('bench', 'results', `${startedAt.replace(/[:.]/g, '-')}.json`);
     const results = await runBench(cases, {
-      runs: args.runs, checkouts: args.checkouts, providerInputs, matcher, signal, variants,
+      runs: args.runs, checkouts: args.checkouts, providerInputs, matcher, signal, variants, ...(findingsFrom && { findingsFrom }),
       onCase: (sofar) => {
         const { variant, results: current } = sofar.at(-1)!;
         writeJson(args.cache, Object.fromEntries(cache));

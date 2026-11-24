@@ -14,7 +14,7 @@ import { NAMED_AGAIN_REASON, UNCONFIRMED_FIX_ENDING, WORKAROUND_REASON } from '.
 import { buildLLMClient } from './review-clients';
 import { expectLinearTime, GIT_TEST_TIMEOUT_MS } from './test-utils';
 import { PRE_EXISTING_TAG, SCOPE_READER_NAME, VERDICT_READER_NAME } from './types';
-import type { Doubt, Finding, FindingFingerprintEntry, FindingSeverity, GradeChange, Refutation, RoundContext, RoundDedup, RoundJudge, RoundLead, RoundMemory, RoundOutcome, RoundRawFinding } from './types';
+import type { Doubt, Finding, FindingFingerprintEntry, FindingSeverity, GradeChange, Refutation, RoundContext, RoundDedup, RoundFix, RoundJudge, RoundLead, RoundMemory, RoundOutcome, RoundRawFinding } from './types';
 
 jest.mock('@actions/core');
 jest.mock('./review-clients', () => {
@@ -595,8 +595,13 @@ describe('scoreRun', () => {
   it('scores the findings the finders reported against the must-catch items, and names from the round record where each one the review did not post left it', async () => {
     const posted = [makeFinding({ title: 'Posted', file: 'src/read.rs' })];
     const step = (by: GradeChange) => [{ from: 'warning' as const, to: 'ignore' as const, by }];
+    // What the stages after the finders read of a finding is kept, so a replay of the run gives them the same finding.
+    const later: Partial<RoundRawFinding> = {
+      evidence: { checks: ['Read `read_len`.'], proof: ['src/read.rs:1'] }, notChecked: true, lead: { checked: 'The caller.', left: 'The peer.' }, preExisting: 'The base had it.',
+      rule: { file: 'AGENTS.md', quote: 'Bound every length.' },
+    };
     const raw: Array<Partial<RoundRawFinding>> = [
-      { title: 'Posted', file: 'src/read.rs' },
+      { title: 'Posted', file: 'src/read.rs', ...later },
       { title: 'Unproven' }, { title: 'Old code' }, { title: 'Over the cap' },
       { title: 'Judged', description: 'Calls `unlock` early.', reviewers: ['finder-b'] }, { title: 'Disproved' }, { title: 'Resolved before' }, { title: 'No step' },
       { title: 'Hidden' }, { title: 'Lead' }, { title: 'Seen before' },
@@ -632,6 +637,8 @@ describe('scoreRun', () => {
       ['Hidden', 'memory_suppression'], ['Lead', 'open_lead'], ['Seen before', 'dedup'], ['Merged', 'merged'], ['Twin', 'unknown'], ['Twin', 'unknown'],
     ]);
     expect(score.raw!.findings[4]).toEqual({ severity: 'warning', title: 'Judged', file: 'src/other.rs', line: 1, description: 'Calls `unlock` early.', reviewers: ['finder-b'], exit: 'judge' });
+    expect(score.raw!.findings[0]).toEqual({ severity: 'warning', title: 'Posted', file: 'src/read.rs', line: 1, description: 'Something.', ...later, reviewers: ['finder-a'], exit: 'posted' });
+    expect(score.replay).toEqual({ planner: null, finders: ['reviewer'] });
     expect(score.raw!.matches).toEqual([
       { item: 'K1', verdict: 'MATCH', findings: [0], severity: 'warning', reason: 'same' },
       { item: 'K2', verdict: 'MATCH', findings: [4, 11], severity: 'warning', reason: 'same' },
@@ -1044,6 +1051,61 @@ describe('runBench and buildReport', () => {
     });
     await expect(runBench([benchCase], { runs: 2, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher: jest.fn(), review, signal: cancel.signal })).rejects.toThrow('Interrupted');
     expect(review).toHaveBeenCalledTimes(1);
+  });
+
+  it('replays the finder output a stored report holds, run n from its complete run n modulo their count, and decides no release with it', async () => {
+    const matcher: Matcher = async () => ({ verdict: 'NONE', findings: [], reason: 'none' });
+    const planner = { trivial: false, subtle: true, paired: true, judgeEffort: 'low' as const, prType: 'fix' as const };
+    const fixes: RoundFix[] = [{ at: ['src/read.rs:1'], problem: 'p', reviewer: 'Fix check 1', status: 'workaround', cause: 'c', stillFails: 's', proof: ['src/read.rs:1'], findings: 0 }];
+    const storedRun = (title: string) => {
+      const local = makeReview('ADDRESS_FIRST', [blocker], true, rawRecord([{ title }], [blocker]));
+      // The stored round set its judge effort, so the replay keeps the planner's own answer and applies its own config.
+      Object.assign(local.result, { plannerResult: { ...planner, judgeEffort: 'max' }, plannerAnswer: planner, fixes: { fixes } });
+      return scoreRun(benchCase, local, matcher);
+    };
+    const [first, second] = [await storedRun('First'), await storedRun('Second')];
+    const stored = { ...buildReport({ startedAt: '2026-11-20T00:00:00.000Z', runsPerCase: 3, matcherModel: 'model-a' }, [
+      { variant: { name: 'base', overrides: {} }, results: [{ benchCase, runs: [first, { ...first, complete: false }, second] }] },
+    ]), commit: SHA_C };
+    const review = jest.fn(async (_input: LocalReviewInput) => makeReview('READY', []));
+    const options = { runs: 3, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher, review, findingsFrom: stored, variants: [{ name: 'tuned', overrides: {} }] };
+
+    // A variant the report does not hold replays its only variant.
+    const [{ variant, results: [replayed] }] = await runBench([benchCase], options);
+    const replayOf = (title: string) => ({ planner, finders: ['reviewer'], fixes, findings: [{ severity: 'warning', title, file: 'src/other.rs', line: 1, description: 'Something.', reviewers: ['finder-a'] }] });
+    expect(review.mock.calls.map(([input]) => input.replay)).toEqual([replayOf('First'), replayOf('Second'), replayOf('First')]);
+    // A case the report holds no complete run of gets no review.
+    review.mockClear();
+    const [{ results: [, missing] }] = await runBench([benchCase, { ...benchCase, id: 'demo-2' }], { ...options, runs: 1 });
+    expect(review).toHaveBeenCalledTimes(1);
+    expect(missing.runs).toEqual([expect.objectContaining({ outcome: 'FAILED', complete: false, error: 'The report to replay holds no complete run of this case with its finder output.' })]);
+    // A case whose file changed what the review reads since the stored run, or a report that does not record it, gets no review either.
+    // A key change alone leaves the stored runs replayable, and scoring the report again keeps what its runs reviewed.
+    const changed = 'The case\'s commits, title, body, config or earlier round changed since the report to replay, or it does not record them.';
+    const unrecorded = { ...stored, variants: [{ ...stored.variants[0], cases: [{ ...stored.variants[0].cases[0], reviewedDigest: undefined }] }] };
+    for (const [benched, findingsFrom] of [[{ ...benchCase, head: benchCase.base }, stored], [{ ...benchCase, body: 'Another body.' }, stored], [benchCase, unrecorded]] as const) {
+      const [{ results: [refused] }] = await runBench([benched], { ...options, runs: 1, findingsFrom });
+      expect(refused.runs).toEqual([expect.objectContaining({ outcome: 'FAILED', error: changed })]);
+    }
+    expect(review).toHaveBeenCalledTimes(1);
+    const rekeyed = { ...benchCase, keyVersion: benchCase.keyVersion + 1 };
+    const rescored = (await rescoreReport(stored, [{ ...rekeyed, head: benchCase.base }], matcher)).report;
+    expect(rescored.variants[0].cases[0].reviewedDigest).toBe(stored.variants[0].cases[0].reviewedDigest);
+    await runBench([rekeyed], { ...options, runs: 1, findingsFrom: rescored });
+    expect(review).toHaveBeenCalledTimes(2);
+    review.mockClear();
+    // With more than one variant, a variant replays the one of its name, and the bench stops before any review on a name the report does not hold.
+    const two = { ...stored, variants: [stored.variants[0], { ...stored.variants[0], name: 'tuned', cases: [] }] };
+    await runBench([benchCase], { ...options, runs: 1, findingsFrom: two });
+    await expect(runBench([benchCase], { ...options, findingsFrom: two, variants: [{ name: 'other', overrides: {} }] })).rejects.toThrow('The report to replay holds no variant other and more than one other');
+    expect(review).not.toHaveBeenCalled();
+
+    // The report of a replay says what it kept, keeps it when merged, and decides no release.
+    const findingsFrom = { commit: SHA_C, startedAt: stored.startedAt };
+    const report = buildReport({ startedAt: '2026-11-21T00:00:00.000Z', runsPerCase: 3, matcherModel: 'model-a', findingsFrom }, [{ variant, results: [replayed] }]);
+    expect(formatBenchSummary(report)).toMatch(new RegExp(`^Finder output kept from the run started at 2026-11-20T00:00:00.000Z on ${SHA_C}. The planner, finders and checks beside them did not run.\n\n== tuned\n`));
+    expect(mergeReports([report], [benchCase], {}).findingsFrom).toEqual(findingsFrom);
+    expect(() => gateReports([stored], [report])).toThrow('The report started at 2026-11-21T00:00:00.000Z kept the finder output of an earlier run, so it decides no release');
   });
 
   it('prints nothing of a hold-out case but its id and counts: no finding text, review log, matcher reply, source or failure reason', async () => {
@@ -1596,9 +1658,10 @@ describe('parseBenchArgs', () => {
     const args = parseBenchArgs([
       '--checkout', 'owner/demo=/src/a=b', '--case', 'x', '--case', 'y', '--runs', '1', '--out', 'r.json', '--matcher-model', 'm', '--cache', 'c.json',
       '--holdout', '--variant', 'base', '--variant', 'opus=bench/opus.yml', '--set', 'models.judge=claude-sonnet-5-5', '--set', 'max_diff_lines=2000', '--set', 'exclude_paths=[a, b]',
+      '--findings-from', 'earlier.json',
     ]);
     expect(args).toMatchObject({
-      holdout: true, only: ['x', 'y'], runs: 1, out: 'r.json', matcherModel: 'm', cache: 'c.json',
+      holdout: true, only: ['x', 'y'], runs: 1, out: 'r.json', matcherModel: 'm', cache: 'c.json', findingsFrom: 'earlier.json',
       variants: [{ name: 'base' }, { name: 'opus', file: 'bench/opus.yml' }],
       sets: [{ models: { judge: 'claude-sonnet-5-5' } }, { max_diff_lines: 2000 }, { exclude_paths: ['a', 'b'] }],
     });
@@ -1706,6 +1769,8 @@ describe('runBenchCommand', () => {
       expect(stderr).toHaveBeenLastCalledWith(`manki bench: The report was matched by model${quoted}${quoted}\n`);
       expect(await runBenchCommand(['--rescore', report, '--cases', cases, '--case', 'demo-1'], dir)).toBe(2);
       expect(stderr).toHaveBeenCalledWith(expect.stringContaining('--case does not apply to --rescore'));
+      expect(await runBenchCommand(['--rescore', report, '--cases', cases, '--findings-from', report], dir)).toBe(2);
+      expect(stderr).toHaveBeenLastCalledWith('manki bench: --findings-from does not apply to --rescore, which reviews nothing\n');
       writeFileSync(join(dir, 'cut.json'), '{"variants": [{"title": "HOLDOUT-TEXT');
       expect(await runBenchCommand(['--rescore', join(dir, 'cut.json'), '--cases', cases], dir)).toBe(2);
       expect(stderr).toHaveBeenLastCalledWith(`manki bench: The report ${join(dir, 'cut.json')} is not valid JSON\n`);

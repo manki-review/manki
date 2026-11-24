@@ -1572,6 +1572,8 @@ export interface ReviewResult {
   leads?: RoundLead[];
   threadEvaluations?: ThreadEvaluation[];
   plannerResult?: PlannerResult;
+  /** The planner's own answer, set when a configured `judge.effort` replaced its pick in `plannerResult`. */
+  plannerAnswer?: PlannerResult;
   /** The effort the judge and its refuter ran at: a set `judge.effort`, else the planner's pick, else `high`. */
   judgeEffort?: EffortLevel;
   failedAgents?: string[];
@@ -2585,6 +2587,19 @@ export interface EarlierAttempt {
   review: number;
   /** The review's GraphQL node id, which tells whether anyone edited it. */
   nodeId?: string;
+}
+
+/**
+ * What an earlier round's finder stage gave, which a replay keeps in place of running it: the planner's answer, the
+ * finders it picked, and the findings of every call before the dedup, with their reviewer names.
+ */
+export interface FinderReplay {
+  /** `null` when the planner failed and the round took its fail-safe answers. */
+  planner: PlannerResult | null;
+  finders: string[];
+  findings: RoundRawFinding[];
+  /** The fix checks' records, which keep an earlier thread open on a workaround. */
+  fixes?: RoundFix[];
 }
 
 /** Round-cap accounting captured at the moment a round was admitted. */
