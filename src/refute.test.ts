@@ -616,6 +616,9 @@ describe('refuteBlockers', () => {
       'Blocker defect disproved': { reason: 'Bounded.', premises: [{ outcome: 'disproved', reason: 'The signature bounds it.', proof: ['src/math.ts:1'] }] },
       'Disproved beside a confirmed premise': { reason: 'Bounded.', premises: [{ outcome: 'disproved', reason: 'Bounded.', proof: ['src/math.ts:1'] }, confirmed('src/api.ts:4')] },
       'Defect confirmed beside a disproved premise': { ...confirmed('src/math.ts:2'), premises: [{ outcome: 'disproved', reason: 'Bounded.', proof: ['src/math.ts:1'] }] },
+      'Defect confirmed without a trigger beside a disproved premise': {
+        ...confirmed('src/math.ts:2'), result: { reason: 'The sum is wrong.', proof: ['src/math.ts:2'] }, premises: [{ outcome: 'disproved', reason: 'Bounded.', proof: ['src/math.ts:1'] }],
+      },
       'Defect and premise disproved': { outcome: 'disproved', reason: 'Bounded.', proof: ['src/math.ts:1'], premises: [{ outcome: 'disproved', reason: 'Bounded.', proof: ['src/math.ts:1'] }] },
       'Premises not answered': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] },
       'Rare claim not answered': { outcome: 'confirmed', reason: 'A handler passes it.', proof: ['src/api.ts:4'] },
@@ -643,6 +646,8 @@ describe('refuteBlockers', () => {
       finding('Disproved beside a confirmed premise', { severity: 'warning', gradeIfConfirmed: 'blocker', doubts: [exists, reached] }),
       // A check that confirms the defect and disproves a premise it rests on contradicts itself, so it settles nothing.
       finding('Defect confirmed beside a disproved premise', { severity: 'warning', gradeIfConfirmed: 'blocker', doubts: [exists] }),
+      // It still contradicts itself when its confirmation, without a trigger line, is stored unsettled.
+      finding('Defect confirmed without a trigger beside a disproved premise', { severity: 'warning', gradeIfConfirmed: 'blocker', doubts: [exists] }),
       finding('Defect and premise disproved', { severity: 'warning', gradeIfConfirmed: 'blocker', doubts: [exists] }),
       finding('Premises not answered', { gradeIfConfirmed: 'blocker', doubts: [exists] }),
       finding('Doubt confirmed in the normal column', { ...held, reviewerSeverity: 'blocker', ...byJudge('blocker') }),
@@ -681,6 +686,7 @@ describe('refuteBlockers', () => {
       ['Blocker defect disproved', 'warning', 'disproved', ['disproved']],
       ['Disproved beside a confirmed premise', 'ignore', 'disproved', ['disproved', 'confirmed']],
       ['Defect confirmed beside a disproved premise', 'warning', 'unsettled', ['disproved']],
+      ['Defect confirmed without a trigger beside a disproved premise', 'warning', 'unsettled', ['disproved']],
       ['Defect and premise disproved', 'ignore', 'disproved', ['disproved']],
       // A reply that skips the premises is asked once more, then leaves the grade to the judge.
       ['Premises not answered', 'blocker', undefined, undefined],
@@ -1876,11 +1882,13 @@ describe('refuteBlockers', () => {
     });
     expect([lowered.severity, lowered.doubts, lowered.cell]).toEqual(['blocker', undefined, { row: 'wrong', column: 'normal' }]);
     // A check that confirmed the defect and disproved a premise the defect rests on settled nothing, also as a record
-    // stored as a disproof, and also when its confirmation rests on outside behavior no line states, stored unsettled.
+    // stored as a disproof, and also when its confirmation rests on outside behavior no line states or cites no trigger
+    // and result lines, each stored unsettled.
     const exists = [{ premise: 'No caller bounds `a`', decides: 'defect' as const }];
     const contradictions: Record<string, unknown>[] = [
       { ...premise('disproved'), defect: 'confirmed' }, { ...premise('disproved'), outcome: 'disproved', defect: 'confirmed' },
       { ...premise('disproved'), defect: 'unsettled', outside: { behavior: 'The package manager rejects a stale lockfile.', stated: false } },
+      { ...premise('disproved'), defect: 'unsettled' },
     ];
     for (const refutation of contradictions) {
       const [contradicted] = await refuteBlockers(client, [finding('Sum overflows', { severity: 'warning', line: 4, cell: stated })], {
@@ -1912,7 +1920,7 @@ describe('refuteBlockers', () => {
       [{ pairRefutation: premise('disproved') }, {}],
       // A disproved premise the grade rests on settles the doubt beside a confirmed defect, and one the defect rests on settles it beside any other answer.
       [{ refutation: { ...premise('disproved'), defect: 'confirmed' } }, {}],
-      [{ doubts: [{ premise: 'No caller bounds `a`', decides: 'defect' }], refutation: { ...premise('disproved'), defect: 'unsettled' } }, {}],
+      [{ doubts: [{ premise: 'No caller bounds `a`', decides: 'defect' }], refutation: { ...premise('disproved'), outcome: 'disproved', defect: 'unsettled' } }, {}],
       // A disproved consequence settles whether the finding blocks.
       [{ doubts: harmDoubts, refutation: answered('confirmed', 'disproved') }, {}],
       // A disproof a security finding outlived settles the doubt too.

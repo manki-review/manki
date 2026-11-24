@@ -332,7 +332,8 @@ function parseRefutation(text: string, workspace: string, finding: Finding, diff
   // A confirmation also shows how normal use reaches the failure and where its wrong result shows, each with its own lines.
   const consequence = claimed === 'confirmed' && !statesNoFailure(finding, rules) ? [parsed.trigger, parsed.result].map(part => shownLines(partProof(part), workspace, related)) : [];
   const unshown = consequence.some(lines => lines.proof.length + lines.relatedProof.length === 0);
-  const answered = unshown ? 'unsettled' : settle(claimed ?? 'unsettled', own.proof, own.relatedProof);
+  const stated = settle(claimed ?? 'unsettled', own.proof, own.relatedProof);
+  const answered = unshown ? 'unsettled' : stated;
   // A confirmation that rests on outside behavior no cited line states is no proof, so it is stored unsettled.
   const reliesOn = answered === 'confirmed' ? outsideBehavior(parsed.outside, workspace, related) : undefined;
   const defect = reliesOn?.outside.stated === false ? 'unsettled' : answered;
@@ -362,8 +363,8 @@ function parseRefutation(text: string, workspace: string, finding: Finding, diff
       };
     });
     // The refuter's own answer decides whether the check contradicts itself, so storing it unsettled never makes a disproof.
-    const added = premisesOutcome(finding.doubts, premises, answered, finding.rule?.unseen);
-    outcome = added === 'confirmed' && defect !== answered ? 'unsettled' : added;
+    const added = premisesOutcome(finding.doubts, premises, stated, finding.rule?.unseen);
+    outcome = added === 'confirmed' && defect !== stated ? 'unsettled' : added;
     // A disproof cites only what disproves the defect, never lines that confirmed a premise or the defect.
     const doubts = finding.doubts;
     const disproved = outcome === 'disproved' || defect === 'disproved';
@@ -755,9 +756,12 @@ function reopenCappedGrade(finding: Finding, priorRounds: readonly RoundContext[
   // A check that confirmed the defect and disproved a premise the defect rests on contradicts itself, also as a record
   // stored as `disproved`. It settles a doubt only by confirming every premise or disproving one the grade rests on.
   // Whether it confirmed the defect is read `asAnswered`, and whether it confirmed every premise is read as stored.
+  // A stored unsettled outcome beside a disproved premise the defect rests on is such a check too, one whose confirmation
+  // was stored unsettled for want of trigger and result lines.
+  const disprovesGrade = (r: Refutation): boolean => !!r.premises?.some((p, i) => p.outcome === 'disproved' && prior.doubts?.[i]?.decides === 'grade');
   const settles = (r: Refutation): boolean => asAnswered(r).defect === 'confirmed'
-    ? r.outcome === 'confirmed' || !!r.premises?.some((p, i) => p.outcome === 'disproved' && prior.doubts?.[i]?.decides === 'grade')
-    : r.outcome !== 'unsettled' || !!r.premises?.some(p => p.outcome === 'disproved');
+    ? r.outcome === 'confirmed' || disprovesGrade(r)
+    : r.outcome !== 'unsettled' || disprovesGrade(r);
   const checks = [prior.refutation, prior.pairRefutation].filter((r): r is Refutation => !!r);
   // A blocker that rests on its consequence rose only when every check `confirmsAll`, so a confirmation short of that settles nothing.
   const settled = namesConsequence(prior) ? confirmsAll(checks) || checks.some(r => settles(r) && outcomeOf(r) !== 'confirmed') : checks.some(settles);
