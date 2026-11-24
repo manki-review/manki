@@ -8,6 +8,7 @@ import { parsePRDiff } from './diff';
 import { LLMClient, SendMessageOptions } from './providers';
 import { capUnconfirmedRaise, checkStatus, confirmPushedFixes, disprovedTrigger, lacksTrigger, needsProof, PushedFix, RefuteOptions, refuteBlockers, unpostedForTrigger, unprovenReason } from './refute';
 import { repoToolsPrompt } from './providers/cli-utils';
+import { withConsequence } from './test-utils';
 import { parseFindings } from './review';
 import { agreedOutcome, disproof, Finding, OpenThread, outcomeOf, ParsedDiff, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, RulesMode, staysWarningIfConfirmed, triggerDoubt, wouldBlockIfTrue } from './types';
 import { RELATED_REPO_TRUST_RULE, VERIFY_CLAIMS_RULE } from './writing-rules';
@@ -37,7 +38,7 @@ function fakeClient(replies: Record<string, unknown>, model?: string, steps: Rec
       const reply = replies[title];
       if (reply instanceof Error) throw reply;
       const toolSteps = title in steps ? Array.from({ length: steps[title] }, () => ({ tool: 'Read' })) : undefined;
-      return { content: typeof reply === 'string' ? reply : JSON.stringify(reply), ...(model && { model }), ...(toolSteps && { toolSteps }) };
+      return { content: typeof reply === 'string' ? reply : JSON.stringify(withConsequence(reply)), ...(model && { model }), ...(toolSteps && { toolSteps }) };
     },
   };
 }
@@ -101,8 +102,16 @@ describe('refuteBlockers', () => {
     const lead = { checked: 'read src/math.ts:2', left: 'find the callers' };
     const client = fakeClient({
       'Disproved': { outcome: 'disproved', reason: 'Both inputs are checked at src/api.ts:9.', proof: ['src/api.ts:9'] },
-      'Confirmed': { outcome: 'confirmed', reason: 'Any caller can pass a huge number.', proof: ['src/math.ts:2', 'src/api.ts:4'] },
+      'Confirmed': {
+        outcome: 'confirmed', reason: 'Any caller can pass a huge number.', proof: ['src/math.ts:2', 'src/api.ts:4'],
+        trigger: { reason: 'The handler passes user input.', proof: ['src/api.ts:3'] }, result: { reason: 'The sum is returned wrong.', proof: ['src/math.ts:2'] },
+      },
       'Confirmed without proof': { outcome: 'confirmed', reason: 'Trust me.' },
+      'Confirmed without a trigger': { outcome: 'confirmed', reason: 'Nothing bounds it.', proof: ['src/math.ts:2'], result: { reason: 'The sum is returned wrong.', proof: ['src/math.ts:2'] } },
+      'Confirmed on a made-up result line': {
+        outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'],
+        trigger: { reason: 'The handler passes user input.', proof: ['src/api.ts:3'] }, result: { reason: 'The caller stores it.', proof: ['src/math.ts:99'] },
+      },
       'Unsettled': { outcome: 'unsettled', reason: `The callers are generated${' and long'.repeat(60)}.`, rule: 'r'.repeat(501) },
       'Lead confirmed': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] },
       'Unproven lead confirmed': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] },
@@ -122,6 +131,8 @@ describe('refuteBlockers', () => {
       finding('Disproved'),
       finding('Confirmed', { reviewers: ['Sweep 1'] }),
       finding('Confirmed without proof'),
+      finding('Confirmed without a trigger', { severity: 'warning', tags: ['unproven-blocker'] }),
+      finding('Confirmed on a made-up result line', { severity: 'warning', tags: ['unproven-blocker'] }),
       finding('Unsettled'),
       finding('Lead confirmed', { severity: 'warning', notChecked: true, lead }),
       finding('Unproven lead confirmed', { severity: 'warning', notChecked: true, lead, tags: ['unproven-blocker'] }),
@@ -150,6 +161,9 @@ describe('refuteBlockers', () => {
       ['Confirmed', 'blocker', 'confirmed'],
       // An unsettled blocker keeps blocking, since only proof may unblock it.
       ['Confirmed without proof', 'blocker', 'unsettled'],
+      // A confirmation needs a line that shows how normal use triggers it and one where its wrong result shows.
+      ['Confirmed without a trigger', 'warning', 'unsettled'],
+      ['Confirmed on a made-up result line', 'warning', 'unsettled'],
       ['Unsettled', 'blocker', 'unsettled'],
       // A confirmation keeps the grade the judge gave a lead, and lifts only the cap on an unproven blocker.
       ['Lead confirmed', 'warning', 'confirmed'],
@@ -187,7 +201,7 @@ describe('refuteBlockers', () => {
     expect(['Disproved in its own file', 'Disproved', 'Confirmed'].map(stepsUsedUp)).toEqual([undefined, undefined, undefined]);
     expect(result[0].judgeNotes).toBe('Refutation disproved: Both inputs are checked at src/api.ts:9.\nPosted as a warning, since the refuter disproved it.');
     // A cut reason or rule ends in an ellipsis, so the next text never reads as its continuation.
-    expect(result[3].judgeNotes).toBe(`Refutation unsettled: ${`The callers are generated${' and long'.repeat(60)}`.slice(0, 500)}... Rule checked: ${'r'.repeat(500)}...`);
+    expect(result[5].judgeNotes).toBe(`Refutation unsettled: ${`The callers are generated${' and long'.repeat(60)}`.slice(0, 500)}... Rule checked: ${'r'.repeat(500)}...`);
     // Each severity change the refutation makes is a step of the grade path, with the refuter's reason.
     expect(Object.fromEntries(result.filter(f => f.gradePath).map(f => [f.title, f.gradePath]))).toEqual({
       'Disproved': [{ from: 'blocker', to: 'warning', by: 'refutation', reason: 'the refuter disproved it' }],
@@ -195,11 +209,12 @@ describe('refuteBlockers', () => {
       'Unproven disproved': [{ from: 'warning', to: 'ignore', by: 'refutation', reason: 'The signature bounds it.' }],
       'Lead disproved': [{ from: 'warning', to: 'ignore', by: 'refutation', reason: 'The signature bounds it.' }],
     });
-    expect(result[1].evidence?.proof).toEqual(['src/math.ts:2', 'src/api.ts:4']);
-    expect([result[4].lead, result[4].notChecked]).toEqual([undefined, undefined]);
-    expect(result[5].tags).toEqual([]);
+    // The lines of the trigger and the result prove the finding too.
+    expect(result[1].evidence?.proof).toEqual(['src/math.ts:2', 'src/api.ts:4', 'src/api.ts:3']);
+    expect([result[6].lead, result[6].notChecked]).toEqual([undefined, undefined]);
+    expect(result[7].tags).toEqual([]);
     // Every blocker and lead was asked once, and the warning never.
-    expect(client.calls.map(([title]) => title).sort()).toEqual(['Blocking lead unsettled', 'Confirmed', 'Confirmed without proof', 'Disproved', 'Disproved by an unrelated file', 'Disproved in its own file', 'Disproved on made-up lines', 'Disproved without proof', 'Failing', 'Lead confirmed', 'Lead disproved', 'Lead unsettled', 'Security disproved', 'Unproven disproved', 'Unproven lead confirmed', 'Unproven note lead confirmed', 'Unsettled']);
+    expect(client.calls.map(([title]) => title).sort()).toEqual(['Blocking lead unsettled', 'Confirmed', 'Confirmed on a made-up result line', 'Confirmed without a trigger', 'Confirmed without proof', 'Disproved', 'Disproved by an unrelated file', 'Disproved in its own file', 'Disproved on made-up lines', 'Disproved without proof', 'Failing', 'Lead confirmed', 'Lead disproved', 'Lead unsettled', 'Security disproved', 'Unproven disproved', 'Unproven lead confirmed', 'Unproven note lead confirmed', 'Unsettled']);
     expect(client.calls[0][1]).toEqual({ effort: 'high', repoTools: { root: workspace, steps: 15, checking: true }, timeoutMs: 600_000 });
     // The call for a finding a sweep raised is marked, so its record counts as the sweep's cost.
     expect(client.calls.filter(([, options]) => options?.sweep).map(([title]) => title)).toEqual(['Confirmed']);
@@ -745,7 +760,7 @@ describe('refuteBlockers', () => {
     const message = client.messages.find(([, user]) => user.includes(': Every premise confirmed\n'))!;
     expect(message[1]).toContain("- **Premises the judge doubts**, to answer in order:\n  1. No caller bounds 'a'\n  2. Normal use or outside input can produce the state this failure needs");
     expect(message[0]).toContain('When the message lists premises the judge doubts, give two kinds of answer. Answer each premise in `premises`, one entry per premise in the order listed.');
-    expect(message[0]).toContain('The top-level `outcome`, `reason` and `proof` then answer whether the defect itself exists: confirmed when the code does what the finding says is wrong once the state or input the finding names occurs, disproved when it does not, unsettled otherwise. Whether that state or input occurs, and how severe the result is, is for a premise to answer and never changes the top-level outcome.');
+    expect(message[0]).toContain('The top-level `outcome`, `reason`, `proof`, `trigger` and `result` then answer whether the defect itself exists: confirmed under the rules above, disproved when the code does not fail as the finding says, unsettled otherwise. How severe the result is, is for a premise to answer and never changes the top-level outcome.');
     // A trigger premise is disproved by odds no use meets, by two failures that only keep a hold, and by a call no caller makes, which the refuter searches for.
     expect(message[0]).toContain('Concurrent use of a public API confirms it only when a caller or the API\'s documentation shows that use.');
     expect(message[0]).toContain('search for every caller with your tools: disprove the premise when none calls it that way and no outside input reaches that call');
@@ -1451,6 +1466,13 @@ describe('refuteBlockers', () => {
     expect(system).toContain('whether that reason holds here');
     expect(system).toContain('A public function, method, constructor or field is an entry point when the repository is a library, as its manifest shows, or when the outside input in the message names that API');
     expect(system).toContain('In an application, an exported function is no entry point on its own and needs a caller.');
+    // A confirmation names how normal use triggers the failure and where its wrong result shows, and a value only the type allows is no trigger.
+    expect(system).toContain('The triggering value must still be one that callers, tests, documentation or outside input actually supply, not merely one the type accepts');
+    expect(system).toContain('- **confirmed**: the failure happens in normal use and gives a wrong result someone can observe. That the code does what the finding says once a state occurs is not enough, and neither is that nothing prevents the state.');
+    expect(system).toContain('A confirmation without a line for each counts as unsettled.');
+    expect(system).toContain('"trigger": {"reason": "How normal use or outside input supplies the triggering state or value", "proof": ["file:line"]}, "result": {"reason": "What goes wrong and where it can be seen", "proof": ["file:line"]}');
+    // An effect the refuter's own reasoning finds negligible confirms nothing.
+    expect(system).toContain('- When your own reasoning finds the effect negligible, such as an event that is rare in normal use, a state a later pass heals, a short delay or a drift of a few percent, answer unsettled, not confirmed.');
     expect(client.messages[0][1]).not.toContain('Outside input');
     expect(system).toContain('disprove only when every path checks the value or cannot carry it');
     expect(system).toContain('Reading code cannot confirm that it fails to compile or that a test fails.');

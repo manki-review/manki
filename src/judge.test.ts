@@ -35,7 +35,7 @@ import { parsePRDiff } from './diff';
 import { extractJSON } from './json';
 import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { CELL_GRADES, Finding, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, ProvenanceEntry, REACH_DOUBT, ReviewConfig, ReviewResult, RoundContext, SECURITY_TAG, ParsedDiff, DiffFile, DiffHunk, RulesMode, RuleVerdict, finderGrade, ThreadEvaluation, isGuardedFinding, isNote, pendingGrade, staysWarningIfConfirmed, triggerDoubt, wouldBlockIfTrue } from './types';
-import { LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy } from './test-utils';
+import { LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, withConsequence } from './test-utils';
 
 const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
   auto_review: true,
@@ -2300,7 +2300,7 @@ describe('runJudgeAgent', () => {
       async sendMessage(_system, user) {
         refuterMessages.push(user);
         const title = Object.keys(replies).find(t => user.includes(`: ${t}\n`))!;
-        return { content: JSON.stringify(replies[title]) };
+        return { content: JSON.stringify(withConsequence(replies[title])) };
       },
     };
 
@@ -2538,7 +2538,7 @@ describe('runJudgeAgent', () => {
       async sendMessage(_system, user) {
         const title = Object.keys(replies).find(t => user.includes(`: ${t}\n`))!;
         asked.push(title ?? user);
-        return { content: JSON.stringify(replies[title]) };
+        return { content: JSON.stringify(withConsequence(replies[title])) };
       },
     };
 
@@ -2920,7 +2920,7 @@ describe('runJudgeAgent', () => {
       repoTools: true,
       async sendMessage(_system, user) {
         refuterMessages.push(user);
-        return { content: JSON.stringify(answers[titles.find(t => user.includes(`: ${t}\n`))!]) };
+        return { content: JSON.stringify(withConsequence(answers[titles.find(t => user.includes(`: ${t}\n`))!])) };
       },
     });
     const refuter = answering(replies);

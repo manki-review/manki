@@ -44,7 +44,7 @@ import * as napi from '@ast-grep/napi';
 import { formatFindingComment, holdsApproval, LinkedIssue, titleToSlug } from './github';
 import { CELL_GRADES, cellGrade, DISPROVED_TAG, EarlierAttempt, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, OriginAnswer, OriginVerdict, Refutation, RefutationOutcome, RelatedItem, RelatedWork, ReviewResult, RoundContext, RoundFix, RoundLead, RoundNotStarted, RoundScope, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG, SweepMode, triggerDoubt, VERDICT_READER_NAME } from './types';
 import { citedLine, stringifyFindingFingerprint } from './finding-fingerprint';
-import { baseProofFixture, baseProofWorkspace, expectLinearTime, fingerprintEntriesFromLegacy, git, GIT_TEST_TIMEOUT_MS, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
+import { baseProofFixture, baseProofWorkspace, expectLinearTime, fingerprintEntriesFromLegacy, git, GIT_TEST_TIMEOUT_MS, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS, withConsequence } from './test-utils';
 import { listUsesOutsideDiff } from './symbol-uses';
 import type { LockfileDiff } from './lockfile';
 import { runJudgeAgent, computeProvenanceMap } from './judge';
@@ -2284,7 +2284,7 @@ describe('runReview', () => {
         writeFileSync(join(stateDir, 'dependencies', `${encodeURIComponent('crates.io/demo@1.0.0')}.from`), JSON.stringify({ registry: 'crates.io', name: 'demo', version: '1.0.0', source: 'lockfile', file: 'Cargo.lock' }));
         const proof = ['src/queue.ts:6', 'acme/billing:src/import.ts:2', 'crates.io/demo@1.0.0:src/import.ts:1'];
         // One finder of two reported the blocker, so the check confirms its damage too.
-        return { content: JSON.stringify({ outcome: 'confirmed', reason: 'It does.', proof, premises: [{ outcome: 'confirmed', reason: 'The id runs twice.', proof: ['src/queue.ts:6'] }] }), relatedReads: { 'acme/billing': 2, 'crates.io/demo@1.0.0': 1 } };
+        return { content: JSON.stringify(withConsequence({ outcome: 'confirmed', reason: 'It does.', proof, premises: [{ outcome: 'confirmed', reason: 'The id runs twice.', proof: ['src/queue.ts:6'] }] })), relatedReads: { 'acme/billing': 2, 'crates.io/demo@1.0.0': 1 } };
       });
       mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
       try {
@@ -3023,7 +3023,7 @@ describe('runReview', () => {
       expect(blocking.outcome).toBe('READY');
       // The refuter reads the doubt on its first cited line, and the warning it confirms is tied to no file again.
       expect(refuterCalls(confirming)).toHaveLength(1);
-      expect(refuterCalls(confirming)[0][1]).toContain(`## Warning no cited line proves: ${doubtTitle}\n\n- **Location**: src/x.ts:1`);
+      expect(refuterCalls(confirming)[0][1]).toContain(`## Doubt about the PR's scope: ${doubtTitle}\n\n- **Location**: src/x.ts:1`);
       expect(fromScope(blocking)).toEqual([
         expect.objectContaining({
           severity: 'warning', title: doubtTitle, file: '', line: 0, description: scope.doubt,
@@ -3348,7 +3348,7 @@ describe('runReview', () => {
         Object.assign(clients.judge, { repoTools: true });
         jest.mocked(clients.judge.sendMessage).mockImplementation(async (system: string) => {
           if (system.startsWith('You are a code review judge')) return { content: JSON.stringify({ summary: 's', findings: [{ id: 1, title: unrounded.title, row: 'severe', reasoning: 'r' }] }) };
-          return { content: system.startsWith('You check one finding') ? JSON.stringify(refuted) : READY_VERDICT };
+          return { content: system.startsWith('You check one finding') ? JSON.stringify(withConsequence(refuted)) : READY_VERDICT };
         });
         mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
         try {
@@ -3404,7 +3404,7 @@ describe('runReview', () => {
         Object.assign(clients.judge, { repoTools: true });
         jest.mocked(clients.judge.sendMessage).mockImplementation(async (system: string) => {
           if (system.startsWith('You are a code review judge')) return { content: JSON.stringify({ summary: 's', findings: [1, 2].map(id => ({ id, title: finding.title, row: 'severe', reasoning: 'r' })) }) };
-          return { content: system.startsWith('You check one finding') ? JSON.stringify({ outcome: 'confirmed', reason: 'It is never rounded.', proof: ['src/a.py:1'] }) : READY_VERDICT };
+          return { content: system.startsWith('You check one finding') ? JSON.stringify(withConsequence({ outcome: 'confirmed', reason: 'It is never rounded.', proof: ['src/a.py:1'] })) : READY_VERDICT };
         });
         mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
         const result = await runReview(clients, {
@@ -3706,7 +3706,7 @@ describe('runReview', () => {
       if (!system.startsWith('You check one finding')) return { content: READY_VERDICT };
       refuterCalls.push(titles.find(title => user.includes(`: ${title}\n`))!);
       const confirmed = { outcome: 'confirmed', reason: 'It leaks.', proof: ['src/app.ts:1'] };
-      return { content: JSON.stringify({ ...confirmed, premises: [confirmed] }) };
+      return { content: JSON.stringify(withConsequence({ ...confirmed, premises: [confirmed] })) };
     });
     mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
     mockedApplySuppressions.mockImplementation(jest.requireActual<typeof import('./memory')>('./memory').applySuppressions);
@@ -3750,7 +3750,7 @@ describe('runReview', () => {
       if (!system.startsWith('You check one finding')) return { content: READY_VERDICT };
       refuterMessages.push(user.split('\n')[0]);
       const confirmed = { outcome: 'confirmed', reason: 'It is ignored.', proof: ['src/old.ts:16'] };
-      return { content: JSON.stringify({ ...confirmed, premises: [confirmed] }) };
+      return { content: JSON.stringify(withConsequence({ ...confirmed, premises: [confirmed] })) };
     });
     mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
     let result: ReviewResult;
@@ -3796,7 +3796,7 @@ describe('runReview', () => {
         refuterMessages.push(user);
         // One finder of two reported the blocker, so the check confirms its damage too.
         const confirmed = { outcome: 'confirmed', reason: 'Nothing removes an entry.', proof: ['src/queue.ts:4'] };
-        return { model, content: JSON.stringify({ ...confirmed, premises: [confirmed] }) };
+        return { model, content: JSON.stringify(withConsequence({ ...confirmed, premises: [confirmed] })) };
       };
       const pair = pairModel === null ? undefined : {
         repoTools: true, sendMessage: pairModel === 'failed' ? jest.fn().mockRejectedValue(new Error('timed out')) : jest.fn(reply(pairModel)),
@@ -3947,7 +3947,7 @@ describe('runReview', () => {
       }
       if (!system.startsWith('You check one finding')) return { content: READY_VERDICT };
       refuterMessages.push(user);
-      return { content: JSON.stringify({ outcome: 'confirmed', reason: 'r', proof: ['src/old.ts:11'], premises: [{ outcome: 'confirmed', reason: 'r', proof: ['src/old.ts:11'] }] }) };
+      return { content: JSON.stringify(withConsequence({ outcome: 'confirmed', reason: 'r', proof: ['src/old.ts:11'], premises: [{ outcome: 'confirmed', reason: 'r', proof: ['src/old.ts:11'] }] })) };
     });
     mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
     let result: ReviewResult;
@@ -4077,7 +4077,7 @@ describe('runReview', () => {
         }
       }
       const confirmed = { outcome: 'confirmed', reason: 'It does.', proof: [title.startsWith('Old') ? 'src/old.ts:11' : 'src/app.ts:3'] };
-      return { content: JSON.stringify({ ...confirmed, premises: [confirmed, confirmed] }) };
+      return { content: JSON.stringify(withConsequence({ ...confirmed, premises: [confirmed, confirmed] })) };
     });
     mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
     const options = { config: makeConfig({ review: { sweep: 'warnings' as const } }), diff, rawDiff: 'raw diff', repoContext: '', workspace: root };
