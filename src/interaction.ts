@@ -643,7 +643,8 @@ export async function handleReviewCommentReply(
     // of a detached thread, and an outdated one has none, so their line is the one on the commit they were posted on.
     const outdated = !findingData?.detached && !root.comment.line && !!root.comment.original_line;
     const postedPlace = outdated ? findingPlace(findingBody, root.comment.path, root.comment.original_line, root.comment.original_line) : place;
-    const elsewhere = !checksElsewhere ? undefined : closed ? { why: 'this PR is no longer open' } : await checkFixedElsewhere(checked.fixedIn!, {
+    // The check reads what other pull requests changed, and which of those files are open is not certain.
+    const elsewhere = !checksElsewhere ? undefined : closed ? { why: 'this PR is no longer open' } : closedPaths.length > 0 ? { why: '`closed_paths` is set, so I do not read the merge with another pull request' } : await checkFixedElsewhere(checked.fixedIn!, {
       octokit, owner, repo, prNumber, file: filePath, line: currentFindingLine(postedPlace), evidenceFiles: evidenceFiles ?? [],
       ...((findingData?.detached || outdated) && { postedOn: root.comment.original_commit_id }),
       ...(client.repoTools && loadWorkspace && { checkout: async (commit: string) => loadWorkspace(commit) }),
