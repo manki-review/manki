@@ -887,14 +887,25 @@ export async function scoreRun(benchCase: BenchCase, review: LocalReview, matche
 }
 
 function storedReplay({ result }: LocalReview): Omit<FinderReplay, 'findings'> {
-  return { planner: result.plannerResult ?? null, finders: result.agentNames, ...(result.fixes?.fixes && { fixes: result.fixes.fixes }) };
+  return { planner: result.plannerAnswer ?? result.plannerResult ?? null, finders: result.agentNames, ...(result.fixes?.fixes && { fixes: result.fixes.fixes }) };
 }
 
-/** Returns what each complete run of case `id` stored in `variant` for a replay, in the order of the runs. A run from a ref that stored none is left out. */
-function storedReplays(variant: VariantReport, id: string): FinderReplay[] {
-  return (variant.cases.find(c => c.id === id)?.runs ?? []).flatMap(run => (run.complete && run.raw && run.replay
+/** Returns a digest of what a review of the case reads of its file: its commits, text, config and earlier round. The key is left out. */
+function reviewedDigest({ repo, base, head, title, body, config, priorRound }: BenchCase): string {
+  return createHash('sha256').update(JSON.stringify([repo, base, head, title, body, config ?? null, priorRound ?? null])).digest('hex');
+}
+
+/**
+ * Returns what each complete run of `benchCase` stored in `variant` for a replay, in the order of the runs, or why none
+ * may be replayed. A run from a ref that stored none is left out.
+ */
+function storedReplays(variant: VariantReport, benchCase: BenchCase): FinderReplay[] | string {
+  const stored = variant.cases.find(c => c.id === benchCase.id);
+  if (stored && stored.reviewedDigest !== reviewedDigest(benchCase)) return 'The case\'s commits, title, body, config or earlier round changed since the report to replay, or it does not record them.';
+  const replays = (stored?.runs ?? []).flatMap(run => (run.complete && run.raw && run.replay
     ? [{ ...run.replay, findings: run.raw.findings.map(({ exit: _exit, ...finding }) => finding) }]
     : []));
+  return replays.length > 0 ? replays : 'The report to replay holds no complete run of this case with its finder output.';
 }
 
 /** Returns the variant of `report` whose finder output variant `name` replays: the one of the same name, or else its only variant. */
@@ -1015,6 +1026,8 @@ interface CaseReport {
   set: CaseSet;
   source: string;
   keyVersion: number;
+  /** The `reviewedDigest` of the case its runs reviewed. A report from a ref that does not store it has none. */
+  reviewedDigest?: string;
   items: ItemReport[];
   runs: RunScore[];
 }
@@ -1117,7 +1130,7 @@ function caseReport(benchCase: BenchCase, runs: RunScore[]): CaseReport {
   const repeated = (id: string, run: RunScore) => restatedFindings(run.matches.filter(m => m.item === id), n => run.findings[n]?.foldedInto).size > 0;
   const earlier = (id: string) => benchCase.priorRound!.findings.find(f => f.id === id)! as Pick<KeyItem, 'id' | 'severity'>;
   return {
-    id: benchCase.id, set: benchCase.set, source: benchCase.source, keyVersion: benchCase.keyVersion,
+    id: benchCase.id, set: benchCase.set, source: benchCase.source, keyVersion: benchCase.keyVersion, reviewedDigest: reviewedDigest(benchCase),
     items: [
       ...benchCase.mustCatch.map(item => report(item, 'must_catch', caught(item))),
       ...benchCase.niceToHave.map(item => report(item, 'nice_to_have', caught(item))),
@@ -1345,7 +1358,9 @@ export async function rescoreReport(report: BenchReport, cases: BenchCase[], mat
         continue;
       }
       rescored.add(c.id);
-      again.push(caseReport(benchCase, runs));
+      // The runs reviewed the case as it was, so a case whose commits changed since stays unreplayable.
+      const { reviewedDigest: _current, ...scoredAgain } = caseReport(benchCase, runs);
+      again.push({ ...scoredAgain, ...(c.reviewedDigest && { reviewedDigest: c.reviewedDigest }) });
     }
     variants.push(variantReport({ name, overrides }, again));
   }
@@ -1969,14 +1984,14 @@ export async function runBench(cases: BenchCase[], options: BenchOptions): Promi
       const runs: RunScore[] = [];
       const configError = invalid.get(benchCase.id);
       const review = (input: LocalReviewInput) => quietly(benchCase, () => (options.review ?? reviewLocal)(input));
-      const replays = findingsFrom && storedReplays(replayedVariant(findingsFrom, variant.name)!, benchCase.id);
+      const replays = findingsFrom && storedReplays(replayedVariant(findingsFrom, variant.name)!, benchCase);
       for (let i = 0; i < options.runs; i++) {
         if (configError) {
           runs.push(failedRun(configError, undefined, CONFIG_INVALID));
           continue;
         }
-        if (replays?.length === 0) {
-          runs.push(failedRun(new Error('The report to replay holds no complete run of this case with its finder output.')));
+        if (typeof replays === 'string') {
+          runs.push(failedRun(new Error(replays)));
           continue;
         }
         let local: LocalReview | undefined;

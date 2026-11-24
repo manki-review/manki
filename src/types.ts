@@ -1572,6 +1572,8 @@ export interface ReviewResult {
   leads?: RoundLead[];
   threadEvaluations?: ThreadEvaluation[];
   plannerResult?: PlannerResult;
+  /** The planner's own answer, set when a configured `judge.effort` replaced its pick in `plannerResult`. */
+  plannerAnswer?: PlannerResult;
   /** The effort the judge and its refuter ran at: a set `judge.effort`, else the planner's pick, else `high`. */
   judgeEffort?: EffortLevel;
   failedAgents?: string[];

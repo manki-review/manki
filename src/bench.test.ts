@@ -1059,7 +1059,8 @@ describe('runBench and buildReport', () => {
     const fixes: RoundFix[] = [{ at: ['src/read.rs:1'], problem: 'p', reviewer: 'Fix check 1', status: 'workaround', cause: 'c', stillFails: 's', proof: ['src/read.rs:1'], findings: 0 }];
     const storedRun = (title: string) => {
       const local = makeReview('ADDRESS_FIRST', [blocker], true, rawRecord([{ title }], [blocker]));
-      Object.assign(local.result, { plannerResult: planner, fixes: { fixes } });
+      // The stored round set its judge effort, so the replay keeps the planner's own answer and applies its own config.
+      Object.assign(local.result, { plannerResult: { ...planner, judgeEffort: 'max' }, plannerAnswer: planner, fixes: { fixes } });
       return scoreRun(benchCase, local, matcher);
     };
     const [first, second] = [await storedRun('First'), await storedRun('Second')];
@@ -1078,12 +1079,26 @@ describe('runBench and buildReport', () => {
     const [{ results: [, missing] }] = await runBench([benchCase, { ...benchCase, id: 'demo-2' }], { ...options, runs: 1 });
     expect(review).toHaveBeenCalledTimes(1);
     expect(missing.runs).toEqual([expect.objectContaining({ outcome: 'FAILED', complete: false, error: 'The report to replay holds no complete run of this case with its finder output.' })]);
+    // A case whose file changed what the review reads since the stored run, or a report that does not record it, gets no review either.
+    // A key change alone leaves the stored runs replayable, and scoring the report again keeps what its runs reviewed.
+    const changed = 'The case\'s commits, title, body, config or earlier round changed since the report to replay, or it does not record them.';
+    const unrecorded = { ...stored, variants: [{ ...stored.variants[0], cases: [{ ...stored.variants[0].cases[0], reviewedDigest: undefined }] }] };
+    for (const [benched, findingsFrom] of [[{ ...benchCase, head: benchCase.base }, stored], [{ ...benchCase, body: 'Another body.' }, stored], [benchCase, unrecorded]] as const) {
+      const [{ results: [refused] }] = await runBench([benched], { ...options, runs: 1, findingsFrom });
+      expect(refused.runs).toEqual([expect.objectContaining({ outcome: 'FAILED', error: changed })]);
+    }
+    expect(review).toHaveBeenCalledTimes(1);
+    const rekeyed = { ...benchCase, keyVersion: benchCase.keyVersion + 1 };
+    const rescored = (await rescoreReport(stored, [{ ...rekeyed, head: benchCase.base }], matcher)).report;
+    expect(rescored.variants[0].cases[0].reviewedDigest).toBe(stored.variants[0].cases[0].reviewedDigest);
+    await runBench([rekeyed], { ...options, runs: 1, findingsFrom: rescored });
+    expect(review).toHaveBeenCalledTimes(2);
+    review.mockClear();
     // With more than one variant, a variant replays the one of its name, and the bench stops before any review on a name the report does not hold.
     const two = { ...stored, variants: [stored.variants[0], { ...stored.variants[0], name: 'tuned', cases: [] }] };
     await runBench([benchCase], { ...options, runs: 1, findingsFrom: two });
-    expect(review).toHaveBeenCalledTimes(1);
     await expect(runBench([benchCase], { ...options, findingsFrom: two, variants: [{ name: 'other', overrides: {} }] })).rejects.toThrow('The report to replay holds no variant other and more than one other');
-    expect(review).toHaveBeenCalledTimes(1);
+    expect(review).not.toHaveBeenCalled();
 
     // The report of a replay says what it kept, keeps it when merged, and decides no release.
     const findingsFrom = { commit: SHA_C, startedAt: stored.startedAt };

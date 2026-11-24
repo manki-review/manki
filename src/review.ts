@@ -1170,7 +1170,8 @@ export async function runReview(
   const plannerStart = Date.now();
   const plannerWrap = wrapClientForUsage(withFallback({ client: clients.planner, fallback: clients.fallbacks?.planner }, 'planner'));
   const plannerOutcome: PlannerOutcomeSink = {};
-  let plannerResult = replay ? replay.planner : await runPlanner(plannerWrap.client, diffWithLockfiles, plannerOutcome);
+  const plannerAnswer = replay ? replay.planner : await runPlanner(plannerWrap.client, diffWithLockfiles, plannerOutcome);
+  let plannerResult = plannerAnswer;
   // A set `judge.effort` replaces the planner's pick, so the progress comment and the round record show the level that runs.
   if (plannerResult && config.judge?.effort && config.judge.effort !== 'auto') plannerResult = { ...plannerResult, judgeEffort: config.judge.effort };
   logOutputTokens('Planner', plannerWrap.getTotals().usage);
@@ -1185,7 +1186,7 @@ export async function runReview(
   const judgeEffort = setEffort && setEffort !== 'auto' ? setEffort : plannerResult?.judgeEffort ?? 'high';
   // What the round has produced so far. A round that ends incomplete keeps it all in its record.
   const recorded: Partial<ReviewResult> = {
-    plannerResult: plannerResult ?? undefined, judgeEffort, plannerDurationMs,
+    plannerResult: plannerResult ?? undefined, ...(plannerAnswer !== plannerResult && { plannerAnswer: plannerAnswer! }), judgeEffort, plannerDurationMs,
     ...(memory && { memoryLoaded: { learnings: memory.learnings.length, suppressions: memory.suppressions.length } }),
   };
   const { trivial, subtle, paired } = team.triage;
@@ -2435,6 +2436,7 @@ export async function runReview(
     threadEvaluations,
     ...(carriedFixed && { carriedFixed }),
     plannerResult: plannerResult ?? undefined,
+    ...(plannerAnswer !== plannerResult && { plannerAnswer: plannerAnswer! }),
     judgeEffort,
     staticDedupCount,
     llmDedupCount,

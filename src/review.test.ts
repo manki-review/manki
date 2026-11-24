@@ -10296,12 +10296,14 @@ describe('runReview triage', () => {
       { severity: 'warning', title: 'Old overflow', file: 'src/x.ts', line: 2, description: 'd', preExisting: true, preExistingReason: 'The base had it.' },
     ]) });
     const options = { config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo', instructionFiles: [{ path: 'AGENTS.md', text: rule }] };
-    const first = await runReview(clients, options);
+    // The stored round set its judge effort, and the replay's config leaves it to the planner, so the planner's own pick applies.
+    const first = await runReview(clients, { ...options, config: makeConfig({ judge: { effort: 'max' } }) });
+    expect([first.plannerResult?.judgeEffort, first.plannerAnswer?.judgeEffort]).toEqual(['max', 'low']);
     const graded = mockedRunJudgeAgent.mock.calls[0][2].findings;
     const stored = postedRecord(first).reviewers.rawFindings!;
     const later = [VERDICT_READER_NAME, 'Sweep 1'].map(reviewer => ({ ...stored[0], title: `Found by ${reviewer}`, reviewers: [reviewer] }));
     const fixes: RoundFix[] = [{ at: ['src/x.ts:1'], problem: 'p', reviewer: 'Fix check 1', status: 'workaround', cause: 'c', stillFails: 's', proof: ['src/x.ts:1'], findings: 0 }];
-    const replay = { planner: first.plannerResult!, finders: first.agentNames, findings: [...stored, ...later], fixes };
+    const replay = { planner: first.plannerAnswer!, finders: first.agentNames, findings: [...stored, ...later], fixes };
     for (const client of [clients.planner, clients.reviewer, opus]) jest.mocked(client.sendMessage).mockClear();
 
     // No planner, finder, check beside the finders or second read runs, and the judge grades what it graded the first time.
@@ -10310,7 +10312,10 @@ describe('runReview triage', () => {
     expect([clients.planner, clients.reviewer, opus].map(client => jest.mocked(client.sendMessage).mock.calls.length)).toEqual([0, 0, 0]);
     expect(mockedRunJudgeAgent.mock.calls[1][2].findings).toEqual(graded);
     expect(mockedRunJudgeAgent.mock.calls[1][2].effort).toBe('low');
-    expect([replayed.agentNames, replayed.plannerResult, replayed.fixes]).toEqual([first.agentNames, first.plannerResult, { fixes }]);
+    expect([replayed.agentNames, replayed.plannerResult, replayed.plannerAnswer, replayed.fixes]).toEqual([first.agentNames, first.plannerAnswer, undefined, { fixes }]);
+    // A replay config that sets its own effort applies it on top of the planner's pick.
+    await runReview(clients, { ...options, config: makeConfig({ judge: { effort: 'medium' } }), replay });
+    expect(mockedRunJudgeAgent.mock.calls[2][2].effort).toBe('medium');
     expect(replayed.secondReads).toBeUndefined();
     expect(postedRecord(replayed).reviewers.rawFindings).toEqual(stored);
 
