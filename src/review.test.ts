@@ -4512,10 +4512,10 @@ describe('runReview', () => {
   it('asks a finder that did not report a blocker or warning one finder alone reported for its harm, and lowers it when the answer names no line the head holds', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'manki-vote-'));
     mkdirSync(join(workspace, 'src'));
-    writeFileSync(join(workspace, 'src', 'a.ts'), Array.from({ length: 16 }, (_, i) => `const line${i + 1} = ${i + 1};`).join('\n'));
+    writeFileSync(join(workspace, 'src', 'a.ts'), Array.from({ length: 24 }, (_, i) => `const line${i + 1} = ${i + 1};`).join('\n'));
     const titles = [
       'Backed blocker', 'Declined blocker', 'Declined warning', 'Misquoted warning', 'Backed warning', 'Security warning', 'Vote fails', 'Both finders found it', 'Restates a thread',
-      'Breaks a rule', 'Held blocker cell', 'Quote nearby', 'Unreadable file', 'Confirmed blocker', 'Confirmed warning',
+      'Breaks a rule', 'Held blocker cell', 'Quote nearby', 'Unreadable file', 'Confirmed blocker', 'Confirmed warning', 'Not shown', 'Times out once', 'Times out twice',
     ];
     const reported = titles.map((title, i) => ({ severity: i < 2 || title === 'Confirmed blocker' ? 'blocker' : 'warning', title, file: 'src/a.ts', line: i + 1, description: `${title}.`, evidence: [`src/a.ts:${i + 1} shows it`], proof: [`src/a.ts:${i + 1}`] }));
     const declines = { harm: '', situation: '', line: 'none' };
@@ -4534,28 +4534,40 @@ describe('runReview', () => {
       'Quote nearby': { harm: 'A total is wrong.', situation: 'Any export.', line: 'src/a.ts:12', quote: 'const line9 = 9;' },
       // Manki cannot read the line, so the answer neither backs nor declines the finding.
       'Unreadable file': { harm: 'A total is wrong.', situation: 'Any export.', line: 'src/gone.ts:3', quote: 'const gone = 3;' },
+      // The answer depends on code the message does not show, so it leaves the finding as it is.
+      'Not shown': { harm: '', situation: '', line: 'not_shown' },
+      'Times out once': declines,
+      'Times out twice': declines,
+      'Second read only': declines,
     };
+    const timeouts: Record<string, number> = { 'Times out once': 1, 'Times out twice': 2 };
     const rule = { file: 'AGENTS.md', quote: 'Every export is logged.', verdict: 'confirmed' as const };
     /** Runs the round, and calls `afterJudge` once the judge answered. */
     const run = async (afterJudge = (): void => undefined) => {
       const asked: string[] = [];
+      const timedOut: Record<string, number> = {};
       const clients = makeClients();
       let finderCalls = 0;
       jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string, user: string) => {
         if (system.startsWith('You test a claim')) {
-          const title = titles.find(t => user.includes(`## Claim: ${t}\n`))!;
+          const title = Object.keys(answers).find(t => user.includes(`## Claim: ${t}\n`))!;
           asked.push(title);
+          if ((timedOut[title] ?? 0) < (timeouts[title] ?? 0)) {
+            timedOut[title] = (timedOut[title] ?? 0) + 1;
+            throw new TimeoutError('Claude CLI timed out after 120s');
+          }
           const answer = answers[title];
           return { content: typeof answer === 'string' ? answer : JSON.stringify(answer) };
         }
         return { content: finderCalls++ === 0 ? JSON.stringify(reported) : '[]' };
       });
-      // The judge marks each finding only the first finder reported, as `mapJudgedToFindings` does.
+      // The judge marks each finding only the first finder reported, as `mapJudgedToFindings` does. A second read alone reported the last one.
       mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => {
         afterJudge();
+        const read = { ...input.findings[0], severity: 'warning' as const, title: 'Second read only', line: 20, description: 'Second read only.', reviewers: ['Second read 1'] };
         return {
-          summary: 'ok', findings: input.findings.map(f => ({
-            ...f, ...(f.title !== 'Both finders found it' && { soleFinder: true }), ...(f.title === 'Security warning' && { tags: ['security'] }), ...(f.title === 'Restates a thread' && { threadId: 'T9' }),
+          summary: 'ok', findings: [...input.findings, read].map(f => ({
+            ...f, ...(f.title !== 'Both finders found it' && f.title !== 'Second read only' && { soleFinder: true }), ...(f.title === 'Security warning' && { tags: ['security'] }), ...(f.title === 'Restates a thread' && { threadId: 'T9' }),
             ...(f.title === 'Breaks a rule' && { rule }), ...(f.title === 'Held blocker cell' && { cell: { row: 'wrong' as const, column: 'normal' as const }, gradeIfConfirmed: 'blocker' as const }),
             ...(f.title === 'Declined blocker' && { cell: { row: 'wrong' as const, column: 'normal' as const } }),
             ...(f.title.startsWith('Confirmed') && { refutation: { outcome: 'confirmed' as const, defect: 'confirmed' as const, reason: 'It drifts.', files: ['src/a.ts'], codeDigest: 'abc' } }),
@@ -4567,10 +4579,11 @@ describe('runReview', () => {
     };
     try {
       const { result, asked } = await run();
-      // A security finding, one more than one finder reported, one that restates a thread and one a rule grades get no vote,
-      // and a failed call asks once more.
+      // A security finding, one more than one finder reported, one that restates a thread and one a rule grades get no vote.
+      // A failed call asks once more, and so does a call that timed out, once.
       expect(asked.sort()).toEqual([
-        'Backed blocker', 'Backed warning', 'Confirmed blocker', 'Confirmed warning', 'Declined blocker', 'Declined warning', 'Held blocker cell', 'Misquoted warning', 'Quote nearby', 'Unreadable file', 'Vote fails', 'Vote fails',
+        'Backed blocker', 'Backed warning', 'Confirmed blocker', 'Confirmed warning', 'Declined blocker', 'Declined warning', 'Held blocker cell', 'Misquoted warning', 'Not shown', 'Quote nearby',
+        'Second read only', 'Times out once', 'Times out once', 'Times out twice', 'Times out twice', 'Unreadable file', 'Vote fails', 'Vote fails',
       ]);
       const reporter = result.findings[0].reviewers[0];
       expect(result.findings.map(f => [f.title, f.severity, f.otherFinderVote?.declined, f.gradePath?.at(-1)?.reason])).toEqual([
@@ -4594,14 +4607,22 @@ describe('runReview', () => {
         ['Confirmed blocker', 'warning', true, 'the other finder would not block on it'],
         // A check confirms the code path, not the harm, so a confirmed warning the other finder declines still becomes a note.
         ['Confirmed warning', 'note', true, 'the other finder named no harm in realistic use'],
+        ['Not shown', 'warning', undefined, undefined],
+        // A vote that timed out once is asked again, and one that timed out twice stays no vote.
+        ['Times out once', 'note', true, 'the other finder named no harm in realistic use'],
+        ['Times out twice', 'warning', undefined, undefined],
+        // A finding only a second read reported goes to a finder on another model than the read's.
+        ['Second read only', 'note', true, 'the other finder named no harm in realistic use'],
       ]);
+      const readFinder = result.secondReads?.reads[0]?.finder;
+      expect([readFinder, result.findings.find(f => f.title === 'Second read only')?.otherFinderVote?.finder]).toEqual([expect.any(String), expect.not.stringMatching(readFinder!)]);
       // A declined blocker's thread is guarded, so the PR author's answer alone does not clear it.
       // Its cell moves to `judgeCell` in the record, so a later round does not restore the blocker from it.
       const declinedBlocker = result.allJudgedFindings?.find(f => f.title === 'Declined blocker');
       expect([declinedBlocker?.tags, declinedBlocker?.cell, declinedBlocker?.judgeCell]).toEqual([expect.arrayContaining([DISPROVED_TAG]), undefined, { row: 'wrong', column: 'normal' }]);
       // The other finder answered, never the one that reported it, and the record keeps its answer with the quoted line.
       expect(result.findings[0].otherFinderVote).toEqual({ finder: expect.not.stringMatching(reporter), harm: 'A total is wrong.', situation: 'Any export.', line: 'src/a.ts:1', quote: 'const line1 = 1;', declined: false });
-      expect(result.llmCalls?.filter(c => c.stage === 'vote').length).toBe(12);
+      expect(result.llmCalls?.filter(c => c.stage === 'vote').length).toBe(18);
       expect(result.unposted ?? []).toEqual([]);
 
       // A vote starts only with the time for its whole timeout and a judge call after it, so with 3 minutes left it is

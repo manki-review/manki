@@ -2165,9 +2165,9 @@ export async function runReview(
   if (workspace) {
     const kept = finalFindings;
     const votes = await otherFinderVotes(kept, {
-      workspace, diff: diffWithLockfiles, restates: finding => restatesEarlier(earlierForChecks, finding), rules: config.review?.rules,
+      workspace, diff: diffWithLockfiles, restates: finding => restatesEarlier(earlierForChecks, finding), rules: config.review?.rules, reads: recorded.secondReads?.reads,
       // A vote only ever lowers a grade, so one without the time to start is skipped and the round goes on.
-      finders: team.finders.map(f => ({ name: f.name, client: lateFallback(pickReviewerClient(clients, f.model), 'vote', f.name, false) })),
+      finders: team.finders.map(f => ({ name: f.name, model: f.model, client: lateFallback(pickReviewerClient(clients, f.model), 'vote', f.name, false) })),
     });
     finalFindings = kept.map((f, i) => withVote(f, votes[i], config.review?.rules));
     const after = new Map(kept.map((f, i) => [f, finalFindings[i]]));

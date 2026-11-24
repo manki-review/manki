@@ -1,4 +1,9 @@
-import { withVote } from './other-finder';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+
+import { LLMClient } from './providers';
+import { otherFinderVotes, withVote } from './other-finder';
 import { DISPROVED_TAG, Finding, isGuardedFinding, OtherFinderVote } from './types';
 
 const finding = (more: Partial<Finding>): Finding => ({
@@ -42,5 +47,26 @@ describe('withVote', () => {
     expect(withVote(finding({ rule }), declined, 'warn')).toEqual(finding({ rule }));
     expect(withVote(finding({ severity: 'blocker', rule }), declined, 'block').severity).toBe('blocker');
     expect(withVote(finding({ rule }), declined, 'auto').severity).toBe('note');
+  });
+});
+
+describe('otherFinderVotes', () => {
+  it('asks a finding only second reads reported of a finder on another model than every read that reported it, and of none when no such finder ran', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'manki-vote-'));
+    mkdirSync(join(workspace, 'src'));
+    writeFileSync(join(workspace, 'src', 'a.ts'), 'let total = 0;\ntotal += 1;\ntotal += 1;\n');
+    const client = (): LLMClient => ({ sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify({ harm: '', situation: '', line: 'none' }) }) } as unknown as LLMClient);
+    const read = finding({ reviewers: ['Second read 1'], soleFinder: undefined });
+    const reads = [{ reviewer: 'Second read 1', finder: 'Finder A' }];
+    const vote = async (models: string[]) => (await otherFinderVotes([read], {
+      workspace, reads, restates: () => false, finders: models.map((model, i) => ({ name: `Finder ${'ABC'[i]}`, model, client: client() })),
+    }))[0]?.finder;
+    try {
+      expect(await vote(['opus', 'sol'])).toBe('Finder B');
+      expect(await vote(['opus', 'opus', 'sol'])).toBe('Finder C');
+      expect(await vote(['opus', 'opus'])).toBeUndefined();
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 });
