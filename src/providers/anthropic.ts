@@ -240,8 +240,8 @@ function shellCommand({ command, args }: MankiCommand): string {
 
 /**
  * Returns the Claude CLI arguments for one call. Without `repoTools` the CLI gets no tools at all. With them it gets
- * Read, Grep and Glob confined to `repoTools.root`, Manki's tool server, the hook that counts the tool steps, and no
- * other tool.
+ * Read, Grep and Glob confined to `repoTools.root` without its `.git`, Manki's tool server, the hook that counts the
+ * tool steps, and no other tool.
  */
 export function claudeCliArgs(model: string, systemPromptPath: string, { effort, repoTools }: SendMessageOptions = {}, tools?: ClaudeToolSetup): string[] {
   // -p enables pipe mode — reads prompt from stdin when no argument follows
@@ -268,7 +268,8 @@ export function claudeCliArgs(model: string, systemPromptPath: string, { effort,
       '--add-dir', repoTools.root,
       '--mcp-config', tools.mcpConfigPath,
       '--allowedTools', MANKI_TOOLS.join(','),
-      '--settings', JSON.stringify({ hooks }),
+      // A `Read` rule covers Grep and Glob too. Git tracks no `.git`, so the rules need no path of the checkout, whose characters could break them.
+      '--settings', JSON.stringify({ hooks, permissions: { deny: ['Read(//**/.git)', 'Read(//**/.git/**)'] } }),
       '--max-turns', String(repoTools.steps + EXTRA_TURNS),
     );
   } else {
