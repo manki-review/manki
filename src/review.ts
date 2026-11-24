@@ -3967,7 +3967,7 @@ export function bodyWarnings(priorRounds: RoundContext[]): FindingFingerprintEnt
  * A changed `citedLine` ends nothing by itself, since an edit next to the line changes it too, so the judge decides. An
  * `unread` warning has no line to compare, so only the judge or a fix ends it, also when its file is gone.
  * A finding left out because nothing proves it does not count, so it ends no carried warning. Neither does a
- * pre-existing warning the review leaves out.
+ * pre-existing warning or blocker the review leaves out.
  * A file `head` cannot read keeps its warnings. A carried entry gets `currentLine` when one place of the file reads like
  * its `citedLine`, which is also the line a finding of this round is compared with. Call it after the last step that
  * takes a finding out of `result.findings`, so each reason says where the naming finding ended up.
@@ -3977,8 +3977,9 @@ export async function carryBodyWarnings(result: ReviewResult, priorRounds: Round
   if (!last) return;
   const warnings = bodyWarnings(priorRounds);
   const fixed = new Set(result.carriedFixed);
-  // A warning left out because nothing proves it or because it is pre-existing withdraws nothing, so the warning an earlier round listed stays listed.
-  const unconfirmed = (result.unpostedPreExisting ?? []).filter(f => f.severity === 'warning');
+  // A finding left out because nothing proves it or because it is pre-existing withdraws nothing, so the warning an earlier round listed stays listed.
+  // A pre-existing note is the judge's lower grade, so it does end the warning.
+  const unconfirmed = (result.unpostedPreExisting ?? []).filter(f => f.severity !== 'note');
   const unproven = new Set([...(result.unposted ?? []).filter(leftOutUnproven), ...unconfirmed].map(findingKey));
   const settled = (findings: Finding[]) => findings.filter(f => !unproven.has(findingKey(f)));
   const judged: Array<[CarriedEndReason, Finding[]]> = [

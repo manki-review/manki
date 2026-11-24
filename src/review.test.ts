@@ -10079,10 +10079,12 @@ describe('carryBodyWarnings', () => {
     expect(fixed.result.carriedEnded?.[0]).toEqual({ key: keyOf(retry), reason: 'fixed' });
     const editedFixed = await carry([first], withX(then['src/x.ts'].map((line, i) => i === 1 ? '  retry(3);' : line)), { carriedFixed: [keyOf(retry)] });
     expect([editedFixed.titles, editedFixed.ended]).toEqual([all.slice(1), ['fixed']]);
-    // Neither does a warning on unchanged code that no check confirmed. A note there is a grade of the judge, so it ends the warning.
+    // Neither does a warning or a blocker on unchanged code that the review leaves out. A note there is a grade of the judge, so it ends the warning.
     const old = (severity: Finding['severity']) => finding('Retry never ends', 2, { severity, tags: ['pre-existing'], preExistingCheck: 'pre_existing' });
-    const unconfirmed = await carry([first], then, { unpostedPreExisting: [old('warning')], allJudgedFindings: [finding('Retry never ends', 2)] });
-    expect([unconfirmed.titles, unconfirmed.ended]).toEqual([all, undefined]);
+    for (const severity of ['warning', 'blocker'] as const) {
+      const unconfirmed = await carry([first], then, { unpostedPreExisting: [old(severity)], allJudgedFindings: [finding('Retry never ends', 2, { severity })] });
+      expect([severity, unconfirmed.titles, unconfirmed.ended]).toEqual([severity, all, undefined]);
+    }
     const lowered = await carry([first], then, { unpostedPreExisting: [old('note')], allJudgedFindings: [finding('Retry never ends', 2, { severity: 'note' })] });
     expect([lowered.titles, lowered.ended]).toEqual([all.slice(1), ['left_out']]);
 
