@@ -5,15 +5,16 @@ import { extractJSON } from './json';
 import { readFileInRoot } from './mcp-server';
 import { sanitizeForPromptEmbed } from './memory';
 import { fenceText } from './github';
-import { LLMClient, NotStartedError } from './providers';
+import { estimateCostUsd, LLMClient, NotStartedError, TimeoutError } from './providers';
 import { changeSection, citedChanges, locationFile, locationLines, MAX_PARALLEL_REFUTATIONS } from './refute';
-import { cellGrade, DISPROVED_TAG, Finding, FindingSeverity, gradedByRule, gradeStep, isDisprovedBlocker, isGradeCell, isSecurityFinding, OtherFinderVote, ParsedDiff, pendingGrade, RulesMode } from './types';
-import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
+import { cellGrade, DISPROVED_TAG, Finding, FindingSeverity, gradedByRule, gradeStep, isDisprovedBlocker, isGradeCell, isSecurityFinding, OtherFinderVote, ParsedDiff, pendingGrade, RulesMode, VoteCall, VoteLog } from './types';
+import { mapWithConcurrency, safeTruncate, sanitizeLogOutput, sendWithParseRetry } from './utils';
 
 // A safety net for a call without tools, which normally answers in well under a minute.
 export const VOTE_TIMEOUT_MS = 120_000;
 const MAX_ANSWER_CHARS = 300;
 const MAX_CITED_LINES = 40;
+const MAX_LOGGED_ERROR = 1500;
 // How far from the line the answer names its quote may sit, since a model often names a line next to the one it quotes.
 const QUOTE_SLACK_LINES = 3;
 const DECLINED_REASON: Partial<Record<FindingSeverity, string>> = {
@@ -109,10 +110,33 @@ export interface VoteOptions {
   workspace: string;
   diff?: ParsedDiff;
   /** The finders of the round, each with its name and the client of its model. */
-  finders: ReadonlyArray<{ name: string; client: LLMClient }>;
+  finders: ReadonlyArray<{ name: string; model?: string; client: LLMClient }>;
   /** Whether `finding` restates a finding of an earlier round, which keeps its own path. */
   restates: (finding: Finding) => boolean;
   rules?: RulesMode;
+  /** Hears how each vote was asked for. */
+  onVote?: (log: VoteLog) => void;
+}
+
+/** Returns `client` with each of its calls added to `calls`. */
+function logCalls(client: LLMClient, calls: VoteCall[]): LLMClient {
+  return {
+    ...client,
+    sendMessage: async (...args) => {
+      const start = Date.now();
+      try {
+        const reply = await client.sendMessage(...args);
+        const { usage, model, toolSteps } = reply;
+        const cost = model && usage && usage.inputTokens + usage.outputTokens > 0 ? estimateCostUsd(model, usage) : null;
+        calls.push({ outcome: 'answered', durationMs: reply.latencyMs ?? Date.now() - start, ...(model && { model }), ...(toolSteps && { toolSteps: toolSteps.length }), ...(cost !== null && { costUsd: cost }) });
+        return reply;
+      } catch (error) {
+        const outcome = error instanceof TimeoutError ? 'timed_out' : error instanceof NotStartedError ? 'not_started' : 'failed';
+        calls.push({ outcome, durationMs: Date.now() - start, error: sanitizeLogOutput(String((error as Error)?.message ?? error)).slice(0, MAX_LOGGED_ERROR) });
+        throw error;
+      }
+    },
+  };
 }
 
 /**
@@ -122,29 +146,44 @@ export interface VoteOptions {
  * one whose quoted code the head does not hold near it. A call that fails, never starts or answers twice in a form that
  * does not parse gives no vote, and so does an answer whose file cannot be read.
  */
-export async function otherFinderVotes(findings: readonly Finding[], { workspace, diff, finders, restates, rules }: VoteOptions): Promise<Array<OtherFinderVote | undefined>> {
+export async function otherFinderVotes(findings: readonly Finding[], { workspace, diff, finders, restates, rules, onVote }: VoteOptions): Promise<Array<OtherFinderVote | undefined>> {
   return mapWithConcurrency([...findings], MAX_PARALLEL_REFUTATIONS, async finding => {
     const other = getsVote(finding, restates, rules) ? finders.find(f => !finding.reviewers.includes(f.name)) : undefined;
     if (!other) return undefined;
+    const calls: VoteCall[] = [];
+    const client = logCalls(other.client, calls);
+    let answer: VoteLog['answer'] = 'no_answer';
     try {
       const raw = await sendWithParseRetry(
         buildVoteMessage(finding, workspace, diff),
-        message => other.client.sendMessage(VOTE_SYSTEM_PROMPT, message, { timeoutMs: VOTE_TIMEOUT_MS }),
-        reply => ({ ...parseVote(reply.content), ...(reply.model && { model: reply.model }) }),
+        message => client.sendMessage(VOTE_SYSTEM_PROMPT, message, { timeoutMs: VOTE_TIMEOUT_MS }),
+        reply => {
+          try {
+            return { ...parseVote(reply.content), ...(reply.model && { model: reply.model }) };
+          } catch (error) {
+            calls.at(-1)!.outcome = 'unusable';
+            throw error;
+          }
+        },
         error => core.warning(`The vote of ${other.name} on "${finding.title}" could not be used (${error}), asking once more`),
       );
       const named = raw.line !== 'none';
       const held = named ? holdsQuote(workspace, raw.line, raw.quote) : false;
       if (held === undefined) {
+        answer = 'unreadable';
         core.info(`${other.name} named ${raw.line} for "${finding.title}", which could not be read, so its vote is not used`);
         return undefined;
       }
       const declined = !held;
+      answer = declined ? 'declines' : 'backs';
       core.info(`${other.name} ${declined ? 'declines' : 'backs'} "${finding.title}"${named && declined ? `, since ${raw.line} does not hold the quoted code` : ''}`);
       return { finder: other.name, harm: raw.harm, situation: raw.situation, ...(named && { line: raw.line, quote: safeTruncate(raw.quote, MAX_ANSWER_CHARS) }), declined, ...(raw.model && { model: raw.model }) };
     } catch (error) {
       if (!(error instanceof NotStartedError)) core.warning(`Could not ask ${other.name} about "${finding.title}": ${error}`);
       return undefined;
+    } finally {
+      const { title, file, line } = finding;
+      onVote?.({ title, file, line, finder: other.name, ...(other.model && { model: other.model }), calls, answer });
     }
   });
 }

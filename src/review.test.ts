@@ -4603,6 +4603,11 @@ describe('runReview', () => {
       expect(result.findings[0].otherFinderVote).toEqual({ finder: expect.not.stringMatching(reporter), harm: 'A total is wrong.', situation: 'Any export.', line: 'src/a.ts:1', quote: 'const line1 = 1;', declined: false });
       expect(result.llmCalls?.filter(c => c.stage === 'vote').length).toBe(12);
       expect(result.unposted ?? []).toEqual([]);
+      // Each vote is logged with its calls, also one that gave no answer, so the benchmark can measure them.
+      const logged = new Map(result.votes!.map(v => [v.title, [v.answer, v.model, ...v.calls.map(c => c.outcome)]]));
+      expect(['Backed blocker', 'Unreadable file', 'Vote fails', 'Security warning'].map(title => logged.get(title))).toEqual([
+        ['backs', expect.any(String), 'answered'], ['unreadable', expect.any(String), 'answered'], ['no_answer', expect.any(String), 'unusable', 'unusable'], undefined,
+      ]);
 
       // A vote starts only with the time for its whole timeout and a judge call after it, so with 3 minutes left it is
       // skipped, and the round goes on without it.
