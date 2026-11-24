@@ -504,7 +504,7 @@ A declined blocker is posted as a warning, and its `gradePath` step `other_finde
 
 With [review memory](memory.md) on, each round reads the repo's fix-rate history, the posted findings of its merged PRs and how many of them were fixed. A warning is posted as a note when warnings of its class were rarely fixed there: at least 20 were posted and fewer than 30% fixed. The class is the model of the finder that reported the warning plus its category, or the model alone while the class with the category has fewer than 20 posted warnings. Its `gradePath` step `calibration` names the class and its rate, as in "59 of 200 posted `warning · GPT 6.2 Sol` findings were fixed in this repo (30%)". Such a note is never left out of the review, like a note the other finder's vote lowered.
 
-Some warnings keep their grade whatever the history says: a security finding, a tool alert, a finding a [rule](#rules-from-instruction-files) graded, one a tool run or a check with tools confirmed, one the judge graded or held as a blocker, a [scope](#the-scope-of-a-pr) warning and one that restates an earlier finding. A blocker is never lowered. Set `review.calibrate: false` to only record the fix rates.
+Some warnings keep their grade whatever the history says: a security finding, a tool alert, a finding a [rule](#rules-from-instruction-files) graded, one a tool run confirmed, one its cited lines prove, one the judge graded or held as a blocker, a [scope](#the-scope-of-a-pr) warning and one that restates an earlier finding. A blocker is never lowered. Set `review.calibrate: false` to only record the fix rates.
 
 ## Sweeping for a defect class
 

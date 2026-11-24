@@ -116,12 +116,12 @@ function markPreExisting(findings: Finding[], checkOf: (finding: Finding) => Pre
 }
 
 /**
- * Whether the fix-rate history may lower the warning `f`. A finding graded by a rule, one a tool run or a check with
- * tools confirmed, one the judge graded or held as a blocker (`wouldBlockIfTrue`), a scope warning and one that restates an `earlier` finding keep
+ * Whether the fix-rate history may lower the warning `f`. A finding graded by a rule, one a tool run confirmed, one
+ * its cited lines prove, one the judge graded or held as a blocker (`wouldBlockIfTrue`), a scope warning and one that restates an `earlier` finding keep
  * their grade. `calibrate` itself skips security findings and tool alerts.
  */
 function calibratesWarning(f: Finding, earlier: EarlierFinding[], rules: RulesMode | undefined): boolean {
-  return f.severity === 'warning' && !gradedByRule(f, rules) && f.toolEvidence?.status !== 'confirmed' && f.checkStatus !== 'confirmed' && !wouldBlockIfTrue(f)
+  return f.severity === 'warning' && !gradedByRule(f, rules) && f.toolEvidence?.status !== 'confirmed' && f.checkStatus !== 'proven' && !wouldBlockIfTrue(f)
     && !f.reviewers.includes(SCOPE_READER_NAME) && !restatesEarlier(earlier, f);
 }
 
