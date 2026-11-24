@@ -4170,7 +4170,7 @@ describe('runReview', () => {
       deadline: number; on: (call: 'judge' | 'sweep' | 'dedup', options?: SendMessageOptions) => void | string | Promise<void | string>;
       previousFindings?: Parameters<typeof runReview>[1]['previousFindings'];
     };
-    const run = async (sweep: SweepMode, disproved = false, sweepJudgeError?: Error, late?: Late) => {
+    const run = async (sweep: SweepMode, disproved = false, sweepJudgeError?: Error, late?: Late, answers = new AnswerStore()) => {
       const clients = makeClients();
       jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string, _user: string, options?: SendMessageOptions) => {
         const reply = sweeping(system) ? await late?.on('sweep', options) : undefined;
@@ -4204,7 +4204,7 @@ describe('runReview', () => {
       });
       const result = await runReview(clients, {
         config: makeConfig({ review: { sweep } }), diff: diffChanging('src/cache.ts', 'src/search.ts', 'src/retry.ts'), rawDiff: 'raw diff', repoContext: '', isFollowUp: true, openThreads: [openThread],
-        deadline: late?.deadline, previousFindings: late?.previousFindings, answers: new AnswerStore(),
+        deadline: late?.deadline, previousFindings: late?.previousFindings, answers,
       });
       return {
         result, sweeps: jest.mocked(clients.reviewer.sendMessage).mock.calls.filter(call => sweeping(call[0])), dedupCalls: jest.mocked(clients.dedup.sendMessage).mock.calls.length,
@@ -4233,8 +4233,18 @@ describe('runReview', () => {
     expect(result.rawFindings?.map(f => f.title)).toContain('Search key misses the tenant');
     expect(result.rawFindingCount).toBe((result.rawFindings ?? []).length);
     expect(second[2].openThreads).toBeUndefined();
-    // Only the first judge call's answer is stored, so the sweep's call never takes its place.
-    expect(mockedRunJudgeAgent.mock.calls.map(([, , input]) => !!input.answers)).toEqual([true, false]);
+    // The sweep's judge call is stored as its own, so it never takes the place of the round's.
+    expect(mockedRunJudgeAgent.mock.calls.map(([, , input]) => [!!input.answers, !!input.ofSweep])).toEqual([[true, false], [true, true]]);
+    // A replay keeps the stored answers of the sweep and of its dedup call, makes neither call, and refuses another input.
+    const recorded = new AnswerStore();
+    const recordedRun = await run('blockers', false, undefined, undefined, recorded);
+    expect(recorded.answers.checks.map(c => c.call)).toEqual(['sweep', 'sweep dedup']);
+    const replayed = await run('blockers', false, undefined, undefined, new AnswerStore(recorded.answers, 'refuter'));
+    expect([replayed.sweeps.length, replayed.dedupCalls]).toEqual([0, recordedRun.dedupCalls - 1]);
+    expect(replayed.result.findings).toEqual(recordedRun.result.findings);
+    const changed = { ...recorded.answers, checks: recorded.answers.checks.map(c => (c.call === 'sweep dedup' ? { ...c, input: { ...c.input, message: 'x' } } : c)) };
+    await expect(run('blockers', false, undefined, undefined, new AnswerStore(changed, 'refuter'))).rejects.toThrow('The stored sweep dedup answer does not fit, since its input differs in: message.');
+    await expect(run('blockers', false, undefined, undefined, new AnswerStore({ ...recorded.answers, checks: [] }, 'refuter'))).rejects.toThrow('The stored round made no such sweep call');
     // It still links its findings to the open threads, and suppresses against what the first call found of them.
     expect(second[2].evaluatedThreads).toEqual({ openThreads: [openThread], evaluations: [evaluation] });
     expect(result.findings.map(f => f.title)).toEqual(['Cache key misses the locale', 'Retry loses the reason', 'Search key misses the tenant', 'Shard key misses the region', 'Page key misses the region']);

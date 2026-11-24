@@ -6,7 +6,8 @@ import { extractJSON } from './json';
 import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient, NotStartedError, SendMessageOptions } from './providers';
 import { strictCheckStatus } from './refute';
-import { repoTools } from './related-repos';
+import { offeredRepos, repoTools } from './related-repos';
+import type { AnswerStore } from './stored-answers';
 import { parseFindings, parseLocation, parseProof, truncateDiff } from './review';
 import { CheckProgress, CheckStatus, disproof, EffortLevel, Finding, RelatedRepoTools, RoundSweep, SECURITY_TAG, SEVERITY_ORDER, SweepMode, sweepName } from './types';
 import { mapWithConcurrency, sendWithParseRetry } from './utils';
@@ -141,6 +142,8 @@ export interface SweepOptions {
   related?: RelatedRepoTools;
   /** Hears how many sweeps are asked and the findings of each. A sweep the round did not start made no call. */
   progress?: CheckProgress<number>;
+  /** Keeps each sweep's parsed answer, or gives a stored one in place of asking, with the model the sweeps run on. */
+  answers?: { store: AnswerStore; model: string };
 }
 
 /**
@@ -152,7 +155,7 @@ export interface SweepOptions {
  * `failed`. A call the round did not start or stopped has no record. It never throws.
  */
 export async function runSweeps(
-  clientFor: (reviewer: string) => LLMClient, sources: readonly Finding[], { rawDiff, effort, workspace, related, progress }: SweepOptions,
+  clientFor: (reviewer: string) => LLMClient, sources: readonly Finding[], { rawDiff, effort, workspace, related, progress, answers: kept }: SweepOptions,
 ): Promise<{ findings: Finding[]; sweeps: RoundSweep[] }> {
   const ordered = byPriority(sources);
   // A name never carries text a model wrote from the PR, so each sweep is numbered and its record names the source's location.
@@ -171,8 +174,9 @@ export async function runSweeps(
       ...(tools && { repoTools: repoTools(workspace!, SWEEP_STEPS, related) }),
     };
     try {
-      const { general, defectClass, findings } = await sendWithParseRetry(
-        sweepMessage(source, rawDiff, tools),
+      const asked = sweepMessage(source, rawDiff, tools);
+      const live = () => sendWithParseRetry(
+        asked,
         message => client.sendMessage(systemPrompt(tools), message, options),
         reply => {
           if (reply.truncated) throw new Error(`response truncated at the output token limit (length ${reply.content.length})`);
@@ -180,6 +184,9 @@ export async function runSweeps(
         },
         error => core.warning(`${reviewer} reply could not be used (${error}), asking once more`),
       );
+      const { general, defectClass, findings } = kept
+        ? await kept.store.askCheck('sweep', [reviewer, source.file, source.line, source.title], { 'system prompt': systemPrompt(tools), message: asked, effort, steps: tools && [SWEEP_STEPS, offeredRepos(related)], model: kept.model }, live)
+        : await live();
       if (!general) {
         core.info(`${reviewer}: the class is too specific to sweep for`);
         return { record: { ...record, status: 'too_specific', class: defectClass }, findings: [] };

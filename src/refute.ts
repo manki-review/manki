@@ -9,10 +9,11 @@ import { fenceText } from './github';
 import { extractJSON } from './json';
 import { readFileInRoot, resolveInRoot } from './mcp-server';
 import { sanitizeForPromptEmbed } from './memory';
-import { LLMClient, LLMResponse, NotStartedError } from './providers';
-import { fetchedRelatedRepos, relatedNames, repoTools } from './related-repos';
+import { LLMClient, NotStartedError } from './providers';
+import { fetchedRelatedRepos, offeredRepos, relatedNames, repoTools } from './related-repos';
 import { parseProof, sameProblem, titlesMatch, truncateDiff } from './review';
 import { stringifyFindingFingerprint } from './finding-fingerprint';
+import type { AnswerStore } from './stored-answers';
 import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation, MAX_QUOTED_RANGE } from './static-signals';
 import { wrapUpNoted } from './tool-steps';
 import { DISPROVED_TAG, agreedOutcome, asAnswered, cellGrade, confirmedByCheck, DiffFile, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, CheckProgress, CheckStatus, confirmsAll, confirmsCodePath, confirmsDefect, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isRareClaim, isSecurityFinding, isSweepName, isTriggerDoubt, leadText, OpenThread, OutsideBehavior, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, restsOnDrop, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, towardFinding, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof, wouldBlockIfTrue } from './types';
@@ -185,10 +186,10 @@ function citesFindingCode(file: string, proof: readonly string[], diff?: ParsedD
  * Returns `check` with whether its call ended on its step budget, when it ended unsettled: the call was told to wrap up
  * or took every step. Only a reply that lists its steps tells.
  */
-function withStepsUsedUp(check: Refutation, { toolSteps }: LLMResponse): Refutation {
+function withStepsUsedUp(check: Refutation, toolSteps: number | undefined): Refutation {
   if (outcomeOf(asAnswered(check)) !== 'unsettled') return check;
-  if (!toolSteps) return { ...check, stepsUsedUp: 'unknown' };
-  const ended = wrapUpNoted(toolSteps.length, REFUTE_STEPS) || toolSteps.length >= REFUTE_STEPS;
+  if (toolSteps === undefined) return { ...check, stepsUsedUp: 'unknown' };
+  const ended = wrapUpNoted(toolSteps, REFUTE_STEPS) || toolSteps >= REFUTE_STEPS;
   return { ...check, stepsUsedUp: ended ? 'yes' : 'no' };
 }
 
@@ -811,6 +812,23 @@ export interface RefuteOptions {
   rules?: RulesMode;
   /** Hears how many findings are checked and the outcome the refuters agree on for each. */
   progress?: CheckProgress<RefutationOutcome>;
+  /** Keeps each refuter's answer, or gives a stored one in place of asking. */
+  answers?: CheckAnswers;
+}
+
+/** The store of a round's answers, with the models of the refuter and the second refuter, which a digest covers. */
+export interface CheckAnswers {
+  store: AnswerStore;
+  models: { first: string; second?: string };
+}
+
+/** Returns the answer of `live`, kept in or taken from `answers` when it is set, for a call about `finding`. */
+export function askAbout<T>(
+  answers: CheckAnswers | undefined, call: 'refutation' | 'origin check', second: boolean, finding: Finding, parts: Record<string, unknown>, live: () => Promise<T>,
+): Promise<T> {
+  if (!answers) return live();
+  const model = second ? answers.models.second : answers.models.first;
+  return answers.store.askCheck(second ? `second ${call}` as const : call, [finding.file, finding.line, finding.title, finding.reviewers], { ...parts, model }, live);
 }
 
 /**
@@ -821,7 +839,7 @@ export interface RefuteOptions {
  * `gradeIfConfirmed`. A call that fails, or that the round did not start or stopped, leaves the grade to the other
  * refuter, or to the judge. With `roundEnd` it makes only the checks `doubtsToCheck` picks.
  */
-export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, related, priorRounds = [], effort, diff, usesOutsideDiff, outsideInput, pair, blockingThreads = [], hiddenLater, unpostedLater, restatesEarlier, doubtBudget, roundEnd, rules, progress }: RefuteOptions): Promise<Finding[]> {
+export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, related, priorRounds = [], effort, diff, usesOutsideDiff, outsideInput, pair, blockingThreads = [], hiddenLater, unpostedLater, restatesEarlier, doubtBudget, roundEnd, rules, progress, answers }: RefuteOptions): Promise<Finding[]> {
   // Unseen code or a caller can change in a file the stored outcome does not cover, so a finding with a `gradeIfConfirmed` is checked afresh.
   const stored = (field: RefutationField, finding: Finding): Refutation | undefined =>
     finding.gradeIfConfirmed ? undefined : priorRefutation(finding, field, workspace, priorRounds, diff, rules);
@@ -833,15 +851,24 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
       return prior;
     }
     try {
-      const refutation = await sendWithParseRetry(
-        buildRefuteMessage(finding, usesOutsideDiff, outsideInput, diff, rules),
+      const asked = buildRefuteMessage(finding, usesOutsideDiff, outsideInput, diff, rules);
+      const parts = { 'system prompt': REFUTE_SYSTEM_PROMPT, message: asked, effort, steps: [REFUTE_STEPS, offeredRepos(related)] };
+      const parse = ({ content, model, toolSteps }: { content: string; model?: string; toolSteps?: number }) =>
+        withStepsUsedUp({ ...parseRefutation(content, workspace, finding, diff, related, rules), ...(model && { model }) }, toolSteps);
+      // The reply is kept and not its parsed form, since the parsing already checks the cited lines.
+      const refutation = parse(await askAbout(answers, 'refutation', field === 'pairRefutation', finding, parts, () => sendWithParseRetry(
+        asked,
         message => refuter.sendMessage(REFUTE_SYSTEM_PROMPT, message, {
           ...(effort && { effort }), repoTools: repoTools(workspace, REFUTE_STEPS, related, 'check'), timeoutMs: REFUTE_TIMEOUT_MS,
           ...(finding.reviewers.some(isSweepName) && { sweep: true as const }),
         }),
-        reply => withStepsUsedUp({ ...parseRefutation(reply.content, workspace, finding, diff, related, rules), ...(reply.model && { model: reply.model }) }, reply),
+        reply => {
+          const kept = { content: reply.content, ...(reply.model && { model: reply.model }), ...(reply.toolSteps && { toolSteps: reply.toolSteps.length }) };
+          parse(kept);
+          return kept;
+        },
         error => core.warning(`The ${label} reply for "${finding.title}" could not be used (${error}), asking once more`),
-      );
+      )));
       core.info(`The ${label} of "${finding.title}": ${outcomeOf(refutation)}`);
       return refutation;
     } catch (error) {

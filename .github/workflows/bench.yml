@@ -48,6 +48,11 @@ on:
         required: false
         default: false
         type: boolean
+      replay_refuter:
+        description: Like replay_judge, and also keep that run's refuter, origin check and sweep answers, so only the vote and the stages after it run.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -85,6 +90,7 @@ jobs:
           RERUN_OF: ${{ inputs.rerun_of }}
           FINDINGS_FROM: ${{ inputs.findings_from }}
           REPLAY_JUDGE: ${{ inputs.replay_judge }}
+          REPLAY_REFUTER: ${{ inputs.replay_refuter }}
         run: |
           fail() { echo "::error::$1"; exit 1; }
           [[ "$RUNS" =~ ^[1-5]$ ]] || fail "runs must be a whole number from 1 to 5"
@@ -97,6 +103,7 @@ jobs:
           [ "$(wc -w <<< "$FINDINGS_FROM")" -le 1 ] || fail "findings_from takes one run id"
           [ -z "${FINDINGS_FROM// }" ] || [ -z "${BASELINE// }" ] || fail "a run with findings_from decides no release, so leave baseline empty"
           [ "$REPLAY_JUDGE" != true ] || [ -n "${FINDINGS_FROM// }" ] || fail "replay_judge needs findings_from"
+          [ "$REPLAY_REFUTER" != true ] || [ -n "${FINDINGS_FROM// }" ] || fail "replay_refuter needs findings_from"
           [ -z "${RERUN_OF// }" ] || [ -n "${BASELINE// }" ] || fail "rerun_of only counts with a baseline, so give the same baseline again"
           commit=$(git -C manki-ref rev-parse HEAD)
           matrix=$(npm run -s bench-report -- matrix --set "$SET" --cases "$CASES")
@@ -164,6 +171,7 @@ jobs:
           VARIANTS: ${{ inputs.variants }}
           FINDINGS_FROM: ${{ inputs.findings_from }}
           REPLAY_JUDGE: ${{ inputs.replay_judge }}
+          REPLAY_REFUTER: ${{ inputs.replay_refuter }}
         # The case file alone, so a ref with an older case parser reads no other case. The bench of a ref before v7.5
         # reads it as a tuning case and logs the titles of its findings, and this log is public. So only a tuning case
         # shows its output, whatever the ref prints.
@@ -175,6 +183,7 @@ jobs:
           for v in $VARIANTS; do args+=(--variant "$v"); done
           [ -z "${FINDINGS_FROM// }" ] || args+=(--findings-from findings-from/report.json)
           [ "$REPLAY_JUDGE" != true ] || args+=(--replay-judge)
+          [ "$REPLAY_REFUTER" != true ] || args+=(--replay-refuter)
           if [ "$CASE_SET" = tuning ]; then
             node manki-ref/dist/index.js "${args[@]}"
           else

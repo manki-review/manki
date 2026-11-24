@@ -6,9 +6,9 @@ import { extractJSON } from './json';
 import { readBaseText, readFileInRoot } from './mcp-server';
 import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient, NotStartedError } from './providers';
-import { repoTools } from './related-repos';
+import { offeredRepos, repoTools } from './related-repos';
 import { citesChangedLine } from './reply-check';
-import { changeSection, citedChanges, codeDigest, locationFile, locationLines, MAX_PARALLEL_REFUTATIONS, shownLines } from './refute';
+import { askAbout, changeSection, CheckAnswers, citedChanges, codeDigest, locationFile, locationLines, MAX_PARALLEL_REFUTATIONS, shownLines } from './refute';
 import { parseProof } from './review';
 import { CheckProgress, EffortLevel, Finding, foundOnBase, oneAnswerSettles, OriginAnswer, OriginCheck, OriginVerdict, ParsedDiff, RelatedRepoTools, SEVERITY_ORDER } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
@@ -62,6 +62,8 @@ export interface OriginOptions {
   budget?: { left: number };
   /** Hears of each check as it ends, with 1 when the check found the failure older than the PR (`foundOnBase`) and 0 otherwise. */
   progress?: CheckProgress<number>;
+  /** Keeps each check's parsed answer, or gives a stored one in place of asking. */
+  answers?: CheckAnswers;
 }
 
 /**
@@ -195,7 +197,7 @@ async function checkLines(raw: RawOrigin, finding: Finding, workspace: string, d
  * file the workspace cannot read, a workspace without the PR's base, and a finding `skip` accepts take no check. A
  * finding whose calls all never started keeps no `originCheck`.
  */
-export async function checkOrigins(client: LLMClient, findings: readonly Finding[], { workspace, diff, excludedPaths = [], related, effort, pair, skip, budget, progress }: OriginOptions): Promise<Finding[]> {
+export async function checkOrigins(client: LLMClient, findings: readonly Finding[], { workspace, diff, excludedPaths = [], related, effort, pair, skip, budget, progress, answers }: OriginOptions): Promise<Finding[]> {
   if (!baseReadsOf(workspace)) return [...findings];
   const asked = findings
     .filter(f => (f.severity === 'blocker' || f.severity === 'warning') && !f.toolSource && !skip?.(f) && !!codeDigest(workspace, [f.file]))
@@ -207,12 +209,14 @@ export async function checkOrigins(client: LLMClient, findings: readonly Finding
   // Resolves to `null` when the call never started, and to undefined when it failed.
   const ask = async (asking: LLMClient, finding: Finding, label: string): Promise<OriginAnswer | null | undefined> => {
     try {
-      const raw = await sendWithParseRetry(
-        buildOriginMessage(finding, diff, excludedPaths),
+      const asked = buildOriginMessage(finding, diff, excludedPaths);
+      const parts = { 'system prompt': ORIGIN_SYSTEM_PROMPT, message: asked, effort, steps: [ORIGIN_STEPS, offeredRepos(related)] };
+      const raw = await askAbout(answers, 'origin check', asking === pair, finding, parts, () => sendWithParseRetry(
+        asked,
         message => asking.sendMessage(ORIGIN_SYSTEM_PROMPT, message, { ...(effort && { effort }), repoTools: repoTools(workspace, ORIGIN_STEPS, related, 'check'), timeoutMs: ORIGIN_TIMEOUT_MS }),
         reply => ({ ...parseOrigin(reply.content), ...(reply.model && { model: reply.model }) }),
         error => core.warning(`The ${label} reply for "${finding.title}" could not be used (${error}), asking once more`),
-      );
+      ));
       const answer = await checkLines(raw, finding, workspace, diff, excludedPaths, related);
       core.info(`The ${label} of "${finding.title}": ${answer.verdict}`);
       return answer;
