@@ -95,8 +95,8 @@ describe('checkOrigins', () => {
       ['Added to a changed file', true, ['pre_existing', 'pre_existing']], ['Added, with the base cited elsewhere', true, ['unsure', 'unsure']],
       ['A new caller of shared work', true, ['pre_existing', 'pre_existing']], ['A new caller of shared work, as a blocker', true, ['pre_existing', 'pre_existing']],
     ]);
-    // The warning goes to the round record only. The blocker stays posted, as a warning, like any pre-existing blocker.
-    expect(added.slice(2).map(f => [!!foundOnBase(f), postedWhenPreExisting(f)])).toEqual([[true, false], [true, true]]);
+    // Both go to the round record only, like any pre-existing finding that is no security finding.
+    expect(added.slice(2).map(f => [!!foundOnBase(f), postedWhenPreExisting(f)])).toEqual([[true, false], [true, false]]);
     expect(checked[0].originCheck?.answers[0]).toEqual({ verdict: 'pre_existing', reason: same.reason, head: ['src/math.ts:2'], base: ['src/math.ts:2'], commit: baseCommit, fixedElsewhere: 'src/api.ts:9', model: 'first-model' });
     // A fix line counts only on a standing pre-existing answer, on a line the PR added or changed other than the flagged one.
     const fixesOf = (f: Finding) => f.originCheck?.answers.map(a => a.fixedElsewhere);

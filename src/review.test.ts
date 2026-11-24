@@ -3770,7 +3770,7 @@ describe('runReview', () => {
     expect(result.unpostedPreExisting?.map(f => [f.title, f.preExistingCheck])).toEqual([['Loader ignores the lock entry', 'pre_existing']]);
   });
 
-  it('posts a blocker the judge calls pre-existing next to a re-indented line as a pre-existing warning once two origin checks find the same failure before this PR', async () => {
+  it('records a blocker the judge calls pre-existing next to a re-indented line without posting it once two origin checks find the same failure before this PR', async () => {
     // The PR only adds a comment and re-indents the loop, so the loop that never ends was there before.
     const before = 'export function drain(queue: number[]) {\n  while (queue.length > 0) {\n  queue.at(0);\n  }\n}\n';
     const after = 'export function drain(queue: number[]) {\n  // Reads the queue until it is empty.\n  while (queue.length > 0) {\n    queue.at(0);\n  }\n}\n';
@@ -3829,12 +3829,12 @@ describe('runReview', () => {
     expect(originMessages[0]).toContain('+  // Reads the queue until it is empty.');
     expect(originMessages[0]).toContain('- **Other files this PR changes**: none');
     expect(originMessages[0]).toContain("- **A reviewer's claim that it is older than this PR**, to check: The loop read the queue the same way before this PR.");
-    expect(result.outcome).toBe('READY');
-    expect(result.findings.map(f => [f.title, f.severity, f.originalSeverity, f.tags, f.preExistingCheck])).toEqual([[title, 'warning', 'blocker', ['pre-existing', 'follow-up'], 'touches_diff']]);
+    expect([result.outcome, result.findings]).toEqual(['READY', []]);
+    expect(result.unpostedPreExisting?.map(f => [f.title, f.severity, f.tags, f.preExistingCheck])).toEqual([[title, 'blocker', ['pre-existing'], 'touches_diff']]);
     // The judge held the blocker for its one finder until the checks confirmed its damage.
-    expect(result.findings[0].gradePath?.map(step => [step.from, step.to, step.by])).toEqual([['blocker', 'warning', 'judge'], ['warning', 'blocker', 'refutation'], ['blocker', 'warning', 'pre_existing']]);
-    expect(result.findings[0].originCheck?.answers.map(a => [a.model, a.verdict, a.base])).toEqual([['judge-model', 'pre_existing', baseProofDefault], ['pair-model', 'pre_existing', baseProofDefault]]);
-    expect(formatFindingComment(result.findings[0], TEST_LINKS)).toContain('**Already broken before this PR.** Two checks found the same problem on the base branch at ');
+    const [recorded] = result.unpostedPreExisting!;
+    expect(recorded.gradePath?.map(step => [step.from, step.to, step.by])).toEqual([['blocker', 'warning', 'judge'], ['warning', 'blocker', 'refutation']]);
+    expect(recorded.originCheck?.answers.map(a => [a.model, a.verdict, a.base])).toEqual([['judge-model', 'pre_existing', baseProofDefault], ['pair-model', 'pre_existing', baseProofDefault]]);
 
     // One answer, alone, beside a second call that failed, or beside a second answer on the same model, changes no
     // grade. The blocker only notes in its thread that it may be older than this PR.
@@ -3846,7 +3846,7 @@ describe('runReview', () => {
     }
     // The re-indented line 4 has no place at the base, so two answers that compare the failure are enough, and one is not.
     const reindented = await run('pre_existing', { line: 4, baseProof: ['src/queue.ts:3'] });
-    expect([reindented.result.outcome, reindented.result.findings.map(f => [f.severity, f.originCheck?.lineChanged])]).toEqual(['READY', [['warning', true]]]);
+    expect([reindented.result.outcome, reindented.result.unpostedPreExisting?.map(f => [f.severity, f.originCheck?.lineChanged])]).toEqual(['READY', [['blocker', true]]]);
     expect((await run('pre_existing', { line: 4, pairModel: null })).result.findings.map(f => f.severity)).toEqual(['blocker']);
 
     // The judge's pre-existing call alone lowers nothing. Answers that the PR caused or worsened the failure or that are
@@ -3863,9 +3863,11 @@ describe('runReview', () => {
         .toEqual([options, 'ADDRESS_FIRST', [['blocker', options.repoTools === false || options.security ? undefined : 'blocker', options.security ? [] : undefined]]]);
       expect(round.originMessages).toHaveLength(options.repoTools === false || options.readsBase === false ? 0 : 2);
     }
-    // Both models lower a security blocker.
+    // Both models lower a security blocker, which is posted as a pre-existing warning.
     const both = await run('pre_existing', { security: true });
-    expect([both.result.outcome, both.result.findings.map(f => [f.severity, f.tags])]).toEqual(['READY', [['warning', ['security', 'pre-existing', 'follow-up']]]]);
+    expect([both.result.outcome, both.result.findings.map(f => [f.severity, f.originalSeverity, f.tags])]).toEqual(['READY', [['warning', 'blocker', ['security', 'pre-existing', 'follow-up']]]]);
+    expect(both.result.findings[0].gradePath?.at(-1)?.by).toBe('pre_existing');
+    expect(formatFindingComment(both.result.findings[0], TEST_LINKS)).toContain('**Already broken before this PR.** Two checks found the same problem on the base branch at ');
   }, GIT_TEST_TIMEOUT_MS);
 
   it('replays a rust-dashcore round: a blocker the base already had is pre-existing with two models, and only noted with one', async () => {
@@ -3898,12 +3900,15 @@ describe('runReview', () => {
         return refute(system, user);
       });
       try {
-        const { findings } = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root });
+        const { findings, unpostedPreExisting = [] } = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root });
         return fixture.findings.map(f => {
-          const posted = findings.find(p => p.title === f.title)!;
+          const posted = findings.find(p => p.title === f.title);
+          // A pre-existing finding is only posted, as a warning, when it is a security finding.
+          if (!posted) return [f.title, unpostedPreExisting.some(p => p.title === f.title) ? 'pre-existing' : 'missing'];
+          if (posted.tags?.includes('pre-existing')) return [f.title, posted.severity === 'warning' && posted.tags.includes('security') ? 'pre-existing' : 'posted pre-existing'];
           // A blocker whose thread says it may be older than this PR reads as `older`.
           const older = posted.severity === 'blocker' && formatFindingComment(posted, TEST_LINKS).includes('**Possibly older than this PR.**');
-          return [f.title, posted.severity === 'warning' && !!posted.tags?.includes('pre-existing') ? 'pre-existing' : older ? 'older' : posted.severity];
+          return [f.title, older ? 'older' : posted.severity];
         });
       } finally {
         rmSync(root, { recursive: true, force: true });
@@ -3911,7 +3916,8 @@ describe('runReview', () => {
     };
 
     // Every recorded answer but the first finds the same failure at the base, with lines the base holds. Two models that
-    // agree make those pre-existing, the security one too, whether the PR changed the flagged line or not.
+    // agree make those pre-existing, the security one too, whether the PR changed the flagged line or not. Only the
+    // security one is posted.
     expect(fixture.findings.map(f => f.expected)).toEqual(['blocker', 'pre-existing', 'pre-existing', 'pre-existing', 'pre-existing', 'pre-existing']);
     expect(await run({ pair: true })).toEqual(fixture.findings.map(f => [f.title, f.expected]));
     // One model changes no grade. Each such blocker only notes that it may be older than this PR.
@@ -3955,8 +3961,8 @@ describe('runReview', () => {
     expect(refuterMessages).toEqual([]);
     expect(result.findings).toEqual([]);
     expect(result.unpostedPreExisting?.map(f => [f.title, f.severity, f.tags])).toEqual(titles.map(title => [title, 'warning', ['pre-existing']]));
-    // The warning of a blocker every refuter disproved is still posted, as the blocker would have been.
-    expect(postedWhenPreExisting({ ...result.unpostedPreExisting![0], tags: ['pre-existing', 'disproved-blocker'] })).toBe(true);
+    // Only a security finding would be posted, not the warning of a blocker every refuter disproved.
+    expect([['security'], ['disproved-blocker']].map(tags => postedWhenPreExisting({ ...result.unpostedPreExisting![0], tags: ['pre-existing', ...tags] }))).toEqual([true, false]);
   });
 
   it('records what the checks at the round\'s end found when the verdict reader then fails, and starts none without the time for it', async () => {
@@ -5250,7 +5256,7 @@ describe('runReview', () => {
     }
   });
 
-  it('posts a pre-existing finding only when it would block had this PR caused it or is a security finding, as a warning unless it is a security blocker on code the PR did not change', async () => {
+  it('posts a pre-existing finding only when it is a security finding, as a warning unless it is a blocker on code the PR did not change', async () => {
     const diff = makeDiff({
       files: [
         { path: 'src/a.ts', changeType: 'modified', hunks: [{ oldStart: 10, oldLines: 5, newStart: 10, newLines: 5, content: '' }] },
@@ -5274,7 +5280,7 @@ describe('runReview', () => {
     const excluded = blocker('Generated client drops the auth header', 'gen/client.ts', 8);
     const run = (clients: ReviewClients) => runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context', excludedPaths: ['gen/client.ts'] });
 
-    // Only blockers and security findings are posted. The rest stay in the round record, a warning a check confirmed too.
+    // Only security findings are posted. The rest stay in the round record, a blocker and a warning a check confirmed too.
     const oldSuggestion = blocker('Old helper could be shorter', 'src/a.ts', 60, { severity: 'note' });
     // No check ran on this one, as on a round without tools, after a refuter call that failed, or in a file the refuter cannot read.
     const oldUnsure = blocker('Old retry may spin', 'src/a.ts', 70, { severity: 'warning', evidence: { checks: [], proof: ['src/a.ts:70'] } });
@@ -5288,22 +5294,20 @@ describe('runReview', () => {
     const pre = await run(makeClients());
     expect(pre.outcome).toBe('READY');
     expect(pre.findings.map(f => [f.title, f.severity, f.originalSeverity, f.tags])).toEqual([
-      ['Old null dereference', 'warning', 'blocker', ['pre-existing', 'follow-up']],
-      ['Old race in the pool', 'warning', 'blocker', ['pre-existing', 'follow-up']],
       ['Old token is logged', 'warning', undefined, ['security', 'pre-existing', 'follow-up']],
     ]);
-    // A note or warning is recorded as pre-existing and not posted, whatever a check found.
-    expect(pre.unpostedPreExisting?.map(f => [f.title, f.tags, f.preExistingCheck])).toEqual([
-      ['Old helper could be shorter', ['pre-existing'], 'pre_existing'],
-      ['Old retry may spin', ['pre-existing'], 'pre_existing'],
-      ['Old lock may leak', ['pre-existing'], 'pre_existing'],
-      ['Old cache may grow', ['pre-existing'], 'pre_existing'],
-      ['Old timeout is never cleared', ['pre-existing'], 'pre_existing'],
+    // Every other finding is recorded as pre-existing with its grade and not posted, whatever a check found.
+    expect(pre.unpostedPreExisting?.map(f => [f.title, f.severity, f.tags, f.preExistingCheck])).toEqual([
+      ['Old null dereference', 'blocker', ['pre-existing'], 'pre_existing'],
+      ['Old race in the pool', 'blocker', ['pre-existing'], 'pre_existing'],
+      ['Old helper could be shorter', 'note', ['pre-existing'], 'pre_existing'],
+      ['Old retry may spin', 'warning', ['pre-existing'], 'pre_existing'],
+      ['Old lock may leak', 'warning', ['pre-existing'], 'pre_existing'],
+      ['Old cache may grow', 'warning', ['pre-existing'], 'pre_existing'],
+      ['Old timeout is never cleared', 'warning', ['pre-existing'], 'pre_existing'],
     ]);
     expect(pre.unposted).toBeUndefined();
-    // The record keeps how each claim was checked, and the lowered blocker's grade step with the reviewer's reason.
-    expect(pre.findings.map(f => f.preExistingCheck)).toEqual(['pre_existing', 'pre_existing', 'pre_existing']);
-    expect(pre.findings[0].gradePath?.at(-1)).toEqual({ from: 'blocker', to: 'warning', by: 'pre_existing', reason: old });
+    expect(pre.findings.map(f => f.preExistingCheck)).toEqual(['pre_existing']);
 
     mockedRunJudgeAgent.mockResolvedValue({ findings: [changed, oldInjection], summary: 'Two defects.' });
     const security = await run(makeClients());
@@ -5314,26 +5318,27 @@ describe('runReview', () => {
     ]);
 
     // A finding on a changed line is pre-existing when two origin checks, on different models, found the same failure
-    // before this PR, with lines the code found at the base. It posts only what would block had this PR caused it, as a
-    // warning. One answer, two on one model, an answer that is unsure or finds the failure the PR's own, one the code did
-    // not check at the base, or one without lines keep the blocker.
+    // before this PR, with lines the code found at the base. It posts only a security finding, a blocker as a warning.
+    // One answer, two on one model, an answer that is unsure or finds the failure the PR's own, one the code did not
+    // check at the base, or one without lines keep the blocker.
     const answer = (verdict: OriginVerdict, model = 'first-model'): OriginAnswer => ({
       verdict, reason: verdict === 'pre_existing' ? 'The same queue had no cap before this PR.' : 'r', head: ['src/a.ts:12'], base: ['src/a.ts:11'], commit: 'base', model,
     });
     const checked = (...answers: OriginAnswer[]): Pick<Finding, 'originCheck'> => ({ originCheck: { lineChanged: true, answers } });
     const onLine = (title: string, extra: Partial<Finding> = {}) => blocker(title, 'src/a.ts', 12, { preExisting: undefined, ...checked(answer('pre_existing'), answer('pre_existing', 'pair-model')), ...extra });
     const based = [
-      onLine('Queue holds unverified entries'),
+      onLine('Queue holds unverified entries', { tags: ['security'] }),
+      onLine('Queue drops entries'),
       onLine('Queue may grow', { severity: 'warning', gradeIfConfirmed: 'blocker', doubts: [{ premise: 'Entries arrive faster than they drain', decides: 'defect' }] }),
     ];
     mockedRunJudgeAgent.mockResolvedValue({ findings: based, summary: 'Old defects on changed lines.' });
     const onBase = await run(makeClients());
     expect(onBase.outcome).toBe('READY');
     expect(onBase.findings.map(f => [f.title, f.severity, f.originalSeverity, f.tags, f.preExistingCheck])).toEqual([
-      ['Queue holds unverified entries', 'warning', 'blocker', ['pre-existing', 'follow-up'], undefined],
+      ['Queue holds unverified entries', 'warning', 'blocker', ['security', 'pre-existing', 'follow-up'], undefined],
     ]);
     expect(onBase.findings[0].gradePath?.at(-1)).toEqual({ from: 'blocker', to: 'warning', by: 'pre_existing', reason: 'the code before this PR fails the same way: The same queue had no cap before this PR.' });
-    expect(onBase.unpostedPreExisting?.map(f => [f.title, f.severity, f.tags])).toEqual([['Queue may grow', 'warning', ['pre-existing']]]);
+    expect(onBase.unpostedPreExisting?.map(f => [f.title, f.severity, f.tags])).toEqual([['Queue drops entries', 'blocker', ['pre-existing']], ['Queue may grow', 'warning', ['pre-existing']]]);
     const keptBlockers = [
       onLine('Left open', checked(answer('unsure'), answer('pre_existing', 'pair-model'))), onLine('Newly reachable', checked(answer('introduced'), answer('pre_existing', 'pair-model'))),
       onLine('Worse now', checked(answer('pre_existing'), answer('worsened', 'pair-model'))), onLine('Not asked', { originCheck: undefined }),
@@ -5369,10 +5374,14 @@ describe('runReview', () => {
     mockedRunJudgeAgent.mockResolvedValue({ findings: [{ ...warningOn(false), evidence: { checks: [], proof: [] }, originCheck: { lineChanged: false, answers: [fixedAt] } }], summary: 'One defect.' });
     const unprovenFix = await run(makeClients());
     expect([unprovenFix.findings, unprovenFix.unpostedPreExisting?.map(f => [f.title, f.severity])]).toEqual([[], [['Queue may stall', 'warning']]]);
-    // A blocker keeps its own rules: it is posted as a pre-existing warning, with no note.
-    mockedRunJudgeAgent.mockResolvedValue({ findings: [onLine('Queue holds unverified entries', checked(fixedAt, { ...fixedAt, model: 'pair-model' }))], summary: 'One defect.' });
+    // So is a blocker. A security blocker keeps its own rules: it is posted as a pre-existing warning, with no note.
+    const fixedBoth = checked(fixedAt, { ...fixedAt, model: 'pair-model' });
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [onLine('Queue drops entries', fixedBoth), onLine('Queue holds unverified entries', { tags: ['security'], ...fixedBoth })], summary: 'Two defects.' });
     const fixedBlocker = await run(makeClients());
-    expect(fixedBlocker.findings.map(f => [f.severity, f.originalSeverity, f.fixedElsewhere])).toEqual([['warning', 'blocker', undefined]]);
+    expect([fixedBlocker.outcome, fixedBlocker.findings.map(f => [f.title, f.severity, f.originalSeverity, f.fixedElsewhere])]).toEqual(['READY', [
+      ['Queue drops entries', 'note', undefined, 'src/a.ts:20'],
+      ['Queue holds unverified entries', 'warning', 'blocker', undefined],
+    ]]);
 
     // A security blocker on code the PR did not change keeps blocking, even when both models found it the same before this PR.
     mockedRunJudgeAgent.mockResolvedValue({ findings: [{ ...oldInjection, ...checked(answer('pre_existing'), answer('pre_existing', 'pair-model')) }], summary: 'One defect.' });
