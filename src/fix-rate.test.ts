@@ -114,6 +114,7 @@ describe('recordFixRate', () => {
       pr: 42,
       mergedSha: 'merged',
       rounds: 2,
+      mankiVersion: '5.0.0-test',
       class: 'security',
       group: 'deep',
       configDigest: 'digest-2',
@@ -150,6 +151,27 @@ describe('recordFixRate', () => {
     expect(line).not.toHaveProperty('class');
     expect(line).not.toHaveProperty('group');
     expect(line).not.toHaveProperty('configDigest');
+  });
+
+  it.each([
+    ['the lower of two versions, compared as numbers', ['7.7.10', '7.7.6'], '7.7.6'],
+    ['the lower version of an earlier round', ['7.7.6', '7.7.10'], '7.7.6'],
+    ['no version when a round has none', ['7.7.6', undefined], undefined],
+    ['no version when a round could not read its own', ['unknown', '7.7.6'], undefined],
+    ['no version when the only round could not read its own', ['unknown'], undefined],
+  ])('records %s', async (_case, versions, expected) => {
+    jest.mocked(fetchRecapState).mockResolvedValue({
+      priorRounds: versions.map((mankiVersion, i) => {
+        const round = makeRoundContext(i + 1);
+        return { ...round, meta: { ...round.meta, mankiVersion: mankiVersion as string } };
+      }),
+      previousFindings: [],
+    });
+
+    await recordFixRate(mockOctokit().octokit, TEST_BOT, 'owner', 'repo', PR);
+
+    expect(summaryLine()).toMatchObject({ rounds: versions.length });
+    expect(summaryLine().mankiVersion).toBe(expected);
   });
 
   it('records nothing when Manki never reviewed the pull request', async () => {
