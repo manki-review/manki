@@ -39,6 +39,10 @@ on:
         description: Run ids of earlier runs of the same ref, space-separated. The gate decides on all runs.
         required: false
         type: string
+      findings_from:
+        description: Run id of an earlier benchmark whose finder output each review keeps, so only the stages after the finders run. Decides no release.
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -74,6 +78,7 @@ jobs:
           RUNS: ${{ inputs.runs }}
           BASELINE: ${{ inputs.baseline }}
           RERUN_OF: ${{ inputs.rerun_of }}
+          FINDINGS_FROM: ${{ inputs.findings_from }}
         run: |
           fail() { echo "::error::$1"; exit 1; }
           [[ "$RUNS" =~ ^[1-5]$ ]] || fail "runs must be a whole number from 1 to 5"
@@ -82,7 +87,9 @@ jobs:
             [[ "$v" =~ ^[A-Za-z0-9._-]+(=[A-Za-z0-9._/-]+)?$ ]] || fail "variant $v must be a name or name=file"
             [[ "$v" != *=* ]] || [ -f "${v#*=}" ] || fail "variant file ${v#*=} is not in this workflow's commit"
           done
-          for id in $BASELINE $RERUN_OF; do [[ "$id" =~ ^[0-9]+$ ]] || fail "run id $id must be a number"; done
+          for id in $BASELINE $RERUN_OF $FINDINGS_FROM; do [[ "$id" =~ ^[0-9]+$ ]] || fail "run id $id must be a number"; done
+          [ "$(wc -w <<< "$FINDINGS_FROM")" -le 1 ] || fail "findings_from takes one run id"
+          [ -z "${FINDINGS_FROM// }" ] || [ -z "${BASELINE// }" ] || fail "a run with findings_from decides no release, so leave baseline empty"
           [ -z "${RERUN_OF// }" ] || [ -n "${BASELINE// }" ] || fail "rerun_of only counts with a baseline, so give the same baseline again"
           commit=$(git -C manki-ref rev-parse HEAD)
           matrix=$(npm run -s bench-report -- matrix --set "$SET" --cases "$CASES")
@@ -94,6 +101,9 @@ jobs:
     name: ${{ matrix.case.set }} ${{ matrix.case.id }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    permissions:
+      contents: read
+      actions: read # reads the report of the run in findings_from
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -129,6 +139,12 @@ jobs:
           git -C case-repo update-ref refs/bench/base "$CASE_BASE"
           git -C case-repo update-ref refs/bench/head "$CASE_HEAD"
           [ -z "$CASE_PRIOR" ] || git -C case-repo update-ref refs/bench/prior "$CASE_PRIOR"
+      # A step of its own, so the review never gets the token.
+      - name: Download the finder output to keep
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FINDINGS_FROM: ${{ inputs.findings_from }}
+        run: '[ -z "${FINDINGS_FROM// }" ] || gh run download "$FINDINGS_FROM" --repo "$GITHUB_REPOSITORY" --name bench-report --dir findings-from'
       - name: Review and score the case
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -139,6 +155,7 @@ jobs:
           CASE_FILE: ${{ matrix.case.file }}
           RUNS: ${{ inputs.runs }}
           VARIANTS: ${{ inputs.variants }}
+          FINDINGS_FROM: ${{ inputs.findings_from }}
         # The case file alone, so a ref with an older case parser reads no other case. The bench of a ref before v7.5
         # reads it as a tuning case and logs the titles of its findings, and this log is public. So only a tuning case
         # shows its output, whatever the ref prints.
@@ -148,6 +165,7 @@ jobs:
           args=(bench --cases case-dir --case "$CASE_ID" --runs "$RUNS" --checkout "$CASE_REPO=$PWD/case-repo"
             --out "out/$CASE_ID.json" --cache "$RUNNER_TEMP/matcher-cache.json")
           for v in $VARIANTS; do args+=(--variant "$v"); done
+          [ -z "${FINDINGS_FROM// }" ] || args+=(--findings-from findings-from/report.json)
           if [ "$CASE_SET" = tuning ]; then
             node manki-ref/dist/index.js "${args[@]}"
           else

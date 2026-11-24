@@ -2587,6 +2587,19 @@ export interface EarlierAttempt {
   nodeId?: string;
 }
 
+/**
+ * What an earlier round's finder stage gave, which a replay keeps in place of running it: the planner's answer, the
+ * finders it picked, and the findings of every call before the dedup, with their reviewer names.
+ */
+export interface FinderReplay {
+  /** `null` when the planner failed and the round took its fail-safe answers. */
+  planner: PlannerResult | null;
+  finders: string[];
+  findings: RoundRawFinding[];
+  /** The fix checks' records, which keep an earlier thread open on a workaround. */
+  fixes?: RoundFix[];
+}
+
 /** Round-cap accounting captured at the moment a round was admitted. */
 export interface RoundCap {
   priorRoundCount: number;

@@ -42,7 +42,7 @@ import { relatedReposCacheDir } from './related-repos';
 import * as core from '@actions/core';
 import * as napi from '@ast-grep/napi';
 import { formatFindingComment, holdsApproval, LinkedIssue, titleToSlug } from './github';
-import { CELL_GRADES, cellGrade, DISPROVED_TAG, EarlierAttempt, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, OriginAnswer, OriginVerdict, Refutation, RefutationOutcome, RelatedItem, RelatedWork, ReviewResult, RoundContext, RoundLead, RoundNotStarted, RoundScope, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG, SweepMode, triggerDoubt } from './types';
+import { CELL_GRADES, cellGrade, DISPROVED_TAG, EarlierAttempt, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, OriginAnswer, OriginVerdict, Refutation, RefutationOutcome, RelatedItem, RelatedWork, ReviewResult, RoundContext, RoundFix, RoundLead, RoundNotStarted, RoundScope, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG, SweepMode, triggerDoubt, VERDICT_READER_NAME } from './types';
 import { citedLine, stringifyFindingFingerprint } from './finding-fingerprint';
 import { baseProofFixture, baseProofWorkspace, expectLinearTime, fingerprintEntriesFromLegacy, git, GIT_TEST_TIMEOUT_MS, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
 import { listUsesOutsideDiff } from './symbol-uses';
@@ -10283,6 +10283,40 @@ describe('runReview triage', () => {
       const result = await runReview(clients, { ...options, ...changed, earlierAttempt: { record: edit(record), review: 7 } });
       expect([label, finderCalls(), result.reused?.finders.length ?? 0]).toEqual([label, runs, 2 - runs]);
     }
+  });
+
+  it('replays the planner answer and the finder stage of an earlier round, and runs only the stages after it', async () => {
+    const planner = JSON.stringify({ trivial: false, subtle: true, paired: true, judgeEffort: 'low', prType: 'fix' });
+    const clients = makeClients(planner);
+    const opus = { sendMessage: jest.fn().mockResolvedValue({ content: '[]' }) } as unknown as import('./providers').LLMClient;
+    clients.reviewerByModel = new Map([['anthropic/claude-opus-5-5', opus]]);
+    const rule = 'Every handler checks the token before it reads the body.';
+    jest.mocked(clients.reviewer.sendMessage).mockResolvedValue({ content: JSON.stringify([
+      { severity: 'blocker', title: 'Token unchecked', file: 'src/x.ts', line: 1, description: 'd', howToFix: 'h', evidence: ['src/x.ts:1 reads the body'], proof: ['src/x.ts:1'], rule, ruleFile: 'AGENTS.md' },
+      { severity: 'warning', title: 'Old overflow', file: 'src/x.ts', line: 2, description: 'd', preExisting: true, preExistingReason: 'The base had it.' },
+    ]) });
+    const options = { config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo', instructionFiles: [{ path: 'AGENTS.md', text: rule }] };
+    const first = await runReview(clients, options);
+    const graded = mockedRunJudgeAgent.mock.calls[0][2].findings;
+    const stored = postedRecord(first).reviewers.rawFindings!;
+    const later = [VERDICT_READER_NAME, 'Sweep 1'].map(reviewer => ({ ...stored[0], title: `Found by ${reviewer}`, reviewers: [reviewer] }));
+    const fixes: RoundFix[] = [{ at: ['src/x.ts:1'], problem: 'p', reviewer: 'Fix check 1', status: 'workaround', cause: 'c', stillFails: 's', proof: ['src/x.ts:1'], findings: 0 }];
+    const replay = { planner: first.plannerResult!, finders: first.agentNames, findings: [...stored, ...later], fixes };
+    for (const client of [clients.planner, clients.reviewer, opus]) jest.mocked(client.sendMessage).mockClear();
+
+    // No planner, finder, check beside the finders or second read runs, and the judge grades what it graded the first time.
+    // The sweeps and the verdict reader come after the judge, so their findings of the stored round are left for them to find again.
+    const replayed = await runReview(clients, { ...options, replay });
+    expect([clients.planner, clients.reviewer, opus].map(client => jest.mocked(client.sendMessage).mock.calls.length)).toEqual([0, 0, 0]);
+    expect(mockedRunJudgeAgent.mock.calls[1][2].findings).toEqual(graded);
+    expect(mockedRunJudgeAgent.mock.calls[1][2].effort).toBe('low');
+    expect([replayed.agentNames, replayed.plannerResult, replayed.fixes]).toEqual([first.agentNames, first.plannerResult, { fixes }]);
+    expect(replayed.secondReads).toBeUndefined();
+    expect(postedRecord(replayed).reviewers.rawFindings).toEqual(stored);
+
+    // A config that picks other finders cannot replay the round.
+    await expect(runReview(clients, { ...options, replay: { ...replay, finders: ['Claude Sonnet 5.5 · high'] } }))
+      .rejects.toThrow('The replayed round was read by Claude Sonnet 5.5 · high, and this config picks Claude Sonnet 5.5 · high, Claude Opus 5.5 · high');
   });
 
   it('reads the change in full when a related repo is not at the commit the attempt read it at', async () => {
