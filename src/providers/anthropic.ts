@@ -6,6 +6,7 @@ import { promisify } from 'util';
 import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
+import { isWholeJSON } from '../json';
 import { installPinned } from '../tool-install';
 import { appendReplyTail, buildExitDiagnostics, callWithTimeout, carryReadings, cliEnv, closedCallsFile, fileReadBy, MankiCommand, matchQuotaText, relatedReadsFile, repoToolsPrompt, resultChars, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, stepHookCommand, toolServerCommand, toolServerReadings, warnReplyTail, withExitCode, withPromptDir } from './cli-utils';
 import { AnthropicAuth, LimitUsage, LLMClient, LLMResponse, LLMUsage, oneRequest, QuotaError, readCount, RefusalError, SendMessageOptions, ToolStep, withLargestRequest, ZERO_USAGE } from './types';
@@ -58,10 +59,11 @@ export function buildAnthropicAuth(oauthToken: string, apiKey: string): Anthropi
  * `--include-partial-messages` wraps each API stream event in a `stream_event` line.
  * `assistantRefusal` is set on every assistant message: the refusal reason, or null when it did not end on `stop_reason: "refusal"`.
  * `requestInput` is set on the `message_start` of each request: its input tokens, cache reads and writes included.
+ * `stopReason` is set on the `message_delta` that ends a message.
  */
 function processJsonLine(line: string): {
   text: string; replace: boolean; resultEvent: unknown; assistantRefusal?: string | null; toolUses?: { id: string; tool: string; input: unknown }[]; toolResults?: { id: string; chars: number }[];
-  limits?: LimitUsage[]; requestInput?: number;
+  limits?: LimitUsage[]; requestInput?: number; stopReason?: unknown;
 } {
   try {
     const event = JSON.parse(line);
@@ -72,6 +74,9 @@ function processJsonLine(line: string): {
     if (event.type === 'stream_event' && streamed?.type === 'message_start') {
       const usage = streamed.message?.usage;
       return { text: '', replace: false, resultEvent: null, requestInput: usage && typeof usage === 'object' ? readAnthropicUsage(usage).inputTokens : 0 };
+    }
+    if (event.type === 'stream_event' && streamed?.type === 'message_delta') {
+      return { text: '', replace: false, resultEvent: null, stopReason: streamed.delta?.stop_reason };
     }
     const blocks: { type?: unknown; id?: unknown; name?: unknown; input?: unknown; tool_use_id?: unknown; content?: unknown }[] = Array.isArray(event.message?.content) ? event.message.content : [];
     if (event.type === 'assistant') {
@@ -267,7 +272,6 @@ export function claudeCliArgs(model: string, systemPromptPath: string, { effort,
       '--max-turns', String(repoTools.steps + EXTRA_TURNS),
     );
   } else {
-    // Without tools the reply is a single turn. With them, the CLI's `result` keeps only the last message.
     args.push('--tools', '');
   }
   if (effort) args.push('--effort', claudeEffort(model, effort));
@@ -363,6 +367,11 @@ export class AnthropicClient implements LLMClient {
     const model = this.model;
 
     let output = '';
+    // The CLI answers a message cut at the output limit with a request to go on, and its `result` holds only the last
+    // message. `cutText` is the text of the cut messages that the current one goes on from.
+    let cutText = '';
+    let messageText = '';
+    let stopReason: unknown;
     let replyTail = '';
     let jsonBuffer = '';
     let lastResultEvent: unknown = null;
@@ -380,7 +389,14 @@ export class AnthropicClient implements LLMClient {
       if (!line.trim()) return;
       const delta = processJsonLine(line);
       for (const limit of delta.limits ?? []) limits.set(limit.window, limit);
-      if (delta.requestInput !== undefined) requestInputs.push(delta.requestInput);
+      if (delta.requestInput !== undefined) {
+        requestInputs.push(delta.requestInput);
+        cutText = stopReason === 'max_tokens' ? cutText + messageText : '';
+        messageText = '';
+        stopReason = undefined;
+      }
+      if (delta.stopReason !== undefined) stopReason = delta.stopReason;
+      if (!delta.replace) messageText += delta.text;
       for (const { id, tool, input } of delta.toolUses ?? []) {
         if (!toolStarts.has(id)) options?.onToolStep?.();
         const file = fileReadBy(tool, input, root);
@@ -394,7 +410,9 @@ export class AnthropicClient implements LLMClient {
       if (delta.resultEvent !== null) lastResultEvent = delta.resultEvent;
       if (!delta.replace) replyTail = appendReplyTail(replyTail, delta.text);
       if (delta.assistantRefusal !== undefined) refusal = delta.assistantRefusal ?? undefined;
-      output = delta.replace ? delta.text : output + delta.text;
+      // A last message that is whole JSON started the answer over instead of going on.
+      if (delta.replace) output = cutText && !isWholeJSON(delta.text) ? cutText + delta.text : delta.text;
+      else output += delta.text;
     };
 
     const { code, signal, stderr, lastStdoutChunk } = await runCli({
@@ -408,7 +426,7 @@ export class AnthropicClient implements LLMClient {
         // On a subscription the CLI defaults to a 1-hour cache, whose writes cost more. The requests of one call are
         // minutes apart at most, and a later call shares no more than its system prompt with an earlier one.
         CLAUDE_CODE_PROMPT_CACHE_TTL: '5m',
-        // A call without tools is one request, so nothing would read what it caches.
+        // A call without tools is one request unless its reply is cut, so almost nothing would read what it caches.
         ...(!options?.repoTools && { DISABLE_PROMPT_CACHING: '1' }),
       }, 'CLAUDE_CODE_OAUTH_TOKEN'),
       input: userMessage,
@@ -472,6 +490,7 @@ export class AnthropicClient implements LLMClient {
       core.warning(`Claude CLI reply reached the ${THINKING_MAX_TOKENS}-token output limit (exit ${code})`);
       warnReplyTail('Claude CLI', replyTail);
     }
+    if (cutText) core.info(`Claude CLI reply went on past the ${THINKING_MAX_TOKENS}-token output limit of one message`);
     const content = code === 0 ? output.trim() : '';
     core.debug(sanitizeLogOutput(content.slice(0, 200)));
     return {

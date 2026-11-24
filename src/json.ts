@@ -38,6 +38,17 @@ function matchingClose(text: string, start: number): number {
   return -1;
 }
 
+function withoutFence(text: string): string {
+  const trimmed = text.trim();
+  return trimmed.startsWith('```') ? trimmed.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?\s*```\s*$/, '') : trimmed;
+}
+
+/** Whether `text` is one whole JSON object or array, with or without a markdown fence around it. */
+export function isWholeJSON(text: string): boolean {
+  const cleaned = withoutFence(text);
+  return parsesAs(cleaned, 'object') || parsesAs(cleaned, 'array');
+}
+
 /**
  * Extract a JSON object or array from LLM response text that may contain
  * markdown fences, preamble, or other non-JSON content. With `shape`, only a
@@ -45,13 +56,7 @@ function matchingClose(text: string, start: number): number {
  * real object is skipped.
  */
 export function extractJSON(text: string, shape?: JsonShape): string {
-  let cleaned = text.trim();
-
-  // Strip markdown fences
-  if (cleaned.startsWith('```')) {
-    cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?\s*```\s*$/, '');
-  }
-
+  const cleaned = withoutFence(text);
   if (parsesAs(cleaned, shape)) return cleaned;
 
   const opens = shape === 'object' ? '{' : shape === 'array' ? '[' : '{[';

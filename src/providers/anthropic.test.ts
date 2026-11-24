@@ -6,6 +6,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
 import { AnthropicClient, buildAnthropicAuth, CLAUDE_CLI_VERSION, extractAnthropicCLIUsage, readClaudeLimits, STALE_TIMEOUT_MS } from './anthropic';
+import { parseJudgeResponse } from '../judge';
 import { runnerDiagnostics } from '../run-diagnostics';
 import { installPinned } from '../tool-install';
 import { RelatedRepoTools } from '../types';
@@ -740,6 +741,43 @@ describe('sendViaOAuth — error paths', () => {
     expect(tailWarning!.endsWith('Let me walk through every file, token [REDACTED], then')).toBe(true);
     expect(tailWarning!.length).toBeLessThanOrEqual('Claude CLI reply ended with: '.length + 2000);
     warnSpy.mockRestore();
+  });
+
+  it('joins a reply the CLI went on with after the output limit cut a message', async () => {
+    // The events the pinned CLI streams: it asks a cut message to go on, and its `result` holds the last message only.
+    const message = (text: string, stopReason: string) => [
+      { type: 'stream_event', event: { type: 'message_start', message: { usage: { input_tokens: 100 } } } },
+      { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } } },
+      { type: 'stream_event', event: { type: 'message_delta', delta: { stop_reason: stopReason } } },
+      { type: 'stream_event', event: { type: 'message_stop' } },
+    ];
+    const goOn = { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'Output token limit hit. Resume directly' }] } };
+    const send = async (messages: [string, string][], last = messages.at(-1)![0]) => {
+      const events = [...messages.flatMap(([text, stopReason], i) => [...(i > 0 ? [goOn] : []), ...message(text, stopReason)]), { type: 'result', subtype: 'success', is_error: false, stop_reason: 'end_turn', result: last }];
+      setupSpawnMock({ stdout: `${events.map(e => JSON.stringify(e)).join('\n')}\n`, rawStdout: true });
+      return new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-5-5' }).sendMessage('sys', 'user');
+    };
+    const entry = (id: number) => ({ id, title: `Finding ${id}`, row: 'none', reasoning: 'r', proof: ['a.ts:1', 'b.ts:2', 'c.ts:3'] });
+    const reply = JSON.stringify({ summary: 's', findings: [1, 2, 3].map(entry), threadEvaluations: [] });
+    const cutAt = (id: number) => reply.indexOf(`"Finding ${id}"`) + 4;
+    const [head, middle, tail] = [reply.slice(0, cutAt(2)), reply.slice(cutAt(2), cutAt(3)), reply.slice(cutAt(3))];
+    // The first whole value in the last message alone is the proof list of one entry, so it grades no finding.
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    expect(parseJudgeResponse(tail, undefined).findings).toEqual([]);
+    expect(warnSpy).toHaveBeenCalledTimes(3);
+    warnSpy.mockRestore();
+
+    const joined = await send([[head, 'max_tokens'], [middle, 'max_tokens'], [tail, 'end_turn']]);
+    expect(joined).toMatchObject({ content: reply, truncated: false });
+    expect(parseJudgeResponse(joined.content, undefined).findings.map(f => f.id)).toEqual([1, 2, 3]);
+    // A message cut while it was still thinking has no text, and an answer that starts over is whole on its own.
+    expect((await send([['', 'max_tokens'], [reply, 'end_turn']])).content).toBe(reply);
+    const fenced = `\`\`\`json\n${reply}\n\`\`\``;
+    expect((await send([[head, 'max_tokens'], [fenced, 'end_turn']])).content).toBe(fenced);
+    // Only the messages right before the answer were cut inside it.
+    expect((await send([['Let me read', 'max_tokens'], [' more.', 'tool_use'], [tail, 'end_turn']])).content).toBe(tail);
+    // Without a `result` text, the streamed text already holds every message.
+    expect((await send([[head, 'max_tokens'], [middle + tail, 'end_turn']], '')).content).toBe(reply);
   });
 
   it('silently skips non-JSON lines (e.g. verbose debug output)', async () => {
