@@ -3342,6 +3342,17 @@ export interface ReplyRecord {
   uncheckedStatements?: number;
   /** How many statements a thread reply did not list because their quote is not in the developer's reply, or repeats one. */
   droppedStatements?: number;
+  /** The model's own answer to a thread reply, before the checks. Unset when the answer could not be read. Nothing decides on it. */
+  modelAnswer?: ReplyModelAnswer;
+}
+
+/** What the model answered to a thread reply. `cited` is model text, which can quote the developer or the PR. */
+export interface ReplyModelAnswer {
+  outcome: 'Fixed' | 'FixedElsewhere' | 'Withdrawn' | 'Agreed' | 'Kept' | 'Unverified';
+  /** The lines of the PR in the answer's proof that exist. */
+  proof: string[];
+  /** The proof entries as the model gave them, bounded and redacted. */
+  cited: string[];
 }
 
 /** Why a thread reply could not check a statement. The first two are the model's answer, the rest come from Manki's own checks. */
@@ -3366,11 +3377,12 @@ export interface ReplyStatementRecord {
  * What a thread reply decided: the word it opens with, and what happens to the thread. `stays_open` is a blocking or
  * security thread only a maintainer may close, `stays_resolved` such a thread that stays resolved and keeps blocking,
  * `resolve_failed` a thread Manki could not resolve, `lookup_failed` a thread GitHub could not list,
- * `deferred_to_round` a fix a later round already judged, and `pr_closed` a thread left as it is on a merged or closed PR.
+ * `deferred_to_round` a fix a later round did not find, `confirmed_by_round` a fix the reply could not prove and a later
+ * round found, and `pr_closed` a thread left as it is on a merged or closed PR.
  */
 export interface ReplyDecision {
   outcome: 'Fixed' | 'Agreed' | 'Withdrawn';
-  thread: 'resolves' | 'stays_open' | 'stays_resolved' | 'resolve_failed' | 'no_permission' | 'already_resolved' | 'not_found' | 'lookup_failed' | 'deferred_to_round' | 'pr_closed';
+  thread: 'resolves' | 'stays_open' | 'stays_resolved' | 'resolve_failed' | 'no_permission' | 'already_resolved' | 'not_found' | 'lookup_failed' | 'deferred_to_round' | 'confirmed_by_round' | 'pr_closed';
 }
 
 /** The round's LLM usage: totals over its calls, per stage and per model, and the calls themselves. */

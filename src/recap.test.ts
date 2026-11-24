@@ -742,6 +742,8 @@ describe('fetchRecapState', () => {
           nodes: [
             { body: '<!-- manki:blocker:Upload --> **Blocker**: Upload\n\nDesc.', author: { login: 'manki-review[bot]' } },
             { body: 'This came up again.\n\n<!-- manki -->\n<!-- manki-found-again-blocker -->', author: { login: 'manki-review[bot]' } },
+            // A pointer at a round's verdict is no answer.
+            { body: `The review of \`aaaaaaa\`, which finished after this reply, confirmed this fix.\n\n${recordedAnswer('Fixed', 'confirmed_by_round').split('\n\n')[1]}`, author: { login: 'manki-review[bot]' } },
           ],
         },
       }),
@@ -763,6 +765,7 @@ describe('fetchRecapState', () => {
     // The commit a thread was posted on still holds the code it named after the thread goes outdated.
     expect(state.previousFindings.map(f => f.originalCommit)).toEqual(['c0ffee', undefined, undefined, undefined, undefined, undefined]);
     expect(state.previousFindings.slice(0, 3).map(f => f.answer)).toEqual(['Confirmed: #7, merged into `main`, replaced the cited line.', '**Withdrawn.** `load` returns early.', 'This came up again.\n\nDetails.']);
+    expect(state.previousFindings[5].answer).toBeUndefined();
     // Only Manki's own filed reply names an issue, and a later answer in the thread keeps it.
     expect(state.previousFindings.slice(0, 3).map(f => f.filedIssue)).toEqual([undefined, undefined, 12]);
     // A severity comes from the first comment only, and no reply marker raises it, not even a pasted one.
@@ -2223,6 +2226,8 @@ describe('fetchRecapState', () => {
         ["I haven't fixed this yet", [], 'none'],
         ['done', [], 'none'],
         ['done', [recordedAnswer('Fixed', 'stays_open')], 'none'],
+        ['done', [recordedAnswer('Fixed', 'confirmed_by_round')], 'none'],
+        ['done', [recordedAnswer('Fixed').replace('"decision":{"outcome":"Fixed","thread":"resolves"}', '"modelAnswer":{"outcome":"Fixed","proof":[],"cited":["src/b.ts:3"]}')], 'none'],
         ['done', ['**Unverified.** I could not check this reply.\n\n<!-- manki -->'], 'none'],
         ['done', [recordedAnswer('Fixed')], 'agree'],
         ['The caller checks it.', [recordedAnswer('Withdrawn', 'already_resolved')], 'agree'],

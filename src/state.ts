@@ -9,7 +9,7 @@ import { ISSUE_BOX_LABEL, withMessageBoxes } from './issue-box';
 import { MessageBox, SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
-import { clearRecordLogin, dismissRecordLogins, dismissRecordMarker, FixClaim, fixClaimOf, fetchPriorRoundContexts, fetchRecapState, guardedKind, isDisprovedThread, isOverrideCandidate, judgeAddressedThreadIds, parseContextBlocks, RAISED_MARKER, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, RecordedGrade, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingPlace } from './recap';
+import { clearRecordLogin, latestAnswer, dismissRecordLogins, dismissRecordMarker, FixClaim, fixClaimOf, fetchPriorRoundContexts, fetchRecapState, guardedKind, isDisprovedThread, isOverrideCandidate, judgeAddressedThreadIds, parseContextBlocks, RAISED_MARKER, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, RecordedGrade, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingPlace } from './recap';
 import { FIXED_MARKER_OPENER, fixedMarker, formatApprovalRecord, hasOwnMarker, hasReviewRecord, ROUND_REPLY_OPENER, settlingDecision } from './review-record';
 import { findPriorThreadId } from './finding-fingerprint';
 import { ApprovalRecord, AuthorClearRole, FindingSeverity, gradedAbove, PRE_EXISTING_TAG, ReviewConfig, RoundContext, SecurityOverride, threadBlocks, threadWarns } from './types';
@@ -103,6 +103,8 @@ interface ReviewThread {
   fixedOn?: string[];
   /** When the review of each head commit replied that this thread is not fixed, from `roundReplyMarker`. */
   roundReplies?: Array<{ commit: string; at: string }>;
+  /** Whether Manki answered a developer in this thread since the finding was last raised, by `latestAnswer`. Also set at the comment limit, which may hide an answer. */
+  answered?: true;
 }
 
 
@@ -280,6 +282,7 @@ async function fetchBotReviewThreads(
         ...(threadUrl && { threadUrl }),
         ...(fixedOn.length > 0 && { fixedOn }),
         ...(roundReplies.length > 0 && { roundReplies }),
+        ...((!complete || latestAnswer(bot, thread.comments.nodes) !== undefined) && { answered: true as const }),
       };
     });
 }
@@ -464,10 +467,10 @@ async function heldWarnings(
   return held;
 }
 
-/** Names what lifts the hold of a warning that is no security finding, to follow "it is" or "each one is". Without `clearRole` no resolve by hand lifts it. */
-function warningClearedBy(clearRole: AuthorClearRole | undefined): string {
+/** Names what lifts the hold of a warning that is no security finding, to follow "it is" or "each one is". Without `clearRole` no resolve by hand lifts it. A `resolved` thread has to be reopened first. */
+function warningClearedBy(clearRole: AuthorClearRole | undefined, resolved = false): string {
   const tracked = `tracked with \`${ISSUE_BOX_LABEL}\``;
-  return clearRole ? `fixed, ${tracked}, or resolved by someone with ${rolePhrase(clearRole, true)}` : `fixed or ${tracked}`;
+  return clearRole ? `fixed, ${tracked}, or ${resolved ? 'reopened and ' : ''}resolved by someone with ${rolePhrase(clearRole, true)}` : `fixed or ${tracked}`;
 }
 
 /**
@@ -478,7 +481,7 @@ async function warningHoldNote(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, thread: ReviewThread, clearRole: AuthorClearRole | undefined,
 ): Promise<string | undefined> {
   if (thread.isSecurity || thread.disprovedBlocker || (await heldWarnings(octokit, owner, repo, [thread], bot, undefined, undefined, clearRole)).length === 0) return undefined;
-  return `This warning holds the approval until it is ${warningClearedBy(clearRole)}.`;
+  return `This warning holds the approval until it is ${warningClearedBy(clearRole, thread.isResolved)}.`;
 }
 
 /** Returns the PR author's role when `clearRole` allows it and a thread the author resolved needs it, as `securityOverrideOf` reads it. */
@@ -805,8 +808,9 @@ function warningThreadsLine(held: ReviewThread[], bot: BotIdentity, clearRole: A
     : isBotLogin(bot, t.resolvedByLogin) ? ' (Manki resolved it, but for none of the reasons that lift the hold)'
     : ` (resolved by ${inline(t.resolvedByLogin ?? 'someone')}, which ${clearRole ? `lifts the hold only with ${rolePhrase(clearRole, true)}` : 'does not lift the hold'})`;
   const list = held.map(t => `- ${threadLink(t)}${note(t)}`).join('\n');
+  const reopen = clearRole && held.some(t => t.isResolved && !t.isSecurity && !t.disprovedBlocker) ? ' A thread that is already resolved has to be reopened first.' : '';
   const count = held.length === 1 ? '1 warning thread holds' : `${held.length} warning threads hold`;
-  return `${count} the approval:\n${list}\n\nApproval follows once each one is ${warningClearedBy(clearRole)}. A reply in a thread lifts its hold only when Manki answers it with Fixed, Withdrawn or Agreed.`;
+  return `${count} the approval:\n${list}\n\nApproval follows once each one is ${warningClearedBy(clearRole)}.${reopen} A reply in a thread lifts its hold only when Manki answers it with Fixed, Withdrawn or Agreed.`;
 }
 
 /** Posts `text` as a comment carrying `marker`, unless a Manki comment with `marker` is already on the PR. Returns whether it posted. */
