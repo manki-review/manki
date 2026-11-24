@@ -17,7 +17,7 @@ import { buildLLMClient } from './review-clients';
 import {
   CELL_GRADES, CheckStatus, Doubt, Finding, finderGrade, FinderReplay, FinderError, FindingFingerprintEntry, FindingSeverity, GradeCell, GradeChange, GradeStep, gradedAbove, isGradeCell, isSecondReadName, isSecurityFinding, isSweepName, leftOutUnproven,
   migrateLegacySeverity, migrateStoredSeverities, PRE_EXISTING_TAG, Refutation, RoundContext, RoundRawFinding, RoundRelatedRepo, SCOPE_READER_NAME, SEVERITY_ORDER, SideCheckKind, ThreadEvaluation, UNPOSTED_REASONS, UnpostedReason,
-  UnprovenReason, VERDICT_READER_NAME, VerdictReason,
+  UnprovenReason, VERDICT_READER_NAME, VerdictReason, VoteCitation,
 } from './types';
 import { runGit } from './workspace';
 
@@ -467,10 +467,15 @@ interface GradeRoute {
   raisedBy?: RaisedBy[];
   /**
    * The other finder's vote: the grade the finding had when it was voted on, whether the vote backs or declines it, and
-   * whether the quote of its line held (`held`), named a line that does not hold it (`missed`) or named no line (`none`).
+   * for its `trigger` and its `result` whether the quote of its line held (`held`), named a line that does not hold it
+   * (`missed`) or named no line (`none`).
    */
-  vote?: { grade: FindingSeverity; answer: 'backs' | 'declines'; quote: 'held' | 'missed' | 'none' };
+  vote?: { grade: FindingSeverity; answer: 'backs' | 'declines'; trigger: CitedLine; result: CitedLine };
 }
+
+type CitedLine = 'held' | 'missed' | 'none';
+
+const citedLine = ({ line, held }: VoteCitation): CitedLine => (!line ? 'none' : held ? 'held' : 'missed');
 
 // The steps that only come after the vote, so the first of them starts from the grade the vote saw.
 const AFTER_VOTE: readonly GradeChange[] = ['other_finder', 'pre_existing', 'own_fix'];
@@ -987,7 +992,8 @@ function gradeRoute(f: Finding): GradeRoute {
     ...(f.otherFinderVote && { vote: {
       grade: gradePath?.find(step => AFTER_VOTE.includes(step.by))?.from ?? f.severity,
       answer: f.otherFinderVote.declined ? 'declines' as const : 'backs' as const,
-      quote: !f.otherFinderVote.declined ? 'held' as const : f.otherFinderVote.line ? 'missed' as const : 'none' as const,
+      trigger: citedLine(f.otherFinderVote.trigger),
+      result: citedLine(f.otherFinderVote.result),
     } }),
   };
 }
@@ -1842,8 +1848,9 @@ export function formatWarningSources(variants: VariantReport[]): string {
 
 /**
  * Returns one line per variant and set with the other finder's votes in the complete runs: how many backed and declined a
- * blocker and a warning, how many of those findings match a key item, and how many declines named a line whose quote
- * did not hold. It holds counts only, so it covers hold-out cases. Returns an empty string when no run recorded a vote.
+ * blocker and a warning, how many of those findings match a key item, and how many declines named a trigger or result
+ * line whose quote did not hold. It holds counts only, so it covers hold-out cases. Returns an empty string when no run
+ * recorded a vote.
  */
 export function formatVotes(variants: VariantReport[]): string {
   return variants.flatMap(v => setSummaries(v).flatMap(({ label, set }) => {
@@ -1854,9 +1861,9 @@ export function formatVotes(variants: VariantReport[]): string {
       const on = votes.filter(vote => vote.grade === grade);
       if (on.length === 0) return [];
       const [backs, declines] = (['backs', 'declines'] as const).map(answer => on.filter(vote => vote.answer === answer));
-      const missed = declines.filter(vote => vote.quote === 'missed').length;
+      const missed = declines.filter(vote => vote.trigger === 'missed' || vote.result === 'missed').length;
       const matched = (some: typeof on) => some.filter(vote => vote.matched).length;
-      return [`on a ${grade} ${backs.length} backed (${matched(backs)} matched) and ${declines.length} declined (${matched(declines)} matched, ${missed} with a quote that did not hold)`];
+      return [`on a ${grade} ${backs.length} backed (${matched(backs)} matched) and ${declines.length} declined (${matched(declines)} matched, ${missed} with a line that did not hold its quote)`];
     });
     return parts.length > 0 ? [`Other finder's votes, ${label ? `${v.name} ${label}` : v.name}: ${parts.join(', ')}.`] : [];
   })).join('\n');

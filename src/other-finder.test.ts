@@ -4,8 +4,10 @@ import { DISPROVED_TAG, Finding, isGuardedFinding, OtherFinderVote } from './typ
 const finding = (more: Partial<Finding>): Finding => ({
   severity: 'warning', title: 'Totals drift', file: 'src/a.ts', line: 3, description: 'Totals drift.', reviewers: ['Finder A'], judgeNotes: '', soleFinder: true, ...more,
 });
-const declined: OtherFinderVote = { finder: 'Finder B', harm: '', situation: '', declined: true };
-const backed: OtherFinderVote = { finder: 'Finder B', harm: 'A total is wrong.', situation: 'Any export.', line: 'src/a.ts:3', quote: 'total += 1;', declined: false };
+const declined: OtherFinderVote = { finder: 'Finder B', trigger: { reason: '' }, result: { reason: '' }, declined: true };
+const backed: OtherFinderVote = {
+  finder: 'Finder B', trigger: { reason: 'Any export.', line: 'src/export.ts:9', quote: 'exportAll();', held: true }, result: { reason: 'A total is wrong.', line: 'src/a.ts:3', quote: 'total += 1;', held: true }, declined: false,
+};
 
 describe('withVote', () => {
   it('lowers a declined blocker to a guarded warning and a declined warning to a note, and leaves alone a finding a refuter lowered or a rule grades', () => {
@@ -20,7 +22,7 @@ describe('withVote', () => {
 
     // A declined warning stays visible as a note.
     const note = withVote(finding({}), declined);
-    expect([note.severity, note.gradePath, note.unpostedReason]).toEqual(['note', [{ from: 'warning', to: 'note', by: 'other_finder', reason: 'the other finder named no harm in realistic use' }], undefined]);
+    expect([note.severity, note.gradePath, note.unpostedReason]).toEqual(['note', [{ from: 'warning', to: 'note', by: 'other_finder', reason: 'the other finder cited no trigger and result in normal use' }], undefined]);
     expect(withVote(finding({}), backed).severity).toBe('warning');
 
     // A check confirms the code path, not the harm, so a confirmed blocker still becomes a guarded warning, and a confirmed warning a note.
