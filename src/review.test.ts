@@ -4782,14 +4782,14 @@ describe('runReview', () => {
         // Only a warning is left out.
         'A doubted note': { severity: 'note', doubts },
         'A blocker': { severity: 'blocker', ...proof },
-        // A cost on the `degraded` row needs a realistic trigger. A serious consequence, a finder's blocker or a security finding keeps it without one.
+        // A cost on the `degraded` row needs a realistic trigger. A serious consequence or a security finding keeps it without one, and a finder's blocker the judge graded a warning does not.
         'Proven cost with a trigger': { ...proof, cell: degraded, trigger: 'When a user opens the page' },
         'Proven cost without a trigger': { ...proof, cell: degraded },
         'Unproven cost without a trigger': { cell: degraded },
         'Rare wrong result without a trigger': { ...proof, cell: { row: 'wrong', column: 'rare' } },
-        'Cost a finder filed as a blocker': { ...proof, cell: degraded, reviewerSeverity: 'blocker' },
+        'Cost a finder filed as a blocker': { ...proof, cell: degraded, reviewerSeverity: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'judge' }] },
         'Security cost without a trigger': { ...proof, cell: degraded, tags: ['security'] },
-        // A finder's blocker without a trigger is left out only once a check disproves the trigger, on any row, and never on a security finding.
+        // A finder's blocker without a trigger is left out whatever a check says about the trigger, and a security finding never is.
         'Cost a finder filed as a blocker, trigger confirmed': triggerChecked('confirmed'),
         'Cost a finder filed as a blocker, trigger disproved': triggerChecked('disproved'),
         'Security cost, trigger disproved': triggerChecked('disproved', { tags: ['security'] }),
@@ -4806,8 +4806,7 @@ describe('runReview', () => {
         ['The check confirmed it without cited lines', 'confirmed'],
         // Only a blocker or a warning says how it was checked. A doubt no check could settle leaves a posted warning unconfirmed.
         ['Doubted and no check could run', 'unconfirmed'], ['A doubted note', undefined], ['A blocker', 'proven'],
-        ['Proven cost with a trigger', 'proven'], ['Rare wrong result without a trigger', 'proven'], ['Cost a finder filed as a blocker', 'proven'], ['Security cost without a trigger', 'proven'],
-        ['Cost a finder filed as a blocker, trigger confirmed', 'confirmed'], ['Security cost, trigger disproved', 'unconfirmed'],
+        ['Proven cost with a trigger', 'proven'], ['Rare wrong result without a trigger', 'proven'], ['Security cost without a trigger', 'proven'], ['Security cost, trigger disproved', 'unconfirmed'],
         ['Wrong result without a realistic trigger, trigger open', 'confirmed'], ['Wrong result with a trigger, trigger confirmed', 'confirmed'], ['Security wrong result, trigger disproved', 'confirmed'],
       ]);
       expect(recordedOnly(result)).toEqual([
@@ -4820,6 +4819,8 @@ describe('runReview', () => {
         // A missing trigger is the reason whatever proves the warning.
         ['Proven cost without a trigger', 'warning', 'no_trigger'],
         ['Unproven cost without a trigger', 'warning', 'no_trigger'],
+        ['Cost a finder filed as a blocker', 'warning', 'no_trigger'],
+        ['Cost a finder filed as a blocker, trigger confirmed', 'warning', 'no_trigger'],
         ['Cost a finder filed as a blocker, trigger disproved', 'warning', 'no_trigger'],
         ['Rare wrong result, trigger disproved', 'warning', 'no_trigger'],
         ['Wrong result without a realistic trigger, trigger disproved', 'warning', 'no_trigger'],
@@ -4830,23 +4831,24 @@ describe('runReview', () => {
       expect(result.outcome).toBe('ADDRESS_FIRST');
     });
 
-    it('never leaves out a finding that would be a blocker if true, a blocker cell the judge keeps at a warning, a finding in the `rare` column, a security finding, a tool alert or a finding that breaks a confirmed rule', async () => {
+    it('never leaves out a finding the judge graded a blocker, a blocker cell the judge keeps at a warning until a check runs, a finding in the `rare` column, a security finding, a tool alert or a finding that breaks a confirmed rule', async () => {
       const rule = { file: 'AGENTS.md', quote: 'Every migration needs a rollback.' };
       const lowered = (by: 'unproven' | 'build_claim' | 'refutation' | 'judge') => ({ gradePath: [{ from: 'blocker' as const, to: 'warning' as const, by }] });
       const keptDown = { doubts, gradeIfConfirmed: 'warning' as const, cell: { row: 'wrong' as const, column: 'normal' as const } };
       const result = await review({
         'The judge held a blocker cell down': { ...proof, doubts, gradeIfConfirmed: 'blocker', ...checked('unsettled') },
         // The judge stated `warning` for the case that the doubt holds, or a check confirmed the doubt of a finding no finder filed as a
-        // blocker. The cell still gives a blocker, so an open doubt never leaves it out.
+        // blocker. The cell still gives a blocker, so it stays until a check runs, and only a check that confirms it keeps it then.
         'The judge keeps a blocker cell at a warning': { ...keptDown, ...checked('unsettled') },
         'The judge keeps a blocker cell at a warning, past the limit of checks': { ...keptDown, overCheckLimit: true },
         'The judge keeps a blocker cell at a warning, confirmed': { ...keptDown, ...checked('confirmed') },
         // No answer makes it a blocker, and it is posted whatever its check answered.
         'The judge placed it in the rare column': { doubts, gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'rare' }, ...checked('unsettled') },
+        // The judge kept the blocker a finder filed, so a cap for want of proof leaves it posted.
         'A blocker without cited lines': { tags: ['unproven-blocker'], ...lowered('unproven'), ...checked('unsettled') },
         'A build failure no CI result reports': { ...proof, tags: ['unconfirmed-build-claim'], ...lowered('build_claim') },
-        'A finder filed it as a blocker': { doubts, reviewerSeverity: 'blocker' },
-        'A blocker the judge lowered': { doubts, ...lowered('judge') },
+        // The judge graded a finder's blocker a warning, so the finder's grade keeps it no more than any warning.
+        'A finder filed it as a blocker': { doubts, reviewerSeverity: 'blocker', ...lowered('judge') },
         'A security finding': { tags: [SECURITY_TAG], doubts },
         'A tool alert': { toolSource: 'CodeQL' },
         // The judge confirmed the rule and the line that breaks it, so the review shows it without the note of an unconfirmed finding.
@@ -4856,13 +4858,16 @@ describe('runReview', () => {
       }, true);
 
       expect(shown(result)).toEqual([
-        ['The judge held a blocker cell down', 'unconfirmed'], ['The judge keeps a blocker cell at a warning', 'unconfirmed'],
+        ['The judge held a blocker cell down', 'unconfirmed'],
         ['The judge keeps a blocker cell at a warning, past the limit of checks', 'unconfirmed'], ['The judge keeps a blocker cell at a warning, confirmed', 'confirmed'],
         ['The judge placed it in the rare column', 'unconfirmed'], ['A blocker without cited lines', 'unconfirmed'], ['A build failure no CI result reports', 'unconfirmed'],
-        ['A finder filed it as a blocker', 'unconfirmed'], ['A blocker the judge lowered', 'unconfirmed'], ['A security finding', 'unconfirmed'], ['A tool alert', undefined],
+        ['A security finding', 'unconfirmed'], ['A tool alert', undefined],
         ['A rule blocker without a search', 'unconfirmed'],
       ]);
-      expect(recordedOnly(result)).toEqual([['A rule the judge did not confirm', 'warning', 'no_proof'], ['A warning nothing proves', 'warning', 'no_proof']]);
+      expect(recordedOnly(result)).toEqual([
+        ['The judge keeps a blocker cell at a warning', 'warning', 'unsettled_check'], ['A finder filed it as a blocker', 'warning', 'no_proof'],
+        ['A rule the judge did not confirm', 'warning', 'no_proof'], ['A warning nothing proves', 'warning', 'no_proof'],
+      ]);
       expect(result.outcome).toBe('READY');
     });
 

@@ -112,7 +112,7 @@ describe('applySuppressions', () => {
       makeFinding({ severity: 'warning', title: 'Unused variable does not compile', tags: [UNBUILT_TAG] }),
       // A check protects a finding that was or would be a blocker, and one whose grade it changed.
       makeFinding({ severity: 'warning', title: 'Unused variable hides the error', refutation, gradeIfConfirmed: 'blocker' }),
-      makeFinding({ severity: 'warning', title: 'Unused variable a finder called a blocker', pairRefutation: refutation, reviewerSeverity: 'blocker' }),
+      makeFinding({ severity: 'warning', title: 'Unused variable the judge kept a blocker', pairRefutation: refutation, gradePath: [{ from: 'blocker', to: 'warning', by: 'pre_existing' }] }),
       makeFinding({ severity: 'warning', title: 'Unused variable the check lowered', refutation, gradePath: [{ from: 'blocker', to: 'warning', by: 'refutation' }] }),
       makeFinding({ severity: 'warning', title: 'Unused variable the check raised', refutation, gradePath: [{ from: 'note', to: 'warning', by: 'refutation' }] }),
     ];
@@ -127,6 +127,8 @@ describe('applySuppressions', () => {
       makeFinding({ severity: 'warning', title: 'Unused variable the check confirmed', refutation: { ...refutation, outcome: 'confirmed' } }),
       makeFinding({ severity: 'warning', title: 'Unused variable the check left open', refutation, gradePath: [{ from: 'note', to: 'warning', by: 'judge' }] }),
       makeFinding({ severity: 'note', title: 'Unused variable lead', pairRefutation: refutation }),
+      // The judge graded it a warning, so the blocker a finder filed protects it from no suppression.
+      makeFinding({ severity: 'warning', title: 'Unused variable a finder called a blocker', pairRefutation: refutation, reviewerSeverity: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'judge' }] }),
       // No answer raises a finding in the `rare` column, so its `gradeIfConfirmed` protects it from no suppression.
       makeFinding({ severity: 'warning', title: 'Unused variable in a rare state', refutation: { ...refutation, outcome: 'confirmed' }, gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'rare' } }),
       // The judge keeps a blocker cell at a warning, so no answer raises the finding and it is hidden like any warning.

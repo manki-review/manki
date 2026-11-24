@@ -1973,7 +1973,7 @@ describe('runJudgeAgent', () => {
     expect(second.startsWith(`${first}\n\nYour previous reply could not be used: `)).toBe(true);
   });
 
-  it('has the trigger of a `degraded` warning checked when two finders ran and only one reported it, or when a finder filed it as a blocker and the judge named no trigger', async () => {
+  it('has the trigger of a `degraded` warning checked when two finders ran and only one reported it, and not for a finder\'s blocker the judge named no trigger for', async () => {
     const trigger = 'When a page loads';
     const findings = [
       makeFinding({ title: 'One finder', severity: 'warning', line: 3, reviewers: ['First'] }),
@@ -2020,15 +2020,15 @@ describe('runJudgeAgent', () => {
       ['Same title', trigger, undefined, undefined],
       // A sweep is no finder, so a warning only it found has fewer than two finders behind it too.
       ['Sweep only', trigger, 'warning', [triggerDoubt(trigger).premise]],
-      // A finder's blocker stays posted without a trigger until a check disproves the one its description names.
-      ['Blocker with no trigger', undefined, 'warning', [triggerDoubt(undefined).premise]],
+      // The judge graded a finder's blocker a warning, so the finder's grade gets no check of a trigger the judge did not name.
+      ['Blocker with no trigger', undefined, undefined, undefined],
       // A wrong result keeps its grade however rare its trigger, so its trigger is never checked.
       ['Wrong result with no trigger', undefined, 'blocker', [REACH_DOUBT.premise]],
     ]);
-    // With one finder there is no second one to agree, so only the finder's blocker with no trigger gets the check.
+    // With one finder there is no second one to agree, so no warning gets the check.
     expect((await graded(['First'])).map(([title, , , doubts]) => [title, doubts])).toEqual([
       ['One finder', undefined], ['Both finders', undefined], ['No trigger', undefined], ['Security', undefined], ['Rare wrong result', [REACH_DOUBT.premise]], ['Same title', undefined], ['Sweep only', undefined],
-      ['Blocker with no trigger', [triggerDoubt(undefined).premise]], ['Wrong result with no trigger', [REACH_DOUBT.premise]],
+      ['Blocker with no trigger', undefined], ['Wrong result with no trigger', [REACH_DOUBT.premise]],
     ]);
     // Without a refuter no check could confirm the trigger, so a warning that cites its lines stays proven.
     const unchecked = await graded(['First', 'Second'], false);
