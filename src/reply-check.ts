@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import type { getOctokit } from '@actions/github';
 
 import { RunCancelledError } from './abort';
-import { addedLines, changesNextTo, findClosedPattern, listedFilesDiff, oldLineOf, parsePRDiff, replacementOf } from './diff';
+import { addedLines, changesNextTo, listedFilesDiff, oldLineOf, parsePRDiff, replacementOf } from './diff';
 import { inline, MAX_COMPARE_FILES, sanitizeMarkdown } from './github';
 import { extractJSON } from './json';
 import { findLines } from './mcp-server';
@@ -438,8 +438,6 @@ export interface ElsewhereSources {
   postedOn?: string;
   /** The other files the finding cited as evidence. */
   evidenceFiles: readonly string[];
-  /** The paths no review stage reads, with those this PR renames into or out of them. `undefined` when they are not known. */
-  closedPaths: readonly string[] | undefined;
   /** Checks out `commit` of the repository for the tools, or returns `undefined` when it cannot. Absent without tools. */
   checkout?: (commit: string) => Promise<string | undefined>;
   /**
@@ -529,7 +527,6 @@ export async function checkFixedElsewhere(pr: number, s: ElsewhereSources): Prom
   if (!s.file) return { why: 'this finding is not tied to a file' };
   if (!s.line) return { why: 'this finding names no line' };
   if (!s.checkout) return { why: 'this reply runs without repository tools' };
-  if (!s.closedPaths) return { why: 'this PR\'s diff could not be read, so which files no review may read is not certain', retry: RETRY_SOON };
   const { octokit, owner, repo } = s;
   const read = await Promise.all([
     octokit.rest.repos.get({ owner, repo }),
@@ -564,11 +561,7 @@ export async function checkFixedElsewhere(pr: number, s: ElsewhereSources): Prom
   // A file this PR renamed has its old name on the base, which is where the other pull request changed it.
   const baseName = (path: string) => ownFiles.find(f => f.filename === path)?.previous_filename ?? path;
   const cited = [s.file, ...s.evidenceFiles].flatMap(path => [path, baseName(path)]);
-  const cites = otherFiles.filter(f => cited.includes(f.filename) || (!!f.previous_filename && cited.includes(f.previous_filename)));
-  // The model reads what the other pull request changes, so a file it moves into or out of a closed path stays out.
-  const closed = (f: typeof cites[number]) => [f.filename, f.previous_filename].some(path => !!path && !!findClosedPattern(path, s.closedPaths!));
-  if (cites.some(f => closed(f) && [f.filename, f.previous_filename].includes(baseName(s.file)))) return { why: `#${pr} moves ${inline(s.file)} into or out of a path no review may read` };
-  const covered = cites.filter(f => !closed(f));
+  const covered = otherFiles.filter(f => cited.includes(f.filename) || (!!f.previous_filename && cited.includes(f.previous_filename)));
   if (covered.length === 0) return { why: `#${pr} changes none of the files this finding cites` };
   const place = inline(`${s.file}:${line}`);
   const file = inline(s.file);

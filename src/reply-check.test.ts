@@ -373,8 +373,8 @@ describe('checkFixedElsewhere', () => {
   const stacked: Pull = { state: 'open', merged: false, head: { sha: OTHER_HEAD }, base: { ref: 'feature' }, merge_commit_sha: 'e'.repeat(40), changed_files: 1 };
 
   /** `holds` lists the `ancestor..commit` pairs where the commit holds the ancestor, and the comparison of `failing` throws. */
-  function setup(other: Pull | Error, { holds = [`${HEAD}..${OTHER_HEAD}`, `${HEAD}..${MERGE}`, `${FIX}..${MERGE}`, `${POSTED}..${HEAD}`], failing = '', files = [FILE] as object[], ownFiles = [OWN_FILE] as object[], sinceHead = [SINCE_HEAD] as object[], answer = '' as string | Error, checkout = true as boolean | 'none', line = 2, ownBase = 'main', postedOn, sincePosted = [] as object[], closedUnknown = false }: {
-    holds?: string[]; failing?: string; files?: object[] | Error; ownFiles?: object[]; sinceHead?: object[]; answer?: string | Error; checkout?: boolean | 'none'; line?: number; ownBase?: string; postedOn?: string; sincePosted?: object[]; closedUnknown?: boolean;
+  function setup(other: Pull | Error, { holds = [`${HEAD}..${OTHER_HEAD}`, `${HEAD}..${MERGE}`, `${FIX}..${MERGE}`, `${POSTED}..${HEAD}`], failing = '', files = [FILE] as object[], ownFiles = [OWN_FILE] as object[], sinceHead = [SINCE_HEAD] as object[], answer = '' as string | Error, checkout = true as boolean | 'none', line = 2, ownBase = 'main', postedOn, sincePosted = [] as object[] }: {
+    holds?: string[]; failing?: string; files?: object[] | Error; ownFiles?: object[]; sinceHead?: object[]; answer?: string | Error; checkout?: boolean | 'none'; line?: number; ownBase?: string; postedOn?: string; sincePosted?: object[];
   } = {}) {
     const octokit = {
       rest: {
@@ -406,7 +406,6 @@ describe('checkFixedElsewhere', () => {
     const checkoutFn = jest.fn().mockResolvedValue(checkout ? workspace : undefined);
     const sources: ElsewhereSources = {
       octokit: octokit as unknown as ElsewhereSources['octokit'], owner: 'acme', repo: 'ledger', prNumber: 1, file: 'src/ledger.rs', line, evidenceFiles: [], ask,
-      closedPaths: closedUnknown ? undefined : ['secret/**'],
       ...(postedOn && { postedOn }),
       ...(checkout !== 'none' && { checkout: checkoutFn }),
     };
@@ -420,13 +419,6 @@ describe('checkFixedElsewhere', () => {
     expect(checkout).toHaveBeenCalledWith(MERGE);
     // The model sees what the other pull request changes in the finding's files, never its text.
     expect(ask).toHaveBeenCalledWith(workspace, expect.stringContaining('+  fn check() {}'), 7, [2, 3]);
-    // Nor the change of a cited file that #7 moves into or out of a path no review may read.
-    for (const [filename, previous_filename] of [['secret/old.rs', 'src/old.rs'], ['src/old.rs', 'secret/old.rs']]) {
-      const closed = setup({ ...merged, changed_files: 2 }, { files: [FILE, { filename, previous_filename, status: 'renamed', patch: '@@ -1,1 +1,1 @@\n-closed_old\n+closed_new' }] });
-      expect(await checkFixedElsewhere(7, { ...closed.sources, evidenceFiles: ['src/old.rs'] })).toEqual({ pr: 7, base: 'main', answer: 'The ledger now checks the key.' });
-      expect(closed.ask.mock.calls[0][1]).toContain('+  fn check() {}');
-      expect(closed.ask.mock.calls[0][1]).not.toContain('closed_');
-    }
   });
 
   // A detached thread names line 1 of the commit it was posted on. This PR has since put line 1 back above it, so the
@@ -465,7 +457,6 @@ describe('checkFixedElsewhere', () => {
     ['a checkout that fails', merged, { checkout: false }, 'the merge with #7 could not be checked out', 'in a few minutes', undefined],
     ['a check of the merge that fails', merged, { answer: new Error('timed out') }, 'the check of the merge with #7 failed', 'in a few minutes', 'Failed to check the merge with #7: timed out'],
     ['a detached finding whose line at the head cannot be read', merged, { postedOn: POSTED, failing: `${POSTED}..${HEAD}` }, 'where `src/ledger.rs:2` is at this PR\'s head could not be read', 'in a few minutes', `Failed to compare ${POSTED} with this PR's head: compare failed`],
-    ['a PR diff that cannot be read while some paths are closed', merged, { closedUnknown: true }, 'this PR\'s diff could not be read, so which files no review may read is not certain', 'in a few minutes', undefined],
   ])('confirms nothing yet for %s', async (_name, other, options, why, retry, logged) => {
     const warning = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const { sources } = setup(other, options);
@@ -490,8 +481,6 @@ describe('checkFixedElsewhere', () => {
     ['a pull request this PR\'s head already holds', merged, { holds: [`${HEAD}..${MERGE}`, `${FIX}..${MERGE}`, `${FIX}..${HEAD}`] }, 'this PR\'s head already holds #7, so #7 cannot be what fixes it'],
     ['no change to a file the finding cites', merged, { files: [{ ...FILE, filename: 'src/other.rs' }] }, '#7 changes none of the files this finding cites'],
     ['a finding on the whole file', merged, { line: 0 }, 'this finding names no line'],
-    ['a fix that moves the finding\'s file into a closed path', merged, { files: [{ ...FILE, filename: 'secret/ledger.rs', previous_filename: 'src/ledger.rs', status: 'renamed' }] }, '#7 moves `src/ledger.rs` into or out of a path no review may read'],
-    ['a fix that moves a closed file onto the finding\'s file', merged, { files: [{ ...FILE, previous_filename: 'secret/ledger.rs', status: 'renamed' }] }, '#7 moves `src/ledger.rs` into or out of a path no review may read'],
     ['a merge that keeps the finding\'s line and replaces the next one', merged, { line: 1 }, 'the merge with #7 changes only the lines next to `src/ledger.rs:1`, and the check needs `src/ledger.rs:1` itself replaced'],
     ['a merge that only adds a guard above the finding\'s line', merged, { sinceHead: [{ ...SINCE_HEAD, patch: '@@ -1,2 +1,3 @@\n pub struct Ledger;\n+// guard\n impl Ledger {}' }] }, 'the merge with #7 changes only the lines next to `src/ledger.rs:2`, and the check needs `src/ledger.rs:2` itself replaced'],
     ['a merge that changes the finding\'s file far from its line', merged, { line: 40 }, 'the merge with #7 leaves `src/ledger.rs:40` as it is'],
