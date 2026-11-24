@@ -1064,6 +1064,7 @@ describe('runBench and buildReport', () => {
     expect(review).toHaveBeenCalledTimes(1);
   });
 
+  // About 15 bench runs on a real git checkout take over the default 5 seconds when other test files run beside it.
   it('replays the finder output a stored report holds, run n from its complete run n modulo their count, and decides no release with it', async () => {
     const matcher: Matcher = async () => ({ verdict: 'NONE', findings: [], reason: 'none' });
     const planner = { trivial: false, subtle: true, paired: true, judgeEffort: 'low' as const, prType: 'fix' as const };
@@ -1137,7 +1138,7 @@ describe('runBench and buildReport', () => {
     expect(mergeReports([report], [benchCase], {}).findingsFrom).toEqual(findingsFrom);
     expect(formatBenchSummary({ ...report, findingsFrom: { ...findingsFrom, live: ['refuter', 'scope reader'] } })).toContain('did not run. The name translation, dedup and judge answers were kept too. Live: refuter, scope reader.\n');
     expect(() => gateReports([stored], [report])).toThrow('The report started at 2026-11-21T00:00:00.000Z kept the finder output of an earlier run, so it decides no release');
-  });
+  }, 30_000);
 
   it('prints nothing of a hold-out case but its id and counts: no finding text, review log, matcher reply, source or failure reason', async () => {
     const SECRET = 'HOLDOUT-TEXT';
