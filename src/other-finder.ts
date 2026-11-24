@@ -121,7 +121,7 @@ export interface VoteOptions {
   restates: (finding: Finding) => boolean;
   rules?: RulesMode;
   /** Hears how each vote was asked for. */
-  onVote?: (log: VoteLog) => void;
+  onVote?: (log: VoteLog, finding: Finding) => void;
 }
 
 /** Returns `client` with each of its calls added to `calls`. */
@@ -167,7 +167,7 @@ export async function otherFinderVotes(findings: readonly Finding[], { workspace
     const readers = bySecondReadsOnly(finding) ? readModels(finding, reads, finders) : [];
     if (!readers) {
       core.info(`No vote on "${finding.title}", since the model of a second read that reported it is not known`);
-      onVote?.({ title, file, line, calls: [], answer: 'unknown_read' });
+      onVote?.({ title, file, line, grade: finding.severity, calls: [], answer: 'unknown_read' }, finding);
       return undefined;
     }
     const other = finders.find(f => !finding.reviewers.includes(f.name) && !readers.includes(modelIdentity(f.model)));
@@ -216,7 +216,7 @@ export async function otherFinderVotes(findings: readonly Finding[], { workspace
       if (!(error instanceof NotStartedError)) core.warning(`Could not ask ${other.name} about "${finding.title}": ${error}`);
       return undefined;
     } finally {
-      onVote?.({ title, file, line, finder: other.name, model: other.model, calls, answer });
+      onVote?.({ title, file, line, grade: finding.severity, finder: other.name, model: other.model, calls, answer }, finding);
     }
   });
 }

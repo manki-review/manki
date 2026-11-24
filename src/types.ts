@@ -1158,6 +1158,9 @@ export interface VoteLog {
   title: string;
   file: string;
   line: number;
+  /** The finding's grade before the vote, and the one `withVote` left it with. */
+  grade: FindingSeverity;
+  after?: FindingSeverity;
   /** The finder whose model was asked, and that model. Unset with `unknown_read`, when the model of a read that reported the finding is not known. */
   finder?: string;
   model?: string;

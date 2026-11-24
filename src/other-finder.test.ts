@@ -79,7 +79,7 @@ describe('otherFinderVotes', () => {
       const asked = { sendMessage: jest.fn().mockResolvedValue(reply) } as unknown as LLMClient;
       await otherFinderVotes([finding({})], { workspace, restates: () => false, onVote: log => logs.push(log), finders: [{ name: 'Finder A', model: 'opus', client: asked }, { name: 'Finder B', model: 'sol', client: asked }] });
       expect(logs).toEqual([{
-        title: 'Totals drift', file: 'src/a.ts', line: 3, finder: 'Finder B', model: 'sol', answer: 'declines',
+        title: 'Totals drift', file: 'src/a.ts', line: 3, grade: 'warning', finder: 'Finder B', model: 'sol', answer: 'declines',
         calls: [{ outcome: 'answered', durationMs: 4000, model: 'claude-opus-5-5', toolSteps: 0, costUsd: expect.any(Number) }],
       }]);
     } finally {

@@ -4640,7 +4640,7 @@ describe('runReview', () => {
         ['no_answer', 'failed'], undefined,
       ]);
       expect(result.votes!.find(v => v.title === 'Times out twice')).toEqual({
-        title: 'Times out twice', file: 'src/a.ts', line: expect.any(Number), finder: expect.any(String), model: expect.any(String), answer: 'no_answer',
+        title: 'Times out twice', file: 'src/a.ts', line: expect.any(Number), grade: 'warning', after: 'warning', finder: expect.any(String), model: expect.any(String), answer: 'no_answer',
         calls: Array(2).fill({ outcome: 'timed_out', durationMs: expect.any(Number), error: 'Claude CLI timed out after 120s' }),
       });
       // A replay runs no read, so it takes the read's model from the stored round, and asks no vote on the read's finding without it.
@@ -4650,7 +4650,7 @@ describe('runReview', () => {
         (await run(undefined, more)).result.findings.find(f => f.title === 'Second read only')!.otherFinderVote?.finder;
       expect(await readVoter({ replay: { ...replay, reads: [{ reviewer, model }] } })).toBe(result.findings.find(f => f.title === 'Second read only')!.otherFinderVote!.finder);
       expect(await readVoter({ replay })).toBeUndefined();
-      expect((await run(undefined, { replay })).result.votes).toContainEqual({ title: 'Second read only', file: 'src/a.ts', line: 21, calls: [], answer: 'unknown_read' });
+      expect((await run(undefined, { replay })).result.votes).toContainEqual({ title: 'Second read only', file: 'src/a.ts', line: 21, grade: 'warning', after: 'warning', calls: [], answer: 'unknown_read' });
       // A lead carried from an earlier round names that round's read, so the name tells no model.
       const last = buildPriorRound(1, []);
       last.leads = [{ title: 'Carried', file: 'src/a.ts', line: 1, severity: 'warning', reviewers: [reviewer], description: 'Carried.', lead: { checked: 'c', left: 'l' }, outcome: 'unsettled', since: 1 }];

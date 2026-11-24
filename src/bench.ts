@@ -2291,7 +2291,10 @@ export function runBenchCommand(argv: string[], root = '.'): Promise<number> {
     if (args.replayLevel && !args.findingsFrom) throw new Error(`--replay-${args.replayLevel} needs --findings-from, whose runs hold the answers to keep`);
     const cases = loadCases([args.cases, ...(args.holdout ? [join(root, CASE_DIRS.holdout)] : [])], args.only, root);
     const cache = loadMatcherCache(args.cache);
-    const matcher = llmMatcher(buildLLMClient(args.matcherModel, providerInputs), args.matcherModel, cache);
+    // A replay is scored outside the run, from the matches of the report it replays.
+    const matcher: Matcher = args.findingsFrom
+      ? async () => ({ verdict: 'NONE', findings: [], reason: 'Not matched in a replay.' })
+      : llmMatcher(buildLLMClient(args.matcherModel, providerInputs), args.matcherModel, cache);
     if (args.rescore) {
       const { report: stored, removed } = readReport(args.rescore, root);
       // A report holds one matcher model, and the gate refuses to compare reports matched by different ones.
