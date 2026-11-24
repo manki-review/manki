@@ -65,6 +65,10 @@ describe('otherFinderVotes', () => {
       expect(await vote(['opus', 'sol'])).toBe('Finder B');
       expect(await vote(['opus', 'opus', 'sol'])).toBe('Finder C');
       expect(await vote(['opus', 'opus'])).toBeUndefined();
+      // A finding a finder reported keeps its voter, also when a second read on that voter's model reported it too.
+      const both = finding({ reviewers: ['Finder A', 'Second read 1'] });
+      const voters = [{ name: 'Finder A', model: 'opus', client: client() }, { name: 'Finder B', model: 'sol', client: client() }];
+      expect((await otherFinderVotes([both], { workspace, reads: [{ reviewer: 'Second read 1', finder: 'Finder B' }], restates: () => false, finders: voters }))[0]?.finder).toBe('Finder B');
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }

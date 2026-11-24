@@ -132,7 +132,7 @@ export interface VoteOptions {
 export async function otherFinderVotes(findings: readonly Finding[], { workspace, diff, finders, reads = [], restates, rules }: VoteOptions): Promise<Array<OtherFinderVote | undefined>> {
   return mapWithConcurrency([...findings], MAX_PARALLEL_REFUTATIONS, async finding => {
     const readers = new Set(reads.filter(read => finding.reviewers.includes(read.reviewer)).map(read => read.finder));
-    const readModels = new Set(finders.filter(f => readers.has(f.name)).map(f => f.model));
+    const readModels = bySecondReadsOnly(finding) ? new Set(finders.filter(f => readers.has(f.name)).map(f => f.model)) : new Set<string>();
     const other = getsVote(finding, restates, rules) ? finders.find(f => !finding.reviewers.includes(f.name) && !readModels.has(f.model)) : undefined;
     if (!other) return undefined;
     let retried = false;
