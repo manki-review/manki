@@ -3,7 +3,8 @@ name: Codex tools
 # Runs the Codex CLI version Manki pins against a stand-in endpoint on localhost, and fails when a model is offered a
 # tool that `scripts/fixtures/codex-tools.json` does not list, or no longer one it lists, when a request carries Codex's
 # skill text, when a part of the Codex setup planted in the runner's home reaches Codex, or when Codex tries to reach
-# another host. The `homes` job does the same for the runner's Claude and Gemini setup with the versions Manki pins.
+# another host. The `homes` job does the same for the runner's Claude and Gemini setup with the versions Manki pins,
+# and fails when a tool of the Claude CLI reads the checkout's `.git`.
 # Needs no secret.
 on:
   push:
@@ -59,3 +60,5 @@ jobs:
           npm install -g --ignore-scripts "@google/gemini-cli@$gemini"
       - name: Check that the runner's own setup stays out
         run: npx tsx scripts/cli-homes-check.ts
+      - name: Check that the Claude CLI's tools read nothing in `.git`
+        run: npx tsx scripts/claude-git-check.ts

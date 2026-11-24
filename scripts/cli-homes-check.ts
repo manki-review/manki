@@ -202,11 +202,17 @@ export function plantGeminiSetup(home: string, temp: string, standIn: string, fl
   }));
 }
 
+/** A tool call the stand-in asks Claude to make. */
+export interface ToolCall {
+  name: string;
+  input: Json;
+}
+
 /**
- * Answers the Messages API with `OK`, as a stream when the request asks for one, also on Bedrock and Vertex. Records a
- * Vertex login that refreshes with the runner's token.
+ * Answers the Messages API with `OK`, as a stream when the request asks for one, also on Bedrock and Vertex. With
+ * `calls` it first asks for those, numbered `toolu_0` on. Records a Vertex login that refreshes with the runner's token.
  */
-function answerClaude(run: StandInRun): Answer {
+export function answerClaude(run: StandInRun, calls: ToolCall[] = []): Answer {
   return (req, raw, res) => {
     if (req.headers.host === 'oauth2.googleapis.com') {
       if (raw.includes(RUNNER_ADC_REFRESH)) run.ran.push(FLAG.adc);
@@ -233,9 +239,14 @@ function answerClaude(run: StandInRun): Answer {
     }
     // Bedrock gets no content type, so the CLI reads server-sent events, as `CLAUDE_CODE_DISABLE_BEDROCK_CONTENT_TYPE_DEFAULT` asks.
     res.writeHead(200, (req.url ?? '').includes('/invoke-with-response-stream') ? {} : { 'content-type': 'text/event-stream' });
-    res.end(sse('message_start', { message }) + sse('content_block_start', { index: 0, content_block: { type: 'text', text: '' } })
-      + sse('content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'OK' } }) + sse('content_block_stop', { index: 0 })
-      + sse('message_delta', { delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 1 } }) + sse('message_stop', {}));
+    // Claude sends the results back in its next request. A request without tools is not one of the review call.
+    const asks = calls.length > 0 && Array.isArray(body.tools) && body.tools.length > 0 && !raw.includes('"tool_result"');
+    const blocks: [Json, Json][] = asks
+      ? calls.map(({ name, input }, i) => [{ type: 'tool_use', id: `toolu_${i}`, name, input: {} }, { type: 'input_json_delta', partial_json: JSON.stringify(input) }])
+      : [[{ type: 'text', text: '' }, { type: 'text_delta', text: 'OK' }]];
+    res.end(sse('message_start', { message })
+      + blocks.map(([content_block, delta], index) => sse('content_block_start', { index, content_block }) + sse('content_block_delta', { index, delta }) + sse('content_block_stop', { index })).join('')
+      + sse('message_delta', { delta: { stop_reason: asks ? 'tool_use' : 'end_turn', stop_sequence: null }, usage: { output_tokens: 1 } }) + sse('message_stop', {}));
   };
 }
 
@@ -260,7 +271,7 @@ function answerGemini(run: StandInRun): Answer {
 }
 
 /** Runs the CLI and returns its exit code with its output, where `claude -p` also reports its errors. */
-function runCli(command: string, args: string[], env: NodeJS.ProcessEnv, cwd: string): Promise<{ code: number | null; output: string }> {
+export function runCli(command: string, args: string[], env: NodeJS.ProcessEnv, cwd: string): Promise<{ code: number | null; output: string }> {
   return new Promise((done, fail) => {
     const child = spawn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
     let output = '';
@@ -344,7 +355,7 @@ async function checkRun({ cli, control, tools = false, cloud }: CheckRun, repo: 
 }
 
 /** Returns the version the CLI `command` reports, or an empty string when there is none. */
-function cliVersion(command: string): Promise<string> {
+export function cliVersion(command: string): Promise<string> {
   return new Promise(done => {
     const child = spawn(command, ['--version'], { stdio: ['ignore', 'pipe', 'ignore'] });
     let stdout = '';

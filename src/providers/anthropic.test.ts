@@ -567,7 +567,9 @@ describe('sendViaOAuth — error paths', () => {
     expect(spawnArgs).toEqual(expect.arrayContaining(['--restricted', '--strict-mcp-config']));
     expect([valueOf('--permission-mode'), valueOf('--tools'), valueOf('--add-dir'), valueOf('--allowedTools'), valueOf('--max-turns')])
       .toEqual(['dontAsk', 'Read,Grep,Glob', '/work/repo', 'mcp__manki__git_history,mcp__manki__ast_grep,mcp__manki__repo_info,mcp__manki__read_file,mcp__manki__grep,mcp__manki__glob', '20']);
-    const hook = JSON.parse(valueOf('--settings')).hooks.PreToolUse;
+    const settings = JSON.parse(valueOf('--settings'));
+    expect(settings.permissions).toEqual({ deny: ['Read(//**/.git)', 'Read(//**/.git/**)'] });
+    const hook = settings.hooks.PreToolUse;
     expect(hook).toEqual([{ matcher: '*', hooks: [{ type: 'command', command: expect.stringMatching(/ 'step-hook' '[^']+\/steps' '15'$/) }] }]);
     expect(hook[0].hooks[0].command.startsWith(`'${process.execPath}' '${process.argv[1]}' `)).toBe(true);
     expect(valueOf('--setting-sources')).toBe('');
