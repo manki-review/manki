@@ -221,15 +221,15 @@ export function isSecurityFinding(tags: string[] | undefined, priorReviewers: Re
 
 /**
  * Whether a step that leaves out notes may leave the finding out of the review: only a note, and never a security
- * finding, a tool alert or a note the other finder's vote lowered from a warning (`votedDown`).
+ * finding, a tool alert or a note a step lowered from a warning (`loweredFromWarning`).
  */
 export function canLeaveOut(f: Finding): boolean {
-  return isNote(f.severity) && !f.toolSource && !isSecurityFinding(f.tags, f.reviewers) && !votedDown(f);
+  return isNote(f.severity) && !f.toolSource && !isSecurityFinding(f.tags, f.reviewers) && !loweredFromWarning(f);
 }
 
-/** Whether the other finder's vote lowered `f` to a note, which stays in the review so one vote never removes a warning. */
-export function votedDown(f: Pick<Finding, 'severity' | 'gradePath'>): boolean {
-  return isNote(f.severity) && !!f.gradePath?.some(step => step.by === 'other_finder' && step.to === 'note');
+/** Whether a step lowered `f` from a warning to a note, which stays in the review so the step never removes a warning. */
+export function loweredFromWarning(f: Pick<Finding, 'severity' | 'gradePath'>): boolean {
+  return isNote(f.severity) && !!f.gradePath?.some(step => LOWERS_WARNING.includes(step.by) && step.to === 'note');
 }
 
 /**
@@ -978,6 +978,9 @@ export interface RoundSlicing {
 export type GradeChange =
   | 'judge' | 'rule' | 'unproven' | 'build_claim' | 'refutation' | 'in_pr_suppression' | 'own_proposal' | 'ratchet'
   | 'resolved_thread' | 'pre_existing' | 'own_fix' | 'other_finder' | 'unconfirmed_raise';
+
+/** The steps that may lower a warning to a note that the review then keeps. */
+const LOWERS_WARNING: readonly GradeChange[] = ['other_finder'];
 
 /** One change of a finding's severity. */
 export interface GradeStep {
