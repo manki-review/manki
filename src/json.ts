@@ -38,16 +38,22 @@ function matchingClose(text: string, start: number): number {
   return -1;
 }
 
+// A bracket pair such as `[42 findings]` that cannot be an answer: it is not empty and holds no quote and no other bracket.
+const PROSE_BRACKETS = /[{[]\s*[^\s"{}[\]][^"{}[\]]*[}\]]/g;
+
 /**
- * Returns the JSON value that starts at the first bracket of `head` and ends at the last bracket of `tail`, or undefined
- * when the text between the two is not one whole value.
+ * Returns the JSON answer that starts in `head` and ends in `tail`, or undefined when another bracket around it could
+ * belong to an answer too. Only a first bracket is tried, since a later one can open a part of the answer.
  */
 export function joinedJSON(head: string, tail: string): string | undefined {
-  const start = head.search(/[{[]/);
-  const end = Math.max(tail.lastIndexOf('}'), tail.lastIndexOf(']'));
-  if (start === -1 || end === -1) return undefined;
-  const joined = head.slice(start) + tail.slice(0, end + 1);
-  return parsesAs(joined) ? joined : undefined;
+  const start = head.replace(PROSE_BRACKETS, m => ' '.repeat(m.length)).search(/[{[]/);
+  if (start === -1) return undefined;
+  const text = head + tail;
+  const end = matchingClose(text, start);
+  if (end < head.length) return undefined;
+  if (/[{}[\]]/.test(text.slice(end + 1).replace(PROSE_BRACKETS, ''))) return undefined;
+  const joined = text.slice(start, end + 1);
+  return /^(?:\[\s*)?\{\s*"/.test(joined) && parsesAs(joined) ? joined : undefined;
 }
 
 /**

@@ -110,4 +110,38 @@ describe('joinedJSON', () => {
     }
     expect([joinedJSON('', whole), joinedJSON(whole, ' done.'), joinedJSON('No', ' JSON.')]).toEqual([undefined, undefined, undefined]);
   });
+
+  it('reads past brackets in the prose and falls back when one could be an answer', () => {
+    const whole = JSON.stringify({ findings: [{ id: 1, title: 'See [1], {x} and "[2]', proof: ['a.ts:1', 'b.ts:2'] }, { id: 2, proof: [] }], threads: [] }, null, 1);
+    const answer = JSON.stringify(JSON.parse(whole).findings);
+    for (const text of [whole, answer]) {
+      for (const [before, after] of [
+        ['Grades for [42 findings]:\n', ''], ['', '\nSee [1].'], ['Grades for [42 findings]:\n', '\nSee [1].'],
+        ['- [x] `list[0]`, {id} and [a link](b)\n', '\nIt is "done" [2], [3].'], ['The "first" [1:\n2] and 3]\n', ''],
+      ]) {
+        for (const [open, close] of [['', ''], ['```json\n', '\n```']]) {
+          for (let at = 1; at < text.length; at++) expect(joinedJSON(before + open + text.slice(0, at), text.slice(at) + close + after)).toBe(text);
+        }
+      }
+      for (const [before, after] of [
+        // The bracket can be a whole answer, an example of one, or cannot be told apart from the start or end of one.
+        ['Example: {"id": 9}\n', ''], ['', '\nExample: {"id": 9}'], ['Proof is ["a.ts:1"].\n', ''], ['', '\nProof is ["a.ts:1"].'],
+        ['Draft: []\n', ''], ['', '\nInstead: []'], ['Draft: {}\n', ''], ['', '\nInstead: {}'], ['Pairs [[1], [2]]\n', ''], ['', '\nPairs [[1], [2]]'],
+        ['See [1:\n', ''], ['', '\nSee [1'], ['', '\nSee 1]'], ['Says ["x]:\n', ''], ['', ']}'],
+      ]) {
+        for (let at = 1; at < text.length; at++) expect(joinedJSON(before + text.slice(0, at), text.slice(at) + after)).toBeUndefined();
+      }
+    }
+    // An entry or a proof list is never taken for the answer that holds it, whether that is left open or does not fit.
+    for (const part of [JSON.stringify({ id: 1, proof: ['a.ts:1'] }), '["a.ts:1", "b.ts:2"]']) {
+      for (const [open, close] of [['{"findings": [\n', ''], ['{"findings": [\n', ']'], ['[{"id": 0}\n', ']'], ['Grades for [42 findings]:\n[{"id": 0} x\n', ''], ['See [1:\n[{"id": 0},\n', '']]) {
+        for (let at = 1; at < part.length; at++) expect(joinedJSON(open + part.slice(0, at), part.slice(at) + close)).toBeUndefined();
+      }
+    }
+    // A value in the prose that the cut goes through is no answer.
+    for (const tail of ['2].', `2].\n${whole}`, '2].\n[]']) expect(joinedJSON('See [1, ', tail)).toBeUndefined();
+    for (const tail of ['}.', `}.\n${whole}`]) expect(joinedJSON('See {', tail)).toBeUndefined();
+    expect(joinedJSON('Such as {"id": ', `9}.\n${whole}`)).toBeUndefined();
+    expect(joinedJSON(`${whole}\nSuch as {"id": `, '9}.')).toBeUndefined();
+  });
 });

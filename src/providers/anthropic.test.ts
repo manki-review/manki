@@ -775,7 +775,7 @@ describe('sendViaOAuth — error paths', () => {
     // A fence or prose around the cut answer is no part of it.
     const fenced = `\`\`\`json\n${reply}\n\`\`\``;
     const at = (text: string): [string, string][] => [[text.slice(0, text.indexOf('"Finding 2"')), 'max_tokens'], [text.slice(text.indexOf('"Finding 2"')), 'end_turn']];
-    for (const text of [fenced, `My grades:\n${fenced}\nThat is all.`]) expect((await send(at(text))).content).toBe(reply);
+    for (const text of [fenced, `My grades:\n${fenced}\nThat is all.`, `Grades for [42 findings]:\n${fenced}\nSee [1].`]) expect((await send(at(text))).content).toBe(reply);
     // Every other last message stands alone, so the reply is never read worse than without the cut text.
     const alone = [
       reply, fenced, `I start over.\n${fenced}`, `${fenced}\nThat covers all findings.`,
@@ -789,7 +789,11 @@ describe('sendViaOAuth — error paths', () => {
     // A restart that was cut in its turn does not fit the first cut text either.
     expect((await send([[head, 'max_tokens'], [head, 'max_tokens'], [middle + tail, 'end_turn']])).content).toBe(middle + tail);
     // The cut text holds no JSON: the message was cut while thinking or in prose.
-    for (const cut of ['', 'Let me go through the findings']) expect((await send([[cut, 'max_tokens'], [reply, 'end_turn']])).content).toBe(reply);
+    for (const cut of ['', 'Let me go through the findings']) {
+      infoSpy.mockClear();
+      expect((await send([[cut, 'max_tokens'], [reply, 'end_turn']])).content).toBe(reply);
+      expect(infoSpy).toHaveBeenLastCalledWith(expect.stringContaining('only its last message is read'));
+    }
     // A whole answer before the cut is not read when the last message adds only prose, which may take it back.
     expect((await send([[`${reply} That is`, 'max_tokens'], [' a draft.', 'end_turn']])).content).toBe('a draft.');
     expect((await send([['The fix is', 'max_tokens'], [' right.', 'end_turn']])).content).toBe('right.');

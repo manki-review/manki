@@ -372,6 +372,7 @@ export class AnthropicClient implements LLMClient {
     let cutText = '';
     let messageText = '';
     let stopReason: unknown;
+    let wentOn = false;
     let joined: string | undefined;
     let replyTail = '';
     let jsonBuffer = '';
@@ -392,7 +393,8 @@ export class AnthropicClient implements LLMClient {
       for (const limit of delta.limits ?? []) limits.set(limit.window, limit);
       if (delta.requestInput !== undefined) {
         requestInputs.push(delta.requestInput);
-        cutText = stopReason === 'max_tokens' ? cutText + messageText : '';
+        wentOn = stopReason === 'max_tokens';
+        cutText = wentOn ? cutText + messageText : '';
         messageText = '';
         stopReason = undefined;
       }
@@ -491,7 +493,7 @@ export class AnthropicClient implements LLMClient {
       core.warning(`Claude CLI reply reached the ${THINKING_MAX_TOKENS}-token output limit (exit ${code})`);
       warnReplyTail('Claude CLI', replyTail);
     }
-    if (cutText) core.info(`Claude CLI reply went on past the ${THINKING_MAX_TOKENS}-token output limit of one message, ${joined ? 'joined with the cut text' : 'and only its last message is read'}`);
+    if (wentOn) core.info(`Claude CLI reply went on past the ${THINKING_MAX_TOKENS}-token output limit of one message, ${joined ? 'joined with the cut text' : 'and only its last message is read'}`);
     const content = code === 0 ? output.trim() : '';
     core.debug(sanitizeLogOutput(content.slice(0, 200)));
     return {
