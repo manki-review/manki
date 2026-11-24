@@ -1,4 +1,4 @@
-import { extractJSON } from './json';
+import { extractJSON, joinedJSON } from './json';
 
 describe('extractJSON', () => {
   it('returns clean JSON as-is', () => {
@@ -94,5 +94,20 @@ describe('extractJSON', () => {
 
   it('returns the cleaned text when nothing of the expected shape parses', () => {
     expect(extractJSON('only [1, 2] here', 'object')).toBe('only [1, 2] here');
+  });
+});
+
+describe('joinedJSON', () => {
+  it('joins an answer cut at any place, and never one that starts over', () => {
+    const whole = JSON.stringify({ summary: 'A "quoted" {brace} and [bracket] \\ path\n', findings: [{ id: 1, proof: ['a.ts:1', 'b.ts:2'], notes: {} }, { id: 2, proof: [] }], threads: [] }, null, 1);
+    for (const text of [whole, JSON.stringify(JSON.parse(whole).findings)]) {
+      const fenced = `\`\`\`json\n${text}\n\`\`\``;
+      for (let at = 1; at < text.length; at++) {
+        const head = text.slice(0, at);
+        expect(joinedJSON(head, text.slice(at))).toBe(text);
+        for (const restart of [text, fenced, `Again: ${fenced}`, `${fenced}\nDone.`]) expect(joinedJSON(head, restart)).toBeUndefined();
+      }
+    }
+    expect([joinedJSON('', whole), joinedJSON(whole, ' done.'), joinedJSON('No', ' JSON.')]).toEqual([undefined, undefined, undefined]);
   });
 });

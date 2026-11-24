@@ -6,7 +6,7 @@ import { promisify } from 'util';
 import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
-import { isWholeJSON } from '../json';
+import { joinedJSON } from '../json';
 import { installPinned } from '../tool-install';
 import { appendReplyTail, buildExitDiagnostics, callWithTimeout, carryReadings, cliEnv, closedCallsFile, fileReadBy, MankiCommand, matchQuotaText, relatedReadsFile, repoToolsPrompt, resultChars, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, stepHookCommand, toolServerCommand, toolServerReadings, warnReplyTail, withExitCode, withPromptDir } from './cli-utils';
 import { AnthropicAuth, LimitUsage, LLMClient, LLMResponse, LLMUsage, oneRequest, QuotaError, readCount, RefusalError, SendMessageOptions, ToolStep, withLargestRequest, ZERO_USAGE } from './types';
@@ -372,6 +372,7 @@ export class AnthropicClient implements LLMClient {
     let cutText = '';
     let messageText = '';
     let stopReason: unknown;
+    let joined: string | undefined;
     let replyTail = '';
     let jsonBuffer = '';
     let lastResultEvent: unknown = null;
@@ -410,9 +411,9 @@ export class AnthropicClient implements LLMClient {
       if (delta.resultEvent !== null) lastResultEvent = delta.resultEvent;
       if (!delta.replace) replyTail = appendReplyTail(replyTail, delta.text);
       if (delta.assistantRefusal !== undefined) refusal = delta.assistantRefusal ?? undefined;
-      // A last message that is whole JSON started the answer over instead of going on.
-      if (delta.replace) output = cutText && !isWholeJSON(delta.text) ? cutText + delta.text : delta.text;
-      else output += delta.text;
+      // The model can also start its answer over, so the cut text counts only when the two make one whole JSON value.
+      if (delta.replace && !readResultError(delta.resultEvent)) joined = joinedJSON(cutText, delta.text);
+      output = delta.replace ? joined ?? delta.text : output + delta.text;
     };
 
     const { code, signal, stderr, lastStdoutChunk } = await runCli({
@@ -490,7 +491,7 @@ export class AnthropicClient implements LLMClient {
       core.warning(`Claude CLI reply reached the ${THINKING_MAX_TOKENS}-token output limit (exit ${code})`);
       warnReplyTail('Claude CLI', replyTail);
     }
-    if (cutText) core.info(`Claude CLI reply went on past the ${THINKING_MAX_TOKENS}-token output limit of one message`);
+    if (cutText) core.info(`Claude CLI reply went on past the ${THINKING_MAX_TOKENS}-token output limit of one message, ${joined ? 'joined with the cut text' : 'and only its last message is read'}`);
     const content = code === 0 ? output.trim() : '';
     core.debug(sanitizeLogOutput(content.slice(0, 200)));
     return {
