@@ -4493,16 +4493,18 @@ describe('runReview', () => {
   it('asks a finder that did not report a blocker or warning one finder alone reported for its trigger and result, and lowers it unless the head holds both lines', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'manki-vote-'));
     mkdirSync(join(workspace, 'src'));
-    writeFileSync(join(workspace, 'src', 'a.ts'), Array.from({ length: 16 }, (_, i) => `const line${i + 1} = ${i + 1};`).join('\n'));
+    writeFileSync(join(workspace, 'src', 'a.ts'), Array.from({ length: 18 }, (_, i) => `const line${i + 1} = ${i + 1};`).join('\n'));
     const titles = [
       'Backed blocker', 'Declined blocker', 'Declined warning', 'Misquoted warning', 'Backed warning', 'Security warning', 'Vote fails', 'Both finders found it', 'Restates a thread',
       'Breaks a rule', 'Held blocker cell', 'Quote nearby', 'Unreadable file', 'Confirmed blocker', 'Confirmed warning', 'Missing result',
+      'Trigger not shown', 'Result not shown',
     ];
     const reported = titles.map((title, i) => ({ severity: i < 2 || title === 'Confirmed blocker' ? 'blocker' : 'warning', title, file: 'src/a.ts', line: i + 1, description: `${title}.`, evidence: [`src/a.ts:${i + 1} shows it`], proof: [`src/a.ts:${i + 1}`] }));
     const at = (line: number, quote = `const line${line} = ${line};`, file = 'src/a.ts') => ({ reason: 'An export reaches it.', line: `${file}:${line}`, quote });
     const none = { reason: '', line: 'none' };
     const both = { trigger: at(2), result: at(1) };
     const declines = { trigger: none, result: none };
+    const notShown = { reason: 'The caller is in another file.', line: 'not_shown' };
     const answers: Record<string, unknown> = {
       'Backed blocker': both,
       'Declined blocker': declines,
@@ -4518,6 +4520,9 @@ describe('runReview', () => {
       'Confirmed warning': declines,
       // A model often names a line next to the one it quotes.
       'Quote nearby': { trigger: at(3), result: at(12, 'const line9 = 9;') },
+      // The code the voter would need is not in front of it, so the answer changes no grade, whatever the other line says.
+      'Trigger not shown': { trigger: notShown, result: at(1) },
+      'Result not shown': { trigger: none, result: notShown },
       // Manki cannot read the trigger line, so the answer neither backs nor declines the finding.
       'Unreadable file': { trigger: at(3, 'const gone = 3;', 'src/gone.ts'), result: at(1) },
     };
@@ -4556,41 +4561,43 @@ describe('runReview', () => {
       // A security finding, one more than one finder reported, one that restates a thread and one a rule grades get no vote,
       // and a failed call asks once more.
       expect(asked.sort()).toEqual([
-        'Backed blocker', 'Backed warning', 'Confirmed blocker', 'Confirmed warning', 'Declined blocker', 'Declined warning', 'Held blocker cell', 'Misquoted warning', 'Missing result', 'Quote nearby', 'Unreadable file',
-        'Vote fails', 'Vote fails',
+        'Backed blocker', 'Backed warning', 'Confirmed blocker', 'Confirmed warning', 'Declined blocker', 'Declined warning', 'Held blocker cell', 'Misquoted warning', 'Missing result', 'Quote nearby', 'Result not shown',
+        'Trigger not shown', 'Unreadable file', 'Vote fails', 'Vote fails',
       ]);
       const reporter = result.findings[0].reviewers[0];
-      expect(result.findings.map(f => [f.title, f.severity, f.otherFinderVote?.declined, f.gradePath?.at(-1)?.reason])).toEqual([
-        ['Backed blocker', 'blocker', false, undefined],
+      expect(result.findings.map(f => [f.title, f.severity, f.otherFinderVote?.answer, f.gradePath?.at(-1)?.reason])).toEqual([
+        ['Backed blocker', 'blocker', 'backs', undefined],
         // A blocker the other finder declines is posted as a warning, with the reason.
-        ['Declined blocker', 'warning', true, 'the other finder would not block on it'],
+        ['Declined blocker', 'warning', 'declines', 'the other finder would not block on it'],
         // A declined warning stays visible as a note, also one whose quoted line the head does not hold.
-        ['Declined warning', 'note', true, 'the other finder cited no trigger and result in normal use'],
-        ['Misquoted warning', 'note', true, 'the other finder cited no trigger and result in normal use'],
-        ['Backed warning', 'warning', false, undefined],
+        ['Declined warning', 'note', 'declines', 'the other finder cited no trigger and result in normal use'],
+        ['Misquoted warning', 'note', 'declines', 'the other finder cited no trigger and result in normal use'],
+        ['Backed warning', 'warning', 'backs', undefined],
         ['Security warning', 'warning', undefined, undefined],
         ['Vote fails', 'warning', undefined, undefined],
         ['Both finders found it', 'warning', undefined, undefined],
         ['Restates a thread', 'warning', undefined, undefined],
         ['Breaks a rule', 'warning', undefined, undefined],
         // A vote lowers a finding one step below its cell at most, so a blocker cell held at a warning stays posted.
-        ['Held blocker cell', 'warning', true, undefined],
-        ['Quote nearby', 'warning', false, undefined],
+        ['Held blocker cell', 'warning', 'declines', undefined],
+        ['Quote nearby', 'warning', 'backs', undefined],
         ['Unreadable file', 'warning', undefined, undefined],
         // A check confirms the code path, not the harm, so a confirmed blocker the other finder declines still becomes a warning.
-        ['Confirmed blocker', 'warning', true, 'the other finder would not block on it'],
+        ['Confirmed blocker', 'warning', 'declines', 'the other finder would not block on it'],
         // A check confirms the code path, not the harm, so a confirmed warning the other finder declines still becomes a note.
-        ['Confirmed warning', 'note', true, 'the other finder cited no trigger and result in normal use'],
-        ['Missing result', 'note', true, 'the other finder cited no trigger and result in normal use'],
+        ['Confirmed warning', 'note', 'declines', 'the other finder cited no trigger and result in normal use'],
+        ['Missing result', 'note', 'declines', 'the other finder cited no trigger and result in normal use'],
+        ['Trigger not shown', 'warning', 'not_shown', undefined],
+        ['Result not shown', 'warning', 'not_shown', undefined],
       ]);
       // A declined blocker's thread is guarded, so the PR author's answer alone does not clear it.
       // Its cell moves to `judgeCell` in the record, so a later round does not restore the blocker from it.
       const declinedBlocker = result.allJudgedFindings?.find(f => f.title === 'Declined blocker');
       expect([declinedBlocker?.tags, declinedBlocker?.cell, declinedBlocker?.judgeCell]).toEqual([expect.arrayContaining([DISPROVED_TAG]), undefined, { row: 'wrong', column: 'normal' }]);
       // The other finder answered, never the one that reported it, and the record keeps its answer with both quoted lines.
-      expect(result.findings[0].otherFinderVote).toEqual({ finder: expect.not.stringMatching(reporter), trigger: { ...at(2), held: true }, result: { ...at(1), held: true }, declined: false });
-      expect(result.findings.find(f => f.title === 'Missing result')?.otherFinderVote).toMatchObject({ trigger: { held: true }, result: { reason: '' }, declined: true });
-      expect(result.llmCalls?.filter(c => c.stage === 'vote').length).toBe(13);
+      expect(result.findings[0].otherFinderVote).toEqual({ finder: expect.not.stringMatching(reporter), trigger: { ...at(2), held: true }, result: { ...at(1), held: true }, answer: 'backs' });
+      expect(result.findings.find(f => f.title === 'Missing result')?.otherFinderVote).toMatchObject({ trigger: { held: true }, result: { reason: '' }, answer: 'declines' });
+      expect(result.llmCalls?.filter(c => c.stage === 'vote').length).toBe(15);
       expect(result.unposted ?? []).toEqual([]);
 
       // A vote starts only with the time for its whole timeout and a judge call after it, so with 3 minutes left it is

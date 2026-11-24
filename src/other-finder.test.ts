@@ -1,12 +1,20 @@
-import { withVote } from './other-finder';
+import { execFileSync } from 'child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+
+import { otherFinderVotes, withVote } from './other-finder';
+import type { LLMClient } from './providers';
+import { GIT_TEST_TIMEOUT_MS } from './test-utils';
 import { DISPROVED_TAG, Finding, isGuardedFinding, OtherFinderVote } from './types';
+import { closePaths } from './workspace';
 
 const finding = (more: Partial<Finding>): Finding => ({
   severity: 'warning', title: 'Totals drift', file: 'src/a.ts', line: 3, description: 'Totals drift.', reviewers: ['Finder A'], judgeNotes: '', soleFinder: true, ...more,
 });
-const declined: OtherFinderVote = { finder: 'Finder B', trigger: { reason: '' }, result: { reason: '' }, declined: true };
+const declined: OtherFinderVote = { finder: 'Finder B', trigger: { reason: '' }, result: { reason: '' }, answer: 'declines' };
 const backed: OtherFinderVote = {
-  finder: 'Finder B', trigger: { reason: 'Any export.', line: 'src/export.ts:9', quote: 'exportAll();', held: true }, result: { reason: 'A total is wrong.', line: 'src/a.ts:3', quote: 'total += 1;', held: true }, declined: false,
+  finder: 'Finder B', trigger: { reason: 'Any export.', line: 'src/export.ts:9', quote: 'exportAll();', held: true }, result: { reason: 'A total is wrong.', line: 'src/a.ts:3', quote: 'total += 1;', held: true }, answer: 'backs',
 };
 
 describe('withVote', () => {
@@ -44,4 +52,43 @@ describe('withVote', () => {
     expect(withVote(finding({ severity: 'blocker', rule }), declined, 'block').severity).toBe('blocker');
     expect(withVote(finding({ rule }), declined, 'auto').severity).toBe('note');
   });
+});
+
+describe('otherFinderVotes', () => {
+  it('shows the code at the trigger and result lines a check cites, without its answer, a closed path or a line of a related repo, and lets the vote quote it', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'manki-vote-lines-'));
+    try {
+      const write = (path: string, text: string) => {
+        mkdirSync(join(workspace, path, '..'), { recursive: true });
+        writeFileSync(join(workspace, path), text);
+      };
+      write('src/a.ts', 'let total = 0;\n\ntotal += 1;\n');
+      write('src/caller.ts', 'exportAll();\n');
+      write('src/sink.ts', 'send(total);\n');
+      write('secrets/key.ts', 'const closedText = 1;\n');
+      // Git allows `:` in a file name, so a PR can hold a file whose path reads like a line of a related repo.
+      write('acme/reports:src/use.ts', 'const relatedText = 1;\n');
+      execFileSync('git', ['init', '-q'], { cwd: workspace });
+      execFileSync('git', ['add', '.'], { cwd: workspace });
+      await closePaths(workspace, ['secrets/']);
+
+      const check = (triggerProof: string[], resultProof: string[]) => ({
+        outcome: 'confirmed' as const, defect: 'confirmed' as const, reason: 'CHECK-ANSWER', files: ['src/a.ts'], codeDigest: 'abc', triggerProof, resultProof,
+        proof: ['src/a.ts:3', 'src/caller.ts:1', 'src/sink.ts:1', 'secrets/key.ts:1'], relatedProof: ['acme/reports:src/use.ts:1'],
+      });
+      const sendMessage = jest.fn().mockResolvedValue({ content: JSON.stringify({
+        trigger: { reason: 'The export runs it.', line: 'src/caller.ts:1', quote: 'exportAll();' }, result: { reason: 'A wrong total is sent.', line: 'src/sink.ts:1', quote: 'send(total);' },
+      }) });
+      const given = finding({ refutation: check(['src/caller.ts:1', 'acme/reports:src/use.ts:1'], ['src/a.ts:3']), pairRefutation: check(['secrets/key.ts:1'], ['src/sink.ts:1']) });
+      const [vote] = await otherFinderVotes([given], { workspace, finders: [{ name: 'Finder A', client: {} as LLMClient }, { name: 'Finder B', client: { sendMessage } as unknown as LLMClient }], restates: () => false });
+
+      const message = sendMessage.mock.calls[0][1] as string;
+      expect(message).toContain('1: exportAll();');
+      expect(message).toContain('1: send(total);');
+      expect(message).not.toMatch(/closedText|secrets\/key|relatedText|acme\/reports|CHECK-ANSWER|confirmed/);
+      expect([vote?.answer, vote?.trigger.held, vote?.result.held]).toEqual(['backs', true, true]);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  }, GIT_TEST_TIMEOUT_MS);
 });

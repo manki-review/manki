@@ -1141,6 +1141,8 @@ export interface VoteCitation {
   reason: string;
   /** The line as `path:line`, missing when the answer named none. */
   line?: string;
+  /** Set when the answer named no line because the code it would need was not shown to it. */
+  notShown?: true;
   quote?: string;
   /** Whether the head holds `quote` near `line`. Missing when the answer named no line. */
   held?: boolean;
@@ -1154,8 +1156,8 @@ export interface OtherFinderVote {
   trigger: VoteCitation;
   /** What goes wrong or what it costs, and where it shows. */
   result: VoteCitation;
-  /** Whether the answer lacks a `trigger` or a `result` line that the head holds. */
-  declined: boolean;
+  /** `backs` when the head holds both lines, `not_shown` when the code for one was not shown, which changes no grade, and `declines` otherwise. */
+  answer: 'backs' | 'declines' | 'not_shown';
   model?: string;
 }
 
