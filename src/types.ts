@@ -1165,6 +1165,9 @@ export interface Refutation {
   defect?: RefutationOutcome;
   /** Set when the refuter confirmed the defect resting on outside behavior. */
   outside?: OutsideBehavior;
+  /** The lines a confirmation of the defect cites for how normal use triggers the failure and where its result shows. */
+  triggerProof?: string[];
+  resultProof?: string[];
   /** What decided it, in one or two sentences. */
   reason: string;
   /** The general rule of the language, a library or a protocol that the finding relies on, as the refuter named it. */

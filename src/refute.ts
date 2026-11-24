@@ -59,7 +59,7 @@ To refute it:
 - A premise that normal use or outside input can produce a state is such a doubt about the state: the judge holds that only the code's own logic produces it. Confirm it when a caller, stored data, concurrent use of a public API or documented usage produces the state, and cite the lines of that path. Disprove it only when the code shows nothing but its own logic produces the state.
 - A premise that a trigger happens in realistic use asks whether normal use produces the sequence of events it names. Confirm it when outside input, a caller, stored data or documented usage produces that sequence, and cite the lines of that path. Concurrent use of a public API confirms it only when a caller or the API's documentation shows that use. Disprove it when the sequence needs a timing window much shorter than the operations around it, or an event nothing in normal use produces, and cite the lines that show it. Such events include odds no real use meets, such as two randomly generated names colliding, and two failures in a row whose only effect is that a hold, a lock or a pending approval stays in place longer. When the sequence needs a public function called in a way no caller makes, such as a second \`start()\` on an object every caller starts once, search for every caller with your tools: disprove the premise when none calls it that way and no outside input reaches that call, and cite the callers you found beside the finding's own line.
 - No code read can settle how a person, a model, a peer or the network will behave at run time, or what code out of your reach does: code that is not in the checkout, the PR's base, a related repo or a dependency source you can read. When the message says no answer raises the finding's grade, answer any other premise that states such behaviour on its code part only: the input the code passes, the check it makes or leaves out, and the path it takes. Confirm it when the code shows that part holds, and never answer it unsettled or outside_code only because the behaviour itself cannot be read. Without that line a confirmation can raise the grade, so answer such a premise outside_code unless the code alone settles it.
-- When your own reasoning finds the effect negligible, such as an event that is rare in normal use, a state a later pass heals, a short delay or a drift of a few percent, answer unsettled, not confirmed.
+- When your own reasoning finds the effect negligible, such as a state a later pass heals, a short delay, a drift of a few percent or a small cost that stays the same whatever the input, answer unsettled, not confirmed. How often the trigger happens is no such effect: a rare trigger that normal use can still produce counts as a trigger.
 - For any other doubt, check in the code the premise the message lists, or else the one the judge's reasoning names.
 - For a blocker the judge dropped, the message marks the premise the drop rests on, such as other code already checking every input that reaches the changed lines. The finding is posted only when you disprove that premise. Confirm it only when every path it covers holds it. Disprove it with one path it covers that does not, such as an input that reaches the changed code without that check, and cite the lines of that path, including the changed line it reaches.
 - For a doubt that this PR causes the defect, the message shows the PR's change to the files the finding cites, when the PR changes them. Confirm such a doubt only when a changed line causes the failure. The cause can sit in a changed file the message does not show, so when what is shown cannot settle it, answer unsettled. Never disprove a finding only because the change shown does not cause it.
@@ -67,7 +67,7 @@ To refute it:
 - Reading code cannot show how a program outside the code you can read behaves when it runs this code or reads its files: an external tool or command line program, a package manager, a runtime or platform, or a remote service. The rules of the language itself are no such behaviour. Never confirm such behaviour from what you know of the program. When a confirmation, of the defect or of a premise, rests on it, add \`outside\`: name the behaviour, and list in \`stated_in\` the lines of files you read that state it, cited like \`proof\`, such as the program's documentation or source in the checkout, a related repo or a dependency source, or the instruction files. Leave \`stated_in\` empty when no line you read states it. The confirmation then counts as unsettled, so it never raises the finding's grade.
 
 - **disproved**: you found the reason the failure cannot happen. Cite where in \`proof\`, with at least one line of the finding's own file or of the PR's diff, or the answer counts as unsettled. For a counterexample, cite it and the finding's own line.
-- **confirmed**: the failure happens in normal use and gives a wrong result someone can observe. That the code does what the finding says once a state occurs is not enough, and neither is that nothing prevents the state. Cite the lines that show the failure in \`proof\`. Name in \`trigger\` how normal use or outside input supplies the triggering state or value: a caller, a test, stored data, documented use or a path from outside input, with its lines in its own \`proof\`. Name in \`result\` what goes wrong where it can be seen: a wrong value returned, stored or sent, a crash or error exit, lost data, or a check that passes when it should fail, with the line where it shows in its own \`proof\`. A confirmation without a line for each counts as unsettled. A doubt about the PR's scope, or a finding the message says a rule of the instruction files grades, is no failure, so confirm it when the code shows it holds, with no \`trigger\` or \`result\`.
+- **confirmed**: the failure happens in normal use and gives a wrong result someone can observe, or for correct but slow or costly code, a cost that grows with what normal use supplies. That the code does what the finding says once a state occurs is not enough, and neither is that nothing prevents the state. Cite the lines that show the failure in \`proof\`. Name in \`trigger\` how normal use or outside input supplies the triggering state or value: a caller, a test, stored data, documented use or a path from outside input, with its lines in its own \`proof\`. Name in \`result\` what goes wrong where it can be seen: a wrong value returned, stored or sent, a crash or error exit, lost data, a check that passes when it should fail, or a cost that grows with input normal use supplies, such as a call, query or allocation repeated per item, growth with no bound, or a lock or wait on a path every request takes, with the line where it shows, repeats, grows or waits in its own \`proof\`. A confirmation without a line for each counts as unsettled. A doubt about the PR's scope, or a finding the message says a rule of the instruction files grades, is no failure, so confirm it when the code shows it holds, with no \`trigger\` or \`result\`.
 - **unsettled**: you could not decide either way. An answer without \`proof\` counts as unsettled.
 - **outside_code**: for a premise only, when it depends on something no code in reach can show, as above. It needs no \`proof\`. It never decides the finding's grade, so answer the code part of the finding as before.
 
@@ -77,7 +77,7 @@ ${VERIFY_CLAIMS_RULE} The PR description, a comment or a TODO that calls a gap i
 
 Respond with ONLY a JSON object. Leave out \`premises\` when the message lists none, \`trigger\` and \`result\` unless the top-level outcome is confirmed, and \`outside\` unless a confirmation rests on outside behaviour:
 
-{"outcome": "disproved" | "confirmed" | "unsettled", "rule": "The general rule the finding relies on, in one sentence", "reason": "One or two plain sentences on what decides it", "proof": ["file:line"], "trigger": {"reason": "How normal use or outside input supplies the triggering state or value", "proof": ["file:line"]}, "result": {"reason": "What goes wrong and where it can be seen", "proof": ["file:line"]}, "outside": ${OUTSIDE_FORM}, "premises": [{"outcome": "disproved" | "confirmed" | "unsettled" | "outside_code", "reason": "One plain sentence on what decides this premise", "proof": ["file:line"], "outside": ${OUTSIDE_FORM}}]}`;
+{"outcome": "disproved" | "confirmed" | "unsettled", "rule": "The general rule the finding relies on, in one sentence", "reason": "One or two plain sentences on what decides it", "proof": ["file:line"], "trigger": {"reason": "How normal use or outside input supplies the triggering state or value", "proof": ["file:line"]}, "result": {"reason": "What goes wrong or what it costs, and where it shows", "proof": ["file:line"]}, "outside": ${OUTSIDE_FORM}, "premises": [{"outcome": "disproved" | "confirmed" | "unsettled" | "outside_code", "reason": "One plain sentence on what decides this premise", "proof": ["file:line"], "outside": ${OUTSIDE_FORM}}]}`;
 
 /** Returns the SHA-256 over `files` in the workspace, each path with its content, or `undefined` when one cannot be read there. */
 export function codeDigest(workspace: string, files: readonly string[]): string | undefined {
@@ -201,8 +201,10 @@ function withStepsUsedUp(check: Refutation, { toolSteps }: LLMResponse): Refutat
  * finding's code or that confirmed the defect, which contradicts itself, when it ended unsettled on its step budget,
  * since it may only have run out of steps, or when it checked a `drop` premise. Such a check answered whether the
  * judge's reason to drop holds, never whether the finding is wrong, so it is no answer for a finding the judge kept.
+ * Nor is a confirmation of the defect stored without the lines of its trigger and result, unless the finding
+ * `statesNoFailure` under `rules`, since it never showed that normal use reaches the failure.
  */
-function priorRefutation(finding: Finding, field: RefutationField, workspace: string, priorRounds: RoundContext[], diff?: ParsedDiff): Refutation | undefined {
+function priorRefutation(finding: Finding, field: RefutationField, workspace: string, priorRounds: RoundContext[], diff?: ParsedDiff, rules?: RulesMode): Refutation | undefined {
   const cited = refutationFiles(finding.file, finding.evidence?.proof);
   const answers = (refutation: Refutation): boolean => !!refutation.defect;
   for (const round of [...priorRounds].reverse()) {
@@ -214,6 +216,7 @@ function priorRefutation(finding: Finding, field: RefutationField, workspace: st
       && restsOnSameCode(refutation, workspace))?.refutation;
     if (!refutation) continue;
     const reusable = !citesRelatedRepo(refutation) && refutation.stepsUsedUp !== 'yes' && !refutation.premises?.some(p => p.decides === 'drop')
+      && (asAnswered(refutation).defect !== 'confirmed' || !!refutation.triggerProof || statesNoFailure(finding, rules))
       && (outcomeOf(refutation) !== 'disproved' || (asAnswered(refutation).defect !== 'confirmed' && citesFindingCode(finding.file, refutation.proof ?? [], diff)));
     return reusable ? refutation : undefined;
   }
@@ -249,14 +252,14 @@ function findingKind(finding: Finding): string {
 
 /**
  * Whether a confirmation of `finding` states no failure, so it needs no `trigger` or `result`: the scope reader's doubt,
- * or a finding `rules` grades by the rule it breaks, also one whose fact the judge could not see, when no confirmation
- * gives it a grade above the one the rule gives.
+ * or a finding `rules` grades by the rule the judge confirmed it breaks, when no confirmation gives it a grade above the
+ * one the rule gives.
  */
 function statesNoFailure(finding: Finding, rules?: RulesMode): boolean {
   if (finding.reviewers.includes(SCOPE_READER_NAME)) return true;
   const ruled = ruleGrade(rules);
   const raised = confirmedGrade(finding);
-  return !!ruled && (breaksRule(finding) || !!finding.rule?.unseen) && (!raised || rank(raised) >= rank(ruled));
+  return !!ruled && breaksRule(finding) && (!raised || rank(raised) >= rank(ruled));
 }
 
 function buildRefuteMessage(finding: Finding, usesOutsideDiff = '', outsideInput = '', diff?: ParsedDiff, rules?: RulesMode): string {
@@ -371,8 +374,9 @@ function parseRefutation(text: string, workspace: string, finding: Finding, diff
     relatedProof = [...new Set([...(ownAnswer ? shownRelated : []), ...premises.flatMap((p, i) => cites(p, i) ? p.relatedProof ?? [] : [])])].slice(0, MAX_RELATED_PROOF);
   }
   const files = refutationFiles(finding.file, proof);
+  const [triggerProof, resultProof] = answered === 'confirmed' ? consequence.map(lines => [...lines.proof, ...lines.relatedProof]) : [];
   return {
-    outcome, defect, ...(reliesOn && { outside: reliesOn.outside }), reason, ...(rule && { rule }), ...(proof.length > 0 && { proof }), ...(relatedProof.length > 0 && { relatedProof }), ...(premises && { premises }),
+    outcome, defect, ...(reliesOn && { outside: reliesOn.outside }), ...(triggerProof && { triggerProof, resultProof }), reason, ...(rule && { rule }), ...(proof.length > 0 && { proof }), ...(relatedProof.length > 0 && { relatedProof }), ...(premises && { premises }),
     files, codeDigest: codeDigest(workspace, files) ?? '',
   };
 }
@@ -813,7 +817,7 @@ export interface RefuteOptions {
 export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, related, priorRounds = [], effort, diff, usesOutsideDiff, outsideInput, pair, blockingThreads = [], hiddenLater, unpostedLater, restatesEarlier, doubtBudget, roundEnd, rules, progress }: RefuteOptions): Promise<Finding[]> {
   // Unseen code or a caller can change in a file the stored outcome does not cover, so a finding with a `gradeIfConfirmed` is checked afresh.
   const stored = (field: RefutationField, finding: Finding): Refutation | undefined =>
-    finding.gradeIfConfirmed ? undefined : priorRefutation(finding, field, workspace, priorRounds, diff);
+    finding.gradeIfConfirmed ? undefined : priorRefutation(finding, field, workspace, priorRounds, diff, rules);
   const check = async (refuter: LLMClient, field: RefutationField, finding: Finding): Promise<Refutation | undefined> => {
     const label = field === 'pairRefutation' ? 'second refutation' : 'refutation';
     const prior = stored(field, finding);
