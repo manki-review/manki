@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 import { gunzipSync } from 'zlib';
 
-import { relatedCommits, ApprovalHeld, earlierPlaces, plainCitedFiles, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, autoApproveHeadMarker, reviewedCommit, updateProgressDashboard, startLiveEdits, LIVE_EDIT_MS, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchChangesSince, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, fetchApprovalHold, SupersededError, isFailedProgress, markFailedProgressSuperseded, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError, githubRepoFiles, openRepoFiles, UnreadFileError } from './github';
+import { readChangesSince, relatedCommits, ApprovalHeld, earlierPlaces, plainCitedFiles, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, autoApproveHeadMarker, reviewedCommit, updateProgressDashboard, startLiveEdits, LIVE_EDIT_MS, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchChangesSince, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, fetchApprovalHold, SupersededError, isFailedProgress, markFailedProgressSuperseded, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError, githubRepoFiles, openRepoFiles, UnreadFileError } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases, RoundFix, Refutation, SideCheckState, OriginAnswer } from './types';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -4701,6 +4701,14 @@ describe('fetchInterRoundDiff', () => {
     expect(await since(jest.fn().mockRejectedValue(new Error('Server Error')))).toBeUndefined();
     const unasked = jest.fn();
     expect(await since(unasked, 'head')).toBe('');
+    // `readChangesSince` says why the change is not known, by GitHub's own comparison.
+    const read = (compareCommits: jest.Mock, named?: string[]) => readChangesSince(makeOctokit(compareCommits), 'owner', 'repo', 'posted', 'head', named);
+    const compared = (status: string, listed: unknown[] = files) => jest.fn().mockResolvedValue({ data: { status, files: listed } });
+    expect(await read(compared('ahead'), ['src/a.ts'])).toEqual({ diff: listedFilesDiff([files[0]]) });
+    expect(await read(compared('identical', []), ['src/a.ts'])).toEqual({ diff: '' });
+    for (const status of ['diverged', 'behind']) expect(await read(compared(status), ['src/a.ts'])).toEqual({ unknown: 'not_descendant' });
+    expect(await read(jest.fn().mockRejectedValue(new Error('Server Error')), ['src/a.ts'])).toEqual({ unknown: 'unreadable' });
+    expect(await read(compared('ahead', many))).toEqual({ unknown: 'unreadable' });
     expect(unasked).not.toHaveBeenCalled();
   });
 

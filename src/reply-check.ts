@@ -3,7 +3,7 @@ import type { getOctokit } from '@actions/github';
 
 import { RunCancelledError } from './abort';
 import { addedLines, changesNextTo, listedFilesDiff, oldLineOf, parsePRDiff, replacementOf } from './diff';
-import { inline, MAX_COMPARE_FILES, sanitizeMarkdown } from './github';
+import { inline, MAX_COMPARE_FILES, sanitizeMarkdown, UnknownChange } from './github';
 import { extractJSON } from './json';
 import { findLines } from './mcp-server';
 import { sanitizeLogOutput } from './providers';
@@ -32,6 +32,11 @@ const UNREADABLE_ANSWER = 'I could not check this reply';
 const UNPROVEN_OUTCOME = 'I could not point to a line of this repository that shows it';
 const NO_FIXING_PR = 'The reply names no other pull request of this repository that I could check';
 
+const UNKNOWN_CHANGES: Record<UnknownChange, string> = {
+  not_descendant: 'This branch was rebased or force pushed since the finding was posted, so I cannot tell which lines changed.',
+  unreadable: 'I could not read what this PR changed since the finding was posted.',
+};
+
 /** How many raw proof entries of the model the reply record keeps, and how much of each. */
 const MAX_CITED_ENTRIES = 10;
 const MAX_CITED_CHARS = 200;
@@ -57,6 +62,8 @@ export interface FixScope {
   files: readonly string[];
   /** Whether the finding is tied to a file. */
   hasFile: boolean;
+  /** Why the change there is not known. Unset when it is. */
+  unknown?: UnknownChange;
   /** The commit of the round that still found the thread open, when the change counts from there. */
   openOn?: string;
   /** Whether the thread is a blocking or security one. What clears it is said apart from this answer. */
@@ -64,13 +71,14 @@ export interface FixScope {
 }
 
 /**
- * Returns the sentences an unproven "Fixed" gets: where a reply counts a fix, and what settles the thread. `changeRead`
- * says whether the change there could be read, as it cannot after a force push.
+ * Returns the sentences an unproven "Fixed" gets: where a reply counts a fix, or why no line could count, and what
+ * settles the thread.
  */
-function unprovenFix({ files, hasFile, openOn, guarded }: FixScope, changeRead: boolean, thread: ThreadState): string {
+function unprovenFix({ files, hasFile, unknown, openOn, guarded }: FixScope, thread: ThreadState): string {
   const since = openOn ? `since the review of ${inline(openOn.slice(0, 7))} still found this open` : 'since this was posted';
   const where = files.length === 0 ? 'This finding is not tied to a file, so a reply cannot show a fix.'
-    : `${changeRead ? 'I could not point to a line this PR changed' : 'I could not read what this PR changed'} in ${files.map(inline).join(', ')} ${since}. A reply counts a fix only there.`;
+    : unknown ? UNKNOWN_CHANGES[unknown]
+      : `I could not point to a line this PR changed in ${files.map(inline).join(', ')} ${since}. A reply counts a fix only there.`;
   if (thread === 'resolved' || (thread === 'open' && guarded)) return where;
   return `${where} ${thread === 'open' && hasFile ? 'The next review after a push checks the whole push, also other files.' : `A${maintainerShould('decide', thread).slice(1)}.`}`;
 }
@@ -94,7 +102,7 @@ export interface ReplySources {
   /** What an unproven "Fixed" says about where a reply counts one. */
   fixScope?: FixScope;
   /**
-   * What the PR changed since the thread was posted, in the finding's file and the files it cited, by `fetchChangesSince`.
+   * What the PR changed since the thread was posted, in the finding's file and the files it cited, by `readChangesSince`.
    * A "Fixed" counts only when its proof cites a line one of these adds. Unset when that change could not be read.
    */
   changedSincePosted?: readonly DiffFile[];
@@ -322,7 +330,7 @@ export function checkReply(content: string, developerReply: string, sources: Rep
     ? parsed.fixed_in : undefined;
   // A fix in another pull request stays unconfirmed until `checkFixedElsewhere` confirms it.
   const settled: AnswerOutcome = unproven || outcome === 'FixedElsewhere' ? 'Unverified' : outcome;
-  const note = (thread: ThreadState): string => unproven && outcome === 'Fixed' && sources.fixScope ? ` ${unprovenFix(sources.fixScope, sources.changedSincePosted !== undefined, thread)}`
+  const note = (thread: ThreadState): string => unproven && outcome === 'Fixed' && sources.fixScope ? ` ${unprovenFix(sources.fixScope, thread)}`
     : unproven ? ` ${leftToMaintainer(UNPROVEN_OUTCOME, thread)}`
     : outcome === 'FixedElsewhere' ? ` ${leftToMaintainer(NO_FIXING_PR, thread)}`
       : outcome === 'Unverified' && thread !== 'resolved' ? ` A${maintainerShould('confirm this', thread).slice(1)}.` : '';

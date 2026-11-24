@@ -6,7 +6,7 @@ import { tokenServiceCalls } from './auth';
 import { LLMCall, LLMClient, recordCalls, SendMessageOptions } from './providers';
 import { messageBox } from './issue-box';
 import { MemoryStore, patternMatchesTitle, writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
-import { BotIdentity, dynamicFence, findingLocation, hasWriteAccess, inline, isBotLogin, isBotUser, MANKI_VERSION, authorClearRole, reactToIssueComment, reactToReviewComment, fetchChangesSince, fetchPRDiff, sanitizeMarkdown, TooManyFilesError } from './github';
+import { BotIdentity, dynamicFence, findingLocation, hasWriteAccess, inline, isBotLogin, isBotUser, MANKI_VERSION, authorClearRole, reactToIssueComment, reactToReviewComment, readChangesSince, fetchPRDiff, sanitizeMarkdown, TooManyFilesError } from './github';
 import { fencePrText, truncateDiff } from './review';
 import { closeRawDiff, diffSections, parsePRDiff, reviewableDiff } from './diff';
 import { eventPrClosed } from './dispatch';
@@ -625,13 +625,13 @@ export async function handleReviewCommentReply(
     const rounds = live ? await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber) : undefined;
     const since = live && rounds ? changesCountFrom(rounds, live.id, root.comment.original_commit_id) : closed ? root.comment.original_commit_id : undefined;
     const fixFiles = [filePath, ...evidenceFiles ?? []];
-    const rawSince = since && head && closedSince ? await fetchChangesSince(octokit, owner, repo, since, head, fixFiles) : undefined;
-    const sincePosted = rawSince === undefined ? undefined : closeRawDiff(rawSince, closedSince!);
+    const change = since && head && closedSince ? await readChangesSince(octokit, owner, repo, since, head, fixFiles) : { unknown: 'unreadable' as const };
+    const sincePosted = 'diff' in change ? closeRawDiff(change.diff, closedSince!) : undefined;
     const response = await askWithRecord(client, 'thread-reply', prNumber, REPLY_SYSTEM_PROMPT, context + diffContext + sinceContext(sincePosted), tools, related);
     // From here on the answer is the plain "Outcome. text" again, so nothing below reads a statement's status.
     const checked = checkReply(response.content, comment.body ?? '', {
       workspace, related, relatedNames, diff, description: prText?.body, repo: `${owner}/${repo}`, pr: prNumber,
-      fixScope: { files: fixFiles.filter(Boolean), hasFile: !!filePath, guarded: !!live && isGuarded(live), ...(since && since !== root.comment.original_commit_id && { openOn: since }) },
+      fixScope: { files: fixFiles.filter(Boolean), hasFile: !!filePath, guarded: !!live && isGuarded(live), ...('unknown' in change && { unknown: change.unknown }), ...(since && since !== root.comment.original_commit_id && { openOn: since }) },
       ...(sincePosted !== undefined && { changedSincePosted: parsePRDiff(sincePosted).files }),
     });
     const isSecurity = isSecurityThread(findingBody);
