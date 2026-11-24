@@ -1212,6 +1212,8 @@ describe('handleReviewCommentReply', () => {
   const noLine = (files: string, since = 'since this was posted') => `I could not point to a line this PR changed in ${files} ${since}. A reply counts a fix only there.`;
   const WHOLE_PUSH = 'The next review after a push checks the whole push, also other files.';
   const CLEARED_BY = 'someone other than the PR author with write access closes it. A PR author can close it only with the `maintain` role or a higher one.';
+  // A review resolves an addressed thread tied to a file, which clears a guarded one too.
+  const REVIEW_OR_CLEARED = 'the next review confirms the fix, or someone other than the PR author with write access closes it.';
 
   it.each<[string, string, Record<string, unknown>, string, FindingKind, string, state.ResolutionReason | undefined, boolean?]>([
     // Confirmed statements leave a blocking thread to a maintainer, also when the PR author's answer would settle it.
@@ -1237,7 +1239,7 @@ describe('handleReviewCommentReply', () => {
     ['a maintainer does not clear a blocker with "Withdrawn." on related lines alone', 'Withdrawn. The caller already checks for null.', { ...CONFIRMED, proof: ['acme/reports:lib/rows.py:9'] }, 'someone', 'blocker',
       `Unverified. The caller already checks for null. ${UNPROVEN}\n\n${LISTED}\n\n${MAINTAINER}\n\n${STAYS_OPEN}`, undefined],
     ['a maintainer does not clear a blocker with "Fixed." on related lines alone', 'Fixed. The guard now runs first.', { ...CONFIRMED, proof: ['acme/reports:lib/rows.py:9'] }, 'someone', 'blocker',
-      `Unverified. The guard now runs first. ${noLine('`src/file.ts`')}\n\n${LISTED}\n\n${MAINTAINER}\n\nThis is a blocking finding, so the thread stays open until ${CLEARED_BY}`, undefined],
+      `Unverified. The guard now runs first. ${noLine('`src/file.ts`')}\n\n${LISTED}\n\n${MAINTAINER}\n\nThis is a blocking finding, so the thread stays open until ${REVIEW_OR_CLEARED}`, undefined],
     ['the PR author does not resolve a warning with "Withdrawn." without a line', 'Withdrawn. The caller already checks for null.', { proof: [] }, 'pr-author', 'warning',
       `Unverified. The caller already checks for null. ${UNPROVEN}`, undefined],
     ['a maintainer does not resolve a warning with an answer that is not the structure', 'Withdrawn. The caller already checks for null.', { outcome: 'Cleared' }, 'someone', 'warning',
@@ -1356,10 +1358,10 @@ describe('handleReviewCommentReply', () => {
   const HOLDS = 'This warning holds the approval until it is fixed.';
   it.each<[string, FindingKind, { resolved?: boolean; sender?: string; nowhere?: boolean; evidence?: boolean; list?: boolean; closed?: boolean }, string]>([
     ['an open warning thread', 'warning', {}, `${noLine('`src/file.ts`')} ${WHOLE_PUSH}\n\n${HOLDS}`],
-    ['an open blocker thread', 'blocker', {}, `${noLine('`src/file.ts`')}\n\nThis is a blocking finding, so the thread stays open until ${CLEARED_BY}`],
-    ['an open blocker thread a maintainer replied in', 'blocker', { sender: 'someone' }, `${noLine('`src/file.ts`')}\n\nThis is a blocking finding, so the thread stays open until ${CLEARED_BY}`],
-    ['an open security thread', 'security', {}, `${noLine('`src/file.ts`')}\n\nThis is a security finding, so the thread stays open until ${CLEARED_BY}`],
-    ['an open blocker thread, with a list', 'blocker', { list: true }, `${noLine('`src/file.ts`')}\n\n${LISTED}\n\n${MAINTAINER}\n\nThis is a blocking finding, so the thread stays open until ${CLEARED_BY}`],
+    ['an open blocker thread', 'blocker', {}, `${noLine('`src/file.ts`')}\n\nThis is a blocking finding, so the thread stays open until ${REVIEW_OR_CLEARED}`],
+    ['an open blocker thread a maintainer replied in', 'blocker', { sender: 'someone' }, `${noLine('`src/file.ts`')}\n\nThis is a blocking finding, so the thread stays open until ${REVIEW_OR_CLEARED}`],
+    ['an open security thread', 'security', {}, `${noLine('`src/file.ts`')}\n\nThis is a security finding, so the thread stays open until ${REVIEW_OR_CLEARED}`],
+    ['an open blocker thread, with a list', 'blocker', { list: true }, `${noLine('`src/file.ts`')}\n\n${LISTED}\n\n${MAINTAINER}\n\nThis is a blocking finding, so the thread stays open until ${REVIEW_OR_CLEARED}`],
     ['a resolved warning thread that still holds', 'warning', { resolved: true }, `${noLine('`src/file.ts`')} A maintainer should decide.\n\n${HOLDS}`],
     ['a resolved blocker thread', 'blocker', { resolved: true }, noLine('`src/file.ts`')],
     ['a warning tied to no file', 'warning', { nowhere: true }, `This finding is not tied to a file, so a reply cannot show a fix. A maintainer should decide and resolve this thread.\n\n${HOLDS}`],

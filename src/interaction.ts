@@ -742,11 +742,11 @@ export async function handleReviewCommentReply(
       const blocks = !!live && (noted || ((live.isResolved ? held : isGuarded(live)) && !(settled && mayClear)));
       // The checks never read as a verdict on the finding. A blocking thread that no other note covers says that it stays
       // open, and names a review as a way out only when a review can clear it.
-      // An unproven "Fixed." says who clears the thread without a list too, and names no review, which may never confirm that fix.
+      // An unproven "Fixed." says who clears the thread without a list too.
       const saysClear = blocks && !staysOpen && !noted && (!!list || (unprovenFix && !live.isResolved));
       const checks = [
         ...(list ? [list, statementSummary(checked, blocks || !live)] : []),
-        ...(saysClear ? [staysOpenNote(guard, !!filePath && !unprovenFix, config?.author_clear_role, live.isResolved)] : []),
+        ...(saysClear ? [staysOpenNote(guard, !!filePath, config?.author_clear_role, live.isResolved)] : []),
       ];
       const text = [answer, ...replaces, ...checks, ...notes];
       const markers = [
