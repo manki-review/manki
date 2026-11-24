@@ -12,7 +12,7 @@
  */
 
 import { randomBytes } from 'crypto';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 
@@ -23,37 +23,48 @@ import { STEP_HOOK_COMMAND } from '../src/tool-steps';
 import { answerClaude, cliVersion, runCli, ToolCall } from './cli-homes-check';
 import { Json, newRun, startStandIn } from './stand-in';
 
-/** A tool call, the text its result holds when it read the file it names, and whether that file is in `.git`. */
+/** A tool call on the planted checkout. Without the deny rules its result shows `.git` when `git` is set. With them it must show another file when `open` is set. */
 export interface GitCall extends ToolCall {
-  shows: string;
-  inGit: boolean;
+  git: boolean;
+  open: boolean;
 }
 
+/** The text that marks the files of the planted `.git`, and the one that marks the other files. A search for `text` finds both. */
+export const gitMark = (text: string): string => `${text}-git`;
+export const openMark = (text: string): string => `${text}-open`;
+
 /**
- * Makes a folder `root` with a `.git` and files with similar names, and returns the calls on them. Every file holds
- * `text` and has `text` in its name. A refusal repeats the path it was asked for, so no call names the file it looks for.
+ * Makes a folder `root` with a `.git` and files with similar names, and returns the calls on them. Every file holds its
+ * mark or has it in its name. A refusal repeats the path it was asked for, so no call names a mark. On a disk that
+ * ignores case, the calls include `.git` in other letter case.
  */
 export function plantCheckout(root: string, text: string): GitCall[] {
-  const folders = ['.git', '.github', 'my.git', 'src'];
-  for (const folder of folders) {
+  for (const folder of ['.git', '.github', 'my.git', 'src']) {
+    const mark = folder === '.git' ? gitMark(text) : openMark(text);
     mkdirSync(join(root, folder), { recursive: true });
-    writeFileSync(join(root, folder, 'notes.txt'), `${text}\n`);
-    writeFileSync(join(root, folder, `${text}.txt`), 'named\n');
+    writeFileSync(join(root, folder, 'notes.txt'), `${mark}\n`);
+    writeFileSync(join(root, folder, `${mark}.txt`), 'named\n');
   }
-  writeFileSync(join(root, '.gitignore'), `${text}\n`);
+  writeFileSync(join(root, '.gitignore'), `${openMark(text)}\n`);
   symlinkSync(join(root, '.git'), join(root, 'link'));
   symlinkSync(join(root, '.git', 'notes.txt'), join(root, 'link.txt'));
-  const read = (path: string, inGit: boolean): GitCall => ({ name: 'Read', input: { file_path: `${root}/${path}` }, shows: text, inGit });
-  const grep = (path: string, inGit: boolean): GitCall => ({ name: 'Grep', input: { pattern: text, path: `${root}/${path}`, output_mode: 'content' }, shows: text, inGit });
-  const glob = (path: string, pattern: string, inGit: boolean, shows = `${text}.txt`): GitCall => ({ name: 'Glob', input: { pattern, path: `${root}/${path}` }, shows, inGit });
-  return [
-    read('.git/notes.txt', true), read('src/../.git/notes.txt', true), read('link/notes.txt', true), read('link.txt', true),
-    grep('.git', true), grep('.git/notes.txt', true), grep('src/../.git', true), grep('link', true), grep('link.txt', true),
-    glob('.git', '*', true), glob('src/../.git', '*', true), glob('link', '*', true),
-    ...['**/*', '.git/**', '[.]git/*'].map(pattern => glob('', pattern, true, `/.git/${text}.txt`)),
-    read('.github/notes.txt', false), read('my.git/notes.txt', false), read('.gitignore', false),
-    grep('.github', false), grep('', false), glob('my.git', '*', false), glob('', '.github/*', false), glob('', '**/*', false, `/src/${text}.txt`),
+  const inGit = { git: true, open: false };
+  const open = { git: false, open: true };
+  const read = (path: string, kind = inGit): GitCall => ({ name: 'Read', input: { file_path: path }, ...kind });
+  const grep = (path: string, kind = inGit): GitCall => ({ name: 'Grep', input: { pattern: text, path, output_mode: 'content' }, ...kind });
+  const glob = (path: string, pattern = '*', kind = inGit): GitCall => ({ name: 'Glob', input: { pattern, path }, ...kind });
+  const folder = (path: string): GitCall[] => [read(`${path}/notes.txt`), grep(path), grep(`${path}/notes.txt`), glob(path)];
+  const calls = [
+    ...['.git', 'src/../.git', 'link'].flatMap(path => folder(`${root}/${path}`)), read(`${root}/link.txt`), grep(`${root}/link.txt`),
+    ...['.git/**', '[.]git/*'].map(pattern => glob(root, pattern)),
+    read(`${root}/.github/notes.txt`, open), read(`${root}/my.git/notes.txt`, open), read(`${root}/.gitignore`, open),
+    grep(`${root}/.github`, open), glob(`${root}/my.git`, '*', open), glob(root, '.github/*', open),
+    // Grep searches no `.git` from the root, and Glob lists it there.
+    grep(root, open), glob(root, '**/*', { git: true, open: true }),
   ];
+  if (!existsSync(join(root, '.GIT'))) return calls;
+  symlinkSync(join(root, '.GIT'), join(root, 'case-link'));
+  return [...calls, ...[`${root}/.GIT`, `${root}/.Git`, `${root}/.gIT`, `${root}/case-link`, `${root}/LINK`, `${root}/SRC/../.git`].flatMap(folder)];
 }
 
 /** Returns each tool result in `bodies`, the model requests of a run, by the index its call has in `calls`. */
@@ -65,18 +76,20 @@ export function toolResults(bodies: Json[], calls: GitCall[]): (string | undefin
   });
 }
 
-/** Returns what is wrong with the `results` of `calls`, in a run where `.git` is `open` or, as Manki runs the CLI, is not. */
-export function gitReadProblems(label: string, calls: GitCall[], results: (string | undefined)[], open = false): string[] {
-  return calls.flatMap((call, i) => {
-    const what = `${label}: ${call.name} ${JSON.stringify(call.input)}`;
-    if (results[i] === undefined) return [`${what} got no result`];
-    const shown = results[i].includes(call.shows);
-    if (call.inGit && !open) return shown ? [`${what} read \`.git\``] : [];
-    return shown ? [] : [`${what} no longer shows its file, so the check cannot see it`];
+/** Returns what is wrong with the `results` of `calls` on the files marked by `text`, in a control run without the deny rules or, as Manki runs the CLI, with them. */
+export function gitReadProblems(label: string, text: string, calls: GitCall[], results: (string | undefined)[], control = false): string[] {
+  return calls.flatMap(({ name, input, git, open }, i) => {
+    const what = `${label}: ${name} ${JSON.stringify(input)}`;
+    const result = results[i];
+    if (result === undefined) return [`${what} got no result`];
+    return [
+      ...(!control && result.includes(gitMark(text)) ? [`${what} read \`.git\``] : []),
+      ...((control && git && !result.includes(gitMark(text))) || (!control && open && !result.includes(openMark(text))) ? [`${what} no longer shows its file, so the check cannot see it`] : []),
+    ];
   });
 }
 
-async function runCalls(calls: GitCall[], root: string, repo: string, scratch: string, open: boolean): Promise<(string | undefined)[]> {
+async function runCalls(calls: GitCall[], root: string, repo: string, scratch: string, control: boolean): Promise<(string | undefined)[]> {
   const run = newRun();
   const standIn = await startStandIn(run, answerClaude(run, calls));
   try {
@@ -89,7 +102,7 @@ async function runCalls(calls: GitCall[], root: string, repo: string, scratch: s
     const mcpConfigPath = writeToolServerConfig(work, { command: process.execPath, args: [dist, MCP_SERVER_COMMAND, root] });
     const stepHook = { command: process.execPath, args: [dist, STEP_HOOK_COMMAND, steps, '60'] };
     const args = claudeCliArgs('claude-sonnet-4-6', systemPrompt, { repoTools: { root, steps: 60, related: undefined } }, { mcpConfigPath, stepHook });
-    if (open) {
+    if (control) {
       const at = args.indexOf('--settings') + 1;
       args[at] = JSON.stringify({ ...JSON.parse(args[at]), permissions: undefined });
     }
@@ -115,11 +128,12 @@ async function main(): Promise<number> {
   mkdirSync(process.env.TMPDIR);
   try {
     const root = join(scratch, 'checkout');
-    const calls = plantCheckout(root, randomBytes(8).toString('hex'));
-    const run = (open: boolean) => runCalls(calls, root, resolve(__dirname, '..'), scratch, open);
+    const text = randomBytes(8).toString('hex');
+    const calls = plantCheckout(root, text);
+    const run = (control: boolean) => runCalls(calls, root, resolve(__dirname, '..'), scratch, control);
     const problems = [
-      ...gitReadProblems('claude', calls, await run(false)),
-      ...gitReadProblems('claude without the deny rules', calls, await run(true), true),
+      ...gitReadProblems('claude', text, calls, await run(false)),
+      ...gitReadProblems('claude without the deny rules', text, calls, await run(true), true),
     ];
     for (const problem of problems) console.log(`::error::${problem}`);
     if (problems.length > 0) console.log('Keep `.git` out in `claudeCliArgs`, and update docs/security.md.');
