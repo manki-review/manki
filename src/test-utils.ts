@@ -18,6 +18,16 @@ import type { LLMClient, LLMResponse, SendMessageOptions } from './providers';
 /** Time limit for a test that starts real `git` processes. Under parallel load each one can take far longer than alone. */
 export const GIT_TEST_TIMEOUT_MS = 30_000;
 
+/**
+ * Returns the refuter's `reply` with its own `proof` as the lines of its `trigger` and `result`, when it confirms and
+ * names neither, so a canned confirmation passes the check of both.
+ */
+export function withConsequence<T>(reply: T): T {
+  if (!reply || typeof reply !== 'object' || 'trigger' in reply || 'result' in reply) return reply;
+  const { outcome, proof } = reply as { outcome?: unknown; proof?: unknown };
+  return outcome === 'confirmed' ? { ...reply, trigger: { reason: 'A caller passes it.', proof }, result: { reason: 'The wrong value is returned.', proof } } : reply;
+}
+
 /** Runs git in `cwd` with a fixed author and returns its trimmed output. */
 export function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' }).trim();

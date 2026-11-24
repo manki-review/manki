@@ -1023,9 +1023,13 @@ export function staysWarningIfConfirmed(f: Pick<Finding, 'gradeIfConfirmed' | 'c
   return f.gradeIfConfirmed === 'warning' && isGradeCell(f.cell) && cellGrade(f.cell.row, f.cell.column) === 'blocker';
 }
 
-/** Whether the judge or a finder graded `f` a blocker at any point, or its `pendingGrade` is one. */
-export function wouldBlockIfTrue(f: Pick<Finding, 'gradeIfConfirmed' | 'cell' | 'reviewerSeverity' | 'gradePath'>): boolean {
-  return pendingGrade(f) === 'blocker' || f.reviewerSeverity === 'blocker' || !!f.gradePath?.some(step => step.from === 'blocker' || step.to === 'blocker');
+/**
+ * Whether the judge graded `f` a blocker, its `pendingGrade` is one, or a later step raised it to one. The grade a
+ * finder filed does not count. A finding with no `judge` step kept the grade it came to the judge with.
+ */
+export function wouldBlockIfTrue(f: Pick<Finding, 'gradeIfConfirmed' | 'cell' | 'gradePath' | 'severity'>): boolean {
+  const judged = f.gradePath?.find(step => step.by === 'judge')?.to ?? f.gradePath?.[0]?.from ?? f.severity;
+  return pendingGrade(f) === 'blocker' || judged === 'blocker' || !!f.gradePath?.some(step => step.to === 'blocker');
 }
 
 /** Whether `applyRefutation` lowered the blocker `finding` because every refuter that ran disproved it. */
@@ -1161,6 +1165,9 @@ export interface Refutation {
   defect?: RefutationOutcome;
   /** Set when the refuter confirmed the defect resting on outside behavior. */
   outside?: OutsideBehavior;
+  /** The lines a confirmation of the defect cites for how normal use triggers the failure and where its result shows. */
+  triggerProof?: string[];
+  resultProof?: string[];
   /** What decided it, in one or two sentences. */
   reason: string;
   /** The general rule of the language, a library or a protocol that the finding relies on, as the refuter named it. */

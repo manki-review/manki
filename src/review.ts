@@ -118,8 +118,9 @@ function markPreExisting(findings: Finding[], checkOf: (finding: Finding) => Pre
  * Splits off the warnings that `needsProof` and that nothing proves, by `unprovenReason`, as `unposted` with that
  * reason, for the round record only. A warning that `unpostedForTrigger` accepts goes there too, with `no_trigger`, whatever
  * its row. A warning is left out only when it is certain that no rule keeps it, so these stay `posted` too: a finding
- * `foldIntoEarlierFindings` or the judge put under one an earlier round still shows, and a finding that `wouldBlock`,
- * `isRareClaim` or `staysWarningIfConfirmed`, whatever its check answered, unless that check disproved its trigger. Each posted blocker and warning that no tool reported gets its `checkStatus`, except a scope warning,
+ * `foldIntoEarlierFindings` or the judge put under one an earlier round still shows, a finding that `wouldBlock` or
+ * `isRareClaim`, whatever its check answered, unless that check disproved its trigger, and one that `staysWarningIfConfirmed`
+ * until a check runs on it. Each posted blocker and warning that no tool reported gets its `checkStatus`, except a scope warning,
  * which judges the PR as a whole and cites no code to check.
  */
 function hideUnprovenWarnings(findings: Finding[], rules: RulesMode | undefined, wouldBlock = wouldBlockIfTrue): { posted: Finding[]; unposted: Finding[] } {
@@ -140,8 +141,9 @@ function hideUnprovenWarnings(findings: Finding[], rules: RulesMode | undefined,
 /** Returns why `hideUnprovenWarnings` leaves `f` out, or undefined when it posts `f`. */
 function unprovenWarningReason(f: Finding, rules: RulesMode | undefined, wouldBlock = wouldBlockIfTrue): UnpostedReason | undefined {
   if (!needsProof(f, rules) || f.threadId || f.answeredIn || f.raisedIn !== undefined) return undefined;
-  if (lacksTrigger(f)) return unpostedForTrigger(f, wouldBlock) ? 'no_trigger' : undefined;
-  return wouldBlock(f) || isRareClaim(f.cell) || staysWarningIfConfirmed(f) ? undefined : unprovenReason(f);
+  if (lacksTrigger(f) && unpostedForTrigger(f, wouldBlock)) return 'no_trigger';
+  const keptInBlockerCell = staysWarningIfConfirmed(f) && !f.refutation && !f.pairRefutation;
+  return wouldBlock(f) || isRareClaim(f.cell) || keptInBlockerCell ? undefined : unprovenReason(f);
 }
 
 const UNRELATED_RULE = 'never report a change only for being unrelated to the PR\'s purpose';

@@ -221,15 +221,17 @@ describe('checkOrigins', () => {
     expect([
       foundOnBase(withAnswers(one)),
       foundOnBase(withAnswers(one, { severity: 'note' })),
+      // The judge graded a finder's blocker a warning, so the finder's grade asks for no second model.
+      foundOnBase(withAnswers(one, { reviewerSeverity: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'judge' }] })),
       // A changed line, a blocker, a would-block warning, a blocker-cell warning, a security finding and the warning of a
       // disproved blocker need two models.
       foundOnBase(withAnswers(one, {}, true)),
       foundOnBase(withAnswers(one, { severity: 'blocker' })),
-      foundOnBase(withAnswers(one, { reviewerSeverity: 'blocker' })),
+      foundOnBase(withAnswers(one, { gradePath: [{ from: 'blocker', to: 'warning', by: 'unproven' }] })),
       foundOnBase(withAnswers(one, { cell: { row: 'severe', column: 'normal' }, gradeIfConfirmed: 'warning' })),
       foundOnBase(withAnswers(one, { tags: ['security'] })),
       foundOnBase(withAnswers(one, { tags: ['disproved-blocker'] })),
-    ].map(Boolean)).toEqual([true, true, false, false, false, false, false, false]);
+    ].map(Boolean)).toEqual([true, true, true, false, false, false, false, false, false]);
     for (const overrides of [{}, { severity: 'blocker' as const }, { tags: ['security'] }]) {
       expect(foundOnBase(withAnswers(two, overrides, true))).toEqual(proven('a'));
     }
