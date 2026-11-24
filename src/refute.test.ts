@@ -325,7 +325,7 @@ describe('refuteBlockers', () => {
     expect(message('Both confirm')).not.toMatch(/The PR's change/i);
   });
 
-  it('posts a blocker every refuter disproved as a warning, and one only the judge raised at its finders\' grade when two refuters on different models disprove it', async () => {
+  it('posts a blocker every refuter disproved as a warning, and one only the judge raised at its finders\' grade without a guard', async () => {
     const cell = { row: 'wrong', column: 'normal' } as const;
     const raised = (from: Finding['severity'] = 'warning'): Partial<Finding> => ({ reviewerSeverity: from, gradePath: [{ from, to: 'blocker', by: 'judge' }], cell });
     const disproved = (reason: string) => ({ outcome: 'disproved', reason, proof: ['src/api.ts:9'] });
@@ -377,19 +377,21 @@ describe('refuteBlockers', () => {
     // what is left to check.
     expect(first.messages.find(([, user]) => user.includes(': Open lead\n'))?.[1]).toContain('- **Checked so far**: read src/math.ts:2\n- **Left to check**: find the callers');
     // Two refuters on different models disproved the tool alert, so it is posted as a guarded warning, never at the grade the tool gave.
-    const toWarning = ['Merged finder blocker', 'Split finder blocker', 'Finder blocker', 'Second fails', 'Second unusable', 'Tool alert', 'Raised by a check'];
+    const toWarning = ['Merged finder blocker', 'Split finder blocker', 'Finder blocker', 'Tool alert', 'Raised by a check'];
+    // A raise of the judge's alone that one refuter disproved goes back to its finders' grade too.
+    const toFinders = ['Second fails', 'Second unusable'];
     expect(result.map(f => [f.title, f.severity])).toEqual([
       ['Judge raise', 'warning'], ['Same as an earlier warning', 'warning'], ['Highest finder grade', 'warning'], ['Breaks a rule', 'note'],
-      ...cases.slice(4).map(([title]) => [title, title === 'Note raise' ? 'note' : toWarning.includes(title) ? 'warning' : 'blocker']),
+      ...cases.slice(4).map(([title]) => [title, title === 'Note raise' ? 'note' : [...toWarning, ...toFinders].includes(title) ? 'warning' : 'blocker']),
     ]);
-    // A blocker lowered to a warning marks its thread as guarded. A raise of the judge's alone that two models send back
-    // to its finders' grade takes no such mark.
+    // A blocker lowered to a warning marks its thread as guarded. A raise of the judge's alone that a disproof sends back
+    // to its finders' grade takes no such mark, as one no check confirms.
     expect(result.filter(f => f.tags?.includes('disproved-blocker')).map(f => f.title)).toEqual(toWarning);
     const finderBlocker = result.find(f => f.title === 'Finder blocker')!;
     expect([finderBlocker.gradePath?.at(-1), finderBlocker.judgeNotes?.split('\n').at(-1)]).toEqual([
       { from: 'blocker', to: 'warning', by: 'refutation', reason: 'both refuters disproved it' }, 'Posted as a warning, since both refuters disproved it.',
     ]);
-    expect(result.find(f => f.title === 'Second fails')!.gradePath?.at(-1)?.reason).toBe('the refuter disproved it');
+    expect(result.find(f => f.title === 'Second fails')!.gradePath?.at(-1)?.reason).toBe('the refuter disproved it, and no finder graded it a blocker');
     // With `auto`, the default, the rule gives no grade, so the finding goes back to its finder's note. With `warn` it
     // goes no lower than a warning, and with `block` the rule alone gives a blocker, so it stays one.
     const byRules = async (rules: RulesMode) => (await run(fakeClient(replies, 'gpt-6.1-sol'), cases.slice(2, 4), undefined, rules)).map(f => f.severity);
@@ -405,11 +407,12 @@ describe('refuteBlockers', () => {
     expect([kept.cell, kept.judgeCell, kept.gradePath]).toEqual([cell, undefined, raised().gradePath]);
     expect(jest.mocked(core.info)).toHaveBeenCalledWith(`Posting blocker "Judge raise" as a warning: ${reason}`);
 
-    // Two answers from one model, or from a model the reply does not name, are not two checks, so they give a warning
-    // and not the finder's note.
+    // Two answers from one model, or from a model the reply does not name, also send a raise of the judge's alone back
+    // to its finder's note, unguarded, so a disproof never leaves it higher than a check that settles nothing.
     const judgeRaise = cases.slice(0, 1);
     for (const pairModel of ['claude-opus-5-5', undefined]) {
-      expect((await run(fakeClient(replies, pairModel), cases.slice(-1)))[0].severity).toBe('warning');
+      const [noteRaise] = await run(fakeClient(replies, pairModel), cases.slice(-1));
+      expect([noteRaise.severity, noteRaise.tags, noteRaise.gradePath?.at(-1)?.reason]).toEqual(['note', undefined, 'both refuters disproved it, and no finder graded it a blocker']);
     }
     // A tool alert needs two disproofs on two known models, so one refuter, one model or an unnamed model keeps it blocking.
     const toolAlert = cases.filter(([title]) => title === 'Tool alert');

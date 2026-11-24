@@ -480,8 +480,9 @@ function restatesBlocker(finding: Finding, priorRounds: readonly RoundContext[],
 /**
  * Returns the grade and the reason for a blocker that every refuter that ran disproved, or undefined when it stays a
  * blocker. It becomes a `guarded` warning, whose thread only a fix or someone allowed to clear it clears, never the PR
- * author's answer alone. A blocker only the judge raised, which two refuters on different models disproved, goes back
- * to the grade its finders gave without that guard. A finding that `breaksRule` goes no lower than the grade `rules`
+ * author's answer alone. A blocker only the judge raised goes back to the grade its finders gave without that guard,
+ * as when `capUnconfirmedRaise` finds no check that confirms it, so a disproof never leaves it higher than an unsettled
+ * check. A finding that `breaksRule` goes no lower than the grade `rules`
  * gives. A tool alert is lowered only when two refuters on different models disproved it and it is no `securityAlert`,
  * and then always to a `guarded` warning. A security finding, an open lead, which is no finished finding to grade, and a blocker that
  * `restates` an earlier one keep blocking.
@@ -496,14 +497,14 @@ function disprovedGrade(
   const [raise, ...later] = finding.gradePath ?? [];
   const filed = finderGrade(finding);
   // A tool, not a finder, reported a tool alert, so its grade before the judge says nothing about the damage.
-  const judgeRaised = twoModels && !finding.toolSource && raise?.by === 'judge' && later.length === 0 && filed !== 'blocker';
+  const judgeRaised = !finding.toolSource && raise?.by === 'judge' && later.length === 0 && filed !== 'blocker';
   const target = judgeRaised ? filed : 'warning';
   // The rule alone gives a finding that `breaksRule` its grade, whatever the refuters say about the damage.
   const ruled = breaksRule(finding) ? ruleGrade(rules) : undefined;
   const grade = ruled && rank(ruled) < rank(target) ? ruled : target;
   if (grade === 'blocker') return undefined;
-  const reason = judgeRaised ? `${refutation!.model} and ${pairRefutation!.model} both disproved it, and no finder graded it a blocker`
-    : `${checks.length > 1 ? 'both refuters' : 'the refuter'} disproved it`;
+  const disproved = `${checks.length > 1 ? 'both refuters' : 'the refuter'} disproved it`;
+  const reason = !judgeRaised ? disproved : `${twoModels ? `${refutation!.model} and ${pairRefutation!.model} both disproved it` : disproved}, and no finder graded it a blocker`;
   return { grade, reason, guarded: !judgeRaised };
 }
 

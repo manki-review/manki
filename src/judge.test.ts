@@ -34,7 +34,7 @@ import { unpostedForTrigger, unprovenReason } from './refute';
 import { parsePRDiff } from './diff';
 import { extractJSON } from './json';
 import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
-import { CELL_GRADES, Finding, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, ProvenanceEntry, REACH_DOUBT, ReviewConfig, ReviewResult, RoundContext, SECURITY_TAG, ParsedDiff, DiffFile, DiffHunk, RulesMode, RuleVerdict, finderGrade, ThreadEvaluation, isNote, pendingGrade, staysWarningIfConfirmed, triggerDoubt, wouldBlockIfTrue } from './types';
+import { CELL_GRADES, Finding, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, ProvenanceEntry, REACH_DOUBT, ReviewConfig, ReviewResult, RoundContext, SECURITY_TAG, ParsedDiff, DiffFile, DiffHunk, RulesMode, RuleVerdict, finderGrade, ThreadEvaluation, isGuardedFinding, isNote, pendingGrade, staysWarningIfConfirmed, triggerDoubt, wouldBlockIfTrue } from './types';
 import { LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy } from './test-utils';
 
 const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
@@ -2484,22 +2484,24 @@ describe('runJudgeAgent', () => {
         const [f] = (await runJudgeAgent(mockClient, makeConfig(), {
           findings: [copy(severity)], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, ...(answer && { refutation: { client: refuter, workspace } }), ...more,
         })).findings;
-        return [f.severity, f.gradePath?.map(step => `${step.by}: ${step.to}`).join(', '), f.cell, f.judgeCell];
+        return [f.severity, f.gradePath?.map(step => `${step.by}: ${step.to}`).join(', '), f.cell, f.judgeCell, isGuardedFinding(f.tags, f.reviewers)];
       };
       const wrongCell = { row: 'wrong', column: 'normal' };
       const unconfirmed = 'judge: blocker, unconfirmed_raise: warning';
-      expect(await raised(missing)).toEqual(['blocker', 'judge: blocker', wrongCell, undefined]);
-      expect(await raised(unsettled)).toEqual(['warning', unconfirmed, undefined, wrongCell]);
+      expect(await raised(missing)).toEqual(['blocker', 'judge: blocker', wrongCell, undefined, false]);
+      expect(await raised(unsettled)).toEqual(['warning', unconfirmed, undefined, wrongCell, false]);
+      // A disproof of the one refuter ends at the same grade, unguarded, so it never leaves the raise higher than an unsettled check.
+      expect(await raised({ outcome: 'disproved', reason: 'A later sync restores them.', proof: ['src/index.ts:18'] })).toEqual(['warning', 'judge: blocker, refutation: warning', undefined, wrongCell, false]);
       // A confirmation that rests on outside behavior no cited line states is stored unsettled, and a raise reads it as stored.
-      expect(await raised({ ...missing, outside: { behavior: 'The queue retries a failed send', stated_in: [] } })).toEqual(['warning', unconfirmed, undefined, wrongCell]);
+      expect(await raised({ ...missing, outside: { behavior: 'The queue retries a failed send', stated_in: [] } })).toEqual(['warning', unconfirmed, undefined, wrongCell, false]);
       // Without tools no check runs, so the raise never stands. From a note it goes back to the note.
-      expect(await raised(undefined)).toEqual(['warning', unconfirmed, undefined, wrongCell]);
-      expect(await raised(undefined, 'note')).toEqual(['note', 'judge: blocker, unconfirmed_raise: note', undefined, wrongCell]);
+      expect(await raised(undefined)).toEqual(['warning', unconfirmed, undefined, wrongCell, false]);
+      expect(await raised(undefined, 'note')).toEqual(['note', 'judge: blocker, unconfirmed_raise: note', undefined, wrongCell, false]);
       // A security finding, a blocker a finder filed and a restatement of an open blocker thread keep the judge's grade.
-      expect(await raised(undefined, 'warning', { security: true })).toEqual(['blocker', 'judge: blocker', wrongCell, undefined]);
+      expect(await raised(undefined, 'warning', { security: true })).toEqual(['blocker', 'judge: blocker', wrongCell, undefined, true]);
       const blockerThread = { threadId: 'PRRT_rows', title: 'Rows lost on retry', file: 'src/index.ts', line: 18, severity: 'blocker' } as OpenThread;
-      expect(await raised(undefined, 'warning', {}, { openThreads: [blockerThread] })).toEqual(['blocker', 'judge: blocker', wrongCell, undefined]);
-      expect(await raised(undefined, 'blocker')).toEqual(['blocker', undefined, wrongCell, undefined]);
+      expect(await raised(undefined, 'warning', {}, { openThreads: [blockerThread] })).toEqual(['blocker', 'judge: blocker', wrongCell, undefined, false]);
+      expect(await raised(undefined, 'blocker')).toEqual(['blocker', undefined, wrongCell, undefined, false]);
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
     }
