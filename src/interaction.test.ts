@@ -1106,7 +1106,7 @@ describe('handleReviewCommentReply', () => {
     // A "Fixed." that leaves a guarded thread open says which push a review needs to confirm it.
     const review = reply.startsWith('Fixed') && (staysOpen || noted || keepsBlocking) ? ' A review confirms the fix only after a push changes the thread\'s file `src/file.ts`.' : '';
     // Only an open thread is left to a maintainer to resolve.
-    const asks = reply.startsWith('Unverified') && !resolved ? ' A maintainer should confirm this and resolve this thread.' : '';
+    const asks = reply.startsWith('Unverified') && (!resolved || (authorResolved && reopens)) ? ' A maintainer should confirm this and resolve this thread.' : '';
     const note = noted && !reply.startsWith('Fixed') ? '\n\nReopened. The PR author cannot resolve it.'
       : keepsBlocking ? `\n\n${finding}, so resolving the thread does not clear it. It keeps blocking until ${until.replace('closes', 'clears')}.${author.replace('close', 'clear')}`
         : `\n\n${finding}, so the thread stays open until ${until}.${author}`;
@@ -1244,7 +1244,7 @@ describe('handleReviewCommentReply', () => {
       'Unverified. I could not check this reply, so a maintainer should decide and resolve this thread.', undefined],
     // A thread the PR author resolved opens again with its own note, which already says that it blocks.
     ['a thread the PR author resolved gets the reopen note and no second one', 'Unverified. The code does not show it.', CONFIRMED, 'pr-author', 'blocker',
-      `Unverified. The code does not show it.\n\n${LISTED}\n\n${MAINTAINER}\n\nReopened. The PR author cannot resolve it.`, undefined, true],
+      `Unverified. The code does not show it. A maintainer should confirm this and resolve this thread.\n\n${LISTED}\n\n${MAINTAINER}\n\nReopened. The PR author cannot resolve it.`, undefined, true],
   ])('lists the checked statements below the answer and lets none of them settle a thread: %s', async (_name, reply, more, sender, kind, posted, reason, authorResolved = false) => {
     setContext({
       comment: { id: 1, body: `${CSV} So this cannot happen.`, user: { type: 'User' }, in_reply_to_id: 99, author_association: 'OWNER' },
@@ -1360,7 +1360,7 @@ describe('handleReviewCommentReply', () => {
     ['an open blocker thread a maintainer replied in', 'blocker', { sender: 'someone' }, `${noLine('`src/file.ts`')}\n\nThis is a blocking finding, so the thread stays open until ${CLEARED_BY}`],
     ['an open security thread', 'security', {}, `${noLine('`src/file.ts`')}\n\nThis is a security finding, so the thread stays open until ${CLEARED_BY}`],
     ['an open blocker thread, with a list', 'blocker', { list: true }, `${noLine('`src/file.ts`')}\n\n${LISTED}\n\n${MAINTAINER}\n\nThis is a blocking finding, so the thread stays open until ${CLEARED_BY}`],
-    ['a resolved warning thread', 'warning', { resolved: true }, `${noLine('`src/file.ts`')}\n\n${HOLDS}`],
+    ['a resolved warning thread that still holds', 'warning', { resolved: true }, `${noLine('`src/file.ts`')} A maintainer should decide.\n\n${HOLDS}`],
     ['a resolved blocker thread', 'blocker', { resolved: true }, noLine('`src/file.ts`')],
     ['a warning tied to no file', 'warning', { nowhere: true }, `This finding is not tied to a file, so a reply cannot show a fix. A maintainer should decide and resolve this thread.\n\n${HOLDS}`],
     ['a blocker tied to no file that cited one', 'blocker', { nowhere: true, evidence: true }, `${noLine('`src/util.ts`')}\n\nThis is a blocking finding, so the thread stays open until ${CLEARED_BY}`],
@@ -1400,6 +1400,57 @@ describe('handleReviewCommentReply', () => {
     expect(record.modelAnswer).toEqual({ outcome: 'Fixed', proof: [], cited: ['src/other.ts:10'] });
     // Only the comment marker and the record, so no fix, no clear and no reopen.
     expect(body.split('\n').filter(l => l.startsWith('<!--')).map(l => l.split(':')[0])).toEqual(['<!-- manki -->', '<!-- manki-reply-record']);
+    jest.mocked(state.warningHoldNote).mockResolvedValue(undefined);
+  });
+
+  // What an "Unverified." asks for follows the thread as the answer leaves it, after a reopen.
+  const FIXED_IN_ANOTHER = { fixed_in: 42, proof: [] };
+  it.each<[string, FindingKind, { resolver?: string; reopen?: boolean; reopens?: boolean; holds?: boolean }, 'open' | 'undecided' | 'settled']>([
+    ['an open warning thread', 'warning', { holds: true }, 'open'],
+    ['a warning thread resolved without a lift', 'warning', { resolver: 'someone', holds: true }, 'undecided'],
+    ['a resolved warning thread that holds nothing', 'warning', { resolver: 'manki-review[bot]' }, 'settled'],
+    ['a blocker thread the PR author resolved, which is reopened', 'blocker', { resolver: 'pr-author', reopen: true, reopens: true }, 'open'],
+    ['a blocker thread the PR author resolved, whose reopen fails', 'blocker', { resolver: 'pr-author', reopen: true, reopens: false }, 'undecided'],
+    ['a blocker thread the PR author resolved, reopened once before', 'blocker', { resolver: 'pr-author' }, 'undecided'],
+    ['a security thread the PR author resolved', 'security', { resolver: 'pr-author' }, 'undecided'],
+    ['a blocker thread someone else cleared', 'blocker', { resolver: 'someone' }, 'settled'],
+  ])('asks a maintainer by how the answer leaves the thread: %s', async (_name, kind, { resolver, reopen = false, reopens = false, holds = false }, state_) => {
+    setContext({
+      comment: { id: 1, body: 'Fixed in #42.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'OWNER' },
+      pull_request: { number: 1, user: { login: 'pr-author' }, head: { sha: 'a'.repeat(40) } },
+      sender: { login: 'pr-author' },
+    });
+    const decide = { open: ', so a maintainer should decide and resolve this thread.', undecided: ', so a maintainer should decide.', settled: '.' }[state_];
+    const sentence = (act: string) => ({ open: ` A maintainer should ${act} and resolve this thread.`, undecided: ` A maintainer should ${act}.`, settled: '' }[state_]);
+    // Only a blocking or security finding has a fix in another PR checked.
+    const elsewhere: Array<[string, string]> = kind === 'warning' ? [] : [[structured('FixedElsewhere. You name #42.', FIXED_IN_ANOTHER), `Unverified. You name #42. I could not confirm that #42 fixes this finding: this reply runs without repository tools.${sentence('decide')}`]];
+    for (const [content, text] of [
+      [structured('Unverified. The code does not show it.'), `Unverified. The code does not show it.${sentence('confirm this')}`],
+      [structured('Withdrawn. The caller checks it.', { proof: [] }), `Unverified. The caller checks it. I could not point to a line of this repository that shows it${decide}`],
+      [structured('Kept. The token is still logged.'), `Unverified. The token is still logged. I could not point to lines that show the problem still happens${decide}`],
+      ['no JSON', `Unverified. I could not check this reply${decide}`],
+      ...elsewhere,
+    ] as Array<[string, string]>) {
+      const octokit = createMockOctokit();
+      octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { original_commit_id: POSTED_ON, user: MANKI_USER, body: findingComment(kind), path: 'src/file.ts', line: 10 } });
+      const client = createMockClient();
+      jest.mocked(client.sendMessage).mockResolvedValue({ content });
+      jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{
+        id: 'PRRT_this', rootCommentId: 99, isResolved: !!resolver, ...(resolver && { resolvedByLogin: resolver, ...(resolver !== 'manki-review[bot]' && { writerResolverLogin: resolver }) }),
+        isBlocking: kind === 'blocker', ...(kind === 'security' && { isSecurity: true }), ...(kind === 'warning' && { isWarning: true as const }), findingTitle: 'This',
+      }]);
+      jest.mocked(state.authorResolvedNote).mockResolvedValue(reopen ? 'Reopened. The PR author cannot resolve it.' : undefined);
+      jest.mocked(state.reopenThread).mockClear().mockResolvedValue(reopens);
+      jest.mocked(state.warningHoldNote).mockResolvedValue(holds ? HOLDS : undefined);
+
+      await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, undefined, CONFIG);
+
+      const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.at(-1)![0].body as string;
+      expect(body.split('\n\n')[0]).toBe(text);
+      expect(state.reopenThread).toHaveBeenCalledTimes(reopen ? 1 : 0);
+    }
+    jest.mocked(state.authorResolvedNote).mockResolvedValue(undefined);
+    jest.mocked(state.reopenThread).mockResolvedValue(true);
     jest.mocked(state.warningHoldNote).mockResolvedValue(undefined);
   });
 

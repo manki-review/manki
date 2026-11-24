@@ -628,10 +628,9 @@ export async function handleReviewCommentReply(
     const rawSince = since && head && closedSince ? await fetchChangesSince(octokit, owner, repo, since, head, fixFiles) : undefined;
     const sincePosted = rawSince === undefined ? undefined : closeRawDiff(rawSince, closedSince!);
     const response = await askWithRecord(client, 'thread-reply', prNumber, REPLY_SYSTEM_PROMPT, context + diffContext + sinceContext(sincePosted), tools, related);
-    const threadState: ThreadState = live && (live.isResolved ? 'resolved' : 'open');
     // From here on the answer is the plain "Outcome. text" again, so nothing below reads a statement's status.
     const checked = checkReply(response.content, comment.body ?? '', {
-      workspace, related, relatedNames, diff, description: prText?.body, repo: `${owner}/${repo}`, pr: prNumber, thread: threadState,
+      workspace, related, relatedNames, diff, description: prText?.body, repo: `${owner}/${repo}`, pr: prNumber,
       fixScope: { files: fixFiles.filter(Boolean), hasFile: !!filePath, guarded: !!live && isGuarded(live), ...(since && since !== root.comment.original_commit_id && { openOn: since }) },
       ...(sincePosted !== undefined && { changedSincePosted: parsePRDiff(sincePosted).files }),
     });
@@ -653,9 +652,12 @@ export async function handleReviewCommentReply(
       })).content,
     });
     const fixClaim = elsewhere && !closed ? { pr: checked.fixedIn!, status: 'answer' in elsewhere ? 'confirmed' as const : 'unconfirmed' as const } : undefined;
-    const answerText = checked.fixedIn === undefined ? checked.text : fixedElsewhereText(checked, elsewhere, threadState);
     // The model read PR content, so its text loses mentions, links, markers and fences before Manki adds its own.
-    const reply = requireNewProof(highlightCode(sanitizeMarkdown(answerText).trim(), codeTokens), findingBody, filePath, relatedNames, threadState);
+    const replyIn = (state: ThreadState): string => requireNewProof(highlightCode(sanitizeMarkdown(
+      checked.fixedIn === undefined ? checked.text(state) : fixedElsewhereText(checked, elsewhere, state),
+    ).trim(), codeTokens), findingBody, filePath, relatedNames, state);
+    // How the thread ends up changes only what an answer that settles nothing asks for, so any state gives the outcome.
+    const reply = replyIn(undefined);
     const outcome = replyOutcome(reply);
     const thread = outcome ? live : undefined;
     // A round that finished after the reply, on the same head, has the newer judgment of a blocking or security thread.
@@ -703,7 +705,6 @@ export async function handleReviewCommentReply(
     // A "Fixed." that leaves a guarded thread open says when a review can confirm the fix. No review ever confirms one on
     // a thread tied to no file, so that answer is "Unverified." and the thread hears who clears it.
     const leftOpen = outcome === 'Fixed' && (staysOpen || noted);
-    const answer = leftOpen ? fixReviewNote(reply, filePath, evidenceFiles) : reply;
     const settled = leftOpen && !filePath ? undefined : outcome;
 
     // The thread is resolved before the answer is posted, so the record names what happened to it. An answer that fails
@@ -732,6 +733,9 @@ export async function handleReviewCommentReply(
       const reopened = noted && reopenNote ? [settled === 'Fixed' ? staysOpenNote(guard, true, config?.author_clear_role) : reopenNote] : [];
       // An answer that accepts nothing lifts no hold, and neither does one to someone Manki resolves no thread for, so a warning thread hears what does.
       const holdNote = (!outcome || !mayResolve) && live && !closed ? await warningHoldNote(octokit, bot, owner, repo, live, config?.author_clear_role) : undefined;
+      // Read as the answer leaves the thread. Manki may have opened it above, and a resolved one can still hold the approval.
+      const threadState: ThreadState = !live ? undefined : noted || !live.isResolved ? 'open' : held || holdNote ? undefined : 'resolved';
+      const answer = leftOpen ? fixReviewNote(reply, filePath, evidenceFiles) : replyIn(threadState);
       const notes = [...(staysOpen ? [staysOpenNote(guard, settled === 'Fixed', config?.author_clear_role, thread?.isResolved)] : []), ...reopened, ...(closed && settled ? [REPLY_PR_CLOSED] : []), ...(holdNote ? [holdNote] : [])];
       const decision = replyDecision(settled, closed ? 'pr_closed' : lookupFailed ? 'lookup_failed' : thread, mayResolve, staysOpen, noted, resolved, clears);
       // Whether the finding still blocks once this answer is posted. Only a maintainer's settling answer clears it.

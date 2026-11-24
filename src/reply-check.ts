@@ -28,7 +28,7 @@ const MAX_QUOTE_CHARS = 160;
 export const MIN_TERM_CHARS = 3;
 export const MAX_TERM_CHARS = 200;
 
-const UNREADABLE_ANSWER = 'Unverified. I could not check this reply';
+const UNREADABLE_ANSWER = 'I could not check this reply';
 const UNPROVEN_OUTCOME = 'I could not point to a line of this repository that shows it';
 const NO_FIXING_PR = 'The reply names no other pull request of this repository that I could check';
 
@@ -36,10 +36,13 @@ const NO_FIXING_PR = 'The reply names no other pull request of this repository t
 const MAX_CITED_ENTRIES = 10;
 const MAX_CITED_CHARS = 200;
 
-/** Whether the reply's thread is resolved. `undefined` when it was not read, as on a merged or closed PR. */
+/**
+ * How an answer leaves its thread: `open`, or `resolved` and holding nothing. `undefined` when it stays resolved and still
+ * holds something, or was not read, as on a merged or closed PR.
+ */
 export type ThreadState = 'open' | 'resolved' | undefined;
 
-/** Returns the sentence "`why`, so a maintainer should decide", which asks for a resolve only on an open thread and for nothing on a resolved one. */
+/** Returns the sentence "`why`, so a maintainer should decide", which asks for a resolve only on an open thread, and for nothing on a resolved one that holds nothing. */
 export function leftToMaintainer(why: string, thread: ThreadState): string {
   return thread === 'resolved' ? `${why}.` : `${why}, so ${maintainerShould('decide', thread)}.`;
 }
@@ -88,8 +91,6 @@ export interface ReplySources {
   repo?: string;
   /** The PR's own number, which never fixes its finding elsewhere. */
   pr?: number;
-  /** Decides whether an "Unverified." asks a maintainer to resolve the thread. */
-  thread?: ThreadState;
   /** What an unproven "Fixed" says about where a reply counts one. */
   fixScope?: FixScope;
   /**
@@ -129,8 +130,11 @@ export interface CheckedStatement {
 }
 
 export interface CheckedReply {
-  /** The answer as "Outcome. text", which is what the reply handler goes on with. */
-  text: string;
+  /**
+   * Returns the answer as "Outcome. text", which is what the reply handler goes on with. `thread` decides only what an
+   * "Unverified." asks a maintainer for.
+   */
+  text: (thread: ThreadState) => string;
   /** The outcome `text` opens with. */
   outcome: AnswerOutcome;
   /** The outcome the model gave before the checks. Unset when its answer could not be read. */
@@ -290,7 +294,7 @@ function checkStatement(entry: Record<string, unknown>, quote: string, sources: 
  * pull request, for `checkFixedElsewhere` to confirm. No statement's status changes the outcome.
  */
 export function checkReply(content: string, developerReply: string, sources: ReplySources): CheckedReply {
-  const unreadable: CheckedReply = { text: leftToMaintainer(UNREADABLE_ANSWER, sources.thread), outcome: 'Unverified', cited: [], answer: '', proof: [], statements: [], unchecked: 0, dropped: 0 };
+  const unreadable: CheckedReply = { text: thread => `Unverified. ${leftToMaintainer(UNREADABLE_ANSWER, thread)}`, outcome: 'Unverified', cited: [], answer: '', proof: [], statements: [], unchecked: 0, dropped: 0 };
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(extractJSON(content, 'object')) as Record<string, unknown>;
@@ -318,12 +322,12 @@ export function checkReply(content: string, developerReply: string, sources: Rep
     ? parsed.fixed_in : undefined;
   // A fix in another pull request stays unconfirmed until `checkFixedElsewhere` confirms it.
   const settled: AnswerOutcome = unproven || outcome === 'FixedElsewhere' ? 'Unverified' : outcome;
-  const note = unproven && outcome === 'Fixed' && sources.fixScope ? ` ${unprovenFix(sources.fixScope, sources.changedSincePosted !== undefined, sources.thread)}`
-    : unproven ? ` ${leftToMaintainer(UNPROVEN_OUTCOME, sources.thread)}`
-    : outcome === 'FixedElsewhere' ? ` ${leftToMaintainer(NO_FIXING_PR, sources.thread)}`
-      : outcome === 'Unverified' && sources.thread !== 'resolved' ? ` A${maintainerShould('confirm this', sources.thread).slice(1)}.` : '';
+  const note = (thread: ThreadState): string => unproven && outcome === 'Fixed' && sources.fixScope ? ` ${unprovenFix(sources.fixScope, sources.changedSincePosted !== undefined, thread)}`
+    : unproven ? ` ${leftToMaintainer(UNPROVEN_OUTCOME, thread)}`
+    : outcome === 'FixedElsewhere' ? ` ${leftToMaintainer(NO_FIXING_PR, thread)}`
+      : outcome === 'Unverified' && thread !== 'resolved' ? ` A${maintainerShould('confirm this', thread).slice(1)}.` : '';
   return {
-    text: `${settled}. ${answer}${note}`,
+    text: thread => `${settled}. ${answer}${note(thread)}`,
     outcome: settled,
     modelOutcome: outcome,
     cited: rawEntries(parsed.proof),

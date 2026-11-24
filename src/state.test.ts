@@ -1531,24 +1531,34 @@ describe('checkAndAutoApprove', () => {
       expect(events).toEqual([]);
       const held = threads.at(-1)!.id;
       expect(why).toMatch(new RegExp(`^1 warning thread holds the approval:\\n- \\[Retry ${held}\\]\\(https://example\\.com/${held}\\)`));
-      expect(why).toContain('Approval follows once each one is fixed, tracked with `Create an issue for this`, or resolved by someone with the `maintain` role or a higher one. A reply in a thread lifts its hold only when Manki answers it with Fixed, Withdrawn or Agreed.');
+      expect(why).toContain('Approval follows once each one is fixed, tracked with `Create an issue for this`, or resolved by someone with the `maintain` role or a higher one.');
+      expect(why).toContain('A reply in a thread lifts its hold only when Manki answers it with Fixed, Withdrawn or Agreed.');
     });
 
     it('names a resolved warning thread that still holds with the reason', async () => {
       jest.spyOn(core, 'info').mockImplementation(() => {});
-      const line = async (resolvedBy: string, role = 'write', config = DEFAULT_CONFIG) => {
+      const line = async (resolvedBy: string, role = 'write', config = DEFAULT_CONFIG, tags?: string[]) => {
         const octokit = makeMockOctokit({
-          threads: [warning('t1', { isResolved: true, resolvedBy })], prHeadSha: HEAD, mergeable: true, role,
+          threads: [warning('t1', { isResolved: true, resolvedBy }, tags)], prHeadSha: HEAD, mergeable: true, role,
           existingReviews: [{ id: 7, body: roundBody(roundThatPosted(HEAD, [])), state: 'COMMENTED', commit_id: HEAD, user }],
         });
         const result = await approveOrSayWhy(octokit, TEST_BOT, 'owner', 'repo', 1, config);
-        return result.approved ? undefined : (await result.why()).split('\n')[1];
+        if (result.approved) return undefined;
+        const why = await result.why();
+        reopens = why.includes('A thread that is already resolved has to be reopened first. A reply');
+        return why.split('\n')[1];
       };
+      let reopens = false;
       expect(await line('author')).toBe('- [Retry t1](https://example.com/t1) (resolved by `author`, which lifts the hold only with the `maintain` role or a higher one)');
       expect(await line(manki, 'admin')).toBe('- [Retry t1](https://example.com/t1) (Manki resolved it, but for none of the reasons that lift the hold)');
+      expect(reopens).toBe(true);
+      // The note of a guarded thread already says what clears it.
+      expect(await line('author', 'write', DEFAULT_CONFIG, ['security'])).toContain('needs a fix or a maintainer to resolve it');
+      expect(reopens).toBe(false);
       // Without `author_clear_role` no resolve by hand lifts the hold, whatever the resolver's role.
       const { author_clear_role: _role, ...noRole } = DEFAULT_CONFIG;
       expect(await line('maria', 'admin', noRole)).toBe('- [Retry t1](https://example.com/t1) (resolved by `maria`, which does not lift the hold)');
+      expect(reopens).toBe(false);
     });
 
     it.each<[string, ReturnType<typeof makeGraphqlFetchThreadNode>[], string?]>([

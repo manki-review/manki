@@ -75,7 +75,7 @@ describe('checkReply', () => {
 
     expect(statementList(checked)).toBe(`**Statements of this reply, and what I checked of each:**\n${line}`);
     // No status moves the outcome.
-    expect(checked.text).toBe('Unverified. The code does not show it. A maintainer should confirm this.');
+    expect(checked.text(undefined)).toBe('Unverified. The code does not show it. A maintainer should confirm this.');
   });
 
   type Run = 'checkout' | 'no checkout' | 'no related repo' | 'no description';
@@ -146,7 +146,7 @@ describe('checkReply', () => {
     try {
       const checked = checkReply(answer({ statements: [{ quote: snapshot, ...statement }] }), REPLY, from);
       expect(statementList(checked)).toBe(`**Statements of this reply, and what I checked of each:**\n- Not checked, ${reason}: "${snapshot}"`);
-      expect(checked.text).toBe('Unverified. The code does not show it. A maintainer should confirm this.');
+      expect(checked.text(undefined)).toBe('Unverified. The code does not show it. A maintainer should confirm this.');
       if (spy) expect(spy).toHaveBeenCalledWith(from.workspace, { text: statement.search, maxResults: 1, ignoreCase: true });
     } finally {
       spy?.mockRestore();
@@ -232,18 +232,18 @@ describe('checkReply', () => {
       { quote: rewrote, status: 'confirmed', description_search: 'MAX_ROWS' },
       { quote: snapshot, status: 'confirmed', description: HELD },
     ];
-    expect(checkReply(JSON.stringify({ outcome, answer: `${outcome}. The exporter writes CSV.`, proof, statements }), REPLY, sources).text).toBe(text);
+    expect(checkReply(JSON.stringify({ outcome, answer: `${outcome}. The exporter writes CSV.`, proof, statements }), REPLY, sources).text(undefined)).toBe(text);
     // When what changed since the thread was posted could not be read, no line shows a fix.
     if (outcome === 'Fixed') {
       const unread = checkReply(JSON.stringify({ outcome, answer: 'The guard runs first.', proof: ['src/ledger.rs:3'] }), REPLY, { ...sources, changedSincePosted: undefined });
-      expect(unread.text).toBe(`Unverified. The guard runs first. ${UNPROVEN}`);
+      expect(unread.text(undefined)).toBe(`Unverified. The guard runs first. ${UNPROVEN}`);
       // A fix that only removes code holds on the line right before or after the removal, and on no line further away.
       const removal = parsePRDiff('diff --git a/src/ledger.rs b/src/ledger.rs\n--- a/src/ledger.rs\n+++ b/src/ledger.rs\n@@ -2,3 +2,2 @@\n context\n-    debug(rows);\n context').files;
-      const removed = (at: string) => checkReply(JSON.stringify({ outcome, answer: 'The debug call is gone.', proof: [at] }), REPLY, { ...sources, changedSincePosted: removal }).text;
+      const removed = (at: string) => checkReply(JSON.stringify({ outcome, answer: 'The debug call is gone.', proof: [at] }), REPLY, { ...sources, changedSincePosted: removal }).text(undefined);
       expect(['src/ledger.rs:2', 'src/ledger.rs:3', 'src/ledger.rs:4'].map(removed)).toEqual(['Fixed. The debug call is gone.', 'Fixed. The debug call is gone.', `Unverified. The debug call is gone. ${UNPROVEN}`]);
       // A range wider than a quote holds an unrelated change as easily as a fix, so it counts only when every line in it changed.
       const wide = 'diff --git a/src/ledger.rs b/src/ledger.rs\n--- a/src/ledger.rs\n+++ b/src/ledger.rs\n@@ -1,0 +1,8 @@\n+a\n+b\n+c\n+d\n+e\n+f\n+g\n+h';
-      const ranged = (at: string, changed: ParsedDiff) => checkReply(JSON.stringify({ outcome, answer: 'The guard runs first.', proof: [at] }), REPLY, { ...sources, changedSincePosted: changed.files }).text;
+      const ranged = (at: string, changed: ParsedDiff) => checkReply(JSON.stringify({ outcome, answer: 'The guard runs first.', proof: [at] }), REPLY, { ...sources, changedSincePosted: changed.files }).text(undefined);
       expect(ranged('src/ledger.rs:1-8', parsePRDiff(wide))).toBe('Fixed. The guard runs first.');
       expect(ranged('src/ledger.rs:1-8', DIFF)).toBe(`Unverified. The guard runs first. ${UNPROVEN}`);
       expect(ranged('src/ledger.rs:1-7', DIFF)).toBe('Fixed. The guard runs first.');
@@ -255,7 +255,8 @@ describe('checkReply', () => {
     const reply = 'This is fixed in #42, see also https://github.com/acme/ledger/pull/57 and https://github.com/acme/other/pull/61, not `#77`.';
     const fixedIn = (n: unknown, from: ReplySources = { ...sources, repo }) => checkReply(JSON.stringify({ outcome: 'FixedElsewhere', answer: 'You name another PR.', fixed_in: n }), reply, from);
 
-    expect(fixedIn(42)).toMatchObject({ outcome: 'Unverified', answer: 'You name another PR.', fixedIn: 42, text: `Unverified. You name another PR. ${NO_FIXING_PR}` });
+    expect(fixedIn(42)).toMatchObject({ outcome: 'Unverified', answer: 'You name another PR.', fixedIn: 42 });
+    expect(fixedIn(42).text(undefined)).toBe(`Unverified. You name another PR. ${NO_FIXING_PR}`);
     expect(fixedIn(57).fixedIn).toBe(57);
     // Another repository's pull request, a number in code, one the reply does not name, and one without the repository all name none.
     for (const n of [61, 77, 43, '42']) expect(fixedIn(n).fixedIn).toBeUndefined();
@@ -271,10 +272,12 @@ describe('checkReply', () => {
     ['a list', '["Withdrawn"]'],
     ['no answer', '{"outcome": "Withdrawn", "proof": ["src/ledger.rs:3"]}'],
   ])('answers Unverified when the model returns %s', (_name, content) => {
-    expect(checkReply(content, REPLY, sources)).toEqual({
-      text: 'Unverified. I could not check this reply, so a maintainer should decide.', outcome: 'Unverified', cited: [], answer: '', proof: [], statements: [], unchecked: 0, dropped: 0,
+    const { text, ...rest } = checkReply(content, REPLY, sources);
+    expect(text(undefined)).toBe('Unverified. I could not check this reply, so a maintainer should decide.');
+    expect(rest).toEqual({
+      outcome: 'Unverified', cited: [], answer: '', proof: [], statements: [], unchecked: 0, dropped: 0,
     });
-    expect(checkReply(content, REPLY, { ...sources, thread: 'resolved' }).text).toBe('Unverified. I could not check this reply.');
+    expect(checkReply(content, REPLY, sources).text('resolved')).toBe('Unverified. I could not check this reply.');
   });
 
   it.each([
@@ -282,7 +285,7 @@ describe('checkReply', () => {
     ['FixedElsewhere', 'The reply names no other pull request of this repository that I could check', ', so a maintainer should decide'],
     ['Unverified', '', 'A maintainer should confirm this'],
   ])('asks a maintainer to resolve only a thread that is open, for %s', (outcome, why, asks) => {
-    const text = (thread: ReplySources['thread']) => checkReply(JSON.stringify({ outcome, answer: 'The exporter writes CSV.' }), REPLY, { ...sources, thread }).text;
+    const { text } = checkReply(JSON.stringify({ outcome, answer: 'The exporter writes CSV.' }), REPLY, sources);
     expect(text('open')).toBe(`Unverified. The exporter writes CSV. ${why}${asks} and resolve this thread.`);
     expect(text(undefined)).toBe(`Unverified. The exporter writes CSV. ${why}${asks}.`);
     expect(text('resolved')).toBe(`Unverified. The exporter writes CSV.${why && ` ${why}.`}`);
@@ -304,7 +307,7 @@ describe('checkReply', () => {
 
   it('counts only a line inside the diff as a line of the PR when the run has no checkout', () => {
     const noCheckout: ReplySources = { relatedNames: ['acme/reports'], diff: DIFF };
-    const withdrawn = (proof: string[], from = noCheckout) => checkReply(JSON.stringify({ outcome: 'Withdrawn', answer: 'The exporter writes CSV.', proof }), REPLY, from).text;
+    const withdrawn = (proof: string[], from = noCheckout) => checkReply(JSON.stringify({ outcome: 'Withdrawn', answer: 'The exporter writes CSV.', proof }), REPLY, from).text(undefined);
 
     expect(withdrawn(['src/ledger.rs:3'])).toBe('Withdrawn. The exporter writes CSV.');
     expect(withdrawn(['src/ledger.rs:9'])).toBe(`Unverified. The exporter writes CSV. ${UNPROVEN}`);

@@ -808,8 +808,9 @@ function warningThreadsLine(held: ReviewThread[], bot: BotIdentity, clearRole: A
     : isBotLogin(bot, t.resolvedByLogin) ? ' (Manki resolved it, but for none of the reasons that lift the hold)'
     : ` (resolved by ${inline(t.resolvedByLogin ?? 'someone')}, which ${clearRole ? `lifts the hold only with ${rolePhrase(clearRole, true)}` : 'does not lift the hold'})`;
   const list = held.map(t => `- ${threadLink(t)}${note(t)}`).join('\n');
+  const reopen = clearRole && held.some(t => t.isResolved && !t.isSecurity && !t.disprovedBlocker) ? ' A thread that is already resolved has to be reopened first.' : '';
   const count = held.length === 1 ? '1 warning thread holds' : `${held.length} warning threads hold`;
-  return `${count} the approval:\n${list}\n\nApproval follows once each one is ${warningClearedBy(clearRole)}. A reply in a thread lifts its hold only when Manki answers it with Fixed, Withdrawn or Agreed.`;
+  return `${count} the approval:\n${list}\n\nApproval follows once each one is ${warningClearedBy(clearRole)}.${reopen} A reply in a thread lifts its hold only when Manki answers it with Fixed, Withdrawn or Agreed.`;
 }
 
 /** Posts `text` as a comment carrying `marker`, unless a Manki comment with `marker` is already on the PR. Returns whether it posted. */
