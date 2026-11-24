@@ -4548,10 +4548,10 @@ describe('runReview', () => {
     };
     try {
       const { result, asked } = await run();
-      // A security finding, one more than one finder reported, one that restates a thread, one a rule grades and a blocker
-      // a check confirmed get no vote, and a failed call asks once more.
+      // A security finding, one more than one finder reported, one that restates a thread and one a rule grades get no vote,
+      // and a failed call asks once more.
       expect(asked.sort()).toEqual([
-        'Backed blocker', 'Backed warning', 'Confirmed warning', 'Declined blocker', 'Declined warning', 'Held blocker cell', 'Misquoted warning', 'Quote nearby', 'Unreadable file', 'Vote fails', 'Vote fails',
+        'Backed blocker', 'Backed warning', 'Confirmed blocker', 'Confirmed warning', 'Declined blocker', 'Declined warning', 'Held blocker cell', 'Misquoted warning', 'Quote nearby', 'Unreadable file', 'Vote fails', 'Vote fails',
       ]);
       const reporter = result.findings[0].reviewers[0];
       expect(result.findings.map(f => [f.title, f.severity, f.otherFinderVote?.declined, f.gradePath?.at(-1)?.reason])).toEqual([
@@ -4571,7 +4571,8 @@ describe('runReview', () => {
         ['Held blocker cell', 'warning', true, undefined],
         ['Quote nearby', 'warning', false, undefined],
         ['Unreadable file', 'warning', undefined, undefined],
-        ['Confirmed blocker', 'blocker', undefined, undefined],
+        // A check confirms the code path, not the harm, so a confirmed blocker the other finder declines still becomes a warning.
+        ['Confirmed blocker', 'warning', true, 'the other finder would not block on it'],
         // A check confirms the code path, not the harm, so a confirmed warning the other finder declines still becomes a note.
         ['Confirmed warning', 'note', true, 'the other finder named no harm in realistic use'],
       ]);
@@ -4581,7 +4582,7 @@ describe('runReview', () => {
       expect([declinedBlocker?.tags, declinedBlocker?.cell, declinedBlocker?.judgeCell]).toEqual([expect.arrayContaining([DISPROVED_TAG]), undefined, { row: 'wrong', column: 'normal' }]);
       // The other finder answered, never the one that reported it, and the record keeps its answer with the quoted line.
       expect(result.findings[0].otherFinderVote).toEqual({ finder: expect.not.stringMatching(reporter), harm: 'A total is wrong.', situation: 'Any export.', line: 'src/a.ts:1', quote: 'const line1 = 1;', declined: false });
-      expect(result.llmCalls?.filter(c => c.stage === 'vote').length).toBe(11);
+      expect(result.llmCalls?.filter(c => c.stage === 'vote').length).toBe(12);
       expect(result.unposted ?? []).toEqual([]);
 
       // A vote starts only with the time for its whole timeout and a judge call after it, so with 3 minutes left it is
