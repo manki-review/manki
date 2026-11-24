@@ -3,6 +3,7 @@ import * as github from '@actions/github';
 
 import { parsePRDiff } from './diff';
 import { BotIdentity, fetchInterRoundDiff } from './github';
+import { compareVersions } from './lockfile';
 import { appendMemoryLine, MemoryStore } from './memory';
 import { fetchRecapState, judgeAddressedThreadIds, PreviousFinding } from './recap';
 import { AuthorClearRole, citesEvidence, Finding, FindingCalibration, FindingFingerprint, FindingFingerprintEntry, isSecurityFinding, migrateStoredSeverities, ParsedDiff, RoundContext } from './types';
@@ -63,7 +64,7 @@ export interface PostedFinding {
  * evidence, category, effort, whether the finding had evidence and whether the judge checked
  * it (`calibration`). Writes one JSON line to the job summary, and appends it to
  * `metrics/fix-rate.jsonl` in the repo's memory when `memory` is given. The line carries
- * the class, group and config digest of the last round that recorded them.
+ * the class, group and config digest of the last round that recorded them, and the lowest Manki version of the rounds.
  */
 export async function recordFixRate(
   octokit: Octokit,
@@ -115,10 +116,12 @@ export async function recordFixRate(
   }
 
   const routing = [...priorRounds].reverse().find(r => r.routing)?.routing;
+  const mankiVersion = lowestVersion(priorRounds);
   const record = {
     pr: pr.number,
     mergedSha: pr.mergedSha,
     rounds: priorRounds.length,
+    ...(mankiVersion && { mankiVersion }),
     ...(routing && { class: routing.class ?? null, group: routing.group, configDigest: routing.configDigest }),
     counts: [...counts.values()],
     calibration: [...calibration.values()],
@@ -139,6 +142,17 @@ export async function recordFixRate(
   } catch (error) {
     core.warning(`Failed to append the fix rate to ${memory.name}: ${sanitizeTokens(String(error))}`);
   }
+}
+
+/** Returns the lowest Manki version of `rounds`, or nothing when one of them has no version. */
+function lowestVersion(rounds: RoundContext[]): string | undefined {
+  let lowest: string | undefined;
+  for (const { meta: { mankiVersion } } of rounds) {
+    const order = compareVersions(mankiVersion, lowest ?? mankiVersion);
+    if (order === undefined) return undefined;
+    if (lowest === undefined || order < 0) lowest = mankiVersion;
+  }
+  return lowest;
 }
 
 function tally<K extends object>(rows: Map<string, K & OutcomeCounts>, dims: K, outcome: Outcome): void {
