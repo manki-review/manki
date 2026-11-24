@@ -644,7 +644,7 @@ export async function handleReviewCommentReply(
     const outdated = !findingData?.detached && !root.comment.line && !!root.comment.original_line;
     const postedPlace = outdated ? findingPlace(findingBody, root.comment.path, root.comment.original_line, root.comment.original_line) : place;
     const elsewhere = !checksElsewhere ? undefined : closed ? { why: 'this PR is no longer open' } : await checkFixedElsewhere(checked.fixedIn!, {
-      octokit, owner, repo, prNumber, file: filePath, line: currentFindingLine(postedPlace), evidenceFiles: evidenceFiles ?? [],
+      octokit, owner, repo, prNumber, file: filePath, line: currentFindingLine(postedPlace), evidenceFiles: evidenceFiles ?? [], closedPaths: closedSince,
       ...((findingData?.detached || outdated) && { postedOn: root.comment.original_commit_id }),
       ...(client.repoTools && loadWorkspace && { checkout: async (commit: string) => loadWorkspace(commit) }),
       ask: async (checkout, change, pr, lines) => (await response.recorded.sendMessage(FIXED_ELSEWHERE_SYSTEM_PROMPT, fixedElsewhereContext(findingBody, filePath, lines, change, pr), {

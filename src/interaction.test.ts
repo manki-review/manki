@@ -1934,8 +1934,9 @@ describe('handleReviewCommentReply', () => {
   const FIX_CHECK_FAILED = 'Unverified. You name #7. I could not check #7 yet: the check of the merge with #7 failed. This thread stays as it is. Reply again in a few minutes.';
   const FIX_PR_CLOSED = 'Unverified. You name #7. I could not confirm that #7 fixes this finding: this PR is no longer open. A maintainer should decide.';
   const FIX_UNCHECKED = 'Unverified. You name #7. I check a fix in another pull request only for a blocker or a security finding, so I did not check #7. This thread stays as it is.';
+  const FIX_CLOSED_UNKNOWN = 'Unverified. You name #7. I could not check #7 yet: this PR\'s diff could not be read, so which files no review may read is not certain. This thread stays as it is. Reply again in a few minutes.';
   const MERGED = { state: 'closed', merged: true, base: { ref: 'main' }, merge_commit_sha: 'd'.repeat(40) };
-  it.each<[string, Record<string, unknown>, string, boolean, boolean?, boolean?, string?, ('blocker' | 'warning' | 'detached' | 'outdated')?]>([
+  it.each<[string, Record<string, unknown>, string, boolean, boolean?, boolean?, string?, ('blocker' | 'warning' | 'detached' | 'outdated' | 'closed unknown')?]>([
     ['a pull request merged into this PR\'s base', MERGED, FIX_CONFIRMED, true],
     ['a pull request merged into this PR\'s base, named by a maintainer', MERGED, FIX_CONFIRMED, true, false, false, 'alice'],
     ['a throwaway pull request stacked on this one', { state: 'open', merged: false, base: { ref: 'feature' }, merge_commit_sha: 'e'.repeat(40) }, FIX_STACKED, false],
@@ -1952,6 +1953,8 @@ describe('handleReviewCommentReply', () => {
     ['an outdated blocker whose line this PR moved', MERGED, FIX_CONFIRMED, true, false, false, 'pr-author', 'outdated'],
     // Nothing reads the check of a thread that does not block, so it makes no checkout and no second call.
     ['a warning', MERGED, FIX_UNCHECKED, false, false, false, 'pr-author', 'warning'],
+    // The other pull request may move a file into or out of a closed path, which only this PR's diff and the config tell.
+    ['a blocker while this PR\'s diff cannot be read and some paths are closed', MERGED, FIX_CLOSED_UNKNOWN, false, false, false, 'pr-author', 'closed unknown'],
   ])('answers a claim that another pull request fixes a finding, and never clears the thread: %s', async (_name, otherState, answer, confirmed, checkFails = false, prClosed = false, sender = 'pr-author', kind = 'blocker') => {
     const root = mkdtempSync(join(tmpdir(), 'manki-elsewhere-'));
     mkdirSync(join(root, 'src'));
@@ -1993,8 +1996,9 @@ describe('handleReviewCommentReply', () => {
       const loadWorkspace = jest.fn().mockResolvedValue(root);
       jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: kind !== 'warning', findingTitle: 'This' }]);
       jest.mocked(state.resolveReviewThread).mockClear();
+      if (kind === 'closed unknown') jest.mocked(ghUtils.fetchPRDiff).mockRejectedValueOnce(new Error('Server Error'));
 
-      await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, loadWorkspace, CONFIG);
+      await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, loadWorkspace, kind === 'closed unknown' ? { ...CONFIG, closed_paths: ['keys/**'] } : CONFIG);
 
       const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.at(-1)![0].body as string;
       const [record] = extractReplyRecords(body).map(r => JSON.parse(r) as ReplyRecord);
