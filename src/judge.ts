@@ -23,10 +23,12 @@ import { FINDER_TOOLS_TIMEOUT_MS, guardedThreadStaysOpen, determineOutcome, earl
 import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, ROW_MEANINGS, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge, stringifyFindingFingerprint } from './finding-fingerprint';
 import { capUnconfirmedRaise, MAX_DOUBT_CHECKS, MAX_RELATED_PROOF, needsProof, refuteBlockers, unpostedForTrigger } from './refute';
-import { fetchedRelatedRepos, relatedNames, repoTools } from './related-repos';
+import { fetchedRelatedRepos, offeredRepos, relatedNames, repoTools } from './related-repos';
 import { citesChangedLine } from './reply-check';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim, relatedCitations } from './static-signals';
+import type { AnswerStore } from './stored-answers';
+import { resolveModel } from './config';
 import { bySecondReadsOnly, isSecondReadName, isSweepName, canLeaveOut, CELL_GRADES, CheckProgress, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, RefutationOutcome, restsOnDrop, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, fixThreadFiles, GradedCounts, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isGuardedFinding, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, REVERT_CAUGHT, RelatedRepoTools, restsOnUnstated, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, wouldBlockIfTrue, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, triggerDoubt, isTriggerDoubt, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, ruleGrade, RulesMode, RuleVerdict } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
@@ -304,6 +306,8 @@ export interface JudgeInput {
   evaluatedThreads?: { openThreads: OpenThread[]; evaluations?: ThreadEvaluation[] };
   /** The warnings earlier rounds listed only in the review body. The judge says of each whether the change since the last round fixed it. */
   carriedWarnings?: FindingFingerprintEntry[];
+  /** Keeps the judge's parsed answer, or gives a stored one in place of asking the judge. */
+  answers?: AnswerStore;
 }
 
 /** Returns the carried warnings the judge is asked about. Only a change since the last round can fix one, so without one it gets none. */
@@ -1736,18 +1740,24 @@ export async function runJudgeAgent(
     );
     return { ...merged, threadEvaluations: synthesizeMissingThreadEvaluations(merged.threadEvaluations, still.threads) };
   };
-  let judgeResult: JudgeResult;
-  const started = Date.now();
-  try {
-    judgeResult = await judge(judgeCall(toolSteps));
-  } catch (error) {
-    // A judge with tools can run out of turns or time, so it grades once more the way it does without them. A used-up
-    // limit or a refusal was already sent to the fallback model, where the stage has one, and would fail again.
-    if (toolSteps === 0 || error instanceof QuotaError || error instanceof RefusalError || error instanceof NotStartedError) throw error;
-    core.warning(`The judge with tools failed (${error}), grading once more without tools`);
-    // The retry gets the time the attempt with tools left of its limit, and never less than `RETRY_WITHOUT_TOOLS_TIMEOUT_MS`.
-    judgeResult = await judge(judgeCall(0, Math.max(RETRY_WITHOUT_TOOLS_TIMEOUT_MS, FINDER_TOOLS_TIMEOUT_MS - (Date.now() - started))));
-  }
+  const askJudge = async (): Promise<JudgeResult> => {
+    const started = Date.now();
+    try {
+      return await judge(judgeCall(toolSteps));
+    } catch (error) {
+      // A judge with tools can run out of turns or time, so it grades once more the way it does without them. A used-up
+      // limit or a refusal was already sent to the fallback model, where the stage has one, and would fail again.
+      if (toolSteps === 0 || error instanceof QuotaError || error instanceof RefusalError || error instanceof NotStartedError) throw error;
+      core.warning(`The judge with tools failed (${error}), grading once more without tools`);
+      // The retry gets the time the attempt with tools left of its limit, and never less than `RETRY_WITHOUT_TOOLS_TIMEOUT_MS`.
+      return judge(judgeCall(0, Math.max(RETRY_WITHOUT_TOOLS_TIMEOUT_MS, FINDER_TOOLS_TIMEOUT_MS - (Date.now() - started))));
+    }
+  };
+  const judgeResult = input.answers
+    ? await input.answers.ask('judge', {
+      'system prompt': judgePrompt(toolSteps), message: userMessage, effort, steps: [toolSteps, toolSteps > 0 && offeredRepos(refutation!.related)], model: resolveModel(config, 'judge'),
+    }, askJudge)
+    : await askJudge();
 
   const threadEvaluations = overrideApplied
     ? openThreads!.map(t => ({

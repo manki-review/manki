@@ -21,6 +21,8 @@ import { checkStatus, confirmPushedFixes, lacksTrigger, MAX_DOUBT_CHECKS, needsP
 import { combineVerdictReports, runVerdictReader } from './verdict';
 import { buildRepositoryRules, CLAIMS_MISSING_RULE, COST_SCALE_RULE, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, PRE_EXISTING_RULE, ROOT_CAUSE_FIX_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
+import type { AnswerStore } from './stored-answers';
+import { resolveModel } from './config';
 import { ChangeUnit, listClaimLines, listRelatedUses, listUsesOutsideDiff, MappedChange, relatedQuestions, TEST_PATH } from './symbol-uses';
 import { EarlierAnswer, EarlierAnswers, runComparisons, runPatternChecks, runRelatedChecks } from './compare';
 import { extractPrClaims, prClaimsRecord, runClaimChecks } from './pr-claims';
@@ -1042,6 +1044,8 @@ export interface ReviewOptions {
   earlierAttempt?: EarlierAttempt;
   /** Keeps the planner's answer and the finder stage's findings of an earlier round in place of running them. The stages after the finders run. */
   replay?: FinderReplay;
+  /** Keeps the answers of the name translation, the dedup and the judge, or gives stored ones in place of making the calls. */
+  answers?: AnswerStore;
 }
 
 export async function runReview(
@@ -1050,7 +1054,7 @@ export async function runReview(
 ): Promise<ReviewResult & { outcome: RoundOutcome }> {
   const {
     config, diff, rawDiff, repoContext, memory, fileContents, prContext, linkedIssues, onProgress, checkpoint, signal, deadline,
-    isFollowUp, openThreads, previousFindings, priorRounds, prAuthorLogin, interRoundDiff, workspace, lockfiles = [], automaticRetry = false, replay,
+    isFollowUp, openThreads, previousFindings, priorRounds, prAuthorLogin, interRoundDiff, workspace, lockfiles = [], automaticRetry = false, replay, answers,
   } = options;
   const overlong = overlongChangedLines(diff);
   if (overlong.length > 0) {
@@ -1347,7 +1351,9 @@ export async function runReview(
   const dependencyNames = uses.dependencyNames ?? [];
   // `dependencyNames` are collected only with a `dependency` repo configured, and such a repo is searched for those alone.
   const checkouts = related && finderTools && referenceNames.length + dependencyNames.length > 0 ? await fetchRelatedRepos(related) : [];
-  const translation = await translateNames(clients.dedup && withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'translate'), referenceNames, diff.files.map(f => f.path), checkouts.filter(c => c.kind !== 'dependency'));
+  const translateClient = clients.dedup && withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'translate');
+  const translation = await translateNames(translateClient && answers ? answers.wrap(translateClient, 'translate', resolveModel(config, 'dedup')) : translateClient, referenceNames, diff.files.map(f => f.path), checkouts.filter(c => c.kind !== 'dependency'));
+  answers?.check();
   const relatedUses = await listRelatedUses(checkouts, referenceNames, translation, dependencyNames);
   const guides = pointedTo.guides = relatedRepoGuides(checkouts);
   const relatedTools = related && { ...related, ...(guides && { guides }) };
@@ -1868,7 +1874,8 @@ export async function runReview(
     if (clients.dedup && findingsForJudge.length > 0) {
       const dedupStart = Date.now();
       const dedupWrap = lateUsage({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup');
-      const llmResult = await llmDeduplicateFindings(findingsForJudge, previousFindings, dedupWrap.client, restatesThreadAcrossFiles(priorRounds ?? []), threadMayHaveChanged(priorRounds ?? [], interRoundDiff, citedCode));
+      const llmResult = await llmDeduplicateFindings(findingsForJudge, previousFindings, answers ? answers.wrap(dedupWrap.client, 'dedup', resolveModel(config, 'dedup')) : dedupWrap.client, restatesThreadAcrossFiles(priorRounds ?? []), threadMayHaveChanged(priorRounds ?? [], interRoundDiff, citedCode));
+      answers?.check();
       if (stopped) return incomplete(stopped, { ...(openLeads.length > 0 && { openLeads }) });
       if (llmResult.duplicates.length > 0) {
         core.info(`LLM dedup removed ${llmResult.duplicates.length} findings matching earlier resolved ones before judge`);
@@ -1980,6 +1987,7 @@ export async function runReview(
     toolSteps: judgeToolSteps(config, clients, !!refutation),
     usesOutsideDiff,
     carriedWarnings,
+    answers,
     ...(onProgress && { onGraded: (graded: GradedCounts) => onProgress({ phase: 'graded', graded }) }),
   };
   if (judgeSkipped) {
@@ -2014,6 +2022,7 @@ export async function runReview(
       openLeads.push(...unsettled);
       core.info(`Judge complete: ${finalFindings.length} findings survived (${judgeResult.findings.length - finalFindings.length} ignored or left unsettled)`);
     } catch (error) {
+      answers?.check();
       if (!(error instanceof NotStartedError)) {
         core.warning(`Judge failed: ${error}`);
         logOutputTokens('Judge', judgeWrap.getTotals().usage);
@@ -2090,7 +2099,7 @@ export async function runReview(
         // The open threads were evaluated already, so this pass only links its findings to them and suppresses against them.
         const evaluatedThreads = { openThreads: openThreads ?? [], ...(judgeThreadEvaluations && { evaluations: judgeThreadEvaluations }) };
         // A rank only compares the notes of one judge call, so only the first call's ranks order the notes.
-        const judged = (await runJudgeAgent(sweepJudge, config, { ...judgeInput, findings: fresh, openThreads: undefined, evaluatedThreads, carriedWarnings: undefined, onGraded: undefined })).findings
+        const judged = (await runJudgeAgent(sweepJudge, config, { ...judgeInput, findings: fresh, openThreads: undefined, evaluatedThreads, carriedWarnings: undefined, onGraded: undefined, answers: undefined })).findings
           .map(({ noteRank: _, ...f }): Finding => f);
         allJudgedFindings = [...(allJudgedFindings ?? []), ...judged];
         const kept = judged.filter(f => f.severity !== 'ignore');

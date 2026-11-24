@@ -44,6 +44,7 @@ import * as napi from '@ast-grep/napi';
 import { formatFindingComment, holdsApproval, LinkedIssue, titleToSlug } from './github';
 import { CELL_GRADES, cellGrade, DISPROVED_TAG, EarlierAttempt, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, OriginAnswer, OriginVerdict, Refutation, RefutationOutcome, RelatedItem, RelatedWork, ReviewResult, RoundContext, RoundFix, RoundLead, RoundNotStarted, RoundScope, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG, SweepMode, triggerDoubt, VERDICT_READER_NAME } from './types';
 import { citedLine, stringifyFindingFingerprint } from './finding-fingerprint';
+import { AnswerStore } from './stored-answers';
 import { baseProofFixture, baseProofWorkspace, expectLinearTime, fingerprintEntriesFromLegacy, git, GIT_TEST_TIMEOUT_MS, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS, withConsequence } from './test-utils';
 import { listUsesOutsideDiff } from './symbol-uses';
 import type { LockfileDiff } from './lockfile';
@@ -2457,8 +2458,14 @@ describe('runReview', () => {
     try {
       const related_repos = [{ repo: 'o/ref', kind: 'reference' as const }, { repo: 'o/app', kind: 'consumer' as const }];
       const options = { config: makeConfig({ related_repos }), diff, rawDiff: 'raw diff', repoContext: '', workspace: root };
-      result = await runReview(clients, options);
+      const answers = new AnswerStore();
+      result = await runReview(clients, { ...options, answers });
       untranslated = await runReview(withDedup(jest.fn().mockRejectedValue(new Error('model down'))), options);
+      // A stored translation stands for the call, and a round whose store holds none ends before the finders answer.
+      const keptOptions = { ...options, answers: new AnswerStore(answers.answers) };
+      const replayed = await runReview(withDedup(jest.fn().mockRejectedValue(new Error('model down'))), keptOptions);
+      expect(replayed.usesOutsideDiff?.translation).toEqual(result.usesOutsideDiff?.translation);
+      await expect(runReview(withDedup(jest.fn()), { ...options, answers: new AnswerStore({ translate: null, dedup: null, judge: null }) })).rejects.toThrow('The stored round made no translate call, and this one needs its answer.');
     } finally {
       fetchSpy.mockRestore();
       for (const dir of [root, reference, consumer]) rmSync(dir, { recursive: true, force: true });
@@ -4197,7 +4204,7 @@ describe('runReview', () => {
       });
       const result = await runReview(clients, {
         config: makeConfig({ review: { sweep } }), diff: diffChanging('src/cache.ts', 'src/search.ts', 'src/retry.ts'), rawDiff: 'raw diff', repoContext: '', isFollowUp: true, openThreads: [openThread],
-        deadline: late?.deadline, previousFindings: late?.previousFindings,
+        deadline: late?.deadline, previousFindings: late?.previousFindings, answers: new AnswerStore(),
       });
       return {
         result, sweeps: jest.mocked(clients.reviewer.sendMessage).mock.calls.filter(call => sweeping(call[0])), dedupCalls: jest.mocked(clients.dedup.sendMessage).mock.calls.length,
@@ -4226,6 +4233,8 @@ describe('runReview', () => {
     expect(result.rawFindings?.map(f => f.title)).toContain('Search key misses the tenant');
     expect(result.rawFindingCount).toBe((result.rawFindings ?? []).length);
     expect(second[2].openThreads).toBeUndefined();
+    // Only the first judge call's answer is stored, so the sweep's call never takes its place.
+    expect(mockedRunJudgeAgent.mock.calls.map(([, , input]) => !!input.answers)).toEqual([true, false]);
     // It still links its findings to the open threads, and suppresses against what the first call found of them.
     expect(second[2].evaluatedThreads).toEqual({ openThreads: [openThread], evaluations: [evaluation] });
     expect(result.findings.map(f => f.title)).toEqual(['Cache key misses the locale', 'Retry loses the reason', 'Search key misses the tenant', 'Shard key misses the region', 'Page key misses the region']);
