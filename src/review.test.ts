@@ -8963,6 +8963,7 @@ describe('runReview post-judge suppression', () => {
         warning('Security', { tags: ['security'] }),
         warning('Tool alert', { toolSource: 'eslint' }),
         warning('Tool confirmed', { toolEvidence: { status: 'confirmed', note: 'the test fails' } }),
+        warning('Check confirmed', { refutation: { outcome: 'confirmed', defect: 'confirmed', reason: 'Reachable.', files: ['src/a.ts'], codeDigest: 'd' } }),
         warning('Rule', { rule: { file: 'AGENTS.md', quote: 'Every migration needs a rollback.', verdict: 'confirmed' } }),
         warning('Judged a blocker', { gradePath: [{ from: 'blocker', to: 'warning', by: 'refutation' }] }),
         warning('Answered in a thread', { answeredIn: { threadId: 'T1', answer: 'a', grade: { severity: 'warning' } } }),
@@ -8976,7 +8977,7 @@ describe('runReview post-judge suppression', () => {
     const result = await runReview(makeClients(), options);
     expect(grades(result)).toEqual({
       'Rarely fixed': 'note', 'Often fixed': 'warning', Security: 'warning', 'Tool alert': 'warning', 'Tool confirmed': 'warning',
-      Rule: 'warning', 'Judged a blocker': 'warning', 'Answered in a thread': 'warning', Scope: 'warning',
+      'Check confirmed': 'warning', Rule: 'warning', 'Judged a blocker': 'warning', 'Answered in a thread': 'warning', Scope: 'warning',
     });
     const lowered = result.findings.find(f => f.title === 'Rarely fixed')!;
     expect(lowered.gradePath?.at(-1)).toEqual({ from: 'warning', to: 'note', by: 'calibration', reason: '59 of 200 posted `warning · GPT 6.2 Sol` findings were fixed in this repo (30%)' });
