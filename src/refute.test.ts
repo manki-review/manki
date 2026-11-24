@@ -747,6 +747,16 @@ describe('refuteBlockers', () => {
     const ruledReplies = Object.fromEntries(ruled.map(f => [f.title, { reason: 'It holds.', premises: [confirmed('src/math.ts:2')] }]));
     const byRuleResult = await refuteBlockers(fakeClient(ruledReplies), ruled, { workspace, diff, rules: 'block' });
     expect(byRuleResult.map(f => [f.title, f.severity, f.gradeIfConfirmed, f.rule?.verdict])).toEqual(ruled.map(f => [f.title, 'blocker', 'blocker', 'confirmed']));
+    // A break the setting grades is no failure, so its confirmation needs no trigger or result while the rule alone gives the
+    // grade it restores. With `warn` the blocker it restores rests on the damage, and with `auto` every grade does.
+    const ruleBreak = finding('Rule break', { severity: 'warning', tags: ['unproven-blocker'], rule });
+    const bare = { 'Rule break': { outcome: 'confirmed', reason: 'The bound is unchecked.', proof: ['src/math.ts:2'], result: { reason: 'r', proof: [] } } };
+    const byMode = async (rules: RulesMode) => {
+      const ruleClient = fakeClient(bare);
+      const [checkedBreak] = await refuteBlockers(ruleClient, [ruleBreak], { workspace, diff, rules });
+      return [checkedBreak.severity, checkedBreak.refutation?.outcome, ruleClient.messages[0][1].includes('- **Graded by a rule of the instruction files**: a confirmation needs no `trigger` or `result`')];
+    };
+    expect([await byMode('block'), await byMode('warn'), await byMode('auto')]).toEqual([['blocker', 'confirmed', true], ['warning', 'unsettled', false], ['warning', 'unsettled', false]]);
     expect(result[0].refutation).toMatchObject({
       proof: ['src/math.ts:2', 'src/api.ts:4'],
       premises: [{ premise: 'No caller bounds `a`', outcome: 'confirmed', reason: 'It holds.', proof: ['src/math.ts:2'] }, { premise: REACH_DOUBT.premise, outcome: 'confirmed', reason: 'It holds.', proof: ['src/api.ts:4'] }],
@@ -908,6 +918,7 @@ describe('refuteBlockers', () => {
     const unbounded = { outcome: 'disproved', reason: 'A queue consumer passes `a` unbounded.', proof: ['src/api.ts:4'] };
     const client = fakeClient({
       'Premise disproved': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'], premises: [unbounded] },
+      // The premise alone brings it back, so a check names no trigger or result for it.
       'Premise disproved, defect open': { outcome: 'unsettled', reason: 'Could not tell.', premises: [unbounded] },
       'Premise disproved in a warning cell': { outcome: 'unsettled', reason: 'Could not tell.', premises: [unbounded] },
       'Premise confirmed': { outcome: 'unsettled', reason: 'Could not tell.', premises: [{ outcome: 'confirmed', reason: 'Every caller bounds them.', proof: ['src/api.ts:9'] }] },
@@ -1469,7 +1480,7 @@ describe('refuteBlockers', () => {
     // A confirmation names how normal use triggers the failure and where its wrong result shows, and a value only the type allows is no trigger.
     expect(system).toContain('The triggering value must still be one that callers, tests, documentation or outside input actually supply, not merely one the type accepts');
     expect(system).toContain('- **confirmed**: the failure happens in normal use and gives a wrong result someone can observe. That the code does what the finding says once a state occurs is not enough, and neither is that nothing prevents the state.');
-    expect(system).toContain('A confirmation without a line for each counts as unsettled.');
+    expect(system).toContain('A confirmation without a line for each counts as unsettled. A doubt about the PR\'s scope, or a finding the message says a rule of the instruction files grades, is no failure, so confirm it when the code shows it holds, with no `trigger` or `result`.');
     expect(system).toContain('"trigger": {"reason": "How normal use or outside input supplies the triggering state or value", "proof": ["file:line"]}, "result": {"reason": "What goes wrong and where it can be seen", "proof": ["file:line"]}');
     // An effect the refuter's own reasoning finds negligible confirms nothing.
     expect(system).toContain('- When your own reasoning finds the effect negligible, such as an event that is rare in normal use, a state a later pass heals, a short delay or a drift of a few percent, answer unsettled, not confirmed.');

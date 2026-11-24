@@ -67,7 +67,7 @@ To refute it:
 - Reading code cannot show how a program outside the code you can read behaves when it runs this code or reads its files: an external tool or command line program, a package manager, a runtime or platform, or a remote service. The rules of the language itself are no such behaviour. Never confirm such behaviour from what you know of the program. When a confirmation, of the defect or of a premise, rests on it, add \`outside\`: name the behaviour, and list in \`stated_in\` the lines of files you read that state it, cited like \`proof\`, such as the program's documentation or source in the checkout, a related repo or a dependency source, or the instruction files. Leave \`stated_in\` empty when no line you read states it. The confirmation then counts as unsettled, so it never raises the finding's grade.
 
 - **disproved**: you found the reason the failure cannot happen. Cite where in \`proof\`, with at least one line of the finding's own file or of the PR's diff, or the answer counts as unsettled. For a counterexample, cite it and the finding's own line.
-- **confirmed**: the failure happens in normal use and gives a wrong result someone can observe. That the code does what the finding says once a state occurs is not enough, and neither is that nothing prevents the state. Cite the lines that show the failure in \`proof\`. Name in \`trigger\` how normal use or outside input supplies the triggering state or value: a caller, a test, stored data, documented use or a path from outside input, with its lines in its own \`proof\`. Name in \`result\` what goes wrong where it can be seen: a wrong value returned, stored or sent, a crash or error exit, lost data, or a check that passes when it should fail, with the line where it shows in its own \`proof\`. A confirmation without a line for each counts as unsettled. A doubt about the PR's scope is no failure, so confirm it when the code shows it holds, with no \`trigger\` or \`result\`.
+- **confirmed**: the failure happens in normal use and gives a wrong result someone can observe. That the code does what the finding says once a state occurs is not enough, and neither is that nothing prevents the state. Cite the lines that show the failure in \`proof\`. Name in \`trigger\` how normal use or outside input supplies the triggering state or value: a caller, a test, stored data, documented use or a path from outside input, with its lines in its own \`proof\`. Name in \`result\` what goes wrong where it can be seen: a wrong value returned, stored or sent, a crash or error exit, lost data, or a check that passes when it should fail, with the line where it shows in its own \`proof\`. A confirmation without a line for each counts as unsettled. A doubt about the PR's scope, or a finding the message says a rule of the instruction files grades, is no failure, so confirm it when the code shows it holds, with no \`trigger\` or \`result\`.
 - **unsettled**: you could not decide either way. An answer without \`proof\` counts as unsettled.
 - **outside_code**: for a premise only, when it depends on something no code in reach can show, as above. It needs no \`proof\`. It never decides the finding's grade, so answer the code part of the finding as before.
 
@@ -247,7 +247,19 @@ function findingKind(finding: Finding): string {
   return 'Blocker';
 }
 
-function buildRefuteMessage(finding: Finding, usesOutsideDiff = '', outsideInput = '', diff?: ParsedDiff): string {
+/**
+ * Whether a confirmation of `finding` states no failure, so it needs no `trigger` or `result`: the scope reader's doubt,
+ * or a finding `rules` grades by the rule it breaks, also one whose fact the judge could not see, when no confirmation
+ * gives it a grade above the one the rule gives.
+ */
+function statesNoFailure(finding: Finding, rules?: RulesMode): boolean {
+  if (finding.reviewers.includes(SCOPE_READER_NAME)) return true;
+  const ruled = ruleGrade(rules);
+  const raised = confirmedGrade(finding);
+  return !!ruled && (breaksRule(finding) || !!finding.rule?.unseen) && (!raised || rank(raised) >= rank(ruled));
+}
+
+function buildRefuteMessage(finding: Finding, usesOutsideDiff = '', outsideInput = '', diff?: ParsedDiff, rules?: RulesMode): string {
   const lines = [
     `## ${findingKind(finding)}: ${sanitizeForPromptEmbed(finding.title)}`,
     '',
@@ -259,6 +271,7 @@ function buildRefuteMessage(finding: Finding, usesOutsideDiff = '', outsideInput
     ...(finding.gradeIfConfirmed && finding.judgeNotes ? [`- **Judge's reasoning**: ${sanitizeForPromptEmbed(finding.judgeNotes.slice(0, MAX_JUDGE_NOTES_CHARS))}`] : []),
     ...(finding.doubts ? ['- **Premises the judge doubts**, to answer in order:', ...finding.doubts.map((d, i) => `  ${i + 1}. ${d.decides === 'drop' ? '(the premise the drop rests on) ' : ''}${sanitizeForPromptEmbed(d.premise)}`)] : []),
     ...(finding.doubts && !confirmedGrade(finding) ? ['- **No answer raises its grade**: a confirmation leaves its grade as it is'] : []),
+    ...(!finding.reviewers.includes(SCOPE_READER_NAME) && statesNoFailure(finding, rules) ? ['- **Graded by a rule of the instruction files**: a confirmation needs no `trigger` or `result`'] : []),
     ...(outsideInput ? [`- **Outside input in this repository, as its maintainers define it**: ${sanitizeForPromptEmbed(outsideInput.trim())}`] : []),
   ];
   // Whether the PR causes the failure is settled only by the PR's change, so the change shows for a doubt the judge names.
@@ -300,7 +313,7 @@ function partProof(part: unknown): unknown {
   return part && typeof part === 'object' ? (part as Record<string, unknown>).proof : undefined;
 }
 
-function parseRefutation(text: string, workspace: string, finding: Finding, diff?: ParsedDiff, related?: RelatedRepoTools): Refutation {
+function parseRefutation(text: string, workspace: string, finding: Finding, diff?: ParsedDiff, related?: RelatedRepoTools, rules?: RulesMode): Refutation {
   const parsed = JSON.parse(extractJSON(text)) as Record<string, unknown>;
   // Either verdict has to cite the code that decides it, so one without real proving lines settles nothing. A line of a
   // related repo counts as such a line. A disproof lifts a finding, so it still needs a line of the finding's own file
@@ -314,7 +327,7 @@ function parseRefutation(text: string, workspace: string, finding: Finding, diff
   if (!claimed && !finding.doubts) throw new Error(`refutation outcome is ${JSON.stringify(parsed.outcome)}, not one of ${OUTCOMES.join(', ')}`);
   const own = shownLines(parsed.proof, workspace, related);
   // A confirmation also shows how normal use reaches the failure and where its wrong result shows, each with its own lines.
-  const consequence = claimed === 'confirmed' && !finding.reviewers.includes(SCOPE_READER_NAME) ? [parsed.trigger, parsed.result].map(part => shownLines(partProof(part), workspace, related)) : [];
+  const consequence = claimed === 'confirmed' && !statesNoFailure(finding, rules) ? [parsed.trigger, parsed.result].map(part => shownLines(partProof(part), workspace, related)) : [];
   const unshown = consequence.some(lines => lines.proof.length + lines.relatedProof.length === 0);
   const answered = unshown ? 'unsettled' : settle(claimed ?? 'unsettled', own.proof, own.relatedProof);
   // A confirmation that rests on outside behavior no cited line states is no proof, so it is stored unsettled.
@@ -810,12 +823,12 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
     }
     try {
       const refutation = await sendWithParseRetry(
-        buildRefuteMessage(finding, usesOutsideDiff, outsideInput, diff),
+        buildRefuteMessage(finding, usesOutsideDiff, outsideInput, diff, rules),
         message => refuter.sendMessage(REFUTE_SYSTEM_PROMPT, message, {
           ...(effort && { effort }), repoTools: repoTools(workspace, REFUTE_STEPS, related, 'check'), timeoutMs: REFUTE_TIMEOUT_MS,
           ...(finding.reviewers.some(isSweepName) && { sweep: true as const }),
         }),
-        reply => withStepsUsedUp({ ...parseRefutation(reply.content, workspace, finding, diff, related), ...(reply.model && { model: reply.model }) }, reply),
+        reply => withStepsUsedUp({ ...parseRefutation(reply.content, workspace, finding, diff, related, rules), ...(reply.model && { model: reply.model }) }, reply),
         error => core.warning(`The ${label} reply for "${finding.title}" could not be used (${error}), asking once more`),
       );
       core.info(`The ${label} of "${finding.title}": ${outcomeOf(refutation)}`);
