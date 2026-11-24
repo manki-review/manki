@@ -6,7 +6,7 @@ import * as core from '@actions/core';
 
 import { parsePRDiff } from './diff';
 import { LLMClient, SendMessageOptions } from './providers';
-import { checkStatus, confirmPushedFixes, disprovedTrigger, lacksTrigger, needsProof, PushedFix, RefuteOptions, refuteBlockers, unpostedForTrigger, unprovenReason } from './refute';
+import { capUnconfirmedRaise, checkStatus, confirmPushedFixes, disprovedTrigger, lacksTrigger, needsProof, PushedFix, RefuteOptions, refuteBlockers, unpostedForTrigger, unprovenReason } from './refute';
 import { repoToolsPrompt } from './providers/cli-utils';
 import { parseFindings } from './review';
 import { agreedOutcome, disproof, Finding, OpenThread, outcomeOf, ParsedDiff, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, RulesMode, staysWarningIfConfirmed, triggerDoubt, wouldBlockIfTrue } from './types';
@@ -429,6 +429,14 @@ describe('refuteBlockers', () => {
     const idle = fakeClient({});
     const [again] = await refuteBlockers(idle, [finding('Judge raise', { ...raised(), sameAs: 'src/math.ts:2:2:judge-raise' })], { workspace, diff, pair: idle, priorRounds: [{ findings: { entries: [stored] }, judge: {} }] as unknown as RoundContext[] });
     expect([again.severity, idle.calls.length]).toEqual(['warning', 0]);
+
+    // A raise the unproven cap lowered and a check gave back still needs a stored confirmation of the defect itself.
+    const restoredRaise = (defect: Refutation['defect']) => finding('Judge raise', {
+      ...raised(), gradePath: [{ from: 'warning', to: 'blocker', by: 'judge' }, { from: 'blocker', to: 'warning', by: 'unproven' }, { from: 'warning', to: 'blocker', by: 'refutation' }],
+      refutation: { outcome: 'confirmed', defect, reason: 'r', proof: ['src/math.ts:2'], files: ['src/math.ts'], codeDigest: 'd' },
+    });
+    expect(capUnconfirmedRaise(restoredRaise('confirmed'), {}).severity).toBe('blocker');
+    expect(capUnconfirmedRaise(restoredRaise('unsettled'), {})).toMatchObject({ severity: 'warning', judgeCell: cell });
   });
 
   it('asks both refuters at the same time', async () => {

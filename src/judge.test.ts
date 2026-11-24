@@ -2040,7 +2040,7 @@ describe('runJudgeAgent', () => {
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const input: JudgeInput = {
       findings: [
-        makeFinding({ title: 'Lock held across await', severity: 'note', line: 3 }),
+        makeFinding({ title: 'Lock held across await', severity: 'blocker', line: 3 }),
         makeFinding({ title: 'Retry count never reset', severity: 'blocker', line: 5 }),
         makeFinding({ title: 'Stale cache entry served', severity: 'blocker', line: 7 }),
         makeFinding({ title: 'Await under the lock', severity: 'warning', line: 3, reviewers: ['Second'] }),
@@ -2212,7 +2212,7 @@ describe('runJudgeAgent', () => {
       findings: [{ title: 'Unused variable', row: ROW_OF[severity], reasoning: 'Rare internal edge case.', reachability: 'hypothetical' }],
     }) });
 
-    const input: JudgeInput = { findings: [makeFinding()], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 3 };
+    const input: JudgeInput = { findings: [makeFinding({ severity })], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 3 };
 
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
     expect(result.findings[0].severity).toBe(severity);
@@ -2475,6 +2475,31 @@ describe('runJudgeAgent', () => {
       expect(await judgeSplit(['blocker'], unsettled, [['Finder A']], pair, { security: true })).toEqual([['blocker', undefined, 0, undefined]]);
       expect(await judgeSplit(['blocker'], unsettled, [['Finder A']], ['Finder A'], { doubts: [] })).toEqual([['blocker', undefined, undefined, undefined]]);
       expect(await judgeSplit(['blocker'], unsettled, [['Finder A']], pair, { doubts: [], security: true })).toEqual([['blocker', undefined, undefined, undefined]]);
+
+      // The judge raised a finding no finder filed as a blocker, with no doubt. It stays a blocker only when its check
+      // confirms the defect as stored, and otherwise goes back to its finder's grade, with its cell kept as `judgeCell`.
+      const raised = async (answer: object | undefined, severity: Finding['severity'] = 'warning', judged: object = {}, more: Partial<JudgeInput> = {}) => {
+        mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 's', findings: [{ id: 1, title: 'Rows lost on retry', row: 'wrong', reasoning: 'r', ...judged }] }) });
+        if (answer) replies['Rows lost on retry'] = answer;
+        const [f] = (await runJudgeAgent(mockClient, makeConfig(), {
+          findings: [copy(severity)], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, ...(answer && { refutation: { client: refuter, workspace } }), ...more,
+        })).findings;
+        return [f.severity, f.gradePath?.map(step => `${step.by}: ${step.to}`).join(', '), f.cell, f.judgeCell];
+      };
+      const wrongCell = { row: 'wrong', column: 'normal' };
+      const unconfirmed = 'judge: blocker, unconfirmed_raise: warning';
+      expect(await raised(missing)).toEqual(['blocker', 'judge: blocker', wrongCell, undefined]);
+      expect(await raised(unsettled)).toEqual(['warning', unconfirmed, undefined, wrongCell]);
+      // A confirmation that rests on outside behavior no cited line states is stored unsettled, and a raise reads it as stored.
+      expect(await raised({ ...missing, outside: { behavior: 'The queue retries a failed send', stated_in: [] } })).toEqual(['warning', unconfirmed, undefined, wrongCell]);
+      // Without tools no check runs, so the raise never stands. From a note it goes back to the note.
+      expect(await raised(undefined)).toEqual(['warning', unconfirmed, undefined, wrongCell]);
+      expect(await raised(undefined, 'note')).toEqual(['note', 'judge: blocker, unconfirmed_raise: note', undefined, wrongCell]);
+      // A security finding, a blocker a finder filed and a restatement of an open blocker thread keep the judge's grade.
+      expect(await raised(undefined, 'warning', { security: true })).toEqual(['blocker', 'judge: blocker', wrongCell, undefined]);
+      const blockerThread = { threadId: 'PRRT_rows', title: 'Rows lost on retry', file: 'src/index.ts', line: 18, severity: 'blocker' } as OpenThread;
+      expect(await raised(undefined, 'warning', {}, { openThreads: [blockerThread] })).toEqual(['blocker', 'judge: blocker', wrongCell, undefined]);
+      expect(await raised(undefined, 'blocker')).toEqual(['blocker', undefined, wrongCell, undefined]);
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
     }
@@ -2625,7 +2650,7 @@ describe('runJudgeAgent', () => {
       ],
     }) });
     const input: JudgeInput = {
-      findings: [makeFinding({ title: 'Reply prompt takes injected instructions' }), makeFinding({ title: 'Off by one' }), makeFinding({ title: 'Token in log' })],
+      findings: [makeFinding({ title: 'Reply prompt takes injected instructions' }), makeFinding({ title: 'Off by one' }), makeFinding({ title: 'Token in log', severity: 'blocker' })],
       diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 3,
     };
 
@@ -2775,8 +2800,9 @@ describe('runJudgeAgent', () => {
         ['Doubted', ...ruled, 'note', undefined, ['The deploy script fails on a model without a migration']],
         ['No line cited', 'note', 'unproven', undefined],
         ['Dropped', 'ignore', 'unproven', 'judge: ignore'],
-        // The cell already gives a blocker, so the rule changes nothing.
-        ['Real defect too', 'blocker', 'confirmed', 'judge: blocker'],
+        // The cell already gives a blocker, so the rule changes nothing. Without a rule that grades it, the judge's raise
+        // above the finder's note needs a check that confirms the defect, and none ran.
+        ['Real defect too', ...(grade ? ['blocker', 'confirmed', 'judge: blocker'] : ['note', 'confirmed', 'judge: blocker, unconfirmed_raise: note'])],
         // A rule blocker passes the caps of any blocker, so one that says something is missing without a search is a warning.
         ['Missing without a search', grade ? 'warning' : 'note', 'confirmed', grade === 'blocker' ? 'rule: blocker, unproven: warning' : grade && 'rule: warning'],
         ['No rule quoted', 'note', undefined, undefined],
@@ -4142,7 +4168,7 @@ describe('runJudgeAgent', () => {
     const three = (): Finding[] => [
       makeFinding({ title: 'Timer never cleared', file: 'a.ts', line: 5, reviewers: ['Correctness'] }),
       makeFinding({ title: 'Unrelated naming', file: 'b.ts', line: 9, reviewers: ['Style'] }),
-      makeFinding({ title: 'Leaked timeout handle', file: 'a.ts', line: 7, reviewers: ['Reliability', 'Correctness'] }),
+      makeFinding({ title: 'Leaked timeout handle', severity: 'blocker', file: 'a.ts', line: 7, reviewers: ['Reliability', 'Correctness'] }),
     ];
     const verdict = (title: string, severity: FindingSeverity, duplicateOf?: unknown) => ({
       title, row: ROW_OF[severity], reasoning: `${severity}.`, ...(duplicateOf !== undefined && { duplicateOf }),
@@ -5309,7 +5335,7 @@ describe('runJudgeAgent on code that applies an earlier fix', () => {
   });
 
   it.each(['warning', 'blocker'] as const)('keeps a %s, which means the new code is worse', async (severity) => {
-    const originals = [makeFinding({ title: 'Confirmed bug', severity: 'note', line: 10 })];
+    const originals = [makeFinding({ title: 'Confirmed bug', severity, line: 10 })];
     const judged: JudgedFinding[] = [
       { title: 'Confirmed bug', row: ROW_OF[severity], reasoning: 'Real.' },
     ];
@@ -5349,7 +5375,7 @@ describe('runJudgeAgent on code that applies an earlier fix', () => {
   });
 
   it('leaves findings outside the provenance range unchanged', async () => {
-    const originals = [makeFinding({ title: 'Elsewhere', severity: 'note', line: 50 })];
+    const originals = [makeFinding({ title: 'Elsewhere', severity: 'blocker', line: 50 })];
     const judged: JudgedFinding[] = [
       { title: 'Elsewhere', row: 'wrong', reasoning: 'Different spot.' },
     ];
@@ -5390,7 +5416,7 @@ describe('runJudgeAgent on code that applies an earlier fix', () => {
   });
 
   it('is a no-op when provenanceMap is undefined or empty', async () => {
-    const originals = [makeFinding({ title: 'Bug', severity: 'note', line: 10 })];
+    const originals = [makeFinding({ title: 'Bug', severity: 'blocker', line: 10 })];
     const judged: JudgedFinding[] = [
       { title: 'Bug', row: 'wrong', reasoning: 'Real.' },
     ];

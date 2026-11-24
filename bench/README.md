@@ -83,7 +83,7 @@ The report stores with each finding how it got its grade: the grade its finder g
 The summary counts the blockers of the complete runs by the route each took, against the grade of the key item it matches. A blocker that matches a key item only partly counts in that item's column. The table holds counts only, so it also covers hold-out cases. The routes are:
 
 - **filed by a finder and kept**: a finder graded it a blocker, whatever lowered and restored it between. When the finders split on its grade and a check raised it, it takes the route of that check instead.
-- **raised by the judge**: its finders graded it lower, and the cell the judge stated made it a blocker.
+- **raised by the judge**: its finders graded it lower, and the cell the judge stated made it a blocker. Unless it is a security finding, a tool alert, a rule finding or a restatement of an earlier blocker, the refuter's checks also confirmed its defect.
 - **raised by a confirmed doubt**: its finders graded it lower, a doubt of the judge held it below blocker, and the refuter's check confirmed the doubt. Only a security finding or one that restates an earlier blocker takes this route.
 - **raised by a confirmed doubt and consequence**: its finders graded it lower, a doubt of the judge held it below blocker, and every check confirmed the defect and every premise, among them the consequence the judge named.
 - **claim check**: only the checks of the PR text's claims reported it, whatever happened to its grade afterwards.

@@ -443,6 +443,27 @@ function refutationNote(label: string, check: Refutation): string {
 }
 
 /**
+ * Returns `finding` at the highest grade a finder gave it when the judge raised it to a blocker above every finder's
+ * grade, also one an unproven cap lowered and a check gave back, and its checks do not confirm the defect: none ran,
+ * or they did not agree on a confirmation of it. A raise rests on the judge's reading alone, so the answers count as
+ * stored, and a confirmation that `restsOnUnstated` does not count. Its cell moves to `judgeCell`, as for a disproof.
+ * A security finding, a tool alert, a finding `gradedByRule` under `rules` and one that `restatesBlocker` keep their
+ * grade.
+ */
+export function capUnconfirmedRaise(finding: Finding, { priorRounds = [], blockingThreads = [], rules }: Pick<RefuteOptions, 'priorRounds' | 'blockingThreads' | 'rules'>): Finding {
+  const filed = finderGrade(finding);
+  const raised = !!finding.gradePath?.some(step => step.by === 'judge' && step.to === 'blocker');
+  if (finding.severity !== 'blocker' || !raised || filed === 'blocker' || finding.toolSource
+    || isSecurityFinding(finding.tags, finding.reviewers) || gradedByRule(finding, rules) || restatesBlocker(finding, priorRounds, blockingThreads)) return finding;
+  const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r);
+  if (agreedOutcome(checks) === 'confirmed' && checks.some(check => confirmsDefect(check, finding))) return finding;
+  const reason = `the judge raised it above every finder's grade, and ${checks.length > 0 ? 'no check confirmed the defect' : 'no check ran'}`;
+  core.info(`Posting "${finding.title}" as a ${filed}: ${reason}`);
+  const { cell, ...rest } = finding;
+  return { ...rest, ...gradeStep(finding, filed, 'unconfirmed_raise', reason), ...(cell && { judgeCell: cell }) };
+}
+
+/**
  * Whether `finding` restates a blocker an earlier round recorded or an open thread that blocks: the judge links it to
  * one, or `sameProblem` matches it with such a thread, as a later step folds it in. So does one that names an earlier
  * finding no record holds. Another finding in the file of such a thread is a defect of its own.
