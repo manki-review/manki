@@ -1112,23 +1112,37 @@ describe('runBench and buildReport', () => {
     await expect(runBench([benchCase], { ...options, findingsFrom: two, variants: [{ name: 'other', overrides: {} }] })).rejects.toThrow('The report to replay holds no variant other and more than one other');
     expect(review).not.toHaveBeenCalled();
 
-    // With `replayJudge`, a case whose stored runs lack an answer gets no review, and one whose runs hold them all gives them to the review.
+    // With `replayLevel`, a case whose stored runs lack an answer gets no review, and one whose runs hold them all gives them to the review.
     const answers = { translate: null, dedup: { input: {} }, judge: { input: { message: 'm' }, answer: { summary: 's', findings: [] } } };
     const withAnswers = (list: Array<unknown>) => ({ ...stored, variants: [{ ...stored.variants[0], cases: [{ ...stored.variants[0].cases[0], runs: list.map(a => ({ ...first, replay: { ...first.replay!, ...(a ? { answers: a } : {}) } as typeof first.replay })) }] }] });
     const { dedup: _, ...undecided } = answers;
     for (const list of [[undefined], [answers, undefined], [undecided], [{ ...answers, judge: { input: {} } }]]) {
-      const [{ results: [refused] }] = await runBench([benchCase], { ...options, runs: 1, findingsFrom: withAnswers(list), replayJudge: true });
+      const [{ results: [refused] }] = await runBench([benchCase], { ...options, runs: 1, findingsFrom: withAnswers(list), replayLevel: 'judge' });
       expect(refused.runs).toEqual([expect.objectContaining({ outcome: 'FAILED', error: 'The report to replay holds a complete run of this case without its judge, dedup and name translation answers.' })]);
     }
     expect(review).not.toHaveBeenCalled();
-    const [{ results: [judged] }] = await runBench([benchCase], { ...options, runs: 1, findingsFrom: withAnswers([answers]), replayJudge: true });
+    const [{ results: [judged] }] = await runBench([benchCase], { ...options, runs: 1, findingsFrom: withAnswers([answers]), replayLevel: 'judge' });
     expect(review.mock.calls[0][0].replay).toEqual(replayOf('First'));
     const ask = () => Promise.reject(new Error('asked live'));
     await expect(review.mock.calls[0][0].answers!.ask('translate', {}, ask)).rejects.toThrow('The stored round made no translate call');
     expect(judged.runs[0].replay?.answers).toBeDefined();
+    // With `refuter` the runs must also hold the checks after the judge, and give them to the review.
+    const checks = [{ call: 'refutation' as const, target: 't', input: { message: 'm' }, answer: {} }];
+    for (const list of [[answers], [{ ...answers, checks: [{ call: 'refutation' }] }]]) {
+      const [{ results: [refused] }] = await runBench([benchCase], { ...options, runs: 1, findingsFrom: withAnswers(list), replayLevel: 'refuter' });
+      expect(refused.runs).toEqual([expect.objectContaining({ outcome: 'FAILED', error: 'The report to replay holds a complete run of this case without its refuter, sweep, judge, dedup and name translation answers.' })]);
+    }
+    review.mockClear();
+    await runBench([benchCase], { ...options, runs: 1, findingsFrom: withAnswers([{ ...answers, checks }]), replayLevel: 'refuter' });
+    await expect(review.mock.calls[0][0].answers!.askCheck('refutation', 'other', {}, ask)).rejects.toThrow('The stored round made no such refutation call');
+    // At `judge` the checks are asked live, whatever the report holds.
+    review.mockClear();
+    await runBench([benchCase], { ...options, runs: 1, findingsFrom: withAnswers([{ ...answers, checks }]), replayLevel: 'judge' });
+    await expect(review.mock.calls[0][0].answers!.askCheck('refutation', 'other', {}, ask)).rejects.toThrow('asked live');
+    review.mockClear();
     // Without it the review asks live, even when the report holds the answers.
     await runBench([benchCase], { ...options, runs: 1, findingsFrom: withAnswers([answers]) });
-    await expect(review.mock.calls[1][0].answers!.ask('judge', { message: 'm' }, ask)).rejects.toThrow('asked live');
+    await expect(review.mock.calls[0][0].answers!.ask('judge', { message: 'm' }, ask)).rejects.toThrow('asked live');
     review.mockClear();
 
     // The report of a replay says what it kept, keeps it when merged, and decides no release.
@@ -1136,7 +1150,7 @@ describe('runBench and buildReport', () => {
     const report = buildReport({ startedAt: '2026-11-21T00:00:00.000Z', runsPerCase: 3, matcherModel: 'model-a', findingsFrom }, [{ variant, results: [replayed] }]);
     expect(formatBenchSummary(report)).toMatch(new RegExp(`^Finder output kept from the run started at 2026-11-20T00:00:00.000Z on ${SHA_C}. The planner, finders and checks beside them did not run.\n\n== tuned\n`));
     expect(mergeReports([report], [benchCase], {}).findingsFrom).toEqual(findingsFrom);
-    expect(formatBenchSummary({ ...report, findingsFrom: { ...findingsFrom, live: ['refuter', 'scope reader'] } })).toContain('did not run. The name translation, dedup and judge answers were kept too. Live: refuter, scope reader.\n');
+    expect(formatBenchSummary({ ...report, findingsFrom: { ...findingsFrom, live: ['refuter', 'scope reader'] } })).toContain('did not run. Stored answers stood in for the calls after the finders, except these live ones: refuter, scope reader.\n');
     expect(() => gateReports([stored], [report])).toThrow('The report started at 2026-11-21T00:00:00.000Z kept the finder output of an earlier run, so it decides no release');
   }, 30_000);
 
@@ -1690,10 +1704,10 @@ describe('parseBenchArgs', () => {
     const args = parseBenchArgs([
       '--checkout', 'owner/demo=/src/a=b', '--case', 'x', '--case', 'y', '--runs', '1', '--out', 'r.json', '--matcher-model', 'm', '--cache', 'c.json',
       '--holdout', '--variant', 'base', '--variant', 'opus=bench/opus.yml', '--set', 'models.judge=claude-sonnet-5-5', '--set', 'max_diff_lines=2000', '--set', 'exclude_paths=[a, b]',
-      '--findings-from', 'earlier.json', '--replay-judge',
+      '--findings-from', 'earlier.json', '--replay-refuter', '--replay-judge',
     ]);
     expect(args).toMatchObject({
-      holdout: true, only: ['x', 'y'], runs: 1, out: 'r.json', matcherModel: 'm', cache: 'c.json', findingsFrom: 'earlier.json', replayJudge: true,
+      holdout: true, only: ['x', 'y'], runs: 1, out: 'r.json', matcherModel: 'm', cache: 'c.json', findingsFrom: 'earlier.json', replayLevel: 'refuter',
       variants: [{ name: 'base' }, { name: 'opus', file: 'bench/opus.yml' }],
       sets: [{ models: { judge: 'claude-sonnet-5-5' } }, { max_diff_lines: 2000 }, { exclude_paths: ['a', 'b'] }],
     });

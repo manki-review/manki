@@ -143,6 +143,8 @@ describe('reviewLocal', () => {
   it('gives the dedup and the judge the same input in two reviews, so their stored answers stand for both calls, and refuses any other', async () => {
     const judgeCalls: string[] = [];
     let dedupCalls = 0;
+    const checkCalls: string[] = [];
+    const shown = { reason: 'Any call.', proof: ['src/a.ts:2'] };
     jest.mocked(createLLMClient).mockImplementation(() => ({
       repoTools: true,
       sendMessage: jest.fn(async (system: string, message: string) => {
@@ -150,9 +152,14 @@ describe('reviewLocal', () => {
           dedupCalls++;
           return { content: '[{"index": 2, "matchedResolved": 1}]' };
         }
+        const refuting = system.startsWith('You check one finding');
+        if (refuting || system.startsWith('You decide whether a defect')) {
+          checkCalls.push(refuting ? 'refutation' : 'origin check');
+          return { content: JSON.stringify(refuting ? { outcome: 'confirmed', reason: 'Past the end.', proof: ['src/a.ts:2'], trigger: shown, result: shown, premises: [1, 2, 3].map(id => ({ id, outcome: 'confirmed', ...shown })) } : { origin: 'introduced', reason: 'New.', head: ['src/a.ts:2'] }) };
+        }
         if (!message.includes('## Findings to Evaluate')) throw new Error('no answer');
         judgeCalls.push(message);
-        return { content: JSON.stringify({ summary: 'Judged.', findings: [{ id: 1, title: 'Off by one', row: 'degraded', column: 'common', reasoning: 'r' }] }) };
+        return { content: JSON.stringify({ summary: 'Judged.', findings: [{ id: 1, title: 'Off by one', row: 'wrong', column: 'normal', reasoning: 'r' }] }) };
       }),
     }));
     jest.mocked(runReview).mockImplementation(jest.requireActual<typeof import('./review')>('./review').runReview);
@@ -167,6 +174,7 @@ describe('reviewLocal', () => {
     const live = new AnswerStore();
     const first = await run(live);
     expect([judgeCalls.length, dedupCalls]).toEqual([1, 1]);
+    expect(checkCalls).toEqual(['refutation', 'origin check']);
     expect(judgeCalls[0]).toContain('Off by one');
     expect(holdsEveryCall(live.answers)).toBe(true);
     const kept = JSON.parse(JSON.stringify(live.answers)) as StoredAnswers;
@@ -177,6 +185,21 @@ describe('reviewLocal', () => {
     expect(second.result.allJudgedFindings).toEqual(first.result.allJudgedFindings);
     expect([first, second].map(r => r.result.llmDedupCount)).toEqual([1, 1]);
     expect(stored.answers).toEqual(kept);
+
+    // Without the stored checks the refuter and the origin check run live. With them neither is asked, and the findings come out the same.
+    expect(checkCalls).toEqual(['refutation', 'origin check', 'refutation', 'origin check']);
+    checkCalls.length = 0;
+    const checked = new AnswerStore(kept, 'refuter');
+    const third = await run(checked);
+    expect(checkCalls).toEqual([]);
+    expect(third.result.allJudgedFindings).toEqual(first.result.allJudgedFindings);
+    expect(checked.answers).toEqual(kept);
+    // Another input to a check is refused, as is a check the stored round did not make. One that failed there fails again, so the later check gets another input.
+    const withCheck = (call: string, changed: object) => new AnswerStore({ ...kept, checks: kept.checks!.map(c => (c.call === call ? { ...c, ...changed } : c)) }, 'refuter');
+    await expect(run(withCheck('refutation', { input: { ...kept.checks![0].input, message: 'x', effort: 'x' } }))).rejects.toThrow('The stored refutation answer does not fit, since its input differs in: message, effort.');
+    await expect(run(withCheck('origin check', { target: 'x' }))).rejects.toThrow('The stored round made no such origin check call, and this one needs its answer.');
+    await expect(run(withCheck('refutation', { answer: undefined }))).rejects.toThrow('The stored origin check answer does not fit, since its input differs in: message.');
+    expect(checkCalls).toEqual([]);
 
     // Another input, or a call the stored round did not make, is refused before the call, naming parts and no content.
     await expect(run(new AnswerStore(kept), 'Another body.')).rejects.toThrow(/^The stored judge answer does not fit, since its input differs in: message\.$/);

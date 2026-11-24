@@ -17,7 +17,7 @@ import { FULL_GROUP, GroupChoice, chooseGroup, classifyPr, distinctModels, finde
 import { extractJSON } from './json';
 import { currentFindingLine, indexThreadEvaluations, isPriorAddressedByJudge, placesReading, stringifyFindingFingerprint } from './finding-fingerprint';
 import { checkOrigins, MAX_ORIGIN_CHECKS } from './origin';
-import { checkStatus, confirmPushedFixes, lacksTrigger, MAX_DOUBT_CHECKS, needsProof, PushedFix, refuteBlockers, unpostedForTrigger, unprovenReason } from './refute';
+import { CheckAnswers, checkStatus, confirmPushedFixes, lacksTrigger, MAX_DOUBT_CHECKS, needsProof, PushedFix, refuteBlockers, unpostedForTrigger, unprovenReason } from './refute';
 import { combineVerdictReports, runVerdictReader } from './verdict';
 import { buildRepositoryRules, CLAIMS_MISSING_RULE, COST_SCALE_RULE, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, PRE_EXISTING_RULE, ROOT_CAUSE_FIX_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
@@ -1044,7 +1044,7 @@ export interface ReviewOptions {
   earlierAttempt?: EarlierAttempt;
   /** Keeps the planner's answer and the finder stage's findings of an earlier round in place of running them. The stages after the finders run. */
   replay?: FinderReplay;
-  /** Keeps the answers of the name translation, the dedup and the judge, or gives stored ones in place of making the calls. */
+  /** Keeps the answers of the calls the store names, or gives stored ones in place of making the calls. */
   answers?: AnswerStore;
 }
 
@@ -1949,12 +1949,13 @@ export async function runReview(
     ...(onProgress && { progress: reportChecks<RefutationOutcome>(event => onProgress({ phase: 'refuter', refuterCheck: event })) }),
     originProgress: sideProgress('origin'),
     originBudget: { left: MAX_ORIGIN_CHECKS },
+    ...(answers && { answers: { store: answers, models: { first: resolveModel(config, 'judge'), second: config.models?.second_refuter } } }),
   } : undefined;
   if (clients.refuterPair && !refutation?.pair) core.warning('No second refuter runs, since `models.second_refuter` needs the PR head checked out and repository tools on both its model and the judge\'s');
   // Each blocker and warning asks whether the PR caused it, on the refuter's clients. `skip` names a finding decided without the check.
-  const originsOf = (findings: Finding[], skip?: (finding: Finding) => boolean): Promise<Finding[]> => (refutation
+  const originsOf = (findings: Finding[], skip?: (finding: Finding) => boolean, kept?: CheckAnswers): Promise<Finding[]> => (refutation
     ? checkOrigins(refutation.client, findings, {
-      workspace: refutation.workspace, diff: diffWithLockfiles, excludedPaths: options.excludedPaths, related: refutation.related, effort: judgeEffort, pair: refutation.pair, skip, budget: refutation.originBudget, progress: refutation.originProgress,
+      workspace: refutation.workspace, diff: diffWithLockfiles, excludedPaths: options.excludedPaths, related: refutation.related, effort: judgeEffort, pair: refutation.pair, skip, budget: refutation.originBudget, progress: refutation.originProgress, answers: kept,
     })
     : Promise.resolve(findings));
   const threadById = new Map((previousFindings ?? []).flatMap(p => (p.threadId ? [[p.threadId, p] as const] : [])));
@@ -2059,7 +2060,9 @@ export async function runReview(
   if (sweepSources.length > 0) {
     const sweep = await runSweeps(reviewer => lateFallback(pickReviewerClient(clients, comparisonModel), 'sweep', reviewer), sweepSources, {
       rawDiff, effort: comparisonEffort, workspace, related: withoutDependencies(relatedTools), progress: sideProgress('sweep'),
+      ...(answers && { answers: { store: answers, model: comparisonModel } }),
     });
+    answers?.check();
     sweeps = sweep.sweeps;
     // A place the round already judged, kept or dropped, is not judged twice. The rest count as raw findings, like a finder's.
     const judgedAlready = allJudgedFindings ?? [];
@@ -2073,7 +2076,8 @@ export async function runReview(
     });
     // A sweep finding near one the round judged, or sharing a line it cites in any file, can say the same in other words, so the dedup model checks those pairs.
     const pairs = unmatched.flatMap((s, i) => judgedAlready.flatMap(f => mayRestate(f, s) ? [{ i, f }] : []));
-    const dedupClient = clients.dedup && lateFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup', 'sweep');
+    const sweepDedup = clients.dedup && lateFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup', 'sweep');
+    const dedupClient = sweepDedup && answers ? answers.wrap(sweepDedup, 'sweep dedup', resolveModel(config, 'dedup')) : sweepDedup;
     const same = pairs.length > 0 && dedupClient ? await llmSameDefects(pairs.map(({ i, f }) => [f, unmatched[i]]), dedupClient) : [];
     const restated = new Set(pairs.flatMap(({ i }, k) => same[k] ? [i] : []));
     sweepRaw = unmatched.filter((_, i) => !restated.has(i)).map(f => ({ ...f, toolEvidence: checkFindingClaims(f, claimSources) }));
@@ -2091,6 +2095,7 @@ export async function runReview(
       sweepDedupCount = statics.duplicates.length + llm.duplicates.length;
       fresh = llm.unique;
     }
+    answers?.check();
     if (stopped) return incompleteAfterJudge(stopped);
     if (fresh.length > 0) {
       try {
@@ -2099,7 +2104,7 @@ export async function runReview(
         // The open threads were evaluated already, so this pass only links its findings to them and suppresses against them.
         const evaluatedThreads = { openThreads: openThreads ?? [], ...(judgeThreadEvaluations && { evaluations: judgeThreadEvaluations }) };
         // A rank only compares the notes of one judge call, so only the first call's ranks order the notes.
-        const judged = (await runJudgeAgent(sweepJudge, config, { ...judgeInput, findings: fresh, openThreads: undefined, evaluatedThreads, carriedWarnings: undefined, onGraded: undefined, answers: undefined })).findings
+        const judged = (await runJudgeAgent(sweepJudge, config, { ...judgeInput, findings: fresh, openThreads: undefined, evaluatedThreads, carriedWarnings: undefined, onGraded: undefined, ofSweep: true })).findings
           .map(({ noteRank: _, ...f }): Finding => f);
         allJudgedFindings = [...(allJudgedFindings ?? []), ...judged];
         const kept = judged.filter(f => f.severity !== 'ignore');
@@ -2107,6 +2112,7 @@ export async function runReview(
         openLeads.push(...unsettled);
         finalFindings = [...finalFindings, ...kept.filter(f => !unsettled.includes(f))];
       } catch (error) {
+        answers?.check();
         if (error instanceof NotStartedError) return incompleteAfterJudge(error.message);
         // A round that lost what the sweep found is never complete, since a blocker may be among it.
         core.warning(`The judge failed on the sweep's findings: ${error}`);
@@ -2144,10 +2150,11 @@ export async function runReview(
       refuteBlockers(refutation.client, kept, {
         workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, doubtBudget: refutation.doubtBudget, progress: refutation.progress, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff,
         outsideInput: config.review?.outside_input, restatesEarlier: finding => restatesEarlier(earlierForChecks, finding),
-        unpostedLater: finding => unchangedCheck(finding) === 'pre_existing' && !postedWhenPreExisting(finding), roundEnd: true, rules: config.review?.rules,
+        unpostedLater: finding => unchangedCheck(finding) === 'pre_existing' && !postedWhenPreExisting(finding), roundEnd: true, rules: config.review?.rules, answers: refutation.answers,
       }),
-      originsOf(kept, finding => unchangedCheck(finding) === 'pre_existing'),
+      originsOf(kept, finding => unchangedCheck(finding) === 'pre_existing', refutation.answers),
     ]);
+    answers?.check();
     const checked = withOrigins(refuted, origins);
     const after = new Map(kept.map((f, i) => [f, checked[i]]));
     allJudgedFindings = allJudgedFindings?.map(f => after.get(f) ?? f);

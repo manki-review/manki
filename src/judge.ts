@@ -22,7 +22,7 @@ import { sanitize, titleOverlapType } from './recap';
 import { FINDER_TOOLS_TIMEOUT_MS, guardedThreadStaysOpen, determineOutcome, earlierFindings, fencePrText, filesChangedByPush, parseProof, postedWhenPreExisting, restatesEarlier, sameProblem, truncateDiff } from './review';
 import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, ROW_MEANINGS, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge, stringifyFindingFingerprint } from './finding-fingerprint';
-import { capUnconfirmedRaise, MAX_DOUBT_CHECKS, MAX_RELATED_PROOF, needsProof, refuteBlockers, unpostedForTrigger } from './refute';
+import { capUnconfirmedRaise, CheckAnswers, MAX_DOUBT_CHECKS, MAX_RELATED_PROOF, needsProof, refuteBlockers, unpostedForTrigger } from './refute';
 import { fetchedRelatedRepos, offeredRepos, relatedNames, repoTools } from './related-repos';
 import { citesChangedLine } from './reply-check';
 import { criticalAreaOf } from './routing';
@@ -292,7 +292,7 @@ export interface JudgeInput {
    * the head, and the client tries to refute each blocker, open lead and finding lowered for want of proof, and the
    * warnings on changed code that nothing proves yet. The round's calls share `MAX_DOUBT_CHECKS` of those checks through `doubtBudget`.
    */
-  refutation?: { client: LLMClient; workspace: string; related?: RelatedRepoTools; pair?: LLMClient; doubtBudget?: { left: number }; progress?: CheckProgress<RefutationOutcome> };
+  refutation?: { client: LLMClient; workspace: string; related?: RelatedRepoTools; pair?: LLMClient; doubtBudget?: { left: number }; progress?: CheckProgress<RefutationOutcome>; answers?: CheckAnswers };
   /** Called once the judge graded the findings, before the refuter checks them. */
   onGraded?: (counts: GradedCounts) => void;
   /** Read-only tool calls the judge itself may make on the `refutation` workspace while it grades. 0 or unset gives it none. */
@@ -308,6 +308,8 @@ export interface JudgeInput {
   carriedWarnings?: FindingFingerprintEntry[];
   /** Keeps the judge's parsed answer, or gives a stored one in place of asking the judge. */
   answers?: AnswerStore;
+  /** Set on the judge call for the sweeps' findings, which `answers` keeps apart from the round's own. */
+  ofSweep?: boolean;
 }
 
 /** Returns the carried warnings the judge is asked about. Only a change since the last round can fix one, so without one it gets none. */
@@ -1753,11 +1755,12 @@ export async function runJudgeAgent(
       return judge(judgeCall(0, Math.max(RETRY_WITHOUT_TOOLS_TIMEOUT_MS, FINDER_TOOLS_TIMEOUT_MS - (Date.now() - started))));
     }
   };
-  const judgeResult = input.answers
-    ? await input.answers.ask('judge', {
-      'system prompt': judgePrompt(toolSteps), message: userMessage, effort, steps: [toolSteps, toolSteps > 0 && offeredRepos(refutation!.related)], model: resolveModel(config, 'judge'),
-    }, askJudge)
-    : await askJudge();
+  const answerParts = () => ({
+    'system prompt': judgePrompt(toolSteps), message: userMessage, effort, steps: [toolSteps, toolSteps > 0 && offeredRepos(refutation!.related)], model: resolveModel(config, 'judge'),
+  });
+  const judgeResult = !input.answers ? await askJudge()
+    : input.ofSweep ? await input.answers.askCheck('sweep judge', null, answerParts(), askJudge)
+      : await input.answers.ask('judge', answerParts(), askJudge);
 
   const threadEvaluations = overrideApplied
     ? openThreads!.map(t => ({
@@ -1819,7 +1822,9 @@ export async function runJudgeAgent(
     // The match `foldIntoEarlierFindings` makes without a model. The threads are graded again before it runs, so it is not certain yet.
     restatesEarlier: finding => restatesEarlier(earlier, finding),
     rules: config.review?.rules,
+    answers: refutation.answers,
   }) : mapped;
+  input.answers?.check();
   // A raise stands only on a check, so it is settled before the suppressions, which hide findings by grade.
   const checked = refuted.map(f => capUnconfirmedRaise(f, { priorRounds, blockingThreads, rules: config.review?.rules }));
   const { findings: suppressed, count: inPrCount, ...suppression } = suppress(checked.map(f => withoutRuleDoubt(f, config.review?.rules)));
