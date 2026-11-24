@@ -1032,8 +1032,8 @@ describe('runBench and buildReport', () => {
     expect(splitSummary).toContain('| demo-2 K1 (must blocker) |  | 1/1 |\n');
   }, GIT_TEST_TIMEOUT_MS);
 
-  it('tries the matcher again before giving up a finished review, and keeps its findings and cost when it gives up', async () => {
-    const review = jest.fn(async () => makeReview('ADDRESS_FIRST', [blocker]));
+  it('tries the matcher again before giving up a finished review, and keeps the review unscored for a later scoring when it gives up', async () => {
+    const review = jest.fn(async (_input: LocalReviewInput) => makeReview('ADDRESS_FIRST', [blocker], true, rawRecord([{ title: 'Raw' }], [blocker])));
     let calls = 0;
     const flaky: Matcher = async () => {
       if (calls++ === 0) throw new Error('bad reply');
@@ -1052,6 +1052,54 @@ describe('runBench and buildReport', () => {
     expect(failed.runs[0]).toMatchObject({ outcome: 'ADDRESS_FIRST', complete: false, error: 'no such model', costUsd: 1.25, mustCatchRecall: null });
     expect(failed.runs[0].findings).toEqual([{ severity: 'blocker', title: 'A finding', file: 'src/read.rs', line: 1, description: 'Something.', route: { finderGrade: 'blocker', raisedBy: ['finder'] } }]);
     expect(review).toHaveBeenCalledTimes(2);
+    // The run keeps what a replay and a later scoring read, and the summary says that it is unscored.
+    expect(failed.runs[0]).toMatchObject({ unscored: {}, replay: { planner: null, finders: ['reviewer'], answers: { translate: null, dedup: null, judge: null } } });
+    expect(failed.runs[0].raw).toMatchObject({ findings: [expect.objectContaining({ title: 'Raw' })], matches: [], unscored: true, error: 'no such model' });
+    const report = buildReport({ startedAt: '2026-11-24T00:00:00.000Z', runsPerCase: 1, matcherModel: 'model-a' }, [{ variant: { name: 'base', overrides: {} }, results: [failed] }]);
+    expect(formatBenchSummary(report)).toContain('  run 1: ADDRESS_FIRST: no such model (unscored: the review completed, and `--rescore` scores it without a new review)\n');
+    expect(report.variants[0].summary.incompleteRuns).toBe(1);
+    // A later scoring needs no changed key and no review, and the run then counts as complete.
+    const { report: rescored, rescored: ids } = await rescoreReport(report, [benchCase], flaky);
+    expect(ids).toEqual(['demo-1']);
+    expect(rescored.variants[0].cases[0].runs[0]).toMatchObject({ complete: true, outcome: 'ADDRESS_FIRST', costUsd: 1.25, raw: { findings: [expect.objectContaining({ title: 'Raw' })], matches: [expect.anything(), expect.anything()] } });
+    expect(rescored.variants[0].cases[0].runs[0]).not.toHaveProperty('unscored');
+    expect(rescored.variants[0].cases[0].runs[0]).not.toHaveProperty('error');
+    expect(rescored.variants[0].summary.incompleteRuns).toBe(0);
+    expect((await rescoreReport(rescored, [benchCase], broken)).rescored).toEqual([]);
+    // A complete run of the case keeps its score while the key is unchanged.
+    const both = buildReport({ startedAt: '2026-11-24T00:00:00.000Z', runsPerCase: 2, matcherModel: 'model-a' }, [{ variant: { name: 'base', overrides: {} }, results: [{ ...failed, runs: [retried.runs[0], failed.runs[0]] }] }]);
+    const rescoredBoth = (await rescoreReport(both, [benchCase], flaky)).report.variants[0].cases[0].runs;
+    expect(rescoredBoth[0]).toBe(retried.runs[0]);
+    expect(rescoredBoth[1].complete).toBe(true);
+    // A run the report holds no text of cannot be scored, unscored or not.
+    const textless = { ...report, variants: [{ ...report.variants[0], cases: [{ ...report.variants[0].cases[0], runs: [{ ...failed.runs[0], findings: failed.runs[0].findings.map(({ description: _d, ...f }) => f) }] }] }] };
+    expect((await rescoreReport(textless, [benchCase], flaky)).left).toEqual([{ id: 'demo-1', reason: 'its report holds no text of the findings' }]);
+    // The round of a follow-up case keeps what it left of the earlier threads for the later scoring.
+    const followUp = parseCase(FOLLOW_UP_YAML, 'demo.yml');
+    const followed = { ...followUp, base: benchCase.base, head: benchCase.head, priorRound: { ...followUp.priorRound!, head: benchCase.base } };
+    review.mockImplementation(async () => {
+      const local = makeReview('ADDRESS_FIRST', [blocker]);
+      Object.assign(local.result, { threadEvaluations: [{ threadId: 'P1', status: 'addressed', reason: 'fixed' }] });
+      return local;
+    });
+    const [{ results: [unscoredFollowUp] }] = await runBench([followed], { ...options, matcher: broken });
+    expect(unscoredFollowUp.runs[0]).not.toHaveProperty('followUp');
+    expect(unscoredFollowUp.runs[0].unscored).toMatchObject({ followUp: { resolved: ['P1'], threads: expect.arrayContaining([expect.objectContaining({ id: 'P1', status: 'addressed' })]) } });
+    const followReport = buildReport({ startedAt: '2026-11-24T00:00:00.000Z', runsPerCase: 1, matcherModel: 'model-a' }, [{ variant: { name: 'base', overrides: {} }, results: [unscoredFollowUp] }]);
+    const scoredFollowUp = await rescoreReport(followReport, [followed], flaky);
+    expect(scoredFollowUp.left).toEqual([]);
+    expect(scoredFollowUp.report.variants[0].cases[0].runs[0]).toMatchObject({ complete: true, followUp: { resolved: ['P1'], foldsStored: true } });
+    // A replay reuses the finder output of the unscored run.
+    review.mockClear();
+    review.mockImplementation(async () => makeReview('ADDRESS_FIRST', [blocker]));
+    await runBench([benchCase], { ...options, matcher: flaky, findingsFrom: { ...report, commit: SHA_C } });
+    expect(review.mock.calls[0][0].replay).toMatchObject({ finders: ['reviewer'], findings: [expect.objectContaining({ title: 'Raw' })] });
+    // A review that did not complete keeps no such data.
+    review.mockResolvedValueOnce(makeReview('INCOMPLETE', [blocker], false, rawRecord([{ title: 'Raw' }], [blocker])));
+    const [{ results: [incomplete] }] = await runBench([benchCase], { ...options, matcher: broken });
+    expect(incomplete.runs[0]).toMatchObject({ complete: false, error: 'no such model' });
+    expect(incomplete.runs[0]).not.toHaveProperty('unscored');
+    expect(incomplete.runs[0]).not.toHaveProperty('raw');
   });
 
   it('stops on an abort instead of recording the run as failed', async () => {
@@ -1802,7 +1850,7 @@ describe('runBenchCommand', () => {
       process.env = { PATH: savedEnv.PATH, ANTHROPIC_API_KEY: 'sk-test' };
 
       expect(await runBenchCommand(['--rescore', report, '--cases', cases, '--cache', cache], dir)).toBe(0);
-      expect(stdout.mock.calls.map(call => call[0]).join('')).toBe(`Scored again with the changed key: demo-1\nReport: ${join(dir, 'report.rescored.json')}\n`);
+      expect(stdout.mock.calls.map(call => call[0]).join('')).toBe(`Scored again with the changed key or for an unscored run: demo-1\nReport: ${join(dir, 'report.rescored.json')}\n`);
       const scored = JSON.parse(readFileSync(join(dir, 'report.rescored.json'), 'utf-8')) as BenchReport;
       expect(scored.variants[0].cases[0]).toMatchObject({ keyVersion: 3, items: [{ id: 'K1' }, { id: 'K2' }, { id: 'N1' }, { id: 'N2', tier: 'nice_to_have', caught: 0, runs: 1 }] });
 
@@ -1832,7 +1880,7 @@ describe('runBenchCommand', () => {
       writeFileSync(mislabelled, JSON.stringify({ ...stored, variants: [{ ...stored.variants[0], cases: [scoredCase, held] }] }));
       stdout.mockClear();
       expect(await runBenchCommand(['--rescore', mislabelled, '--cases', cases, '--cache', cache], dir)).toBe(0);
-      expect(stdout.mock.calls.map(call => call[0]).join('')).toBe(`Scored again with the changed key: demo-1\nLeft out, no case file holds it: held-1\nReport: ${join(dir, 'mislabelled.rescored.json')}\n`);
+      expect(stdout.mock.calls.map(call => call[0]).join('')).toBe(`Scored again with the changed key or for an unscored run: demo-1\nLeft out, no case file holds it: held-1\nReport: ${join(dir, 'mislabelled.rescored.json')}\n`);
       expect((JSON.parse(readFileSync(join(dir, 'mislabelled.rescored.json'), 'utf-8')) as BenchReport).variants[0].cases.map(c => c.id)).toEqual(['demo-1']);
       const refused = `manki bench: The report ${mislabelled} calls held-1 a tuning case, and bench/holdout holds a case file for it.\n`;
       writeFileSync(join(holdout, 'held-1.yml'), CASE_YAML.replace('id: demo-1', 'id: held-1').replace('key_version: 2', 'key_version: 3'));
