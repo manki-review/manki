@@ -221,15 +221,15 @@ export function isSecurityFinding(tags: string[] | undefined, priorReviewers: Re
 
 /**
  * Whether a step that leaves out notes may leave the finding out of the review: only a note, and never a security
- * finding, a tool alert or a note the other finder's vote lowered from a warning (`votedDown`).
+ * finding, a tool alert or a note a step lowered from a warning (`loweredFromWarning`).
  */
 export function canLeaveOut(f: Finding): boolean {
-  return isNote(f.severity) && !f.toolSource && !isSecurityFinding(f.tags, f.reviewers) && !votedDown(f);
+  return isNote(f.severity) && !f.toolSource && !isSecurityFinding(f.tags, f.reviewers) && !loweredFromWarning(f);
 }
 
-/** Whether the other finder's vote lowered `f` to a note, which stays in the review so one vote never removes a warning. */
-export function votedDown(f: Pick<Finding, 'severity' | 'gradePath'>): boolean {
-  return isNote(f.severity) && !!f.gradePath?.some(step => step.by === 'other_finder' && step.to === 'note');
+/** Whether a step lowered `f` from a warning to a note, which stays in the review so the step never removes a warning. */
+export function loweredFromWarning(f: Pick<Finding, 'severity' | 'gradePath'>): boolean {
+  return isNote(f.severity) && !!f.gradePath?.some(step => LOWERS_WARNING.includes(step.by) && step.to === 'note');
 }
 
 /**
@@ -457,6 +457,8 @@ export interface Finding {
   originCheck?: OriginCheck;
   /** The vote of a finder that did not report the finding, which `otherFinderVotes` asks on a `soleFinder` blocker or warning. */
   otherFinderVote?: OtherFinderVote;
+  /** The fix rate of the warning class `lowerByFixRate` lowered the finding for. */
+  calibration?: FindingCalibration;
   /** The line of an origin answer's `fixedElsewhere`, on a pre-existing finding posted as a note because the PR fixes the same failure there. */
   fixedElsewhere?: string;
   /** The id of the memory suppression that hid the finding. */
@@ -977,7 +979,10 @@ export interface RoundSlicing {
 /** What changed a finding's severity. */
 export type GradeChange =
   | 'judge' | 'rule' | 'unproven' | 'build_claim' | 'refutation' | 'in_pr_suppression' | 'own_proposal' | 'ratchet'
-  | 'resolved_thread' | 'pre_existing' | 'own_fix' | 'other_finder' | 'unconfirmed_raise';
+  | 'resolved_thread' | 'pre_existing' | 'own_fix' | 'other_finder' | 'unconfirmed_raise' | 'calibration';
+
+/** The steps that may lower a warning to a note that the review then keeps. */
+const LOWERS_WARNING: readonly GradeChange[] = ['other_finder', 'calibration'];
 
 /** One change of a finding's severity. */
 export interface GradeStep {
@@ -1816,6 +1821,8 @@ export interface ReviewRoutingConfig {
   rules?: RulesMode;
   /** Whether the scope reader's doubt or split is posted as a warning that holds the approval, instead of only listed in the review body. */
   scope_blocks?: boolean;
+  /** Whether a warning of a class this repo rarely fixed, by its fix-rate history, is posted as a note. On unless `false`. */
+  calibrate?: boolean;
 }
 
 /** How a round's review group was picked. */
@@ -2568,7 +2575,7 @@ export interface RoundMeta {
   retryAfter?: string;
   /** Set when the round kept results of an earlier attempt on the same commit that ended incomplete. */
   reusedFrom?: RoundReusedFrom;
-  /** How many posted findings the fix-rate history would lower (`FindingCalibration.wouldLower`). Unset without a history. */
+  /** How many warnings the fix-rate history lowered to notes (`lowerByFixRate`). Unset without a history. */
   calibrationLowered?: number;
   /**
    * Set when the record was too large for the review even compressed: the fields that were left out, such as
@@ -3168,7 +3175,7 @@ export interface FindingCalibration {
   posted: number;
   fixed: number;
   rate: number;
-  /** Whether the class has enough posted findings and a fix rate low enough that the finding would be lowered. */
+  /** Whether the class has enough posted findings and a fix rate low enough to lower a warning of it. */
   wouldLower: boolean;
 }
 

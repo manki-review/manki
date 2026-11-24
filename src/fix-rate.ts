@@ -5,7 +5,7 @@ import { parsePRDiff } from './diff';
 import { BotIdentity, fetchInterRoundDiff } from './github';
 import { appendMemoryLine, MemoryStore } from './memory';
 import { fetchRecapState, judgeAddressedThreadIds, PreviousFinding } from './recap';
-import { AuthorClearRole, citesEvidence, Finding, FindingCalibration, FindingFingerprint, FindingFingerprintEntry, isSecurityFinding, migrateStoredSeverities, ParsedDiff, RoundContext } from './types';
+import { AuthorClearRole, citesEvidence, Finding, FindingCalibration, FindingFingerprint, FindingFingerprintEntry, FOLLOW_UP_TAG, gradeStep, isSecurityFinding, migrateStoredSeverities, ParsedDiff, RoundContext } from './types';
 import { sanitizeTokens } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -259,4 +259,17 @@ export function calibrate(history: FixRateHistory, finding: Finding): FindingCal
   if (!row || row.posted === 0) return undefined;
   const rate = row.fixed / row.posted;
   return { class: name, posted: row.posted, fixed: row.fixed, rate: Math.round(rate * 100) / 100, wouldLower: row.posted >= MIN_POSTED && rate < LOW_FIX_RATE };
+}
+
+/**
+ * Returns the warning `finding` posted as a note when `calibrate` says its class would be lowered, with that
+ * `calibration` and a `calibration` grade step that names the class and its rate. Any other finding is returned as it is.
+ */
+export function lowerByFixRate(history: FixRateHistory, finding: Finding): Finding {
+  const calibration = finding.severity === 'warning' ? calibrate(history, finding) : undefined;
+  if (!calibration?.wouldLower) return finding;
+  const reason = `${calibration.fixed} of ${calibration.posted} posted \`${calibration.class}\` findings were fixed in this repo (${Math.round((calibration.fixed / calibration.posted) * 100)}%)`;
+  core.info(`Posting warning "${finding.title}" on ${finding.file}:${finding.line} as a note: ${reason}`);
+  const tags = finding.tags?.filter(tag => tag !== FOLLOW_UP_TAG);
+  return { ...finding, ...gradeStep(finding, 'note', 'calibration', reason), calibration, ...(tags && { tags }) };
 }

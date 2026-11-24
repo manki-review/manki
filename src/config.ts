@@ -92,7 +92,7 @@ export const MODEL_KEYS: ReadonlySet<string> = new Set(['planner', 'judge', 'sec
 /** How many notes a review lists when `review.notes` is not set. */
 export const DEFAULT_NOTES = 3;
 
-export const REVIEW_KEYS: ReadonlySet<string> = new Set(['groups', 'classes', 'routing', 'critical_paths', 'outside_input', 'examples', 'sweep', 'notes', 'rules', 'scope_blocks']);
+export const REVIEW_KEYS: ReadonlySet<string> = new Set(['groups', 'classes', 'routing', 'critical_paths', 'outside_input', 'examples', 'sweep', 'notes', 'rules', 'scope_blocks', 'calibrate']);
 export const GROUP_REVIEWER_KEYS: ReadonlySet<string> = new Set(['model', 'effort', 'focus']);
 /** The keys of a reader of the `trivial` group. The quick check has one fixed prompt, so it takes no `focus`. */
 const QUICK_CHECK_KEYS: ReadonlySet<string> = new Set(['model', 'effort']);
@@ -467,6 +467,7 @@ function validateReviewBlock(review: unknown, errors: string[], warnings: string
   if ('notes' in review && !(Number.isInteger(review.notes) && (review.notes as number) >= 0)) errors.push('`review.notes` must be a non-negative integer');
   if ('rules' in review && !RULES_MODES.some(mode => mode === review.rules)) errors.push('`review.rules` must be `auto`, `warn` or `block`');
   if ('scope_blocks' in review && typeof review.scope_blocks !== 'boolean') errors.push('`review.scope_blocks` must be `true` or `false`');
+  if ('calibrate' in review && typeof review.calibrate !== 'boolean') errors.push('`review.calibrate` must be `true` or `false`');
   if ('examples' in review) {
     const examples = review.examples;
     if (!isObject(examples) || Object.keys(examples).length === 0) {

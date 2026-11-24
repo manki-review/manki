@@ -4,10 +4,11 @@ import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, quotaResetTime, recordCalls, SendMessageOptions, TimeoutError, UnreachableError, withModelFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput, NotStartedError } from './providers';
 import { appendTo, digestOf, escapeRegExp, formatDuration, jsonOnlyReply, mapWithConcurrency, parseRetryNote } from './utils';
 import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDiff, interRoundDiffFirst, MAX_INTER_ROUND_DIFF_CHARS, runJudgeAgent, JudgeInput, PriorFinding, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
+import { FixRateHistory, lowerByFixRate } from './fix-rate';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, formatResetTime, InstructionFile, LinkedIssue, MANKI_VERSION, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, pushTouchesThread, replyClassOf, titleOverlapType, dropWaivedRestatements } from './recap';
-import { isGuardedFinding, canLeaveOut, CheckProgress, UnpostedReason, foundOnBase, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FinderReplay, isSweepName, VERDICT_READER_NAME, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundAgentMetric, RoundComparison, RoundContext, RoundDedupDuplicateMatch, RoundFix, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundPrClaim, RoundRawFinding, RoundRelatedRepo, RoundReusedFrom, RoundStaticSignalMatch, RoundUnitLine, RoundUses, EarlierAttempt, DiffHunk, EffortLevel, Finder, FinderError, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, SCOPE_READER_NAME, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType, secondReadName, RoundSecondReads } from './types';
+import { gradedByRule, isGuardedFinding, canLeaveOut, CheckProgress, UnpostedReason, foundOnBase, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FinderReplay, isSweepName, VERDICT_READER_NAME, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundAgentMetric, RoundComparison, RoundContext, RoundDedupDuplicateMatch, RoundFix, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundPrClaim, RoundRawFinding, RoundRelatedRepo, RoundReusedFrom, RoundStaticSignalMatch, RoundUnitLine, RoundUses, EarlierAttempt, DiffHunk, EffortLevel, Finder, FinderError, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, SCOPE_READER_NAME, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType, secondReadName, RoundSecondReads } from './types';
 import { countChangedLines, diffSections, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE, repoPath } from './diff';
 import { guessClaimTerms, translateNames } from './name-translation';
 import { dependencyOutcomes } from './dependency-sources';
@@ -112,6 +113,16 @@ function markPreExisting(findings: Finding[], checkOf: (finding: Finding) => Pre
     }
   }
   return { posted, unposted };
+}
+
+/**
+ * Whether the fix-rate history may lower the warning `f`. A finding graded by a rule, one a tool run confirmed, one
+ * its cited lines prove, one the judge graded or held as a blocker (`wouldBlockIfTrue`), a scope warning and one that restates an `earlier` finding keep
+ * their grade. `calibrate` itself skips security findings and tool alerts.
+ */
+function calibratesWarning(f: Finding, earlier: EarlierFinding[], rules: RulesMode | undefined): boolean {
+  return f.severity === 'warning' && !gradedByRule(f, rules) && f.toolEvidence?.status !== 'confirmed' && f.checkStatus !== 'proven' && !wouldBlockIfTrue(f)
+    && !f.reviewers.includes(SCOPE_READER_NAME) && !restatesEarlier(earlier, f);
 }
 
 /**
@@ -996,6 +1007,8 @@ export interface ReviewOptions {
   /** The instruction files in `repoContext`. A rule a finder quotes is looked up in them. */
   instructionFiles?: readonly InstructionFile[];
   memory?: RepoMemory | null;
+  /** The repo's fix-rate history, which posts a warning of a class it rarely fixed as a note (`review.calibrate`). */
+  fixRates?: FixRateHistory;
   fileContents?: Map<string, string>;
   prContext?: PrContext;
   linkedIssues?: LinkedIssue[];
@@ -1049,7 +1062,7 @@ export async function runReview(
   options: ReviewOptions,
 ): Promise<ReviewResult & { outcome: RoundOutcome }> {
   const {
-    config, diff, rawDiff, repoContext, memory, fileContents, prContext, linkedIssues, onProgress, checkpoint, signal, deadline,
+    config, diff, rawDiff, repoContext, memory, fixRates, fileContents, prContext, linkedIssues, onProgress, checkpoint, signal, deadline,
     isFollowUp, openThreads, previousFindings, priorRounds, prAuthorLogin, interRoundDiff, workspace, lockfiles = [], automaticRetry = false, replay,
   } = options;
   const overlong = overlongChangedLines(diff);
@@ -2283,6 +2296,10 @@ export async function runReview(
   // After the fold into earlier findings, so a warning an earlier round already shows stays where it is.
   const proven = hideUnprovenWarnings(finalFindings, config.review?.rules);
   finalFindings = proven.posted;
+  // After the proof checks, so only a warning the round posts is lowered, and before the outcome, which reads the grades.
+  if (fixRates && config.review?.calibrate !== false) {
+    finalFindings = finalFindings.map(f => calibratesWarning(f, earlier, config.review?.rules) ? lowerByFixRate(fixRates, f) : f);
+  }
   // Listed after the judge and the refuter, so no model reads an earlier blocker a second time.
   const relisting = openThreads != null ? relistThreadlessBlockers(finalFindings, priorFindingsFlat, priorRoundLookup) : { findings: finalFindings, restated: [] };
   finalFindings = relisting.findings;

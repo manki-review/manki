@@ -42,7 +42,7 @@ import { relatedReposCacheDir } from './related-repos';
 import * as core from '@actions/core';
 import * as napi from '@ast-grep/napi';
 import { formatFindingComment, holdsApproval, LinkedIssue, titleToSlug } from './github';
-import { CELL_GRADES, cellGrade, DISPROVED_TAG, EarlierAttempt, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, OriginAnswer, OriginVerdict, Refutation, RefutationOutcome, RelatedItem, RelatedWork, ReviewResult, RoundContext, RoundFix, RoundLead, RoundNotStarted, RoundScope, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG, SweepMode, triggerDoubt, VERDICT_READER_NAME } from './types';
+import { CELL_GRADES, cellGrade, DISPROVED_TAG, EarlierAttempt, Finding, FOLLOW_UP_TAG, SCOPE_READER_NAME, FindingFingerprintEntry, FindingSeverity, GradeCell, OriginAnswer, OriginVerdict, Refutation, RefutationOutcome, RelatedItem, RelatedWork, ReviewResult, RoundContext, RoundFix, RoundLead, RoundNotStarted, RoundScope, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG, SweepMode, triggerDoubt, VERDICT_READER_NAME } from './types';
 import { citedLine, stringifyFindingFingerprint } from './finding-fingerprint';
 import { baseProofFixture, baseProofWorkspace, expectLinearTime, fingerprintEntriesFromLegacy, git, GIT_TEST_TIMEOUT_MS, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS, withConsequence } from './test-utils';
 import { listUsesOutsideDiff } from './symbol-uses';
@@ -51,7 +51,7 @@ import { runJudgeAgent, computeProvenanceMap } from './judge';
 import { applySuppressions } from './memory';
 import { PreviousFinding } from './recap';
 import { buildRoundContext, buildRoundUsage, mergedDuplicateCount, RoundRecordInput } from './round-context';
-import { aggregateFixRates } from './fix-rate';
+import { aggregateFixRates, lowerByFixRate } from './fix-rate';
 import { COST_SCALE_RULE, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, ROOT_CAUSE_FIX_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { latestLimits, LLMCall, LLMClient, LLMResponse, QuotaError, recordCalls, RefusalError, SendMessageOptions, summarizeCalls, TimeoutError, UnreachableError, withModelFallback, withSignal, wrapClientForUsage } from './providers';
 import { isClaimCheck } from './pr-claims';
@@ -119,13 +119,13 @@ const postedRecord = (result: ReviewResult, input: Partial<RoundRecordInput> = {
 }, result, { judgeDurationMs: 0 }))) as RoundContext;
 
 describe('buildRoundContext', () => {
-  it('records the fix rate of each posted finding\'s class and the count it would lower, and changes nothing else', () => {
+  it('records the fix rate of each posted finding\'s class and the count of warnings lowered, and changes nothing else', () => {
     const fixRates = aggregateFixRates([JSON.stringify({ pr: 1, counts: [
       { severity: 'warning', specialist: 'GPT 6.2 Sol · high', category: 'correctness', posted: 25, fixed: 5 },
       { severity: 'note', specialist: 'Claude Opus 5.5 · high', posted: 30, fixed: 20 },
     ] })]);
     const findings = [
-      makeFinding({ severity: 'warning', title: 'Low rate', reviewers: ['GPT 6.2 Sol · medium'], category: 'correctness' }),
+      lowerByFixRate(fixRates, makeFinding({ severity: 'warning', title: 'Low rate', reviewers: ['GPT 6.2 Sol · medium'], category: 'correctness' })),
       makeFinding({ title: 'High rate', reviewers: ['Claude Opus 5.5 · high'] }),
       makeFinding({ severity: 'warning', title: 'Security', reviewers: ['GPT 6.2 Sol · high'], category: 'correctness', tags: ['security'] }),
     ];
@@ -8947,6 +8947,48 @@ describe('runReview post-judge suppression', () => {
     );
     expect(result.findings.map(f => f.title)).toEqual(['Rename the helper', 'Token logged in a fixture', 'Unused import']);
     expect(result.testNitSuppressedCount).toBe(7);
+  });
+
+  it('posts a warning of a class the repo rarely fixed as a note, unless `review.calibrate` is off or an exemption keeps it', async () => {
+    const fixRates = aggregateFixRates([JSON.stringify({ pr: 1, counts: [
+      { severity: 'warning', specialist: 'GPT 6.2 Sol · high', posted: 200, fixed: 59 },
+      { severity: 'warning', specialist: 'Claude Opus 5.5 · high', posted: 40, fixed: 23 },
+      { severity: 'warning', specialist: SCOPE_READER_NAME, posted: 30, fixed: 0 },
+    ] })]);
+    const warning = (title: string, overrides: Partial<Finding> = {}) => makeFinding({
+      severity: 'warning', title, reviewers: ['GPT 6.2 Sol · high'], refutation: { outcome: 'confirmed', defect: 'confirmed', reason: 'Reachable.', files: ['src/a.ts'], codeDigest: 'd' }, ...overrides,
+    });
+    mockedRunJudgeAgent.mockResolvedValue({
+      findings: [
+        warning('Rarely fixed'),
+        warning('Often fixed', { reviewers: ['Claude Opus 5.5 · high'] }),
+        warning('Security', { tags: ['security'] }),
+        warning('Tool alert', { toolSource: 'eslint' }),
+        warning('Tool confirmed', { toolEvidence: { status: 'confirmed', note: 'the test fails' } }),
+        warning('Proven', { refutation: undefined }),
+        warning('Rule', { rule: { file: 'AGENTS.md', quote: 'Every migration needs a rollback.', verdict: 'confirmed' } }),
+        warning('Judged a blocker', { gradePath: [{ from: 'blocker', to: 'warning', by: 'refutation' }] }),
+        warning('Answered in a thread', { answeredIn: { threadId: 'T1', answer: 'a', grade: { severity: 'warning' } } }),
+        warning('Scope', { reviewers: [SCOPE_READER_NAME] }),
+      ],
+      summary: 'ok',
+    });
+    const options = { config: makeConfig({ review: { rules: 'warn' } }), diff: diffChanging('src/a.ts'), rawDiff: 'raw', repoContext: 'ctx', fixRates };
+    const grades = (result: ReviewResult) => Object.fromEntries(result.findings.map(f => [f.title, f.severity]));
+
+    const result = await runReview(makeClients(), options);
+    expect(grades(result)).toEqual({
+      'Rarely fixed': 'note', 'Often fixed': 'warning', Security: 'warning', 'Tool alert': 'warning', 'Tool confirmed': 'warning',
+      Proven: 'warning', Rule: 'warning', 'Judged a blocker': 'warning', 'Answered in a thread': 'warning', Scope: 'warning',
+    });
+    const lowered = result.findings.find(f => f.title === 'Rarely fixed')!;
+    expect(lowered.gradePath?.at(-1)).toEqual({ from: 'warning', to: 'note', by: 'calibration', reason: '59 of 200 posted `warning · GPT 6.2 Sol` findings were fixed in this repo (30%)' });
+    expect(lowered.calibration).toEqual({ class: 'warning · GPT 6.2 Sol', posted: 200, fixed: 59, rate: 0.3, wouldLower: true });
+    expect(lowered.tags ?? []).not.toContain(FOLLOW_UP_TAG);
+
+    for (const off of [{ ...options, config: makeConfig({ review: { rules: 'warn', calibrate: false } }) }, { ...options, fixRates: undefined }]) {
+      expect(grades(await runReview(makeClients(), off))['Rarely fixed']).toBe('warning');
+    }
   });
 
   it('keeps a note on a test file in round 1', async () => {

@@ -2412,6 +2412,7 @@ async function runFullReview(
       repoContext: repoContext.text,
       instructionFiles: repoContext.files,
       memory,
+      fixRates,
       fileContents,
       prContext: prContext && staticSignals.length > 0 ? { ...prContext, staticSignals } : prContext,
       linkedIssues,
@@ -2476,7 +2477,7 @@ async function runFullReview(
     await carryBodyWarnings(result, recap.priorRounds, openRepoFiles(githubRepoFiles(octokit, owner, repo, commitSha), config.closed_paths ?? [], true));
     const context = buildContext();
     if (context.meta.calibrationLowered !== undefined) {
-      core.info(`Fix-rate calibration: ${context.meta.calibrationLowered} of ${context.findings.entries.filter(e => e.calibration).length} calibrated findings would be lowered, nothing changed`);
+      core.info(`Fix-rate calibration: lowered ${context.meta.calibrationLowered} of ${context.findings.entries.filter(e => e.calibration).length} calibrated findings to notes`);
     }
     const pauseAfter = pauseState({ ...recap, priorRounds: [...recap.priorRounds, context] }, config);
     let posted: Awaited<ReturnType<typeof postRound>>;
