@@ -1138,6 +1138,34 @@ export interface OriginAnswer {
 }
 
 /** The origin checks of a finding. */
+/** One model call of a vote. */
+export interface VoteCall {
+  /** `unusable` when the reply did not parse. */
+  outcome: 'answered' | 'unusable' | 'timed_out' | 'failed' | 'not_started';
+  durationMs: number;
+  /** Model that answered. */
+  model?: string;
+  /** Tool steps the call took. Unset when it had no tools or its client reports no steps. */
+  toolSteps?: number;
+  /** Unset when the client reports no usage or the model has no known price. */
+  costUsd?: number;
+  /** Why the call ended, with the last output of a CLI that timed out. */
+  error?: string;
+}
+
+/** How Manki asked for the vote on one finding. A finding that gets no vote by rule has none. */
+export interface VoteLog {
+  title: string;
+  file: string;
+  line: number;
+  /** The finder whose model was asked, and that model. Unset with `unknown_read`, when the model of a read that reported the finding is not known. */
+  finder?: string;
+  model?: string;
+  calls: VoteCall[];
+  /** `unreadable` when the head could not read a named file, and `no_answer` when no call gave a usable reply. */
+  answer: 'backs' | 'declines' | 'not_shown' | 'unreadable' | 'no_answer' | 'unknown_read';
+}
+
 /** The answer of a finder that did not report a `soleFinder` finding, asked for the harm the finding causes. */
 export interface OtherFinderVote {
   /** The finder whose model answered. */
@@ -1625,6 +1653,8 @@ export interface ReviewResult {
   /** Each sibling comparison the round found, asked or cut. */
   comparisons?: RoundComparison[];
   /** Each sweep the round's findings started, asked or cut. */
+  /** How each vote was asked for, for the benchmark's report. No round record holds it. */
+  votes?: VoteLog[];
   sweeps?: RoundSweep[];
   /** The reads of the change after the finders. Unset on a round that runs none. */
   secondReads?: RoundSecondReads;

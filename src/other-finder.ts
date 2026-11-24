@@ -5,16 +5,17 @@ import { extractJSON } from './json';
 import { readFileInRoot } from './mcp-server';
 import { sanitizeForPromptEmbed } from './memory';
 import { fenceText } from './github';
-import { LLMClient, NotStartedError, TimeoutError } from './providers';
+import { estimateCostUsd, LLMClient, NotStartedError, TimeoutError } from './providers';
 import { changeSection, citedChanges, locationFile, locationLines, MAX_PARALLEL_REFUTATIONS } from './refute';
 import { modelIdentity } from './routing';
-import { bySecondReadsOnly, DISPROVED_TAG, Finding, FindingSeverity, gradedByRule, gradeStep, isDisprovedBlocker, isSecurityFinding, OtherFinderVote, ParsedDiff, pendingGrade, RoundSecondRead, RulesMode } from './types';
-import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
+import { bySecondReadsOnly, DISPROVED_TAG, Finding, FindingSeverity, gradedByRule, gradeStep, isDisprovedBlocker, isSecurityFinding, OtherFinderVote, ParsedDiff, pendingGrade, RoundSecondRead, RulesMode, VoteCall, VoteLog } from './types';
+import { mapWithConcurrency, safeTruncate, sanitizeLogOutput, sendWithParseRetry } from './utils';
 
 // A safety net for a call without tools, which normally answers in well under a minute.
 export const VOTE_TIMEOUT_MS = 120_000;
 const MAX_ANSWER_CHARS = 300;
 const MAX_CITED_LINES = 40;
+const MAX_LOGGED_ERROR = 1500;
 // How far from the line the answer names its quote may sit, since a model often names a line next to the one it quotes.
 const QUOTE_SLACK_LINES = 3;
 const DECLINED_REASON: Partial<Record<FindingSeverity, string>> = {
@@ -119,6 +120,29 @@ export interface VoteOptions {
   /** Whether `finding` restates a finding of an earlier round, which keeps its own path. */
   restates: (finding: Finding) => boolean;
   rules?: RulesMode;
+  /** Hears how each vote was asked for. */
+  onVote?: (log: VoteLog) => void;
+}
+
+/** Returns `client` with each of its calls added to `calls`. */
+function logCalls(client: LLMClient, calls: VoteCall[]): LLMClient {
+  return {
+    ...client,
+    sendMessage: async (...args) => {
+      const start = Date.now();
+      try {
+        const reply = await client.sendMessage(...args);
+        const { usage, model, toolSteps } = reply;
+        const cost = model && usage && usage.inputTokens + usage.outputTokens > 0 ? estimateCostUsd(model, usage) : null;
+        calls.push({ outcome: 'answered', durationMs: reply.latencyMs ?? Date.now() - start, ...(model && { model }), ...(toolSteps && { toolSteps: toolSteps.length }), ...(cost !== null && { costUsd: cost }) });
+        return reply;
+      } catch (error) {
+        const outcome = error instanceof TimeoutError ? 'timed_out' : error instanceof NotStartedError ? 'not_started' : 'failed';
+        calls.push({ outcome, durationMs: Date.now() - start, error: sanitizeLogOutput(String((error as Error)?.message ?? error)).slice(0, MAX_LOGGED_ERROR) });
+        throw error;
+      }
+    },
+  };
 }
 
 /** Returns the models of the reads that reported `finding`, or undefined unless each is known to be a finder's. */
@@ -136,18 +160,23 @@ function readModels(finding: Finding, reads: NonNullable<VoteOptions['reads']>, 
  * in a form that does not parse gives no vote, and so do an answer whose file cannot be read and one that names
  * `not_shown`.
  */
-export async function otherFinderVotes(findings: readonly Finding[], { workspace, diff, finders, reads = [], restates, rules }: VoteOptions): Promise<Array<OtherFinderVote | undefined>> {
+export async function otherFinderVotes(findings: readonly Finding[], { workspace, diff, finders, reads = [], restates, rules, onVote }: VoteOptions): Promise<Array<OtherFinderVote | undefined>> {
   return mapWithConcurrency([...findings], MAX_PARALLEL_REFUTATIONS, async finding => {
     if (!getsVote(finding, restates, rules)) return undefined;
+    const { title, file, line } = finding;
     const readers = bySecondReadsOnly(finding) ? readModels(finding, reads, finders) : [];
     if (!readers) {
       core.info(`No vote on "${finding.title}", since the model of a second read that reported it is not known`);
+      onVote?.({ title, file, line, calls: [], answer: 'unknown_read' });
       return undefined;
     }
     const other = finders.find(f => !finding.reviewers.includes(f.name) && !readers.includes(modelIdentity(f.model)));
     if (!other) return undefined;
+    const calls: VoteCall[] = [];
+    const client = logCalls(other.client, calls);
+    let answer: VoteLog['answer'] = 'no_answer';
     let retried = false;
-    const ask = (message: string): ReturnType<LLMClient['sendMessage']> => other.client.sendMessage(VOTE_SYSTEM_PROMPT, message, { timeoutMs: VOTE_TIMEOUT_MS }).catch((error: unknown) => {
+    const ask = (message: string): ReturnType<LLMClient['sendMessage']> => client.sendMessage(VOTE_SYSTEM_PROMPT, message, { timeoutMs: VOTE_TIMEOUT_MS }).catch((error: unknown) => {
       if (!(error instanceof TimeoutError) || retried) throw error;
       retried = true;
       core.warning(`${other.name} timed out on "${finding.title}", asking once more`);
@@ -157,25 +186,37 @@ export async function otherFinderVotes(findings: readonly Finding[], { workspace
       const raw = await sendWithParseRetry(
         buildVoteMessage(finding, workspace, diff),
         ask,
-        reply => ({ ...parseVote(reply.content), ...(reply.model && { model: reply.model }) }),
+        reply => {
+          try {
+            return { ...parseVote(reply.content), ...(reply.model && { model: reply.model }) };
+          } catch (error) {
+            calls.at(-1)!.outcome = 'unusable';
+            throw error;
+          }
+        },
         error => core.warning(`The vote of ${other.name} on "${finding.title}" could not be used (${error}), asking once more`),
       );
       if (raw.line === 'not_shown') {
+        answer = 'not_shown';
         core.info(`${other.name} was not shown the code to vote on "${finding.title}", so its grade stays`);
         return undefined;
       }
       const named = raw.line !== 'none';
       const held = named ? holdsQuote(workspace, raw.line, raw.quote) : false;
       if (held === undefined) {
+        answer = 'unreadable';
         core.info(`${other.name} named ${raw.line} for "${finding.title}", which could not be read, so its vote is not used`);
         return undefined;
       }
       const declined = !held;
+      answer = declined ? 'declines' : 'backs';
       core.info(`${other.name} ${declined ? 'declines' : 'backs'} "${finding.title}"${named && declined ? `, since ${raw.line} does not hold the quoted code` : ''}`);
       return { finder: other.name, harm: raw.harm, situation: raw.situation, ...(named && { line: raw.line, quote: safeTruncate(raw.quote, MAX_ANSWER_CHARS) }), declined, ...(raw.model && { model: raw.model }) };
     } catch (error) {
       if (!(error instanceof NotStartedError)) core.warning(`Could not ask ${other.name} about "${finding.title}": ${error}`);
       return undefined;
+    } finally {
+      onVote?.({ title, file, line, finder: other.name, model: other.model, calls, answer });
     }
   });
 }

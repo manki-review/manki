@@ -4,7 +4,7 @@ import { join } from 'path';
 
 import { LLMClient } from './providers';
 import { otherFinderVotes, withVote } from './other-finder';
-import { DISPROVED_TAG, Finding, isGuardedFinding, OtherFinderVote } from './types';
+import { DISPROVED_TAG, Finding, isGuardedFinding, OtherFinderVote, VoteLog } from './types';
 
 const finding = (more: Partial<Finding>): Finding => ({
   severity: 'warning', title: 'Totals drift', file: 'src/a.ts', line: 3, description: 'Totals drift.', reviewers: ['Finder A'], judgeNotes: '', soleFinder: true, ...more,
@@ -72,6 +72,16 @@ describe('otherFinderVotes', () => {
       const both = finding({ reviewers: ['Finder A', 'Second read 1'] });
       const voters = [{ name: 'Finder A', model: 'opus', client: client() }, { name: 'Finder B', model: 'sol', client: client() }];
       expect((await otherFinderVotes([both], { workspace, reads: [{ reviewer: 'Second read 1', model: 'sol' }], restates: () => false, finders: voters }))[0]?.finder).toBe('Finder B');
+
+      // The log of a vote holds the call's model, its tool steps and its cost where the client reports usage.
+      const logs: VoteLog[] = [];
+      const reply = { content: JSON.stringify({ harm: '', situation: '', line: 'none' }), model: 'claude-opus-5-5', latencyMs: 4000, usage: { inputTokens: 1000, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 0 }, toolSteps: [] };
+      const asked = { sendMessage: jest.fn().mockResolvedValue(reply) } as unknown as LLMClient;
+      await otherFinderVotes([finding({})], { workspace, restates: () => false, onVote: log => logs.push(log), finders: [{ name: 'Finder A', model: 'opus', client: asked }, { name: 'Finder B', model: 'sol', client: asked }] });
+      expect(logs).toEqual([{
+        title: 'Totals drift', file: 'src/a.ts', line: 3, finder: 'Finder B', model: 'sol', answer: 'declines',
+        calls: [{ outcome: 'answered', durationMs: 4000, model: 'claude-opus-5-5', toolSteps: 0, costUsd: expect.any(Number) }],
+      }]);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }

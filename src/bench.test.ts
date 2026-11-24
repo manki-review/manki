@@ -13,7 +13,7 @@ import type { LLMClient } from './providers';
 import { NAMED_AGAIN_REASON, UNCONFIRMED_FIX_ENDING, WORKAROUND_REASON } from './review';
 import { buildLLMClient } from './review-clients';
 import { expectLinearTime, GIT_TEST_TIMEOUT_MS } from './test-utils';
-import { PRE_EXISTING_TAG, SCOPE_READER_NAME, VERDICT_READER_NAME } from './types';
+import { PRE_EXISTING_TAG, SCOPE_READER_NAME, VERDICT_READER_NAME, VoteLog } from './types';
 import type { Doubt, Finding, FindingFingerprintEntry, FindingSeverity, GradeChange, Refutation, RoundContext, RoundDedup, RoundFix, RoundJudge, RoundLead, RoundMemory, RoundOutcome, RoundRawFinding } from './types';
 
 jest.mock('@actions/core');
@@ -416,7 +416,11 @@ describe('scoreRun', () => {
     ];
     const matcher = stub({ K1: { verdict: 'MATCH', findings: [1, 0], reason: 'same' }, K2: { verdict: 'PARTIAL', findings: [0], reason: 'vague' } });
 
-    const score = await scoreRun(benchCase, makeReview('ADDRESS_FIRST', findings), matcher);
+    const review = makeReview('ADDRESS_FIRST', findings);
+    const votes: VoteLog[] = [{ title: 'Voted', file: 'src/read.rs', line: 1, finder: 'finder-b', model: 'claude-opus-5-5', answer: 'no_answer', calls: [{ outcome: 'timed_out', durationMs: 120_000, error: 'timed out' }] }];
+    Object.assign(review.result, { votes });
+    const score = await scoreRun(benchCase, review, matcher);
+    expect(score.votes).toEqual(votes);
 
     expect(matcher).toHaveBeenCalledTimes(3);
     expect(matcher.mock.calls[0][1]).toEqual([findings[0], findings[3]]);

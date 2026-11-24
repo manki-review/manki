@@ -18,7 +18,7 @@ import { AnswerStore, holdsEveryCall, ReplayLevel, StoredAnswers } from './store
 import {
   CELL_GRADES, CheckStatus, Doubt, Finding, finderGrade, FinderReplay, FinderError, FindingFingerprintEntry, FindingSeverity, GradeCell, GradeChange, GradeStep, gradedAbove, isGradeCell, isSecondReadName, isSecurityFinding, isSweepName, leftOutUnproven,
   migrateLegacySeverity, migrateStoredSeverities, PRE_EXISTING_TAG, Refutation, RoundContext, RoundRawFinding, RoundRelatedRepo, SCOPE_READER_NAME, SEVERITY_ORDER, SideCheckKind, ThreadEvaluation, UNPOSTED_REASONS, UnpostedReason,
-  UnprovenReason, VERDICT_READER_NAME, VerdictReason,
+  UnprovenReason, VERDICT_READER_NAME, VerdictReason, VoteLog,
 } from './types';
 import { runGit } from './workspace';
 
@@ -647,6 +647,8 @@ interface RunScore {
    */
   unscored?: { followUp?: Pick<FollowUpScore, 'resolved' | 'threads' | 'foldsStored'> };
   finders: FinderSteps[];
+  /** How each vote was asked for. Set only on a run with votes. */
+  votes?: VoteLog[];
   /** The tool use of each second read, apart from the finders'. Set only on a run with second reads. */
   secondReads?: FinderSteps[];
   /** What the review could read of each related repo: the commit it checked out, and the time it read the repo as of. A report from a ref that records neither has none. */
@@ -1030,10 +1032,10 @@ function gradeRoute(f: Finding): GradeRoute {
 }
 
 /** What a run records about its review whether or not the findings could be matched. `earlier` is the round a follow-up case follows. */
-function reviewFacts(review: LocalReview, earlier?: EarlierRound): Pick<RunScore, 'outcome' | 'verdictReason' | 'finderErrors' | 'findings' | 'finders' | 'secondReads' | 'relatedRepos' | 'costUsd' | 'inputTokens' | 'outputTokens' | 'durationMs'> {
+function reviewFacts(review: LocalReview, earlier?: EarlierRound): Pick<RunScore, 'outcome' | 'verdictReason' | 'finderErrors' | 'findings' | 'finders' | 'votes' | 'secondReads' | 'relatedRepos' | 'costUsd' | 'inputTokens' | 'outputTokens' | 'durationMs'> {
   const usage = review.context.usage ?? {};
   const secondReads = finderSteps(review, true);
-  const { outcome, verdictReason, agentErrors } = review.result;
+  const { outcome, verdictReason, agentErrors, votes } = review.result;
   const finderErrors = [...agentErrors ?? []].flatMap(([finder, causes]) => causes.map(cause => ({ finder, ...cause })));
   return {
     outcome,
@@ -1045,6 +1047,7 @@ function reviewFacts(review: LocalReview, earlier?: EarlierRound): Pick<RunScore
       return { severity, title, file, line, description, ...(howToFix && { howToFix }), ...(suggestedFix && { suggestedFix }), route: gradeRoute(f), ...(foldedInto && { foldedInto }) };
     }),
     finders: finderSteps(review),
+    ...(votes && { votes }),
     ...(secondReads.length > 0 && { secondReads }),
     ...(review.context.relatedRepos && { relatedRepos: review.context.relatedRepos.map(({ repo, ref, status, commit, asOf }) => ({ repo, ...(ref && { ref }), status, ...(commit && { commit }), ...(asOf && { asOf }) })) }),
     costUsd: usage.estimatedCostUsd ?? 0,

@@ -4633,6 +4633,16 @@ describe('runReview', () => {
       expect(result.llmCalls?.filter(c => c.stage === 'vote').length).toBe(19);
       expect(result.unposted ?? []).toEqual([]);
 
+      // Each vote is logged with its calls, also one that gave no answer, so the benchmark can measure them.
+      const logged = new Map(result.votes!.map(v => [v.title, [v.answer, ...v.calls.map(c => c.outcome)]]));
+      expect(['Backed blocker', 'Not shown', 'Unreadable file', 'Vote fails', 'Times out once', 'Times out twice', 'Limit reached', 'Security warning'].map(title => logged.get(title))).toEqual([
+        ['backs', 'answered'], ['not_shown', 'answered'], ['unreadable', 'answered'], ['no_answer', 'unusable', 'unusable'], ['declines', 'timed_out', 'answered'], ['no_answer', 'timed_out', 'timed_out'],
+        ['no_answer', 'failed'], undefined,
+      ]);
+      expect(result.votes!.find(v => v.title === 'Times out twice')).toEqual({
+        title: 'Times out twice', file: 'src/a.ts', line: expect.any(Number), finder: expect.any(String), model: expect.any(String), answer: 'no_answer',
+        calls: Array(2).fill({ outcome: 'timed_out', durationMs: expect.any(Number), error: 'Claude CLI timed out after 120s' }),
+      });
       // A replay runs no read, so it takes the read's model from the stored round, and asks no vote on the read's finding without it.
       const { reviewer, model } = result.secondReads!.reads[0];
       const replay = { planner: null, finders: result.agentNames, findings: postedRecord(result).reviewers.rawFindings! };
@@ -4640,6 +4650,7 @@ describe('runReview', () => {
         (await run(undefined, more)).result.findings.find(f => f.title === 'Second read only')!.otherFinderVote?.finder;
       expect(await readVoter({ replay: { ...replay, reads: [{ reviewer, model }] } })).toBe(result.findings.find(f => f.title === 'Second read only')!.otherFinderVote!.finder);
       expect(await readVoter({ replay })).toBeUndefined();
+      expect((await run(undefined, { replay })).result.votes).toContainEqual({ title: 'Second read only', file: 'src/a.ts', line: 21, calls: [], answer: 'unknown_read' });
       // A lead carried from an earlier round names that round's read, so the name tells no model.
       const last = buildPriorRound(1, []);
       last.leads = [{ title: 'Carried', file: 'src/a.ts', line: 1, severity: 'warning', reviewers: [reviewer], description: 'Carried.', lead: { checked: 'c', left: 'l' }, outcome: 'unsettled', since: 1 }];
