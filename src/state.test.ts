@@ -213,16 +213,19 @@ describe('fetchBotReviewThreads', () => {
             { body: `This came up again.\n\n\`\`\`\n${fixedMarker('ef'.repeat(20))}\n\`\`\`\n\n<!-- manki -->\n<!-- manki-found-again -->`, author: { login: 'manki-review' } },
           ],
         }),
+        // A thread at the comment limit may hide an answer.
+        makeGraphqlFetchThreadNode({ id: 't4', replies: Array.from({ length: 99 }, () => ({ body: 'Why?', author: { login: 'alice' } })) }),
       ]),
     );
 
     const octokit = threadsOctokit(graphqlMock);
     const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
 
-    expect(threads).toHaveLength(3);
+    expect(threads).toHaveLength(4);
+    expect(threads[3].answered).toBe(true);
     expect(threads[0]).toEqual({ id: 't1', rootCommentId: 501, isResolved: false, isBlocking: true, mayCarryBlocker: true, findingTitle: 'null check', place: { file: 'src/a.ts', line: 10, markerSlug: 'null-check', commit: testSha('1') } });
     expect(threads[1]).toEqual({ id: 't3', isResolved: false, isBlocking: false, isWarning: true, findingTitle: '`parse` drops a field', place: { file: 'src/parse.ts', line: 0, findingLine: 40, markerSlug: '-parse--drops-a-field' } });
-    expect(threads[2]).toEqual({ id: 't2', isResolved: true, resolvedByLogin: 'reviewer', writerResolverLogin: 'reviewer', isBlocking: false, findingTitle: 'rename var', place: { file: 'src/a.ts', line: 10, markerSlug: 'rename-var' }, fixedOn: ['ab'.repeat(20)], roundReplies: [{ commit: 'ab'.repeat(20), at: '2026-11-06T14:34:11Z' }] });
+    expect(threads[2]).toEqual({ id: 't2', isResolved: true, resolvedByLogin: 'reviewer', writerResolverLogin: 'reviewer', isBlocking: false, findingTitle: 'rename var', place: { file: 'src/a.ts', line: 10, markerSlug: 'rename-var' }, fixedOn: ['ab'.repeat(20)], roundReplies: [{ commit: 'ab'.repeat(20), at: '2026-11-06T14:34:11Z' }], answered: true });
   });
 
   it('reads every page of review threads', async () => {
@@ -1494,6 +1497,7 @@ describe('checkAndAutoApprove', () => {
       ['a warning thread whose Manki answer carries a record that cannot be read', [warning('t1', { replies: [reply('author'), reply(manki, `Agreed. Fine.\n\n${BOT_MARKER}\n<!-- manki-reply-record: {"decision": -->`)] })]],
       // An accepting outcome that did not settle the thread lifts nothing.
       ['a warning thread whose "Fixed." a newer round contradicted', [warning('t1', { replies: [reply('author'), accepted('Fixed', 'deferred_to_round')] })]],
+      ['a warning thread whose unproven "Fixed." a newer round confirmed', [warning('t1', { replies: [reply('author'), accepted('Fixed', 'confirmed_by_round')] })]],
       ['a warning thread whose "Fixed." left it open as a blocking thread', [warning('t1', { replies: [reply('author'), accepted('Fixed', 'stays_open')] })]],
       ['a warning thread Manki could not read when it answered', [warning('t1', { replies: [reply('author'), accepted('Agreed', 'lookup_failed')] })]],
       ['a warning thread Manki could not find when it answered', [warning('t1', { replies: [reply('author'), accepted('Agreed', 'not_found')] })]],
@@ -1698,8 +1702,8 @@ describe('checkAndAutoApprove', () => {
       expect(await note({})).toBe('This warning holds the approval until it is fixed, tracked with `Create an issue for this`, or resolved by someone with the `write` role or a higher one.');
       expect(await note({}, 'admin')).toBe('This warning holds the approval until it is fixed, tracked with `Create an issue for this`, or resolved by someone with the `admin` role.');
       expect(await note({}, 'unset')).toBe('This warning holds the approval until it is fixed or tracked with `Create an issue for this`.');
-      // A resolve by a person below the role leaves the hold, and so does Manki's own resolve without a reason.
-      expect(await note({ isResolved: true, resolvedByLogin: 'bob' }, 'admin')).toMatch(/^This warning holds the approval/);
+      // A resolve by a person below the role leaves the hold, and so does Manki's own resolve without a reason. A resolved thread has to be reopened first.
+      expect(await note({ isResolved: true, resolvedByLogin: 'bob' }, 'admin')).toBe('This warning holds the approval until it is fixed, tracked with `Create an issue for this`, or reopened and resolved by someone with the `admin` role.');
       expect(await note({ isResolved: true, resolvedByLogin: 'manki-review[bot]' })).toMatch(/^This warning holds the approval/);
       // A thread that holds nothing gets no note, and a security warning has its own.
       expect(await note({ holdLifted: 'answer' })).toBeUndefined();

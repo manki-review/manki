@@ -13,6 +13,7 @@ import { fetchedRelatedRepos } from './related-repos';
 import { parseProof } from './review';
 import { leadingRelatedCitation, MAX_QUOTED_RANGE } from './static-signals';
 import { DiffFile, ParsedDiff, RelatedRepoTools, ReplyStatementRecord, UncheckedReason } from './types';
+import { redactSecrets, safeTruncate, sanitizeTokens } from './utils';
 
 type Octokit = ReturnType<typeof getOctokit>;
 
@@ -27,9 +28,25 @@ const MAX_QUOTE_CHARS = 160;
 export const MIN_TERM_CHARS = 3;
 export const MAX_TERM_CHARS = 200;
 
-const UNREADABLE_ANSWER = 'Unverified. I could not check this reply, so a maintainer should decide and resolve this thread.';
-const UNPROVEN_OUTCOME = 'I could not point to a line of this repository that shows it, so a maintainer should decide and resolve this thread.';
-const NO_FIXING_PR = 'The reply names no other pull request of this repository that I could check, so a maintainer should decide and resolve this thread.';
+const UNREADABLE_ANSWER = 'Unverified. I could not check this reply';
+const UNPROVEN_OUTCOME = 'I could not point to a line of this repository that shows it';
+const NO_FIXING_PR = 'The reply names no other pull request of this repository that I could check';
+
+/** How many raw proof entries of the model the reply record keeps, and how much of each. */
+const MAX_CITED_ENTRIES = 10;
+const MAX_CITED_CHARS = 200;
+
+/** Whether the reply's thread is resolved. `undefined` when it was not read, as on a merged or closed PR. */
+export type ThreadState = 'open' | 'resolved' | undefined;
+
+/** Returns the sentence "`why`, so a maintainer should decide", which asks for a resolve only on an open thread and for nothing on a resolved one. */
+export function leftToMaintainer(why: string, thread: ThreadState): string {
+  return thread === 'resolved' ? `${why}.` : `${why}, so ${maintainerShould('decide', thread)}.`;
+}
+
+function maintainerShould(act: string, thread: 'open' | undefined): string {
+  return `a maintainer should ${act}${thread === 'open' ? ' and resolve this thread' : ''}`;
+}
 
 /** What the reply's cited lines and searches are checked against. */
 export interface ReplySources {
@@ -47,6 +64,8 @@ export interface ReplySources {
   repo?: string;
   /** The PR's own number, which never fixes its finding elsewhere. */
   pr?: number;
+  /** Decides whether an "Unverified." asks a maintainer to resolve the thread. */
+  thread?: ThreadState;
   /**
    * What the PR changed since the thread was posted, in the finding's file and the files it cited, by `fetchChangesSince`.
    * A "Fixed" counts only when its proof cites a line one of these adds. Unset when that change could not be read.
@@ -88,6 +107,10 @@ export interface CheckedReply {
   text: string;
   /** The outcome `text` opens with. */
   outcome: AnswerOutcome;
+  /** The outcome the model gave before the checks. Unset when its answer could not be read. */
+  modelOutcome?: AnswerOutcome;
+  /** The entries of the model's proof as it gave them, at most `MAX_CITED_ENTRIES`, each redacted and cut. */
+  cited: string[];
   /** The answer without its outcome. Empty when the model's answer could not be read. */
   answer: string;
   /** The lines of the PR's own repository in the answer's proof that exist. */
@@ -241,7 +264,7 @@ function checkStatement(entry: Record<string, unknown>, quote: string, sources: 
  * pull request, for `checkFixedElsewhere` to confirm. No statement's status changes the outcome.
  */
 export function checkReply(content: string, developerReply: string, sources: ReplySources): CheckedReply {
-  const unreadable: CheckedReply = { text: UNREADABLE_ANSWER, outcome: 'Unverified', answer: '', proof: [], statements: [], unchecked: 0, dropped: 0 };
+  const unreadable: CheckedReply = { text: leftToMaintainer(UNREADABLE_ANSWER, sources.thread), outcome: 'Unverified', cited: [], answer: '', proof: [], statements: [], unchecked: 0, dropped: 0 };
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(extractJSON(content, 'object')) as Record<string, unknown>;
@@ -269,10 +292,14 @@ export function checkReply(content: string, developerReply: string, sources: Rep
     ? parsed.fixed_in : undefined;
   // A fix in another pull request stays unconfirmed until `checkFixedElsewhere` confirms it.
   const settled: AnswerOutcome = unproven || outcome === 'FixedElsewhere' ? 'Unverified' : outcome;
-  const note = unproven ? ` ${UNPROVEN_OUTCOME}` : outcome === 'FixedElsewhere' ? ` ${NO_FIXING_PR}` : '';
+  const note = unproven ? ` ${leftToMaintainer(UNPROVEN_OUTCOME, sources.thread)}`
+    : outcome === 'FixedElsewhere' ? ` ${leftToMaintainer(NO_FIXING_PR, sources.thread)}`
+      : outcome === 'Unverified' && sources.thread !== 'resolved' ? ` A${maintainerShould('confirm this', sources.thread).slice(1)}.` : '';
   return {
     text: `${settled}. ${answer}${note}`,
     outcome: settled,
+    modelOutcome: outcome,
+    cited: rawEntries(parsed.proof),
     answer,
     proof: own,
     ...(fixedIn !== undefined && { fixedIn }),
@@ -280,6 +307,13 @@ export function checkReply(content: string, developerReply: string, sources: Rep
     unchecked: Math.max(0, quoted.size - MAX_REPLY_STATEMENTS),
     dropped: entries.length - quoted.size,
   };
+}
+
+/** Returns the model's proof entries for the record. Each one is redacted before it is cut, since a cut secret matches no pattern. */
+function rawEntries(proof: unknown): string[] {
+  const entries: unknown[] = Array.isArray(proof) ? proof : proof === undefined || proof === null ? [] : [proof];
+  return entries.slice(0, MAX_CITED_ENTRIES)
+    .map(entry => safeTruncate(redactSecrets(sanitizeTokens(typeof entry === 'string' ? entry : JSON.stringify(entry))), MAX_CITED_CHARS));
 }
 
 const UNCHECKED_REASONS: Record<UncheckedReason, (detail: string) => string> = {
@@ -560,7 +594,7 @@ export async function checkFixedElsewhere(pr: number, s: ElsewhereSources): Prom
  * fix, and "Unverified." with the reason otherwise. Without `result`, the finding is neither a blocker nor a security
  * finding, so nothing checked `fixedIn`. None of these settles the thread, since this PR's own code still has the defect.
  */
-export function fixedElsewhereText(checked: CheckedReply, result?: ElsewhereCheck): string {
+export function fixedElsewhereText(checked: CheckedReply, result?: ElsewhereCheck, thread?: ThreadState): string {
   const pr = checked.fixedIn!;
   if (!result) return `Unverified. ${checked.answer} I check a fix in another pull request only for a blocker or a security finding, so I did not check #${pr}. This thread stays as it is.`;
   if ('answer' in result) {
@@ -568,6 +602,6 @@ export function fixedElsewhereText(checked: CheckedReply, result?: ElsewhereChec
   }
   const why = result.retry
     ? `I could not check #${pr} yet: ${result.why}. This thread stays as it is. Reply again ${result.retry}.`
-    : `I could not confirm that #${pr} fixes this finding: ${result.why}. A maintainer should decide and resolve this thread.`;
+    : `I could not confirm that #${pr} fixes this finding: ${result.why}.${thread === 'resolved' ? '' : ` A${maintainerShould('decide', thread).slice(1)}.`}`;
   return `Unverified. ${checked.answer} ${why}`;
 }

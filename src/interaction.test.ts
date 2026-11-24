@@ -1,6 +1,6 @@
 import { parseCommand, buildReplyContext, ParsedCommand, isBotComment, hasBotMention, mentionsMankiUser, isReviewRequest, isBotMentionNonReview, handleBoxCommand, handlePRComment, handleReviewCommentReply, handleReviewCommentCommand, scopeDiffToFile, isLLMAccessAllowed } from './interaction';
 import { Finding, ReplyRecord, ReviewConfig, ThreadEvaluation } from './types';
-import { extractReplyRecords, formatReviewRecord, settlingDecision } from './review-record';
+import { extractReplyRecords, formatReviewRecord, settledReplyId, settlingDecision, settlingPlaces } from './review-record';
 import { RELATED_REPO_TRUST_RULE, WRITING_RULES } from './writing-rules';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -862,7 +862,7 @@ describe('handleReviewCommentReply', () => {
     );
     expect(octokit.rest.pulls.createReplyForReviewComment).toHaveBeenCalledWith(
       expect.objectContaining({
-        body: expect.stringMatching(/^Unverified\. AI response here\n\n<!-- manki -->\n<!-- manki-reply-record: .+ -->$/),
+        body: expect.stringMatching(/^Unverified\. AI response here A maintainer should confirm this\.\n\n<!-- manki -->\n<!-- manki-reply-record: .+ -->$/),
         pull_number: 1,
       }),
     );
@@ -1032,7 +1032,7 @@ describe('handleReviewCommentReply', () => {
     ['Fixed. The guard now runs first.', 'OWNER', 'pr-author', 'pr-author', 'blocker', undefined],
     ['Withdrawn. The caller already checks for null.', 'OWNER', 'someone', 'pr-author', 'blocker', 'INVALID'],
     ['Kept. `src/file.ts:12` still skips `clearTimeout` on the success path.', 'MEMBER', 'someone', 'pr-author', 'blocker', undefined],
-    ['Unverified. I can\'t verify from the code that the API sorts the list. A maintainer should confirm it.', 'OWNER', 'pr-author', 'pr-author', 'blocker', undefined],
+    ['Unverified. I can\'t verify from the code that the API sorts the list.', 'OWNER', 'pr-author', 'pr-author', 'blocker', undefined],
     ['Fixed. The guard now runs first.', 'CONTRIBUTOR', 'reader', 'pr-author', 'blocker', undefined],
     ['Fixed. The guard now runs first.', 'COLLABORATOR', 'reader', 'pr-author', 'blocker', undefined],
     ['Fixed. The guard now runs first.', 'NONE', 'someone', 'pr-author', 'blocker', 'ADDRESSED'],
@@ -1047,7 +1047,7 @@ describe('handleReviewCommentReply', () => {
     ['Agreed. Deferring it to the follow-up is fine.', 'NONE', 'pr-author', 'pr-author', 'blocker', undefined, true, true],
     ['Kept. `src/file.ts:12` still skips `clearTimeout` on the success path.', 'NONE', 'pr-author', 'pr-author', 'blocker', undefined, true, true],
     ['Kept. `src/file.ts:12` still skips `clearTimeout` on the success path.', 'MEMBER', 'someone', 'pr-author', 'blocker', undefined, true, true],
-    ['Unverified. I can\'t verify from the code that the API sorts the list. A maintainer should confirm it.', 'OWNER', 'pr-author', 'pr-author', 'blocker', undefined, true, true],
+    ['Unverified. I can\'t verify from the code that the API sorts the list.', 'OWNER', 'pr-author', 'pr-author', 'blocker', undefined, true, true],
     // After "Fixed." the thread opens again too, and the answer says what an open thread hears: the next review decides.
     ['Fixed. The guard now runs first.', 'OWNER', 'pr-author', 'pr-author', 'blocker', undefined, true, true],
     ['Fixed. The guard now runs first.', 'OWNER', 'pr-author', 'pr-author', 'security', undefined, true, true],
@@ -1104,10 +1104,12 @@ describe('handleReviewCommentReply', () => {
     const finding = `This is a ${kind === 'security' ? 'security' : 'blocking'} finding`;
     // A "Fixed." that leaves a guarded thread open says which push a review needs to confirm it.
     const review = reply.startsWith('Fixed') && (staysOpen || noted || keepsBlocking) ? ' A review confirms the fix only after a push changes the thread\'s file `src/file.ts`.' : '';
+    // Only an open thread is left to a maintainer to resolve.
+    const asks = reply.startsWith('Unverified') && !resolved ? ' A maintainer should confirm this and resolve this thread.' : '';
     const note = noted && !reply.startsWith('Fixed') ? '\n\nReopened. The PR author cannot resolve it.'
       : keepsBlocking ? `\n\n${finding}, so resolving the thread does not clear it. It keeps blocking until ${until.replace('closes', 'clears')}.${author.replace('close', 'clear')}`
         : `\n\n${finding}, so the thread stays open until ${until}.${author}`;
-    expect(octokit.rest.pulls.createReplyForReviewComment).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringContaining(`${reply}${review}${staysOpen || noted || keepsBlocking ? note : ''}\n\n<!-- manki -->\n<!-- manki-reply-record: `) }));
+    expect(octokit.rest.pulls.createReplyForReviewComment).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringContaining(`${reply}${asks}${review}${staysOpen || noted || keepsBlocking ? note : ''}\n\n<!-- manki -->\n<!-- manki-reply-record: `) }));
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(reason && reopens ? [[octokit, 'PRRT_this', reason]] : []);
     // The reply record keeps what the reply decided for the thread.
     const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.at(-1)![0].body as string;
@@ -1209,8 +1211,8 @@ describe('handleReviewCommentReply', () => {
 
   it.each<[string, string, Record<string, unknown>, string, FindingKind, string, state.ResolutionReason | undefined, boolean?]>([
     // Confirmed statements leave a blocking thread to a maintainer, also when the PR author's answer would settle it.
-    ['the PR author hears that a blocker stays open after "Unverified."', 'Unverified. A maintainer should confirm it.', CONFIRMED, 'pr-author', 'blocker',
-      `Unverified. A maintainer should confirm it.\n\n${LISTED}\n\n${MAINTAINER}\n\n${STAYS_OPEN}`, undefined],
+    ['the PR author hears that a blocker stays open after "Unverified."', 'Unverified. The code does not show it.', CONFIRMED, 'pr-author', 'blocker',
+      `Unverified. The code does not show it. A maintainer should confirm this and resolve this thread.\n\n${LISTED}\n\n${MAINTAINER}\n\n${STAYS_OPEN}`, undefined],
     ['the PR author hears it once after "Fixed."', 'Fixed. The guard now runs first.', CONFIRMED, 'pr-author', 'blocker',
       `Fixed. The guard now runs first. A review confirms the fix only after a push changes the thread's file \`src/file.ts\`.\n\n${LISTED}\n\n${MAINTAINER}\n\n${STAYS_OPEN}`, undefined],
     ['the PR author hears it once after "Withdrawn."', 'Withdrawn. The caller already checks for null.', CONFIRMED, 'pr-author', 'security',
@@ -1220,8 +1222,8 @@ describe('handleReviewCommentReply', () => {
       `Withdrawn. The caller already checks for null.\n\n${LISTED}\n\n${MAINTAINER}\n\nThis is a finding a check lowered from a blocker, so the thread stays open until someone other than the PR author with write access closes it. A PR author can close it only with the \`maintain\` role or a higher one.`, undefined],
     ['a maintainer clears a disproved blocker with "Withdrawn."', 'Withdrawn. The caller already checks for null.', CONFIRMED, 'someone', 'disproved',
       `Withdrawn. The caller already checks for null.\n\n${LISTED}\n\n${CHECKED}`, 'INVALID'],
-    ['a maintainer hears it after "Unverified." too', 'Unverified. A maintainer should confirm it.', CONFIRMED, 'someone', 'blocker',
-      `Unverified. A maintainer should confirm it.\n\n${LISTED}\n\n${MAINTAINER}\n\n${STAYS_OPEN}`, undefined],
+    ['a maintainer hears it after "Unverified." too', 'Unverified. The code does not show it.', CONFIRMED, 'someone', 'blocker',
+      `Unverified. The code does not show it. A maintainer should confirm this and resolve this thread.\n\n${LISTED}\n\n${MAINTAINER}\n\n${STAYS_OPEN}`, undefined],
     // A maintainer's settling answer clears the thread as before, so the list says nothing about a decision left.
     ['a maintainer clears a blocker with "Withdrawn." on a line of the PR', 'Withdrawn. The caller already checks for null.', CONFIRMED, 'someone', 'blocker',
       `Withdrawn. The caller already checks for null.\n\n${LISTED}\n\n${CHECKED}`, 'INVALID'],
@@ -1237,8 +1239,8 @@ describe('handleReviewCommentReply', () => {
     ['a maintainer does not resolve a warning with an answer that is not the structure', 'Withdrawn. The caller already checks for null.', { outcome: 'Cleared' }, 'someone', 'warning',
       'Unverified. I could not check this reply, so a maintainer should decide and resolve this thread.', undefined],
     // A thread the PR author resolved opens again with its own note, which already says that it blocks.
-    ['a thread the PR author resolved gets the reopen note and no second one', 'Unverified. A maintainer should confirm it.', CONFIRMED, 'pr-author', 'blocker',
-      `Unverified. A maintainer should confirm it.\n\n${LISTED}\n\n${MAINTAINER}\n\nReopened. The PR author cannot resolve it.`, undefined, true],
+    ['a thread the PR author resolved gets the reopen note and no second one', 'Unverified. The code does not show it.', CONFIRMED, 'pr-author', 'blocker',
+      `Unverified. The code does not show it.\n\n${LISTED}\n\n${MAINTAINER}\n\nReopened. The PR author cannot resolve it.`, undefined, true],
   ])('lists the checked statements below the answer and lets none of them settle a thread: %s', async (_name, reply, more, sender, kind, posted, reason, authorResolved = false) => {
     setContext({
       comment: { id: 1, body: `${CSV} So this cannot happen.`, user: { type: 'User' }, in_reply_to_id: 99, author_association: 'OWNER' },
@@ -1348,7 +1350,8 @@ describe('handleReviewCommentReply', () => {
       lookup();
       const unknown = await reply(judgedOpen);
       expect(ghUtils.fetchChangesSince).not.toHaveBeenCalled();
-      expect(unknown.split('\n\n<!-- manki -->')[0]).toBe(`Unverified. The guard now runs first. ${UNPROVEN}`);
+      // Whether that thread is open is unknown, so the answer asks nobody to resolve it.
+      expect(unknown.split('\n\n<!-- manki -->')[0]).toBe(`Unverified. The guard now runs first. ${UNPROVEN.replace(' and resolve this thread', '')}`);
       expect(unknown).not.toContain('<!-- manki-fixed:');
     }
   });
@@ -1424,8 +1427,8 @@ describe('handleReviewCommentReply', () => {
     // No review clears a thread tied to no file, so neither a "Fixed." nor the note below a list promises one.
     ['on a thread tied to no file', 'pr-author', 'blocker', undefined, 'Fixed. The guard now runs first.',
       `Unverified. The guard now runs first. This finding is not tied to a file, so a review cannot confirm the fix.\n\nThis is a blocking finding, ${AUTHOR_CLOSES}`, undefined],
-    ['answered "Unverified." with a list, on a thread tied to no file', 'pr-author', 'blocker', undefined, 'Unverified. A maintainer should confirm it.',
-      `Unverified. A maintainer should confirm it.\n\n${LISTED}\n\n${MAINTAINER}\n\nThis is a blocking finding, ${AUTHOR_CLOSES}`, undefined],
+    ['answered "Unverified." with a list, on a thread tied to no file', 'pr-author', 'blocker', undefined, 'Unverified. The code does not show it.',
+      `Unverified. The code does not show it. A maintainer should confirm this and resolve this thread.\n\n${LISTED}\n\n${MAINTAINER}\n\nThis is a blocking finding, ${AUTHOR_CLOSES}`, undefined],
   ])('says when a review can confirm a fix: %s', async (name, sender, kind, evidence, said, posted, reason) => {
     setContext({
       comment: { id: 1, body: `${CSV} Fixed in the latest commit.`, user: { type: 'User' }, in_reply_to_id: 99, author_association: 'OWNER' },
@@ -1513,6 +1516,7 @@ describe('handleReviewCommentReply', () => {
       expect(body).toMatch(new RegExp(`^${pointer.replace(/[.*+?^${}()|[\]\\`]/g, '\\$&')}\n\n<!-- manki -->\n<!-- manki-reply-record: `));
       expect(state.resolveReviewThread).not.toHaveBeenCalled();
       expect(extractReplyRecords(body).map(r => (JSON.parse(r) as ReplyRecord).decision)).toEqual([{ outcome: 'Fixed', thread: 'deferred_to_round' }]);
+      expect(extractReplyRecords(body).map(r => (JSON.parse(r) as ReplyRecord).modelAnswer)).toEqual([{ outcome: 'Fixed', proof: ['src/file.ts:10'], cited: ['src/file.ts:10'] }]);
     } else {
       expect(body.startsWith(answer)).toBe(true);
       // A "Fixed." answer records the head it confirms, so the round on that head adds no "Fixed in" line.
@@ -1523,6 +1527,99 @@ describe('handleReviewCommentReply', () => {
       expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual([[octokit, 'PRRT_this', 'ADDRESSED']]);
       jest.mocked(state.warningHoldNote).mockResolvedValue(undefined);
     }
+  });
+
+  type Confirmed = {
+    answer?: string; proof?: string[]; kind?: FindingKind; thread?: Partial<state.ReviewThread>; comment?: Record<string, unknown>; closed?: boolean;
+    round?: { commitSha?: string; timestamp?: string; status?: ThreadEvaluation['status'] }; after?: 'incomplete' | 'unread' | 'other round';
+  };
+  const HELD_WARNING = { kind: 'warning', thread: { isBlocking: false, isWarning: true } } as const;
+  it.each<[string, Confirmed, boolean]>([
+    ['a blocker thread', {}, true],
+    ['a security thread', { kind: 'security', thread: { isBlocking: false, isSecurity: true } }, true],
+    ['a warning thread whose hold is lifted', { ...HELD_WARNING, thread: { ...HELD_WARNING.thread, holdLifted: 'fixed' } }, true],
+    ['a reply in another language', { comment: { body: 'Behoben in 7e3f21d.' } }, true],
+    ['a warning thread that still holds', HELD_WARNING, false],
+    ['a blocker thread whose fix no round backs', { thread: { addressed: false } }, false],
+    ['an open thread', { thread: { isResolved: false } }, false],
+    ['a thread someone else resolved', { thread: { resolvedByLogin: 'someone', writerResolverLogin: 'someone' } }, false],
+    ['a thread without a confirmation on the head', { thread: { fixedOn: ['b'.repeat(40)] } }, false],
+    ['a thread with an earlier answer', { thread: { answered: true } }, false],
+    ['an edited reply', { comment: { updated_at: '2026-11-06T14:33:00Z' } }, false],
+    ['a reply whose edit time is not known', { comment: { created_at: undefined, updated_at: undefined } }, false],
+    ['a reply with a question', { comment: { body: 'Fixed in 7e3f21d. Is the old path still needed?' } }, false],
+    ['a reply written after the round', { comment: { created_at: '2026-11-06T14:36:00Z', updated_at: '2026-11-06T14:36:00Z' } }, false],
+    ['a round on another head', { round: { commitSha: 'b'.repeat(40) } }, false],
+    ['a round that found the thread partly fixed', { round: { status: 'partly_addressed' } }, false],
+    ['a newer round that ended incomplete', { after: 'incomplete' }, false],
+    ['an unread round record', { after: 'unread' }, false],
+    ['a newer round on the head that did not judge the thread', { after: 'other round' }, false],
+    ['a closed PR', { closed: true }, false],
+    // Only a "Fixed." the model gave and could not prove is replaced.
+    ['a proven "Fixed."', { proof: ['src/file.ts:10'] }, false],
+    ['a genuine "Unverified."', { answer: 'Unverified. The code does not show it.' }, false],
+    ['a "Withdrawn." without proof', { answer: 'Withdrawn. The caller already checks for null.' }, false],
+    ['a "Kept."', { answer: 'Kept. `src/file.ts:12` still logs it.' }, false],
+  ])('points an unproven "Fixed." at the round that confirmed the fix only when that is certain: %s', async (_case, c, points) => {
+    const head = 'a'.repeat(40);
+    const said = 'Fixed in 7e3f21d.';
+    setContext({
+      comment: { id: 1, body: said, user: { type: 'User' }, in_reply_to_id: 99, author_association: 'OWNER', created_at: '2026-11-06T14:32:05Z', updated_at: '2026-11-06T14:32:05Z', ...c.comment },
+      pull_request: { number: 1, user: { login: 'pr-author' }, head: { sha: head }, ...(c.closed && { state: 'closed' }) },
+      sender: { login: 'pr-author' },
+    });
+    const octokit = createMockOctokit();
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { original_commit_id: POSTED_ON, user: MANKI_USER, body: findingComment(c.kind ?? 'blocker'), path: 'src/file.ts', line: 10 } });
+    const record = (round: number, meta: Record<string, unknown>, status?: ThreadEvaluation['status']) => formatReviewRecord(makeRoundContext(round, {
+      meta: { prNumber: 1, commitSha: head, round, timestamp: '2026-11-06T14:34:11Z', mankiVersion: '7.7.5', ...meta },
+      judge: { summary: '', ...(status && { threadEvaluations: [{ threadId: 'PRRT_this', status, reason: 'the guard runs first now.' }] }) },
+    } as Parameters<typeof makeRoundContext>[1]));
+    const { status = 'addressed', ...meta } = c.round ?? {};
+    const newer = { incomplete: record(3, { incomplete: true }), unread: '<!-- manki-context: {broken -->', 'other round': record(3, { timestamp: '2026-11-06T14:40:00Z' }) };
+    octokit.paginate = jest.fn().mockResolvedValue([record(2, meta, status), ...(c.after ? [newer[c.after]] : [])]
+      .map((body, i) => ({ id: 7 + i, body: `Reviewed.\n\n${body}`, user: { login: 'manki-review[bot]' } })));
+    const client = createMockClient();
+    const quote = (c.comment?.body ?? said) as string;
+    jest.mocked(client.sendMessage).mockResolvedValue({ content: structured(c.answer ?? 'Fixed. The guard now runs first.', {
+      proof: c.proof ?? (c.answer ? [] : ['src/file.ts:999', 'the new guard']), statements: [{ quote, status: 'not_checkable', why: 'outside_code' }],
+    }) });
+    jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{
+      id: 'PRRT_this', rootCommentId: 99, isResolved: true, resolvedByLogin: 'manki-review[bot]', addressed: true, isBlocking: true, findingTitle: 'This', fixedOn: [head], ...c.thread,
+    }]);
+    jest.mocked(state.authorResolvedNote).mockResolvedValue(undefined);
+    jest.mocked(state.warningHoldNote).mockResolvedValue(undefined);
+    jest.mocked(state.resolveReviewThread).mockClear();
+    jest.mocked(state.reopenThread).mockClear();
+
+    await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, undefined, CONFIG);
+
+    expect(client.sendMessage).toHaveBeenCalledTimes(1);
+    // The thread already confirms the fix on this head, so a proven "Fixed." posts no second one.
+    if (c.proof) {
+      expect(octokit.rest.pulls.createReplyForReviewComment).not.toHaveBeenCalled();
+      return;
+    }
+    const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls[0][0].body as string;
+    const [kept] = extractReplyRecords(body).map(r => JSON.parse(r) as ReplyRecord);
+    expect(body.startsWith('The review of `aaaaaaa`, which finished after this reply, confirmed this fix.\n\n')).toBe(points);
+    expect(kept.decision).toEqual(points ? { outcome: 'Fixed', thread: 'confirmed_by_round' } : undefined);
+    expect(kept.answers).toBe(1);
+    expect(state.resolveReviewThread).not.toHaveBeenCalled();
+    expect(state.reopenThread).not.toHaveBeenCalled();
+    expect(body).not.toContain('<!-- manki-fixed:');
+    expect(body).not.toContain('<!-- manki-cleared-for:');
+    if (!points) {
+      expect(body).toMatch(/^(Unverified|Kept)\. /);
+      return;
+    }
+    // No text of the model, no outcome word, and nothing a later round or the approval check reads as a settlement.
+    expect(body).not.toContain('The guard now runs first');
+    expect(body).not.toMatch(/Unverified|maintainer/);
+    expect(settlingDecision(body)).toBeUndefined();
+    expect(settledReplyId(body)).toBeUndefined();
+    expect(settlingPlaces(body)).toBeUndefined();
+    expect(body).toContain(`- Not checked, the review model says code cannot show it: "${quote}"`);
+    expect(kept.modelAnswer).toEqual({ outcome: 'Fixed', proof: [], cited: ['src/file.ts:999', 'the new guard'] });
   });
 
   it.each([
@@ -1685,7 +1782,7 @@ describe('handleReviewCommentReply', () => {
   const FIX_REFUSED = 'Unverified. You name #7. I could not confirm that #7 fixes this finding: #7 is closed without being merged. A maintainer should decide and resolve this thread.';
   const FIX_STACKED = 'Unverified. You name #7. I could not confirm that #7 fixes this finding: #7 targets `feature`, not the default branch `main`. A maintainer should decide and resolve this thread.';
   const FIX_CHECK_FAILED = 'Unverified. You name #7. I could not check #7 yet: the check of the merge with #7 failed. This thread stays as it is. Reply again in a few minutes.';
-  const FIX_PR_CLOSED = 'Unverified. You name #7. I could not confirm that #7 fixes this finding: this PR is no longer open. A maintainer should decide and resolve this thread.';
+  const FIX_PR_CLOSED = 'Unverified. You name #7. I could not confirm that #7 fixes this finding: this PR is no longer open. A maintainer should decide.';
   const FIX_UNCHECKED = 'Unverified. You name #7. I check a fix in another pull request only for a blocker or a security finding, so I did not check #7. This thread stays as it is.';
   const MERGED = { state: 'closed', merged: true, base: { ref: 'main' }, merge_commit_sha: 'd'.repeat(40) };
   it.each<[string, Record<string, unknown>, string, boolean, boolean?, boolean?, string?, ('blocker' | 'warning' | 'detached' | 'outdated')?]>([
@@ -1799,7 +1896,7 @@ describe('handleReviewCommentReply', () => {
         writeFileSync(join(stateDir, 'acme%2Freports.lock'), String(process.pid));
         writeFileSync(join(stateDir, 'acme%2Freports.failed'), 'fatal: repository not found');
       }
-      return { content: structured('Unverified. I could not read `acme/reports`, so a maintainer should confirm this.') };
+      return { content: structured('Unverified. I could not read `acme/reports`.') };
     });
     const plain = createMockClient();
     try {
