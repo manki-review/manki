@@ -6,7 +6,7 @@ import { APPROVED_LINE, autoApproveHeadMarker, formatFindingComment, postReview,
 import { extractApprovalRecords, formatApprovalRecord, formatReplyRecord, formatReviewRecord, roundReplyMarker } from './review-record';
 import { DEFAULT_CONFIG, fallbackConfig } from './config';
 import { determineOutcome } from './review';
-import { ApprovalRecord, AuthorClearRole, Finding, FindingFingerprintEntry, ReplyDecision, RoundContext, ThreadEvaluation, VerdictTraceEntry } from './types';
+import { ApprovalRecord, AuthorClearRole, Finding, FindingFingerprintEntry, ReplyDecision, ReplyModelAnswer, RoundContext, ThreadEvaluation, VerdictTraceEntry } from './types';
 import * as authModule from './auth';
 import { offerQueuedCheck } from './check-run';
 import { RunCancelledError, stopWritesOn } from './abort';
@@ -59,8 +59,8 @@ function roundThatPosted(commitSha: string, threads: ReturnType<typeof makeGraph
 const roundBody = (round: RoundContext): string => `<!-- manki -->\n${formatReviewRecord(round)}`;
 
 /** The body of Manki's answer `text` to a thread reply, with the reply record it carries. `decision` is set on an answer that accepts the reply. */
-const answerBody = (text: string, decision?: ReplyDecision): string =>
-  `${text}\n\n${BOT_MARKER}\n${formatReplyRecord({ kind: 'thread-reply', prNumber: 1, timestamp: '2026-11-12T10:00:00Z', mankiVersion: '7.5.2', usage: {}, ...(decision && { decision }) })}`;
+const answerBody = (text: string, decision?: ReplyDecision, modelAnswer?: ReplyModelAnswer): string =>
+  `${text}\n\n${BOT_MARKER}\n${formatReplyRecord({ kind: 'thread-reply', prNumber: 1, timestamp: '2026-11-12T10:00:00Z', mankiVersion: '7.5.2', usage: {}, ...(decision && { decision }), ...(modelAnswer && { modelAnswer }) })}`;
 
 const makeThread = (overrides: Partial<ReviewThread> = {}): ReviewThread => ({
   id: 'thread-1',
@@ -223,6 +223,14 @@ describe('fetchBotReviewThreads', () => {
 
     expect(threads).toHaveLength(4);
     expect(threads[3].answered).toBe(true);
+    expect(threads[0].answered).toBeUndefined();
+    // A pointer at a round's verdict is no answer, so an earlier one still stands in the thread. A round's fix confirmation is none either.
+    const pointer = `The review of \`abababa\`, which finished after this reply, confirmed this fix.\n\n${BOT_MARKER}`;
+    const answeredAfter = async (...bodies: string[]) => (await fetchBotReviewThreads(threadsOctokit(jest.fn().mockResolvedValueOnce(makeGraphqlFetchResponse([
+      makeGraphqlFetchThreadNode({ id: 't5', replies: bodies.map(body => ({ body, author: { login: 'manki-review' } })) }),
+    ]))), TEST_BOT, 'owner', 'repo', 1))[0].answered;
+    expect(await answeredAfter(`Withdrawn. The caller checks it.\n\n${BOT_MARKER}`, pointer)).toBe(true);
+    expect(await answeredAfter(`Fixed in abababa.\n\n${BOT_MARKER}`, pointer)).toBeUndefined();
     expect(threads[0]).toEqual({ id: 't1', rootCommentId: 501, isResolved: false, isBlocking: true, mayCarryBlocker: true, findingTitle: 'null check', place: { file: 'src/a.ts', line: 10, markerSlug: 'null-check', commit: testSha('1') } });
     expect(threads[1]).toEqual({ id: 't3', isResolved: false, isBlocking: false, isWarning: true, findingTitle: '`parse` drops a field', place: { file: 'src/parse.ts', line: 0, findingLine: 40, markerSlug: '-parse--drops-a-field' } });
     expect(threads[2]).toEqual({ id: 't2', isResolved: true, resolvedByLogin: 'reviewer', writerResolverLogin: 'reviewer', isBlocking: false, findingTitle: 'rename var', place: { file: 'src/a.ts', line: 10, markerSlug: 'rename-var' }, fixedOn: ['ab'.repeat(20)], roundReplies: [{ commit: 'ab'.repeat(20), at: '2026-11-06T14:34:11Z' }], answered: true });
@@ -1469,7 +1477,7 @@ describe('checkAndAutoApprove', () => {
 
     const manki = 'manki-review[bot]';
     /** Manki's answer to a reply. `decision` is set on an answer that accepts the reply. */
-    const answer = (text: string, decision?: ReplyDecision, createdAt?: string) => reply(manki, answerBody(text, decision), undefined, createdAt);
+    const answer = (text: string, decision?: ReplyDecision, createdAt?: string, modelAnswer?: ReplyModelAnswer) => reply(manki, answerBody(text, decision, modelAnswer), undefined, createdAt);
     const accepted = (outcome: ReplyDecision['outcome'] = 'Agreed', thread: ReplyDecision['thread'] = 'resolves', createdAt?: string) => answer(`${outcome}. Fine.`, { outcome, thread }, createdAt);
     const kept = answer('Kept. `src/a.ts:12` still loops.');
     const tracked = `**Agreed.** Filed as #5 for later work.\n\n${BOT_MARKER}\n${TRACKED_MARKER}`;
@@ -1480,6 +1488,7 @@ describe('checkAndAutoApprove', () => {
       ['a warning thread only Manki replied in', [warning('t1', { replies: [reply(manki, 'Kept. The retry still loops.')] })]],
       ['a warning thread whose reply by the PR author Manki answered "Kept."', [warning('t1', { replies: [reply('author'), kept] })]],
       ['a warning thread whose reply by the PR author Manki answered "Unverified."', [warning('t1', { replies: [reply('author'), answer('Unverified. I can\'t verify that from the code.')] })]],
+      ['a warning thread whose "Fixed." the model could not prove', [warning('t1', { replies: [reply('author'), answer('Unverified. I could not point to a line this PR changed in `src/a.ts` since this was posted.', undefined, undefined, { outcome: 'Fixed', proof: [], cited: ['src/b.ts:3'] })] })]],
       ['a warning thread whose reply by a person with the role Manki answered "Kept."', [warning('t1', { replies: [reply('maria'), kept] })], 'maintain'],
       ['a warning thread whose reply by the PR author Manki has not answered', [warning('t1', { replies: [reply('author')] })]],
       ['a warning thread whose reply by a person with the role Manki has not answered', [warning('t1', { replies: [reply('maria')] })], 'maintain'],

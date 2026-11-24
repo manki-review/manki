@@ -1209,6 +1209,9 @@ describe('handleReviewCommentReply', () => {
   const NEXT_REVIEW = 'the next review confirms the fix, or someone other than the PR author with write access';
   const STAYS_OPEN = `This is a blocking finding, so the thread stays open until ${NEXT_REVIEW} closes it.`;
   const UNPROVEN = 'I could not point to a line of this repository that shows it, so a maintainer should decide and resolve this thread.';
+  const noLine = (files: string, since = 'since this was posted') => `I could not point to a line this PR changed in ${files} ${since}. A reply counts a fix only there.`;
+  const WHOLE_PUSH = 'The next review after a push checks the whole push, also other files.';
+  const CLEARED_BY = 'someone other than the PR author with write access closes it. A PR author can close it only with the `maintain` role or a higher one.';
 
   it.each<[string, string, Record<string, unknown>, string, FindingKind, string, state.ResolutionReason | undefined, boolean?]>([
     // Confirmed statements leave a blocking thread to a maintainer, also when the PR author's answer would settle it.
@@ -1234,7 +1237,7 @@ describe('handleReviewCommentReply', () => {
     ['a maintainer does not clear a blocker with "Withdrawn." on related lines alone', 'Withdrawn. The caller already checks for null.', { ...CONFIRMED, proof: ['acme/reports:lib/rows.py:9'] }, 'someone', 'blocker',
       `Unverified. The caller already checks for null. ${UNPROVEN}\n\n${LISTED}\n\n${MAINTAINER}\n\n${STAYS_OPEN}`, undefined],
     ['a maintainer does not clear a blocker with "Fixed." on related lines alone', 'Fixed. The guard now runs first.', { ...CONFIRMED, proof: ['acme/reports:lib/rows.py:9'] }, 'someone', 'blocker',
-      `Unverified. The guard now runs first. ${UNPROVEN}\n\n${LISTED}\n\n${MAINTAINER}\n\n${STAYS_OPEN}`, undefined],
+      `Unverified. The guard now runs first. ${noLine('`src/file.ts`')}\n\n${LISTED}\n\n${MAINTAINER}\n\nThis is a blocking finding, so the thread stays open until ${CLEARED_BY}`, undefined],
     ['the PR author does not resolve a warning with "Withdrawn." without a line', 'Withdrawn. The caller already checks for null.', { proof: [] }, 'pr-author', 'warning',
       `Unverified. The caller already checks for null. ${UNPROVEN}`, undefined],
     ['a maintainer does not resolve a warning with an answer that is not the structure', 'Withdrawn. The caller already checks for null.', { outcome: 'Cleared' }, 'someone', 'warning',
@@ -1280,6 +1283,7 @@ describe('handleReviewCommentReply', () => {
     ['a line changed since the thread was posted', undefined, ['src/file.ts:10'], true],
     ['no change since the thread was posted', '', ['src/file.ts:10'], false],
     ['a change to another line only', OTHER_LINE_CHANGED, ['src/file.ts:10'], false],
+    ['a changed line of another file', undefined, ['src/other.ts:10'], false],
     ['no proof at all', undefined, [], false],
     ['a head that no longer holds the thread\'s commit', 'unknown', ['src/file.ts:10'], false],
   ])('settles a "Fixed." only on a line changed since the thread: %s', async (_name, since, proof, settles) => {
@@ -1305,7 +1309,9 @@ describe('handleReviewCommentReply', () => {
     const shown = jest.mocked(client.sendMessage).mock.calls[0][1].split('## Changes That Can Show a Fix\n\n')[1];
     expect(since === 'unknown' ? shown.startsWith('Unknown, so no line shows a fix.') : since === '' ? shown.startsWith('None.') : shown.includes('```diff\n')).toBe(true);
     const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.at(-1)![0].body as string;
-    expect(body.split('\n\n<!-- manki -->')[0]).toBe(settles ? 'Fixed. The guard now runs first.' : `Unverified. The guard now runs first. ${UNPROVEN}`);
+    expect(body.split('\n\n<!-- manki -->')[0]).toBe(settles ? 'Fixed. The guard now runs first.' : `Unverified. The guard now runs first. ${
+      since === 'unknown' ? noLine('`src/file.ts`, `src/util.ts`').replace('could not point to a line this PR changed', 'could not read what this PR changed') : noLine('`src/file.ts`, `src/util.ts`')} ${WHOLE_PUSH}`);
+    expect(body.includes('<!-- manki-fixed:')).toBe(settles);
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(settles ? [[octokit, 'PRRT_this', 'ADDRESSED']] : []);
     expect(extractReplyRecords(body).map(r => (JSON.parse(r) as ReplyRecord).decision)).toEqual([settles ? { outcome: 'Fixed', thread: 'resolves' } : undefined]);
   });
@@ -1347,6 +1353,56 @@ describe('handleReviewCommentReply', () => {
     jest.mocked(ghUtils.fetchChangesSince).mockReset().mockResolvedValue(FILE_CHANGE);
   });
 
+  const HOLDS = 'This warning holds the approval until it is fixed.';
+  it.each<[string, FindingKind, { resolved?: boolean; sender?: string; nowhere?: boolean; evidence?: boolean; list?: boolean; closed?: boolean }, string]>([
+    ['an open warning thread', 'warning', {}, `${noLine('`src/file.ts`')} ${WHOLE_PUSH}\n\n${HOLDS}`],
+    ['an open blocker thread', 'blocker', {}, `${noLine('`src/file.ts`')}\n\nThis is a blocking finding, so the thread stays open until ${CLEARED_BY}`],
+    ['an open blocker thread a maintainer replied in', 'blocker', { sender: 'someone' }, `${noLine('`src/file.ts`')}\n\nThis is a blocking finding, so the thread stays open until ${CLEARED_BY}`],
+    ['an open security thread', 'security', {}, `${noLine('`src/file.ts`')}\n\nThis is a security finding, so the thread stays open until ${CLEARED_BY}`],
+    ['an open blocker thread, with a list', 'blocker', { list: true }, `${noLine('`src/file.ts`')}\n\n${LISTED}\n\n${MAINTAINER}\n\nThis is a blocking finding, so the thread stays open until ${CLEARED_BY}`],
+    ['a resolved warning thread', 'warning', { resolved: true }, `${noLine('`src/file.ts`')}\n\n${HOLDS}`],
+    ['a resolved blocker thread', 'blocker', { resolved: true }, noLine('`src/file.ts`')],
+    ['a warning tied to no file', 'warning', { nowhere: true }, `This finding is not tied to a file, so a reply cannot show a fix. A maintainer should decide and resolve this thread.\n\n${HOLDS}`],
+    ['a blocker tied to no file that cited one', 'blocker', { nowhere: true, evidence: true }, `${noLine('`src/util.ts`')}\n\nThis is a blocking finding, so the thread stays open until ${CLEARED_BY}`],
+    ['a warning tied to no file that cited one', 'warning', { nowhere: true, evidence: true }, `${noLine('`src/util.ts`')} A maintainer should decide and resolve this thread.\n\n${HOLDS}`],
+    ['a closed PR', 'warning', { closed: true }, `${noLine('`src/file.ts`')} A maintainer should decide.`],
+  ])('says where a reply counts a fix when the cited line is in another file, and settles nothing: %s', async (_name, kind, { resolved = false, sender = 'pr-author', nowhere = false, evidence = false, list = false, closed = false }, text) => {
+    setContext({
+      comment: { id: 1, body: `${CSV} Fixed in abc1234.`, user: { type: 'User' }, in_reply_to_id: 99, author_association: 'OWNER' },
+      pull_request: { number: 1, user: { login: 'pr-author' }, head: { sha: 'a'.repeat(40) }, ...(closed && { state: 'closed' }) },
+      sender: { login: sender },
+    });
+    const octokit = createMockOctokit();
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: {
+      original_commit_id: POSTED_ON, user: MANKI_USER, path: 'src/file.ts', line: 10,
+      body: findingComment(kind, nowhere, evidence ? { checks: ['src/util.ts:5 passes the token on'], proof: [] } : undefined, nowhere ? '' : 'src/file.ts'),
+    } });
+    const client = createMockClient();
+    jest.mocked(client.sendMessage).mockResolvedValue({ content: structured('Fixed. The guard now runs first.', { ...(list && CONFIRMED), proof: ['src/other.ts:10'] }) });
+    jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{
+      id: 'PRRT_this', rootCommentId: 99, isResolved: resolved, ...(resolved && { resolvedByLogin: 'manki-review[bot]', addressed: true }),
+      isBlocking: kind === 'blocker', ...(kind === 'security' && { isSecurity: true }), ...(kind === 'warning' && { isWarning: true as const }), findingTitle: 'This',
+    }]);
+    jest.mocked(state.authorResolvedNote).mockResolvedValue(undefined);
+    jest.mocked(state.warningHoldNote).mockResolvedValue(kind === 'warning' ? HOLDS : undefined);
+    jest.mocked(state.resolveReviewThread).mockClear();
+    jest.mocked(state.reopenThread).mockClear();
+
+    await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, undefined, CONFIG);
+
+    const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.at(-1)![0].body as string;
+    expect(body.split('\n\n<!-- manki -->')[0]).toBe(`Unverified. The guard now runs first. ${text}`);
+    expect(state.resolveReviewThread).not.toHaveBeenCalled();
+    expect(state.reopenThread).not.toHaveBeenCalled();
+    expect(settlingDecision(body)).toBeUndefined();
+    const [record] = extractReplyRecords(body).map(r => JSON.parse(r) as ReplyRecord);
+    expect(record.decision).toBeUndefined();
+    expect(record.modelAnswer).toEqual({ outcome: 'Fixed', proof: [], cited: ['src/other.ts:10'] });
+    // Only the comment marker and the record, so no fix, no clear and no reopen.
+    expect(body.split('\n').filter(l => l.startsWith('<!--')).map(l => l.split(':')[0])).toEqual(['<!-- manki -->', '<!-- manki-reply-record']);
+    jest.mocked(state.warningHoldNote).mockResolvedValue(undefined);
+  });
+
   it('counts the change for a "Fixed." from the latest round that kept the thread open, and no change when the rounds or the thread cannot be read', async () => {
     const head = 'a'.repeat(40);
     const judged = 'c'.repeat(40);
@@ -1373,7 +1429,9 @@ describe('handleReviewCommentReply', () => {
     };
     const files = ['src/file.ts'];
     // A change that round already judged cannot show a fix, so only what came after it counts.
-    await reply(Promise.resolve([{ id: 7, body: `Changes requested.\n\n${formatReviewRecord(round('not_addressed'))}`, user: { login: 'manki-review[bot]' } }]));
+    jest.mocked(client.sendMessage).mockResolvedValueOnce({ content: structured('Fixed. The guard now runs first.', { proof: [] }) });
+    const sinceRound = await reply(Promise.resolve([{ id: 7, body: `Changes requested.\n\n${formatReviewRecord(round('not_addressed'))}`, user: { login: 'manki-review[bot]' } }]));
+    expect(sinceRound.split('\n\n<!-- manki -->')[0]).toBe(`Unverified. The guard now runs first. ${noLine('`src/file.ts`', 'since the review of `ccccccc` still found this open')} ${WHOLE_PUSH}`);
     expect(ghUtils.fetchChangesSince).toHaveBeenLastCalledWith(octokit, 'test-owner', 'test-repo', judged, head, files);
     // A round that found it addressed leaves the count at the commit the thread was posted on.
     await reply(Promise.resolve([{ id: 7, body: `Approved.\n\n${formatReviewRecord(round('addressed'))}`, user: { login: 'manki-review[bot]' } }]));
@@ -1381,7 +1439,8 @@ describe('handleReviewCommentReply', () => {
     // Rounds that cannot be read may hold such a judgment, so no change counts.
     const body = await reply(Promise.reject(new Error('Server Error')));
     expect(ghUtils.fetchChangesSince).not.toHaveBeenCalled();
-    expect(body.split('\n\n<!-- manki -->')[0]).toBe(`Unverified. The guard now runs first. ${UNPROVEN}`);
+    const unread = noLine('`src/file.ts`').replace('could not point to a line this PR changed', 'could not read what this PR changed');
+    expect(body.split('\n\n<!-- manki -->')[0]).toBe(`Unverified. The guard now runs first. ${unread} ${WHOLE_PUSH}`);
     // Without the thread no round's judgment of it can be found, so no change counts either.
     const judgedOpen = Promise.resolve([{ id: 7, body: `Changes requested.\n\n${formatReviewRecord(round('not_addressed'))}`, user: { login: 'manki-review[bot]' } }]);
     for (const lookup of [() => jest.mocked(state.fetchBotReviewThreads).mockResolvedValueOnce([]), () => jest.mocked(state.fetchBotReviewThreads).mockRejectedValueOnce(new Error('GraphQL timeout'))]) {
@@ -1389,7 +1448,7 @@ describe('handleReviewCommentReply', () => {
       const unknown = await reply(judgedOpen);
       expect(ghUtils.fetchChangesSince).not.toHaveBeenCalled();
       // Whether that thread is open is unknown, so the answer asks nobody to resolve it.
-      expect(unknown.split('\n\n<!-- manki -->')[0]).toBe(`Unverified. The guard now runs first. ${UNPROVEN.replace(' and resolve this thread', '')}`);
+      expect(unknown.split('\n\n<!-- manki -->')[0]).toBe(`Unverified. The guard now runs first. ${unread} A maintainer should decide.`);
       expect(unknown).not.toContain('<!-- manki-fixed:');
     }
   });
@@ -1431,7 +1490,7 @@ describe('handleReviewCommentReply', () => {
     const listed = `**Statements of this reply, and what I checked of each:**\n- ${line}: "${said}"\n\n${summary}`;
     const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.at(-1)![0].body as string;
     // A fix is a line the PR changed, which no text of the description is, so "Fixed." settles nothing whatever the check of the description shows.
-    expect(body.split('\n\n<!-- manki -->')[0]).toBe(`Unverified. The description no longer names the constant. ${UNPROVEN}\n\n${listed}`);
+    expect(body.split('\n\n<!-- manki -->')[0]).toBe(`Unverified. The description no longer names the constant. ${noLine('`src/file.ts`')} ${WHOLE_PUSH}\n\n${listed}`);
     expect(state.resolveReviewThread).not.toHaveBeenCalled();
     const userMessage = jest.mocked(client.sendMessage).mock.calls[0][1];
     expect(userMessage.includes('They could not be read for this reply.')).toBe(description === undefined);

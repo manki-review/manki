@@ -48,6 +48,30 @@ function maintainerShould(act: string, thread: 'open' | undefined): string {
   return `a maintainer should ${act}${thread === 'open' ? ' and resolve this thread' : ''}`;
 }
 
+/** Where a reply counts a fix of its finding. */
+export interface FixScope {
+  /** The finding's file and the files it cited, whose change `changedSincePosted` holds. */
+  files: readonly string[];
+  /** Whether the finding is tied to a file. */
+  hasFile: boolean;
+  /** The commit of the round that still found the thread open, when the change counts from there. */
+  openOn?: string;
+  /** Whether the thread is a blocking or security one. What clears it is said apart from this answer. */
+  guarded: boolean;
+}
+
+/**
+ * Returns the sentences an unproven "Fixed" gets: where a reply counts a fix, and what settles the thread. `changeRead`
+ * says whether the change there could be read, as it cannot after a force push.
+ */
+function unprovenFix({ files, hasFile, openOn, guarded }: FixScope, changeRead: boolean, thread: ThreadState): string {
+  const since = openOn ? `since the review of ${inline(openOn.slice(0, 7))} still found this open` : 'since this was posted';
+  const where = files.length === 0 ? 'This finding is not tied to a file, so a reply cannot show a fix.'
+    : `${changeRead ? 'I could not point to a line this PR changed' : 'I could not read what this PR changed'} in ${files.map(inline).join(', ')} ${since}. A reply counts a fix only there.`;
+  if (thread === 'resolved' || (thread === 'open' && guarded)) return where;
+  return `${where} ${thread === 'open' && hasFile ? 'The next review after a push checks the whole push, also other files.' : `A${maintainerShould('decide', thread).slice(1)}.`}`;
+}
+
 /** What the reply's cited lines and searches are checked against. */
 export interface ReplySources {
   /** The checkout of the PR head, when the reply had one. */
@@ -66,6 +90,8 @@ export interface ReplySources {
   pr?: number;
   /** Decides whether an "Unverified." asks a maintainer to resolve the thread. */
   thread?: ThreadState;
+  /** What an unproven "Fixed" says about where a reply counts one. */
+  fixScope?: FixScope;
   /**
    * What the PR changed since the thread was posted, in the finding's file and the files it cited, by `fetchChangesSince`.
    * A "Fixed" counts only when its proof cites a line one of these adds. Unset when that change could not be read.
@@ -292,7 +318,8 @@ export function checkReply(content: string, developerReply: string, sources: Rep
     ? parsed.fixed_in : undefined;
   // A fix in another pull request stays unconfirmed until `checkFixedElsewhere` confirms it.
   const settled: AnswerOutcome = unproven || outcome === 'FixedElsewhere' ? 'Unverified' : outcome;
-  const note = unproven ? ` ${leftToMaintainer(UNPROVEN_OUTCOME, sources.thread)}`
+  const note = unproven && outcome === 'Fixed' && sources.fixScope ? ` ${unprovenFix(sources.fixScope, sources.changedSincePosted !== undefined, sources.thread)}`
+    : unproven ? ` ${leftToMaintainer(UNPROVEN_OUTCOME, sources.thread)}`
     : outcome === 'FixedElsewhere' ? ` ${leftToMaintainer(NO_FIXING_PR, sources.thread)}`
       : outcome === 'Unverified' && sources.thread !== 'resolved' ? ` A${maintainerShould('confirm this', sources.thread).slice(1)}.` : '';
   return {

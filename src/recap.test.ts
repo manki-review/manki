@@ -2227,6 +2227,7 @@ describe('fetchRecapState', () => {
         ['done', [], 'none'],
         ['done', [recordedAnswer('Fixed', 'stays_open')], 'none'],
         ['done', [recordedAnswer('Fixed', 'confirmed_by_round')], 'none'],
+        ['done', [recordedAnswer('Fixed').replace('"decision":{"outcome":"Fixed","thread":"resolves"}', '"modelAnswer":{"outcome":"Fixed","proof":[],"cited":["src/b.ts:3"]}')], 'none'],
         ['done', ['**Unverified.** I could not check this reply.\n\n<!-- manki -->'], 'none'],
         ['done', [recordedAnswer('Fixed')], 'agree'],
         ['The caller checks it.', [recordedAnswer('Withdrawn', 'already_resolved')], 'agree'],

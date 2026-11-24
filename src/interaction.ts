@@ -624,13 +624,15 @@ export async function handleReviewCommentReply(
     // a "Fixed." again. On an open PR a thread that could not be found may have such a judgment, so no change counts.
     const rounds = live ? await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber) : undefined;
     const since = live && rounds ? changesCountFrom(rounds, live.id, root.comment.original_commit_id) : closed ? root.comment.original_commit_id : undefined;
-    const rawSince = since && head && closedSince ? await fetchChangesSince(octokit, owner, repo, since, head, [filePath, ...evidenceFiles ?? []]) : undefined;
+    const fixFiles = [filePath, ...evidenceFiles ?? []];
+    const rawSince = since && head && closedSince ? await fetchChangesSince(octokit, owner, repo, since, head, fixFiles) : undefined;
     const sincePosted = rawSince === undefined ? undefined : closeRawDiff(rawSince, closedSince!);
     const response = await askWithRecord(client, 'thread-reply', prNumber, REPLY_SYSTEM_PROMPT, context + diffContext + sinceContext(sincePosted), tools, related);
     const threadState: ThreadState = live && (live.isResolved ? 'resolved' : 'open');
     // From here on the answer is the plain "Outcome. text" again, so nothing below reads a statement's status.
     const checked = checkReply(response.content, comment.body ?? '', {
       workspace, related, relatedNames, diff, description: prText?.body, repo: `${owner}/${repo}`, pr: prNumber, thread: threadState,
+      fixScope: { files: fixFiles.filter(Boolean), hasFile: !!filePath, guarded: !!live && isGuarded(live), ...(since && since !== root.comment.original_commit_id && { openOn: since }) },
       ...(sincePosted !== undefined && { changedSincePosted: parsePRDiff(sincePosted).files }),
     });
     const isSecurity = isSecurityThread(findingBody);
@@ -678,7 +680,8 @@ export async function handleReviewCommentReply(
     const held = !!live && (!!reopenNote || await resolveIsHeld(octokit, bot, owner, repo, live, prAuthorLogin, config?.author_clear_role));
     const list = statementList(checked);
     // The model saw the fix and cited no line that counts, but a round that finished since confirmed it. The thread stays as it is.
-    const confirmed = checked.modelOutcome === 'Fixed' && checked.outcome === 'Unverified' && live && rounds
+    const unprovenFix = checked.modelOutcome === 'Fixed' && checked.outcome === 'Unverified';
+    const confirmed = unprovenFix && live && rounds
       ? confirmedAfterReply(rounds, bot, live, head, comment, held)
       : undefined;
     if (confirmed) {
@@ -735,7 +738,12 @@ export async function handleReviewCommentReply(
       const blocks = !!live && (noted || ((live.isResolved ? held : isGuarded(live)) && !(settled && mayClear)));
       // The checks never read as a verdict on the finding. A blocking thread that no other note covers says that it stays
       // open, and names a review as a way out only when a review can clear it.
-      const checks = list ? [list, statementSummary(checked, blocks || !live), ...(blocks && !staysOpen && !noted ? [staysOpenNote(guard, !!filePath, config?.author_clear_role, live.isResolved)] : [])] : [];
+      // An unproven "Fixed." says who clears the thread without a list too, and names no review, which may never confirm that fix.
+      const saysClear = blocks && !staysOpen && !noted && (!!list || (unprovenFix && !live.isResolved));
+      const checks = [
+        ...(list ? [list, statementSummary(checked, blocks || !live)] : []),
+        ...(saysClear ? [staysOpenNote(guard, !!filePath && !unprovenFix, config?.author_clear_role, live.isResolved)] : []),
+      ];
       const text = [answer, ...replaces, ...checks, ...notes];
       const markers = [
         BOT_MARKER, response.record(decision, replyChecks(checked), comment.id),
