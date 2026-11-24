@@ -78,12 +78,12 @@ A run that failed or whose review did not complete stores the reason in `error`.
 
 ### The route of each blocker
 
-The report stores with each finding how it got its grade: the grade its finder gave it, and the lowest one when the finders split, the severity table cell the judge stated, the grade a confirmed doubt would give, the grade the judge itself stated for that case, whether it is a security finding, whether only claim checks or only fix checks reported it, the kinds of step that reported it (`raisedBy`), each step of its grade path with what made the step, the number of doubts of each kind and how many of them state the consequence, the outcome of the refuter's check, whether an unsettled check ended on its step budget, how many lines of related repos and of the PR's repository that check cited when it cited a related line, and the check status. With each run it stores why the review reached its outcome. These are grades, kinds and counts. No text of a finding is among them.
+The report stores with each finding how it got its grade: the grade its finder gave it, and the lowest one when the finders split, the severity table cell the judge stated, the grade a confirmed doubt would give, the grade the judge itself stated for that case, whether it is a security finding, whether only claim checks or only fix checks reported it, the kinds of step that reported it (`raisedBy`), each step of its grade path with what made the step, the number of doubts of each kind and how many of them state the consequence, the outcome of the refuter's check, whether an unsettled check ended on its step budget, how many lines of related repos and of the PR's repository that check cited when it cited a related line, the check status, and the other finder's vote when one was used: the grade the finding had when it was voted on, whether the vote backs or declines it, and whether the quote of its line held (`held`), named a line that does not hold it (`missed`) or named no line (`none`). With each run it stores why the review reached its outcome. These are grades, kinds and counts. No text of a finding is among them.
 
 The summary counts the blockers of the complete runs by the route each took, against the grade of the key item it matches. A blocker that matches a key item only partly counts in that item's column. The table holds counts only, so it also covers hold-out cases. The routes are:
 
 - **filed by a finder and kept**: a finder graded it a blocker, whatever lowered and restored it between. When the finders split on its grade and a check raised it, it takes the route of that check instead.
-- **raised by the judge**: its finders graded it lower, and the cell the judge stated made it a blocker.
+- **raised by the judge**: its finders graded it lower, and the cell the judge stated made it a blocker. Unless it is a security finding, a tool alert, an open lead, a rule finding under `review.rules: block` or a restatement of an earlier blocker, the refuter's checks also confirmed its defect.
 - **raised by a confirmed doubt**: its finders graded it lower, a doubt of the judge held it below blocker, and the refuter's check confirmed the doubt. Only a security finding or one that restates an earlier blocker takes this route.
 - **raised by a confirmed doubt and consequence**: its finders graded it lower, a doubt of the judge held it below blocker, and every check confirmed the defect and every premise, among them the consequence the judge named.
 - **claim check**: only the checks of the PR text's claims reported it, whatever happened to its grade afterwards.
@@ -95,6 +95,10 @@ The summary counts the blockers of the complete runs by the route each took, aga
 ### Who raised each unexpected warning
 
 `raisedBy` names each kind of step that reported a finding, once each, in pipeline order: `finder`, `second_read` (a finder's model reading the change again in the same round), `comparison` (a sibling comparison), `pattern` (a pattern check), `related` (a related repository check), `claim`, `fix`, `sweep`, `tool` (a CI tool or analyzer result), `scope` (the scope reader) and `reader` (the verdict reader). It comes from the reviewer names the finding carries, and a name no other step uses counts as a finder's. The summary counts the unexpected warnings of every run, by variant and set, under the set of kinds that reported each one, so the rows of a variant and set add up to its unexpected warnings. The table holds counts only, so it also covers hold-out cases. A finding of a ref from before `raisedBy` was stored counts as `unknown`.
+
+### The other finder's votes
+
+The summary gets one line per variant and set with the votes of its complete runs: on a blocker and on a warning, how many votes backed and declined the finding, how many of those findings match a key item, fully or partly, and how many declines named a line whose quote did not hold. A grade no vote saw is left out, and so is the line of a variant and set without a vote. It holds counts only, so it also covers hold-out cases.
 
 ### Where the finders' findings went
 

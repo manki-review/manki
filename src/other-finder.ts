@@ -7,7 +7,7 @@ import { sanitizeForPromptEmbed } from './memory';
 import { fenceText } from './github';
 import { LLMClient, NotStartedError } from './providers';
 import { changeSection, citedChanges, locationFile, locationLines, MAX_PARALLEL_REFUTATIONS } from './refute';
-import { cellGrade, confirmedByCheck, DISPROVED_TAG, Finding, FindingSeverity, gradedByRule, gradeStep, isDisprovedBlocker, isGradeCell, isSecurityFinding, OtherFinderVote, ParsedDiff, pendingGrade, RulesMode } from './types';
+import { cellGrade, DISPROVED_TAG, Finding, FindingSeverity, gradedByRule, gradeStep, isDisprovedBlocker, isGradeCell, isSecurityFinding, OtherFinderVote, ParsedDiff, pendingGrade, RulesMode } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 
 // A safety net for a call without tools, which normally answers in well under a minute.
@@ -77,10 +77,6 @@ function parseVote(text: string): RawVote {
   return { harm: safeTruncate(harm, MAX_ANSWER_CHARS), situation: safeTruncate(situation, MAX_ANSWER_CHARS), line, quote };
 }
 
-// A confirmed blocker outweighs one call without tools. A confirmed warning does not, since a check confirms the code
-// path rather than the harm, and the vote can lower it only to a note no step leaves out.
-const confirmedBlocker = (finding: Finding): boolean => finding.severity === 'blocker' && confirmedByCheck(finding);
-
 const collapse = (text: string): string => text.replace(/\s+/g, ' ').trim();
 
 /**
@@ -98,12 +94,13 @@ function holdsQuote(workspace: string, location: string, quote: string): boolean
 /**
  * Whether `finding` gets the other finder's vote. Two or more finders ran and one of them alone reported it
  * (`soleFinder`), and it is or may become a blocker or a warning. A security finding, a tool alert, a finding
- * `gradedByRule` under `rules`, a blocker a check `confirmedByCheck` and one that `restates` an earlier thread get none.
+ * `gradedByRule` under `rules` and one that `restates` an earlier thread get none. A finding a check confirmed gets one,
+ * since a check confirms that the code path is real, not that the finding matters.
  */
 function getsVote(finding: Finding, restates: (finding: Finding) => boolean, rules?: RulesMode): boolean {
   const grade = pendingGrade(finding);
   const blocks = (severity: string | undefined) => severity === 'blocker' || severity === 'warning';
-  return !!finding.soleFinder && finding.severity !== 'ignore' && (blocks(finding.severity) || blocks(grade)) && !confirmedBlocker(finding) && !finding.toolSource && !isSecurityFinding(finding.tags, finding.reviewers)
+  return !!finding.soleFinder && finding.severity !== 'ignore' && (blocks(finding.severity) || blocks(grade)) && !finding.toolSource && !isSecurityFinding(finding.tags, finding.reviewers)
     && !gradedByRule(finding, rules) && !finding.threadId && !finding.answeredIn && finding.raisedIn === undefined && !restates(finding);
 }
 
@@ -157,11 +154,11 @@ export async function otherFinderVotes(findings: readonly Finding[], { workspace
  * text in the code that steers the vote cannot also let the PR author clear it, and a warning to a note. A vote lowers a
  * finding at most one step below the grade of its cell, so a blocker cell the judge already held at a warning stays a
  * warning. A declined blocker keeps its cell as `judgeCell`, as a disproof does, so a later round does not restore it
- * from the cell. A blocker the refuter confirmed, a finding it lowered from a blocker and one that `gradedByRule` under
- * `rules` keep their grade and get no vote.
+ * from the cell. A finding the refuter lowered from a blocker and one that `gradedByRule` under `rules` keep their grade
+ * and get no vote.
  */
 export function withVote(finding: Finding, vote: OtherFinderVote | undefined, rules?: RulesMode): Finding {
-  if (!vote || confirmedBlocker(finding) || isDisprovedBlocker(finding) || finding.tags?.includes(DISPROVED_TAG) || gradedByRule(finding, rules)) return finding;
+  if (!vote || isDisprovedBlocker(finding) || finding.tags?.includes(DISPROVED_TAG) || gradedByRule(finding, rules)) return finding;
   const voted = { ...finding, otherFinderVote: vote };
   if (!vote.declined) return voted;
   if (finding.severity === 'blocker') {

@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { isMap, isScalar, parseDocument } from 'yaml';
 
-import { BenchCase, BenchReport, buildReport, candidateFindings, caseSet, formatBenchSummary, formatBlockerRoutes, formatGate, formatUnmatched, formatWarningSources, gateReports, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, MatcherSpend, mergeReports, parseBenchArgs, parseCase, readReport, rescoreReport, resolveVariants, runBench, runBenchCommand, scoreRun } from './bench';
+import { BenchCase, BenchReport, buildReport, candidateFindings, caseSet, formatBenchSummary, formatBlockerRoutes, formatGate, formatUnmatched, formatVotes, formatWarningSources, gateReports, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, MatcherSpend, mergeReports, parseBenchArgs, parseCase, readReport, rescoreReport, resolveVariants, runBench, runBenchCommand, scoreRun } from './bench';
 import { loadConfigWithOverrides } from './local-review';
 import type { LocalReview, LocalReviewInput } from './local-review';
 import { printableError } from './cli';
@@ -464,11 +464,12 @@ describe('scoreRun', () => {
       premises: [{ premise: 'PREMISE-TEXT', outcome: 'confirmed', reason: 'REASON-TEXT' }],
     };
     const blocker = (title: string, overrides: Partial<Finding>) => makeFinding({ severity: 'blocker', title, ...overrides });
+    const vote = (declined: boolean, line?: string) => ({ finder: 'Other', harm: 'HARM-TEXT', situation: 'SITUATION-TEXT', ...(line && { line, quote: 'QUOTE-TEXT' }), declined });
     const findings = [
       // A finder filed it as a blocker. A doubt held it down, and a check gave the blocker back. The judge's own answer for that case is stored too.
       blocker('Kept', {
         file: 'src/read.rs', gradePath: [step('blocker', 'warning', 'judge'), step('warning', 'blocker', 'refutation')], cell: { row: 'wrong', column: 'normal' }, gradeIfConfirmed: 'blocker', judgeIfConfirmed: 'blocker',
-        doubts: [doubt('defect'), doubt('grade'), doubt('defect')], refutation, checkStatus: 'confirmed',
+        doubts: [doubt('defect'), doubt('grade'), doubt('defect')], refutation, checkStatus: 'confirmed', otherFinderVote: vote(false, 'src/read.rs:3'),
       }),
       // The judge's cell raised it. A check gave back what the cap for want of proof took, which is no raise of its own.
       blocker('Raised', {
@@ -490,7 +491,8 @@ describe('scoreRun', () => {
       makeFinding({
         title: 'Lowered', toolSource: 'clippy',
         reviewers: [SCOPE_READER_NAME, 'clippy', 'Sweep 2', 'Consumer check: Api', 'Reference check: read', 'Pattern check: helper', 'Sibling code: Codec::decode', 'Sibling field: len vs cap', 'Second read 1', 'Reviewer', 'reviewer'],
-        gradePath: [step('blocker', 'warning', 'pre_existing')], checkStatus: 'unconfirmed', refutation: {
+        // The vote backed it as a blocker, before the check of the base lowered it.
+        gradePath: [step('blocker', 'warning', 'pre_existing')], checkStatus: 'unconfirmed', otherFinderVote: vote(false, 'src/read.rs:3'), refutation: {
           ...refutation, outcome: 'unsettled', defect: 'unsettled', stepsUsedUp: 'yes', outside: { behavior: 'b', stated: false },
           premises: [{ premise: 'p', outcome: 'confirmed', outside: { behavior: 'b', stated: true }, reason: 'r' }, { premise: 'q', outcome: 'unsettled', reason: 'r' }],
         },
@@ -505,10 +507,13 @@ describe('scoreRun', () => {
         doubts: [doubt('defect'), { ...doubt('grade'), consequence: true }], refutation,
       }),
       makeFinding({ title: 'Worked around', severity: 'blocker', reviewers: ['Fix check 1'] }),
+      // A vote that named no line declined a warning, and one whose quoted line did not hold declined a blocker.
+      makeFinding({ title: 'Voted down', severity: 'note', gradePath: [step('warning', 'note', 'other_finder')], otherFinderVote: vote(true) }),
+      makeFinding({ title: 'Misquoted', severity: 'warning', gradePath: [step('blocker', 'warning', 'other_finder')], otherFinderVote: vote(true, 'src/read.rs:9') }),
     ];
     const review = makeReview('ADDRESS_FIRST', findings);
     review.result.verdictReason = 'required_present';
-    const matcher = stub({ K1: { verdict: 'MATCH', findings: [0], reason: 'same' }, K2: { verdict: 'MATCH', findings: [0], reason: 'same' }, N1: { verdict: 'PARTIAL', findings: [2], reason: 'vague' } });
+    const matcher = stub({ K1: { verdict: 'MATCH', findings: [0], reason: 'same' }, K2: { verdict: 'MATCH', findings: [0], reason: 'same' }, N1: { verdict: 'PARTIAL', findings: [2, 12], reason: 'vague' } });
 
     const score = await scoreRun(benchCase, review, matcher);
 
@@ -516,7 +521,7 @@ describe('scoreRun', () => {
     expect(score.findings.map(f => f.route)).toEqual([
       {
         finderGrade: 'blocker', cell: { row: 'wrong', column: 'normal' }, gradeIfConfirmed: 'blocker', judgeIfConfirmed: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'judge' }, { from: 'warning', to: 'blocker', by: 'refutation' }],
-        doubts: { defect: 2, grade: 1 }, refutation: { outcome: 'confirmed', defect: 'confirmed' }, checkStatus: 'confirmed', raisedBy: ['finder'],
+        doubts: { defect: 2, grade: 1 }, refutation: { outcome: 'confirmed', defect: 'confirmed' }, checkStatus: 'confirmed', raisedBy: ['finder'], vote: { grade: 'blocker', answer: 'backs', quote: 'held' },
       },
       {
         finderGrade: 'warning', cell: { row: 'severe', column: 'normal', judgeColumn: 'rare' }, refutation: { outcome: 'confirmed' },
@@ -532,7 +537,7 @@ describe('scoreRun', () => {
       { finderGrade: 'blocker', raisedBy: ['finder', 'claim'] },
       {
         finderGrade: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'pre_existing' }], refutation: { outcome: 'unsettled', defect: 'unsettled', stepsUsedUp: 'yes', outside: { stated: 1, unstated: 1 } }, checkStatus: 'unconfirmed',
-        raisedBy: ['finder', 'second_read', 'comparison', 'pattern', 'related', 'sweep', 'tool', 'scope'],
+        raisedBy: ['finder', 'second_read', 'comparison', 'pattern', 'related', 'sweep', 'tool', 'scope'], vote: { grade: 'blocker', answer: 'backs', quote: 'held' },
       },
       {
         finderGrade: 'warning', gradeIfConfirmed: 'blocker', gradePath: [{ from: 'warning', to: 'blocker', by: 'refutation' }],
@@ -543,6 +548,8 @@ describe('scoreRun', () => {
         doubts: { defect: 1, grade: 1, consequence: 1 }, refutation: { outcome: 'confirmed', defect: 'confirmed' }, raisedBy: ['finder'],
       },
       { finderGrade: 'blocker', byFixCheck: true, raisedBy: ['fix'] },
+      { finderGrade: 'warning', gradePath: [{ from: 'warning', to: 'note', by: 'other_finder' }], raisedBy: ['finder'], vote: { grade: 'warning', answer: 'declines', quote: 'none' } },
+      { finderGrade: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'other_finder' }], raisedBy: ['finder'], vote: { grade: 'blocker', answer: 'declines', quote: 'missed' } },
     ]);
     expect(await scoreRun(benchCase, makeReview('READY', []), stub({}))).not.toHaveProperty('verdictReason');
 
@@ -566,6 +573,10 @@ describe('scoreRun', () => {
     expect(routed.variants[0].summary.unexpectedWarnings).toBe(2);
     expect(formatWarningSources(routed.variants)).toBe(sources('| base: finder, second read, sibling comparison, pattern check, related repo check, sweep, tool result, scope reader | 2 |'));
     expect(formatBenchSummary(routed)).toContain(`\n\n${formatWarningSources(routed.variants)}\n`);
+    // The votes count in the complete run alone, by the grade each vote saw and whether the finding matches a key item.
+    expect(formatVotes(routed.variants)).toBe("Other finder's votes, base: on a blocker 2 backed (1 matched) and 1 declined (1 matched, 1 with a quote that did not hold), on a warning 0 backed (0 matched) and 1 declined (0 matched, 0 with a quote that did not hold).");
+    expect(formatBenchSummary(routed)).toContain(`\n\n${formatVotes(routed.variants)}\n`);
+    expect(formatVotes(report([{ ...score, findings: score.findings.slice(1, 7) }]).variants)).toBe('');
     expect(formatWarningSources(report([{ ...score, findings: score.findings.slice(0, 7) }]).variants)).toBe('');
     expect(formatBlockerRoutes(report([{ ...score, findings: score.findings.slice(7, 8) }]).variants)).toBe('');
 

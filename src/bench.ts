@@ -465,7 +465,15 @@ interface GradeRoute {
   byFixCheck?: true;
   /** The kinds of step that reported the finding, in the order of `RAISED_BY`. Left out of a finding no step names. */
   raisedBy?: RaisedBy[];
+  /**
+   * The other finder's vote: the grade the finding had when it was voted on, whether the vote backs or declines it, and
+   * whether the quote of its line held (`held`), named a line that does not hold it (`missed`) or named no line (`none`).
+   */
+  vote?: { grade: FindingSeverity; answer: 'backs' | 'declines'; quote: 'held' | 'missed' | 'none' };
 }
+
+// The steps that only come after the vote, so the first of them starts from the grade the vote saw.
+const AFTER_VOTE: readonly GradeChange[] = ['other_finder', 'pre_existing', 'own_fix'];
 
 /** The kinds of step that report findings, in pipeline order, by the label a report prints. */
 const RAISED_BY = {
@@ -976,6 +984,11 @@ function gradeRoute(f: Finding): GradeRoute {
     ...(f.reviewers.length > 0 && f.reviewers.every(isClaimCheck) && { byClaimCheck: true as const }),
     ...(f.reviewers.length > 0 && f.reviewers.every(isFixCheck) && { byFixCheck: true as const }),
     ...(kinds.size > 0 && { raisedBy: (Object.keys(RAISED_BY) as RaisedBy[]).filter(kind => kinds.has(kind)) }),
+    ...(f.otherFinderVote && { vote: {
+      grade: gradePath?.find(step => AFTER_VOTE.includes(step.by))?.from ?? f.severity,
+      answer: f.otherFinderVote.declined ? 'declines' as const : 'backs' as const,
+      quote: !f.otherFinderVote.declined ? 'held' as const : f.otherFinderVote.line ? 'missed' as const : 'none' as const,
+    } }),
   };
 }
 
@@ -1827,6 +1840,28 @@ export function formatWarningSources(variants: VariantReport[]): string {
   return ['| Raised an unexpected warning | Warnings |', '| --- | --- |', ...rows].join('\n');
 }
 
+/**
+ * Returns one line per variant and set with the other finder's votes in the complete runs: how many backed and declined a
+ * blocker and a warning, how many of those findings match a key item, and how many declines named a line whose quote
+ * did not hold. It holds counts only, so it covers hold-out cases. Returns an empty string when no run recorded a vote.
+ */
+export function formatVotes(variants: VariantReport[]): string {
+  return variants.flatMap(v => setSummaries(v).flatMap(({ label, set }) => {
+    const votes = v.cases.filter(c => c.set === set).flatMap(c => c.runs.filter(run => run.complete).flatMap(run => run.findings.flatMap((f, n) => (
+      f.route?.vote ? [{ ...f.route.vote, matched: matchedKeyGrade(c, run, n) !== undefined }] : []
+    ))));
+    const parts = (['blocker', 'warning'] as const).flatMap(grade => {
+      const on = votes.filter(vote => vote.grade === grade);
+      if (on.length === 0) return [];
+      const [backs, declines] = (['backs', 'declines'] as const).map(answer => on.filter(vote => vote.answer === answer));
+      const missed = declines.filter(vote => vote.quote === 'missed').length;
+      const matched = (some: typeof on) => some.filter(vote => vote.matched).length;
+      return [`on a ${grade} ${backs.length} backed (${matched(backs)} matched) and ${declines.length} declined (${matched(declines)} matched, ${missed} with a quote that did not hold)`];
+    });
+    return parts.length > 0 ? [`Other finder's votes, ${label ? `${v.name} ${label}` : v.name}: ${parts.join(', ')}.`] : [];
+  })).join('\n');
+}
+
 /** Returns one line of counts: the must-catch items the finders found, the ones the review found, the ones it missed by exit, and what matching the finders' findings cost. */
 function formatRawSummary(raw: RawSummary): string {
   const lost = (Object.keys(RAW_EXITS) as RawExit[]).flatMap(exit => (raw.lost[exit] ? [`${RAW_EXITS[exit]} ${raw.lost[exit]}`] : []));
@@ -1875,7 +1910,7 @@ export function formatBenchSummary(report: BenchReport): string {
     lines.push('');
   }
   lines.push(formatComparison(report.variants));
-  for (const table of [formatBlockerRoutes(report.variants), formatWarningSources(report.variants)]) if (table) lines.push('', table);
+  for (const table of [formatBlockerRoutes(report.variants), formatWarningSources(report.variants), formatVotes(report.variants)]) if (table) lines.push('', table);
   return `${lines.join('\n')}\n`;
 }
 

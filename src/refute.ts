@@ -443,6 +443,29 @@ function refutationNote(label: string, check: Refutation): string {
 }
 
 /**
+ * Returns `finding` at the highest grade a finder gave it when the judge raised it to a blocker above every finder's
+ * grade, also one an unproven cap lowered and a check gave back, and its checks do not confirm the defect: none ran,
+ * or they did not agree on a confirmation of it. A raise rests on the judge's reading alone, so the answers count as
+ * stored, and a confirmation that `restsOnUnstated` does not count. Its cell moves to `judgeCell`, as for a disproof.
+ * It takes the exceptions of `disprovedGrade`: a security finding, a tool alert, an open lead and one that
+ * `restatesBlocker` keep their grade, and one that `breaksRule` goes no lower than the grade `rules` gives.
+ */
+export function capUnconfirmedRaise(finding: Finding, { priorRounds = [], blockingThreads = [], rules }: Pick<RefuteOptions, 'priorRounds' | 'blockingThreads' | 'rules'>): Finding {
+  const filed = finderGrade(finding);
+  const ruled = breaksRule(finding) ? ruleGrade(rules) : undefined;
+  const grade = ruled && rank(ruled) < rank(filed) ? ruled : filed;
+  const raised = !!finding.gradePath?.some(step => step.by === 'judge' && step.to === 'blocker');
+  if (finding.severity !== 'blocker' || !raised || grade === 'blocker' || finding.toolSource || finding.lead
+    || isSecurityFinding(finding.tags, finding.reviewers) || restatesBlocker(finding, priorRounds, blockingThreads)) return finding;
+  const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r);
+  if (agreedOutcome(checks) === 'confirmed' && checks.some(check => confirmsDefect(check, finding))) return finding;
+  const reason = `the judge raised it above every finder's grade, and ${checks.length > 0 ? 'no check confirmed the defect' : 'no check ran'}`;
+  core.info(`Posting "${finding.title}" as a ${grade}: ${reason}`);
+  const { cell, ...rest } = finding;
+  return { ...rest, ...gradeStep(finding, grade, 'unconfirmed_raise', reason), ...(cell && { judgeCell: cell }) };
+}
+
+/**
  * Whether `finding` restates a blocker an earlier round recorded or an open thread that blocks: the judge links it to
  * one, or `sameProblem` matches it with such a thread, as a later step folds it in. So does one that names an earlier
  * finding no record holds. Another finding in the file of such a thread is a defect of its own.
@@ -459,8 +482,9 @@ function restatesBlocker(finding: Finding, priorRounds: readonly RoundContext[],
 /**
  * Returns the grade and the reason for a blocker that every refuter that ran disproved, or undefined when it stays a
  * blocker. It becomes a `guarded` warning, whose thread only a fix or someone allowed to clear it clears, never the PR
- * author's answer alone. A blocker only the judge raised, which two refuters on different models disproved, goes back
- * to the grade its finders gave without that guard. A finding that `breaksRule` goes no lower than the grade `rules`
+ * author's answer alone. A blocker only the judge raised goes back to the grade its finders gave without that guard,
+ * as when `capUnconfirmedRaise` finds no check that confirms it, so a disproof never leaves it higher than an unsettled
+ * check. A finding that `breaksRule` goes no lower than the grade `rules`
  * gives. A tool alert is lowered only when two refuters on different models disproved it and it is no `securityAlert`,
  * and then always to a `guarded` warning. A security finding, an open lead, which is no finished finding to grade, and a blocker that
  * `restates` an earlier one keep blocking.
@@ -475,14 +499,14 @@ function disprovedGrade(
   const [raise, ...later] = finding.gradePath ?? [];
   const filed = finderGrade(finding);
   // A tool, not a finder, reported a tool alert, so its grade before the judge says nothing about the damage.
-  const judgeRaised = twoModels && !finding.toolSource && raise?.by === 'judge' && later.length === 0 && filed !== 'blocker';
+  const judgeRaised = !finding.toolSource && raise?.by === 'judge' && later.length === 0 && filed !== 'blocker';
   const target = judgeRaised ? filed : 'warning';
   // The rule alone gives a finding that `breaksRule` its grade, whatever the refuters say about the damage.
   const ruled = breaksRule(finding) ? ruleGrade(rules) : undefined;
   const grade = ruled && rank(ruled) < rank(target) ? ruled : target;
   if (grade === 'blocker') return undefined;
-  const reason = judgeRaised ? `${refutation!.model} and ${pairRefutation!.model} both disproved it, and no finder graded it a blocker`
-    : `${checks.length > 1 ? 'both refuters' : 'the refuter'} disproved it`;
+  const disproved = `${checks.length > 1 ? 'both refuters' : 'the refuter'} disproved it`;
+  const reason = !judgeRaised ? disproved : `${twoModels ? `${refutation!.model} and ${pairRefutation!.model} both disproved it` : disproved}, and no finder graded it a blocker`;
   return { grade, reason, guarded: !judgeRaised };
 }
 

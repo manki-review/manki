@@ -22,7 +22,7 @@ import { sanitize, titleOverlapType } from './recap';
 import { FINDER_TOOLS_TIMEOUT_MS, guardedThreadStaysOpen, determineOutcome, earlierFindings, fencePrText, filesChangedByPush, parseProof, postedWhenPreExisting, restatesEarlier, sameProblem, truncateDiff } from './review';
 import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, ROW_MEANINGS, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge, stringifyFindingFingerprint } from './finding-fingerprint';
-import { MAX_DOUBT_CHECKS, MAX_RELATED_PROOF, needsProof, refuteBlockers, unpostedForTrigger } from './refute';
+import { capUnconfirmedRaise, MAX_DOUBT_CHECKS, MAX_RELATED_PROOF, needsProof, refuteBlockers, unpostedForTrigger } from './refute';
 import { fetchedRelatedRepos, relatedNames, repoTools } from './related-repos';
 import { citesChangedLine } from './reply-check';
 import { criticalAreaOf } from './routing';
@@ -1800,15 +1800,18 @@ export async function runJudgeAgent(
   const kept = mapped.filter(f => f.severity !== 'ignore').length;
   input.onGraded?.({ kept, dropped: mapped.length - kept, merged: findings.length - mapped.length });
   // The suppressions hide findings by grade, so the refuter settles each grade first.
-  const checked = refutation ? await refuteBlockers(refutation.client, mapped, {
+  const blockingThreads = (openThreads ?? input.evaluatedThreads?.openThreads ?? []).filter(threadBlocks);
+  const refuted = refutation ? await refuteBlockers(refutation.client, mapped, {
     workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, doubtBudget: refutation.doubtBudget, progress: refutation.progress, priorRounds, effort, diff, usesOutsideDiff, outsideInput: config.review?.outside_input,
-    blockingThreads: (openThreads ?? input.evaluatedThreads?.openThreads ?? []).filter(threadBlocks),
+    blockingThreads,
     hiddenLater: finding => suppress([finding], true).findings[0].severity === 'ignore',
     unpostedLater,
     // The match `foldIntoEarlierFindings` makes without a model. The threads are graded again before it runs, so it is not certain yet.
     restatesEarlier: finding => restatesEarlier(earlier, finding),
     rules: config.review?.rules,
   }) : mapped;
+  // A raise stands only on a check, so it is settled before the suppressions, which hide findings by grade.
+  const checked = refuted.map(f => capUnconfirmedRaise(f, { priorRounds, blockingThreads, rules: config.review?.rules }));
   const { findings: suppressed, count: inPrCount, ...suppression } = suppress(checked.map(f => withoutRuleDoubt(f, config.review?.rules)));
 
   return {

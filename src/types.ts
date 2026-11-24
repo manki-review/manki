@@ -977,7 +977,7 @@ export interface RoundSlicing {
 /** What changed a finding's severity. */
 export type GradeChange =
   | 'judge' | 'rule' | 'unproven' | 'build_claim' | 'refutation' | 'in_pr_suppression' | 'own_proposal' | 'ratchet'
-  | 'resolved_thread' | 'pre_existing' | 'own_fix' | 'other_finder';
+  | 'resolved_thread' | 'pre_existing' | 'own_fix' | 'other_finder' | 'unconfirmed_raise';
 
 /** One change of a finding's severity. */
 export interface GradeStep {
