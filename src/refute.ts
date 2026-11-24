@@ -447,20 +447,22 @@ function refutationNote(label: string, check: Refutation): string {
  * grade, also one an unproven cap lowered and a check gave back, and its checks do not confirm the defect: none ran,
  * or they did not agree on a confirmation of it. A raise rests on the judge's reading alone, so the answers count as
  * stored, and a confirmation that `restsOnUnstated` does not count. Its cell moves to `judgeCell`, as for a disproof.
- * A security finding, a tool alert, a finding `gradedByRule` under `rules` and one that `restatesBlocker` keep their
- * grade.
+ * It takes the exceptions of `disprovedGrade`: a security finding, a tool alert, an open lead and one that
+ * `restatesBlocker` keep their grade, and one that `breaksRule` goes no lower than the grade `rules` gives.
  */
 export function capUnconfirmedRaise(finding: Finding, { priorRounds = [], blockingThreads = [], rules }: Pick<RefuteOptions, 'priorRounds' | 'blockingThreads' | 'rules'>): Finding {
   const filed = finderGrade(finding);
+  const ruled = breaksRule(finding) ? ruleGrade(rules) : undefined;
+  const grade = ruled && rank(ruled) < rank(filed) ? ruled : filed;
   const raised = !!finding.gradePath?.some(step => step.by === 'judge' && step.to === 'blocker');
-  if (finding.severity !== 'blocker' || !raised || filed === 'blocker' || finding.toolSource
-    || isSecurityFinding(finding.tags, finding.reviewers) || gradedByRule(finding, rules) || restatesBlocker(finding, priorRounds, blockingThreads)) return finding;
+  if (finding.severity !== 'blocker' || !raised || grade === 'blocker' || finding.toolSource || finding.lead
+    || isSecurityFinding(finding.tags, finding.reviewers) || restatesBlocker(finding, priorRounds, blockingThreads)) return finding;
   const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r);
   if (agreedOutcome(checks) === 'confirmed' && checks.some(check => confirmsDefect(check, finding))) return finding;
   const reason = `the judge raised it above every finder's grade, and ${checks.length > 0 ? 'no check confirmed the defect' : 'no check ran'}`;
-  core.info(`Posting "${finding.title}" as a ${filed}: ${reason}`);
+  core.info(`Posting "${finding.title}" as a ${grade}: ${reason}`);
   const { cell, ...rest } = finding;
-  return { ...rest, ...gradeStep(finding, filed, 'unconfirmed_raise', reason), ...(cell && { judgeCell: cell }) };
+  return { ...rest, ...gradeStep(finding, grade, 'unconfirmed_raise', reason), ...(cell && { judgeCell: cell }) };
 }
 
 /**

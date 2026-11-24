@@ -2802,9 +2802,9 @@ describe('runJudgeAgent', () => {
         ['Doubted', ...ruled, 'note', undefined, ['The deploy script fails on a model without a migration']],
         ['No line cited', 'note', 'unproven', undefined],
         ['Dropped', 'ignore', 'unproven', 'judge: ignore'],
-        // The cell already gives a blocker, so the rule changes nothing. Without a rule that grades it, the judge's raise
-        // above the finder's note needs a check that confirms the defect, and none ran.
-        ['Real defect too', ...(grade ? ['blocker', 'confirmed', 'judge: blocker'] : ['note', 'confirmed', 'judge: blocker, unconfirmed_raise: note'])],
+        // The judge's raise above the finder's note needs a check that confirms the defect, and none ran, so it goes back
+        // to the note, or no lower than the grade the rule gives. With `block` the rule alone gives the blocker.
+        ['Real defect too', ...(grade === 'blocker' ? ['blocker', 'confirmed', 'judge: blocker'] : [grade ?? 'note', 'confirmed', `judge: blocker, unconfirmed_raise: ${grade ?? 'note'}`])],
         // A rule blocker passes the caps of any blocker, so one that says something is missing without a search is a warning.
         ['Missing without a search', grade ? 'warning' : 'note', 'confirmed', grade === 'blocker' ? 'rule: blocker, unproven: warning' : grade && 'rule: warning'],
         ['No rule quoted', 'note', undefined, undefined],

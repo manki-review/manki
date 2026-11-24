@@ -440,6 +440,12 @@ describe('refuteBlockers', () => {
     });
     expect(capUnconfirmedRaise(restoredRaise('confirmed'), {}).severity).toBe('blocker');
     expect(capUnconfirmedRaise(restoredRaise('unsettled'), {})).toMatchObject({ severity: 'warning', judgeCell: cell });
+    // It takes the exceptions of a disproof: an open lead keeps blocking, and a broken rule goes no lower than the grade
+    // `review.rules` gives, so with `auto` back to the finder's note, with `warn` a warning and with `block` a blocker.
+    const unsure = { outcome: 'unsettled' as const, reason: 'r', files: ['src/math.ts'], codeDigest: 'd' };
+    expect(capUnconfirmedRaise(finding('Open lead', { ...raised(), refutation: unsure, notChecked: true, lead: { checked: 'read src/math.ts:2', left: 'find the callers' } }), {}).severity).toBe('blocker');
+    const ruledRaise = finding('Breaks a rule', { ...raised('note'), refutation: unsure, rule: { file: 'AGENTS.md', quote: 'Every bound must be checked.', verdict: 'confirmed' } });
+    expect((['auto', 'warn', 'block'] as const).map(rules => capUnconfirmedRaise(ruledRaise, { rules }).severity)).toEqual(['note', 'warning', 'blocker']);
   });
 
   it('asks both refuters at the same time', async () => {
