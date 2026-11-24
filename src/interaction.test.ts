@@ -1210,7 +1210,8 @@ describe('handleReviewCommentReply', () => {
   const STAYS_OPEN = `This is a blocking finding, so the thread stays open until ${NEXT_REVIEW} closes it.`;
   const UNPROVEN = 'I could not point to a line of this repository that shows it, so a maintainer should decide and resolve this thread.';
   const noLine = (files: string, since = 'since this was posted') => `I could not point to a line this PR changed in ${files} ${since}. A reply counts a fix only there.`;
-  const REBASED = 'This branch was rebased or force pushed since the finding was posted, so this reply does not settle the thread. The next review checks the fix.';
+  const REBASED = 'This branch was rebased or force pushed since the finding was posted, so this reply does not settle the thread.';
+  const CHECKS_FIX = 'The next review checks the fix.';
   const UNREAD = 'I could not read what this PR changed since the finding was posted.';
   const WHOLE_PUSH = 'The next review after a push checks the whole push, also other files.';
   const CLEARED_BY = 'someone other than the PR author with write access closes it. A PR author can close it only with the `maintain` role or a higher one.';
@@ -1315,7 +1316,7 @@ describe('handleReviewCommentReply', () => {
     expect(since === 'unreadable' || since === 'not_descendant' ? shown.startsWith('Unknown, so no line shows a fix.') : since === '' ? shown.startsWith('None.') : shown.includes('```diff\n')).toBe(true);
     const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.at(-1)![0].body as string;
     expect(body.split('\n\n<!-- manki -->')[0]).toBe(settles ? 'Fixed. The guard now runs first.' : since === 'not_descendant'
-      ? `The guard now runs first. ${REBASED}`
+      ? `The guard now runs first. ${REBASED} ${CHECKS_FIX}`
       : `Unverified. The guard now runs first. ${since === 'unreadable' ? UNREAD : noLine('`src/file.ts`, `src/util.ts`')} ${WHOLE_PUSH}`);
     expect(body.includes('<!-- manki-fixed:')).toBe(settles);
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(settles ? [[octokit, 'PRRT_this', 'ADDRESSED']] : []);
@@ -1416,14 +1417,24 @@ describe('handleReviewCommentReply', () => {
 
   // A branch rebased since the finding was posted gives no line that can prove a fix, so the answer keeps the model's reading
   // and opens with no outcome word: nothing settles, and every reader takes it as an "Unverified.".
-  it.each<[string, FindingKind, { resolved?: boolean; nowhere?: boolean; evidence?: boolean; answer?: string }, string, string]>([
-    ['an open warning thread', 'warning', {}, 'The guard now runs first. ', `\n\n${HOLDS}`],
-    ['an open blocker thread', 'blocker', {}, 'The guard now runs first. ', `\n\nThis is a blocking finding, so the thread stays open until ${REVIEW_OR_CLEARED}`],
+  it.each<[string, FindingKind, { resolved?: boolean; nowhere?: boolean; evidence?: boolean; holds?: boolean; closedFile?: boolean; answer?: string }, string, string]>([
+    ['an open warning thread', 'warning', {}, 'The guard now runs first. ', ` ${CHECKS_FIX}\n\n${HOLDS}`],
+    ['an open blocker thread', 'blocker', {}, 'The guard now runs first. ', ` ${CHECKS_FIX}\n\nThis is a blocking finding, so the thread stays open until ${REVIEW_OR_CLEARED}`],
+    // Only a thread a review is certain to read hears of one: an open one tied to a file.
     ['a resolved blocker thread', 'blocker', { resolved: true }, 'The guard now runs first. ', ''],
+    ['a resolved warning thread that holds nothing', 'warning', { resolved: true, holds: false }, 'The guard now runs first. ', ''],
+    ['a resolved warning thread that still holds', 'warning', { resolved: true }, 'The guard now runs first. ', ` A maintainer should decide.\n\n${HOLDS}`],
+    ['an open warning thread on a closed file', 'warning', { closedFile: true }, 'The guard now runs first. ', ` A maintainer should decide and resolve this thread.\n\n${HOLDS}`],
     ['a blocker tied to no file that cited one', 'blocker', { nowhere: true, evidence: true }, 'The guard now runs first. ', `\n\nThis is a blocking finding, so the thread stays open until ${CLEARED_BY}`],
-    ...['Fixed by the guard.', '**Agreed, the guard runs first.**', 'Withdrawn in effect.', 'kept as before.', 'Unverified so far.', 'Confirmed: the guard runs first.']
-      .map((answer): [string, FindingKind, { answer: string }, string, string] => [`an answer that opens with "${answer}"`, 'warning', { answer }, `My reading: ${answer} `, `\n\n${HOLDS}`]),
-  ])('settles nothing after a rebase and opens with no outcome word: %s', async (_name, kind, { resolved = false, nowhere = false, evidence = false, answer = 'The guard now runs first.' }, opening, notes) => {
+    ['a warning tied to no file that cited one', 'warning', { nowhere: true, evidence: true }, 'The guard now runs first. ', ` A maintainer should decide and resolve this thread.\n\n${HOLDS}`],
+    ...['Fixed by the guard.', '**Agreed, the guard runs first.**', 'Withdrawn in effect.', 'kept as before.', 'Unverified so far.', 'Confirmed: the guard runs first.', '`Fixed`. The guard runs first.']
+      .map((answer): [string, FindingKind, { answer: string }, string, string] => [`an answer that opens with "${answer}"`, 'warning', { answer }, `My reading: ${answer} `, ` ${CHECKS_FIX}\n\n${HOLDS}`]),
+    // Sanitizing uncovers the word, so the opener is read from the text as it is posted.
+    ...['<b>Fixed. The guard runs first.</b>', '&#70;ixed. The guard runs first.', '<!-- note -->Fixed. The guard runs first.', '[Fixed](https://example.com). The guard runs first.', '&lt;b&gt;Fixed. The guard runs first.&lt;/b&gt;', '<i>**Fixed.** The guard runs first.',
+      '&#x46;ixed. The guard runs first.', '![Fixed](https://example.com/a.png). The guard runs first.', '[Fixed][1]. The guard runs first.', '![Fixed][1]. The guard runs first.',
+      '[1]: https://example.com\nFixed. The guard runs first.', '<<b>b>Fixed. The guard runs first.', '--> Fixed. The guard runs first.']
+      .map((answer): [string, FindingKind, { answer: string }, string, string] => [`an answer that sanitizing makes open with an outcome word: ${answer}`, 'warning', { answer }, `My reading: ${answer.includes('**') ? '**Fixed.**' : 'Fixed.'} The guard runs first. `, ` ${CHECKS_FIX}\n\n${HOLDS}`]),
+  ])('settles nothing after a rebase and opens with no outcome word: %s', async (_name, kind, { resolved = false, nowhere = false, evidence = false, holds = kind === 'warning', closedFile = false, answer = 'The guard now runs first.' }, opening, notes) => {
     const text = `${opening}${REBASED}${notes}`;
     setContext({
       comment: { id: 1, body: 'Fixed in abc1234.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'OWNER' },
@@ -1443,11 +1454,11 @@ describe('handleReviewCommentReply', () => {
       isBlocking: kind === 'blocker', ...(kind === 'warning' && { isWarning: true as const }), findingTitle: 'This',
     }]);
     jest.mocked(state.authorResolvedNote).mockResolvedValue(undefined);
-    jest.mocked(state.warningHoldNote).mockResolvedValue(kind === 'warning' ? HOLDS : undefined);
+    jest.mocked(state.warningHoldNote).mockResolvedValue(holds ? HOLDS : undefined);
     jest.mocked(state.resolveReviewThread).mockClear();
     jest.mocked(state.reopenThread).mockClear();
 
-    await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, undefined, CONFIG);
+    await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, undefined, closedFile ? { ...CONFIG, closed_paths: ['src/file.ts'] } : CONFIG);
 
     const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.at(-1)![0].body as string;
     expect(body.split('\n\n<!-- manki -->')[0]).toBe(text);

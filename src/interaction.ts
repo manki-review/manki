@@ -8,14 +8,14 @@ import { messageBox } from './issue-box';
 import { MemoryStore, patternMatchesTitle, writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
 import { BotIdentity, dynamicFence, findingLocation, hasWriteAccess, inline, isBotLogin, isBotUser, MANKI_VERSION, authorClearRole, reactToIssueComment, reactToReviewComment, readChangesSince, fetchPRDiff, sanitizeMarkdown, TooManyFilesError } from './github';
 import { fencePrText, truncateDiff } from './review';
-import { closeRawDiff, diffSections, parsePRDiff, reviewableDiff } from './diff';
+import { closeRawDiff, diffSections, findClosedPattern, parsePRDiff, reviewableDiff } from './diff';
 import { eventPrClosed } from './dispatch';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { clearRecordMarker, fetchPriorRoundContexts, RecapState, fixClaimMarker, guardedKind, isDisprovedThread, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, UNSETTLED_ANSWER_MARKER, currentFindingLine, findingPlace, withoutCode, BOT_PREFIX_PATTERN } from './recap';
 import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, recordDismissal, authorResolvedNote, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, rolePhrase, unclearedThreads, warningHoldNote } from './state';
 import { AuthorClearRole, ParsedDiff, PrContext, RelatedRepoTools, ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation, RoundContext } from './types';
 import { relatedRepoOutcomes, relatedRepoTools, repoTools } from './related-repos';
-import { CheckedReply, MAX_REPLY_STATEMENTS, MAX_TERM_CHARS, MIN_TERM_CHARS, ThreadState, checkFixedElsewhere, checkReply, fixedElsewhereText, leftToMaintainer, statementList, statementRecords, statementSummary } from './reply-check';
+import { CheckedReply, MAX_REPLY_STATEMENTS, MAX_TERM_CHARS, MIN_TERM_CHARS, ThreadState, checkFixedElsewhere, checkReply, fixedElsewhereText, leftToMaintainer, statementList, statementRecords, statementSummary, withoutOutcomeOpener } from './reply-check';
 import { formatReplyRecord } from './review-record';
 import { buildRoundUsage, withReads } from './round-context';
 import { MessageBox } from './settings';
@@ -631,7 +631,7 @@ export async function handleReviewCommentReply(
     // From here on the answer is the plain "Outcome. text" again, so nothing below reads a statement's status.
     const checked = checkReply(response.content, comment.body ?? '', {
       workspace, related, relatedNames, diff, description: prText?.body, repo: `${owner}/${repo}`, pr: prNumber,
-      fixScope: { files: fixFiles.filter(Boolean), hasFile: !!filePath, guarded: !!live && isGuarded(live), ...('unknown' in change && { unknown: change.unknown }), ...(live && 'unknown' in change && change.unknown === 'not_descendant' && { rebased: true as const }), ...(since && since !== root.comment.original_commit_id && { openOn: since }) },
+      fixScope: { files: fixFiles.filter(Boolean), hasFile: !!filePath, guarded: !!live && isGuarded(live), ...('unknown' in change && { unknown: change.unknown }), ...(live && 'unknown' in change && change.unknown === 'not_descendant' && { rebased: { reviewable: !!filePath && !findClosedPattern(filePath, closedSince ?? closedPaths) } }), ...(since && since !== root.comment.original_commit_id && { openOn: since }) },
       ...(sincePosted !== undefined && { changedSincePosted: parsePRDiff(sincePosted).files }),
     });
     const isSecurity = isSecurityThread(findingBody);
@@ -654,9 +654,10 @@ export async function handleReviewCommentReply(
     });
     const fixClaim = elsewhere && !closed ? { pr: checked.fixedIn!, status: 'answer' in elsewhere ? 'confirmed' as const : 'unconfirmed' as const } : undefined;
     // The model read PR content, so its text loses mentions, links, markers and fences before Manki adds its own.
-    const replyIn = (state: ThreadState): string => requireNewProof(highlightCode(sanitizeMarkdown(
-      checked.fixedIn === undefined ? checked.text(state) : fixedElsewhereText(checked, elsewhere, state),
-    ).trim(), codeTokens), findingBody, filePath, relatedNames, state);
+    const replyIn = (state: ThreadState): string => {
+      const shown = highlightCode(sanitizeMarkdown(checked.fixedIn === undefined ? checked.text(state) : fixedElsewhereText(checked, elsewhere, state)).trim(), codeTokens);
+      return checked.unsettled ? withoutOutcomeOpener(shown) : requireNewProof(shown, findingBody, filePath, relatedNames, state);
+    };
     // How the thread ends up changes only what an answer that settles nothing asks for, so any state gives the outcome.
     const reply = replyIn(undefined);
     const outcome = replyOutcome(reply);

@@ -38,11 +38,20 @@ const UNKNOWN_CHANGES: Record<UnknownChange, string> = {
 };
 
 /** Ends an answer whose fix no line can show, since the branch was rebased. */
-const REBASED_ANSWER = 'This branch was rebased or force pushed since the finding was posted, so this reply does not settle the thread. The next review checks the fix.';
+const REBASED_ANSWER = 'This branch was rebased or force pushed since the finding was posted, so this reply does not settle the thread.';
 
-/** Whether `answer` reads as an outcome word of its own, such as "Fixed by the guard", which the readers of a reply would take as one. */
-function opensWithOutcome(answer: string): boolean {
-  return /^(?:fixed|agreed|withdrawn|kept|unverified|confirmed)\b/i.test(answer.replace(/^[^A-Za-z0-9]+/, ''));
+/**
+ * Returns an unsettled answer with a lead-in when it opens with an outcome word, such as "Fixed by the guard", which the
+ * readers of a reply would take as its outcome. `answer` must be the sanitized text, since sanitizing can uncover the word.
+ */
+export function withoutOutcomeOpener(answer: string): string {
+  return /^(?:fixed|agreed|withdrawn|kept|unverified|confirmed)\b/i.test(answer.replace(/^[^A-Za-z0-9]+/, '')) ? `My reading: ${answer}` : answer;
+}
+
+/** Returns the sentences that end an answer after a rebase. Only an open thread whose file a review reads hears of the next one. */
+function rebasedAnswer({ rebased, guarded }: FixScope, thread: ThreadState): string {
+  if (thread === 'open' && rebased?.reviewable) return `${REBASED_ANSWER} The next review checks the fix.`;
+  return thread === 'resolved' || guarded ? REBASED_ANSWER : `${REBASED_ANSWER} A${maintainerShould('decide', thread).slice(1)}.`;
 }
 
 /** How many raw proof entries of the model the reply record keeps, and how much of each. */
@@ -72,8 +81,11 @@ export interface FixScope {
   hasFile: boolean;
   /** Why the change there is not known. Unset when it is. */
   unknown?: UnknownChange;
-  /** Set on an open PR whose branch was rebased or force pushed since the finding was posted. */
-  rebased?: true;
+  /**
+   * Set on an open PR whose branch was rebased or force pushed since the finding was posted. `reviewable` says whether a
+   * review reads the thread's file: it is tied to one, and `closed_paths` does not close that file.
+   */
+  rebased?: { reviewable: boolean };
   /** The commit of the round that still found the thread open, when the change counts from there. */
   openOn?: string;
   /** Whether the thread is a blocking or security one. What clears it is said apart from this answer. */
@@ -150,10 +162,11 @@ export interface CheckedStatement {
 export interface CheckedReply {
   /**
    * Returns the answer as "Outcome. text", which is what the reply handler goes on with. `thread` decides only what an
-   * "Unverified." asks a maintainer for. An `unsettled` answer opens with no outcome word.
+   * "Unverified." asks a maintainer for. An `unsettled` answer is the model's own
+   * text, which `withoutOutcomeOpener` has to check once it is sanitized.
    */
   text: (thread: ThreadState) => string;
-  /** Whether `text` opens with no outcome word, for an unproven fix on a rebased branch. Its readers take it as "Unverified." */
+  /** Set for an unproven fix on a rebased branch, whose `text` names no outcome. The readers of the reply take it as "Unverified." */
   unsettled?: true;
   /** The outcome `text` opens with. */
   outcome: AnswerOutcome;
@@ -346,11 +359,9 @@ export function checkReply(content: string, developerReply: string, sources: Rep
     : unproven ? ` ${leftToMaintainer(UNPROVEN_OUTCOME, thread)}`
     : outcome === 'FixedElsewhere' ? ` ${leftToMaintainer(NO_FIXING_PR, thread)}`
       : outcome === 'Unverified' && thread !== 'resolved' ? ` A${maintainerShould('confirm this', thread).slice(1)}.` : '';
-  const unsettled = unproven && outcome === 'Fixed' && !!sources.fixScope?.rebased && sources.fixScope.files.length > 0;
+  const unsettled = unproven && outcome === 'Fixed' && sources.fixScope?.rebased && sources.fixScope.files.length > 0 ? sources.fixScope : undefined;
   return {
-    text: thread => unsettled
-      ? `${opensWithOutcome(answer) ? 'My reading: ' : ''}${answer} ${REBASED_ANSWER}`
-      : `${settled}. ${answer}${note(thread)}`,
+    text: thread => unsettled ? `${answer} ${rebasedAnswer(unsettled, thread)}` : `${settled}. ${answer}${note(thread)}`,
     ...(unsettled && { unsettled: true as const }),
     outcome: settled,
     modelOutcome: outcome,

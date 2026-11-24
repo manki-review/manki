@@ -235,7 +235,7 @@ describe('checkReply', () => {
     expect(checkReply(JSON.stringify({ outcome, answer: `${outcome}. The exporter writes CSV.`, proof, statements }), REPLY, sources).text(undefined)).toBe(text);
     // A rebase rewords only an unproven "Fixed.".
     const rebased = checkReply(JSON.stringify({ outcome, answer: `${outcome}. The exporter writes CSV.`, proof, statements }), REPLY, {
-      ...sources, fixScope: { files: ['src/ledger.rs'], hasFile: true, guarded: false, unknown: 'not_descendant', rebased: true },
+      ...sources, fixScope: { files: ['src/ledger.rs'], hasFile: true, guarded: false, unknown: 'not_descendant', rebased: { reviewable: true } },
     });
     const reworded = outcome === 'Fixed' && text.startsWith('Unverified.');
     expect(rebased.unsettled).toBe(reworded || undefined);
