@@ -4605,8 +4605,8 @@ describe('runReview', () => {
         ['Both finders found it', 'warning', undefined, undefined],
         ['Restates a thread', 'warning', undefined, undefined],
         ['Breaks a rule', 'warning', undefined, undefined],
-        // A warning the judge held in a blocker cell goes to a note like any other declined warning.
-        ['Held blocker cell', 'note', true, 'the other finder named no harm in realistic use'],
+        // A vote lowers a finding one step below its cell at most, so a blocker cell held at a warning stays posted.
+        ['Held blocker cell', 'warning', true, undefined],
         ['Quote nearby', 'warning', false, undefined],
         ['Unreadable file', 'warning', undefined, undefined],
         // A check confirms the code path, not the harm, so a confirmed blocker the other finder declines still becomes a warning.
