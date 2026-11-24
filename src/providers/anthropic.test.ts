@@ -6,6 +6,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
 import { AnthropicClient, buildAnthropicAuth, CLAUDE_CLI_VERSION, extractAnthropicCLIUsage, readClaudeLimits, STALE_TIMEOUT_MS } from './anthropic';
+import { parseJudgeResponse } from '../judge';
 import { runnerDiagnostics } from '../run-diagnostics';
 import { installPinned } from '../tool-install';
 import { RelatedRepoTools } from '../types';
@@ -740,6 +741,70 @@ describe('sendViaOAuth — error paths', () => {
     expect(tailWarning!.endsWith('Let me walk through every file, token [REDACTED], then')).toBe(true);
     expect(tailWarning!.length).toBeLessThanOrEqual('Claude CLI reply ended with: '.length + 2000);
     warnSpy.mockRestore();
+  });
+
+  it('joins a reply the CLI went on with after the output limit cut a message', async () => {
+    // The events the pinned CLI streams: it asks a cut message to go on, and its `result` holds the last message only.
+    const message = (text: string, stopReason: string) => [
+      { type: 'stream_event', event: { type: 'message_start', message: { usage: { input_tokens: 100 } } } },
+      { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } } },
+      { type: 'stream_event', event: { type: 'message_delta', delta: { stop_reason: stopReason } } },
+      { type: 'stream_event', event: { type: 'message_stop' } },
+    ];
+    const goOn = { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'Output token limit hit. Resume directly' }] } };
+    const send = async (messages: [string, string][], end: object = {}) => {
+      const events = [...messages.flatMap(([text, stopReason], i) => [...(i > 0 ? [goOn] : []), ...message(text, stopReason)]), { type: 'result', subtype: 'success', is_error: false, stop_reason: 'end_turn', result: messages.at(-1)![0], ...end }];
+      setupSpawnMock({ stdout: `${events.map(e => JSON.stringify(e)).join('\n')}\n`, rawStdout: true });
+      return new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-5-5' }).sendMessage('sys', 'user');
+    };
+    const entry = (id: number) => ({ id, title: `Finding ${id}`, row: 'none', reasoning: 'r', proof: ['a.ts:1', 'b.ts:2', 'c.ts:3'] });
+    const reply = JSON.stringify({ summary: 's', findings: [1, 2, 3].map(entry), threadEvaluations: [] });
+    const cutAt = (id: number) => reply.indexOf(`"Finding ${id}"`) + 4;
+    const [head, middle, tail] = [reply.slice(0, cutAt(2)), reply.slice(cutAt(2), cutAt(3)), reply.slice(cutAt(3))];
+    // The first whole value in the last message alone is the proof list of one entry, so it grades no finding.
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    expect(parseJudgeResponse(tail, undefined).findings).toEqual([]);
+    expect(warnSpy).toHaveBeenCalledTimes(3);
+    warnSpy.mockRestore();
+
+    const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
+    const joined = await send([[head, 'max_tokens'], [middle, 'max_tokens'], [tail, 'end_turn']]);
+    expect(joined).toMatchObject({ content: reply, truncated: false });
+    expect(parseJudgeResponse(joined.content, undefined).findings.map(f => f.id)).toEqual([1, 2, 3]);
+    expect(infoSpy).toHaveBeenLastCalledWith(expect.stringContaining('joined with the cut text'));
+    // A fence or prose around the cut answer is no part of it.
+    const fenced = `\`\`\`json\n${reply}\n\`\`\``;
+    const at = (text: string): [string, string][] => [[text.slice(0, text.indexOf('"Finding 2"')), 'max_tokens'], [text.slice(text.indexOf('"Finding 2"')), 'end_turn']];
+    for (const text of [fenced, `My grades:\n${fenced}\nThat is all.`, `Grades for [42 findings]:\n${fenced}\nSee [1].`]) expect((await send(at(text))).content).toBe(reply);
+    // Every other last message stands alone, so the reply is never read worse than without the cut text.
+    const alone = [
+      reply, fenced, `I start over.\n${fenced}`, `${fenced}\nThat covers all findings.`,
+      // It goes on with text that does not fit the cut, opens a fence of its own, or leaves the answer open.
+      `"row":${tail}`, `\`\`\`json\n${middle}${tail}\n\`\`\``, middle, 'Done.',
+    ];
+    for (const last of alone) {
+      expect((await send([[head, 'max_tokens'], [last, 'end_turn']])).content).toBe(last);
+      expect(infoSpy).toHaveBeenLastCalledWith(expect.stringContaining('only its last message is read'));
+    }
+    // A restart that was cut in its turn does not fit the first cut text either.
+    expect((await send([[head, 'max_tokens'], [head, 'max_tokens'], [middle + tail, 'end_turn']])).content).toBe(middle + tail);
+    // The cut text holds no JSON: the message was cut while thinking or in prose.
+    for (const cut of ['', 'Let me go through the findings']) {
+      infoSpy.mockClear();
+      expect((await send([[cut, 'max_tokens'], [reply, 'end_turn']])).content).toBe(reply);
+      expect(infoSpy).toHaveBeenLastCalledWith(expect.stringContaining('only its last message is read'));
+    }
+    // A whole answer before the cut is not read when the last message adds only prose, which may take it back.
+    expect((await send([[`${reply} That is`, 'max_tokens'], [' a draft.', 'end_turn']])).content).toBe('a draft.');
+    expect((await send([['The fix is', 'max_tokens'], [' right.', 'end_turn']])).content).toBe('right.');
+    // Only the messages right before the answer were cut inside it.
+    expect((await send([[head, 'max_tokens'], ['', 'tool_use'], [middle + tail, 'end_turn']])).content).toBe(middle + tail);
+    // Without a `result` text, the streamed text already holds every message.
+    expect((await send([[head, 'max_tokens'], [middle + tail, 'end_turn']], { result: '' })).content).toBe(reply);
+    // An error result is no part of the answer.
+    const failed = 'API Error: 529 {"type":"error"}';
+    expect((await send([[head, 'max_tokens'], [middle, 'max_tokens']], { result: failed, is_error: true })).content).toBe(failed);
+    infoSpy.mockRestore();
   });
 
   it('silently skips non-JSON lines (e.g. verbose debug output)', async () => {
