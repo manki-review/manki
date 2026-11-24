@@ -33,8 +33,9 @@ describe('withVote', () => {
     expect(withVote(disproved, declined)).toBe(disproved);
     const unguarded = finding({ gradePath: [{ from: 'blocker', to: 'warning', by: 'refutation' }] });
     expect(withVote(unguarded, declined)).toBe(unguarded);
-    // A blocker cell held at a warning for its one finder keeps it as `judgeCell` once disproved, and stays posted.
-    expect(withVote(finding({ judgeCell: { row: 'wrong', column: 'normal' } }), declined).severity).toBe('warning');
+    // A warning the judge held in a blocker cell goes to a note like any other warning, whether it holds the cell as `cell` or `judgeCell`.
+    expect(withVote(finding({ cell, gradeIfConfirmed: 'blocker' }), declined).severity).toBe('note');
+    expect(withVote(finding({ judgeCell: cell }), declined).severity).toBe('note');
 
     // A rule the refuter confirmed after the vote was asked gives the finding its grade.
     const rule = { file: 'AGENTS.md', quote: 'Every export is logged.', verdict: 'confirmed' as const };
