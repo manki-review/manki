@@ -771,6 +771,47 @@ describe('refuteBlockers', () => {
       return [checkedBreak.severity, checkedBreak.refutation?.outcome, ruleClient.messages[0][1].includes('- **Graded by a rule of the instruction files**: a confirmation needs no `trigger` or `result`')];
     };
     expect([await byMode('block'), await byMode('warn'), await byMode('auto')]).toEqual([['blocker', 'confirmed', true], ['warning', 'unsettled', false], ['warning', 'unsettled', false]]);
+    // A blocker the judge graded above the rule's grade rests on its damage, so a bare confirmation keeps nothing under `warn`.
+    const judgeRaised = finding('Rule break', { severity: 'blocker', gradePath: [{ from: 'warning', to: 'blocker', by: 'judge' }], rule });
+    const byJudgeMode = async (rules: RulesMode) => {
+      const ruleClient = fakeClient(bare);
+      const [checkedBreak] = await refuteBlockers(ruleClient, [judgeRaised], { workspace, diff, rules });
+      return [checkedBreak.refutation?.outcome, ruleClient.messages[0][1].includes('- **Graded by a rule of the instruction files**')];
+    };
+    expect([await byJudgeMode('block'), await byJudgeMode('warn')]).toEqual([['confirmed', true], ['unsettled', false]]);
+    // Each top-level answer beside a disproved premise. A disproved drop premise brings the finding back whatever the
+    // top-level answer, unless the check disproves the defect itself. A disproved defect premise contradicts a confirmation
+    // with or without its lines, so only an answer that is no confirmation turns into a disproof.
+    const dropPremise = { premise: 'Every caller bounds both inputs of `add`', decides: 'drop' as const };
+    const kinds = {
+      drop: {
+        severity: 'ignore' as const, reviewerSeverity: 'blocker' as const, gradePath: [{ from: 'blocker' as const, to: 'ignore' as const, by: 'judge' as const }],
+        cell: { row: 'severe' as const, column: 'normal' as const }, gradeIfConfirmed: 'blocker' as const, doubts: [dropPremise],
+      },
+      defect: { severity: 'warning' as const, gradeIfConfirmed: 'blocker' as const, doubts: [exists] },
+    };
+    const answers = {
+      'confirmed with lines': confirmed('src/math.ts:2'),
+      'confirmed without lines': { ...confirmed('src/math.ts:2'), trigger: { reason: 't', proof: [] }, result: { reason: 'r', proof: [] } },
+      unsettled: { outcome: 'unsettled', reason: 'Could not tell.' },
+      disproved: { outcome: 'disproved', reason: 'Bounded.', proof: ['src/math.ts:1'] },
+    };
+    const cells = Object.keys(kinds).flatMap(kind => Object.keys(answers).map(answer => `${kind} premise, ${answer}`));
+    const matrixClient = fakeClient(Object.fromEntries(cells.map(title => {
+      const answer = answers[title.split(', ')[1] as keyof typeof answers];
+      return [title, { ...answer, premises: [{ outcome: 'disproved', reason: 'A queue consumer passes `a` unbounded.', proof: ['src/api.ts:4'] }] }];
+    })));
+    const matrix = await refuteBlockers(matrixClient, cells.map(title => finding(title, kinds[title.split(' ')[0] as keyof typeof kinds])), { workspace, diff });
+    expect(matrix.map(f => [f.title, f.severity, f.refutation && outcomeOf(f.refutation)])).toEqual([
+      ['drop premise, confirmed with lines', 'blocker', 'confirmed'],
+      ['drop premise, confirmed without lines', 'blocker', 'confirmed'],
+      ['drop premise, unsettled', 'blocker', 'confirmed'],
+      ['drop premise, disproved', 'ignore', 'disproved'],
+      ['defect premise, confirmed with lines', 'warning', 'unsettled'],
+      ['defect premise, confirmed without lines', 'warning', 'unsettled'],
+      ['defect premise, unsettled', 'ignore', 'disproved'],
+      ['defect premise, disproved', 'ignore', 'disproved'],
+    ]);
     expect(result[0].refutation).toMatchObject({
       proof: ['src/math.ts:2', 'src/api.ts:4'],
       premises: [{ premise: 'No caller bounds `a`', outcome: 'confirmed', reason: 'It holds.', proof: ['src/math.ts:2'] }, { premise: REACH_DOUBT.premise, outcome: 'confirmed', reason: 'It holds.', proof: ['src/api.ts:4'] }],

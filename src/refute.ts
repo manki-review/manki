@@ -252,14 +252,14 @@ function findingKind(finding: Finding): string {
 
 /**
  * Whether a confirmation of `finding` states no failure, so it needs no `trigger` or `result`: the scope reader's doubt,
- * or a finding `rules` grades by the rule the judge confirmed it breaks, when no confirmation gives it a grade above the
- * one the rule gives.
+ * or a finding `rules` grades by the rule the judge confirmed it breaks, while neither its grade nor the grade a
+ * confirmation gives it is above the one the rule gives.
  */
 function statesNoFailure(finding: Finding, rules?: RulesMode): boolean {
   if (finding.reviewers.includes(SCOPE_READER_NAME)) return true;
   const ruled = ruleGrade(rules);
   const raised = confirmedGrade(finding);
-  return !!ruled && breaksRule(finding) && (!raised || rank(raised) >= rank(ruled));
+  return !!ruled && breaksRule(finding) && rank(finding.severity) >= rank(ruled) && (!raised || rank(raised) >= rank(ruled));
 }
 
 function buildRefuteMessage(finding: Finding, usesOutsideDiff = '', outsideInput = '', diff?: ParsedDiff, rules?: RulesMode): string {
@@ -363,8 +363,10 @@ function parseRefutation(text: string, workspace: string, finding: Finding, diff
       };
     });
     // The refuter's own answer decides whether the check contradicts itself, so storing it unsettled never makes a disproof.
+    // Only a confirmation that rests on unstated outside behavior also keeps its premises from confirming. One without
+    // trigger and result lines counts as no confirmation, so its premises decide as beside an unsettled answer.
     const added = premisesOutcome(finding.doubts, premises, stated, finding.rule?.unseen);
-    outcome = added === 'confirmed' && defect !== stated ? 'unsettled' : added;
+    outcome = added === 'confirmed' && defect !== answered ? 'unsettled' : added;
     // A disproof cites only what disproves the defect, never lines that confirmed a premise or the defect.
     const doubts = finding.doubts;
     const disproved = outcome === 'disproved' || defect === 'disproved';
