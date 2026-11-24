@@ -41,6 +41,8 @@ export const CASE_DIRS: Record<CaseSet, string> = { tuning: 'bench/cases', holdo
 const DEFAULT_MATCHER_MODEL = 'claude-sonnet-5-5';
 /** The outcome of a run that got no review because the config of its case does not load. */
 const CONFIG_INVALID = 'CONFIG_INVALID';
+// A variant whose name ends in this gives the voters of a replay repository tools.
+const VOTE_TOOLS_SUFFIX = '-vote-tools';
 const MAX_MATCHER_DESCRIPTION = 2000;
 const MATCHER_TIMEOUT_MS = 300_000;
 /** The model calls a replay of the stored answers makes, by the last stage whose answers it keeps. */
@@ -2092,7 +2094,7 @@ export async function runBench(cases: BenchCase[], options: BenchOptions): Promi
             ...(benchCase.priorRound && { earlier: benchCase.priorRound }),
             // Only a case with related repos needs a date, so a change that cannot be dated fails no other case.
             ...(config.related_repos?.length && { relatedReposAsOf: await changeDate(checkouts.get(benchCase.repo)!, benchCase) }),
-            providerInputs: options.providerInputs, signal: options.signal, answers, ...(stored && { replay: stored.replay }),
+            providerInputs: options.providerInputs, signal: options.signal, answers, ...(stored && { replay: { ...stored.replay, ...(variant.name.endsWith(VOTE_TOOLS_SUFFIX) && { voteTools: true as const }) } }),
             // The case's own config replaces the repository's. Without one, the overrides are set on the repository's.
             ...(benchCase.config ? { config } : Object.keys(variant.overrides).length > 0 && { configOverrides: variant.overrides }),
           });

@@ -55,13 +55,13 @@ describe('a replay of the vote', () => {
     const cite = { reason: 'Any call.', proof: ['src/a.ts:5'] };
     jest.mocked(createLLMClient).mockImplementation((_provider, model) => ({
       repoTools: true,
-      sendMessage: jest.fn(async (system: string, message: string) => {
+      sendMessage: jest.fn(async (system: string, message: string, options?: { repoTools?: unknown }) => {
         const stage = STAGES.find(([head]) => system.startsWith(head))?.[1] ?? (message.includes('## Findings to Evaluate') ? 'judge' : `other: ${system.slice(0, 60)}`);
-        calls.push(stage);
+        calls.push(stage === 'vote' && options?.repoTools ? 'vote with tools' : stage);
         const reply = (value: unknown) => ({ content: JSON.stringify(value), model, latencyMs: 10 });
         if (stage === 'vote') {
           if (more.failVote && message.includes(`Claim: ${more.failVote}`)) throw new TimeoutError('Claude CLI timed out after 120s');
-          return reply({ harm: 'h', situation: 's', line: 'none', quote: '', trigger: { reason: 'r', line: 'none', quote: '' }, result: { reason: 'r', line: 'none', quote: '' } });
+          return reply({ harm: 'h', situation: 's', line: 'none', quote: '', trigger: 'rare', reached_by: 'Any call.', reached_at: 'src/a.ts:5' });
         }
         if (stage === 'refuter') return reply({ outcome: 'confirmed', reason: 'Real.', proof: ['src/a.ts:5'], trigger: cite, result: cite, premises: [1, 2, 3].map(id => ({ id, outcome: 'confirmed', ...cite })) });
         if (stage === 'origin check') return reply({ origin: 'introduced', reason: 'New.', head: ['src/a.ts:5'] });
@@ -161,6 +161,12 @@ describe('a replay of the vote', () => {
       expect(arm.complete).toBe(true);
       expect(calls).toEqual(['vote', 'vote']);
       expect(arm.votes!.map(v => [v.title, v.grade, v.after])).toEqual([['First blocker', 'blocker', 'warning'], ['Second warning', 'warning', 'note']]);
+      expect(arm.votes!.map(v => [v.reply!.trigger, v.reply!.reachedBy, v.reply!.reachedAt])).toEqual([['rare', 'Any call.', 'src/a.ts:5'], ['rare', 'Any call.', 'src/a.ts:5']]);
+      // The bench workflow passes no flag for it, so the variant's name gives the voters tools.
+      writeFileSync(join(dir, 'empty.yml'), '{}\n');
+      const withTools = await bench('recorded.json', 'tools.json', '--replay-refuter', '--variant', `base-vote-tools=${join(dir, 'empty.yml')}`);
+      expect(withTools.complete).toBe(true);
+      expect(calls).toEqual(['vote with tools', 'vote with tools']);
     } finally {
       process.env = env;
       rmSync(dir, { recursive: true, force: true });

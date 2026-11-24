@@ -1153,6 +1153,19 @@ export interface VoteCall {
   error?: string;
 }
 
+/** The voter's answer as it gave it, before the code reads its line. The trigger fields change no grade. */
+export interface VoteReply {
+  harm: string;
+  situation: string;
+  line: string;
+  quote: string;
+  /** How what the claim says goes wrong is reached, as the voter classed it. Unset when the answer gave no known class. */
+  trigger?: 'ordinary' | 'rare' | 'contrived';
+  /** The caller or the input that reaches it, and its line as `path:line` or `none`. Unset when the answer gave none. */
+  reachedBy?: string;
+  reachedAt?: string;
+}
+
 /** How Manki asked for the vote on one finding. A finding that gets no vote by rule has none. */
 export interface VoteLog {
   title: string;
@@ -1167,6 +1180,8 @@ export interface VoteLog {
   calls: VoteCall[];
   /** `unreadable` when the head could not read a named file, and `no_answer` when no call gave a usable reply. */
   answer: 'backs' | 'declines' | 'not_shown' | 'unreadable' | 'no_answer' | 'unknown_read';
+  /** Unset when no call gave a usable reply. */
+  reply?: VoteReply;
 }
 
 /** The answer of a finder that did not report a `soleFinder` finding, asked for the harm the finding causes. */
@@ -2644,6 +2659,8 @@ export interface FinderReplay {
   fixes?: RoundFix[];
   /** The model of each second read, without which no vote is asked on what only that read reported. */
   reads?: Array<Pick<RoundSecondRead, 'reviewer' | 'model'>>;
+  /** Whether a vote gets read-only repository tools. */
+  voteTools?: true;
 }
 
 /** Round-cap accounting captured at the moment a round was admitted. */

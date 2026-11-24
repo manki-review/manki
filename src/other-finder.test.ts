@@ -80,7 +80,26 @@ describe('otherFinderVotes', () => {
       expect(logs).toEqual([{
         title: 'Totals drift', file: 'src/a.ts', line: 3, grade: 'warning', finder: 'Finder B', model: 'sol', answer: 'declines',
         calls: [{ outcome: 'answered', durationMs: 4000, model: 'claude-opus-5-5', toolSteps: 0, costUsd: expect.any(Number) }],
+        reply: { harm: '', situation: '', line: 'none', quote: '' },
       }]);
+
+      // The log keeps the trigger the voter named. A class it does not know is left out, and neither that nor any class changes the vote.
+      const said = async (more: Record<string, unknown>, tools = true, repoTools = false) => {
+        const kept: VoteLog[] = [];
+        const voter = { repoTools, sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify({ harm: 'h', situation: 's', line: 'src/a.ts:3', quote: 'total += 1;', ...more }) }) } as unknown as LLMClient;
+        const [cast] = await otherFinderVotes([finding({})], { workspace, restates: () => false, tools, onVote: log => kept.push(log), finders: [{ name: 'Finder A', model: 'opus', client: client() }, { name: 'Finder B', model: 'sol', client: voter }] });
+        const [system, , options] = jest.mocked(voter.sendMessage).mock.calls[0];
+        const { trigger, reachedBy, reachedAt } = kept[0].reply!;
+        return { answer: kept[0].answer, log: [trigger, reachedBy, reachedAt], vote: cast && Object.keys(cast), asked: [system.includes('Open the code you need with your tools'), system.includes('You have no tools'), options], calls: kept[0].calls.length };
+      };
+      const named = await said({ trigger: 'contrived', reached_by: ' A test calls it. ', reached_at: 'src/a.ts:1' });
+      expect(named).toEqual({ answer: 'backs', log: ['contrived', 'A test calls it.', 'src/a.ts:1'], vote: ['finder', 'harm', 'situation', 'line', 'quote', 'declined'], asked: [false, true, { timeoutMs: 120_000 }], calls: 1 });
+      expect(await said({ trigger: 'unheard of', reached_by: 3 })).toEqual({ ...named, log: [undefined, undefined, undefined] });
+      expect((await said({ line: 'none', quote: '', trigger: 'rare' })).answer).toBe('declines');
+      expect(await said({ line: 'not_shown', quote: '', trigger: 'ordinary' })).toMatchObject({ answer: 'not_shown', log: ['ordinary', undefined, undefined], vote: undefined });
+      // Only a replay that asks for tools gives them, and only to a client that has them.
+      expect((await said({}, true, true)).asked).toEqual([true, false, { timeoutMs: 240_000, repoTools: { root: workspace, steps: 8, checking: true } }]);
+      expect((await said({}, false, true)).asked).toEqual([false, true, { timeoutMs: 120_000 }]);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
