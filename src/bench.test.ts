@@ -1033,7 +1033,10 @@ describe('runBench and buildReport', () => {
   }, GIT_TEST_TIMEOUT_MS);
 
   it('tries the matcher again before giving up a finished review, and keeps the review unscored for a later scoring when it gives up', async () => {
-    const review = jest.fn(async (_input: LocalReviewInput) => makeReview('ADDRESS_FIRST', [blocker], true, rawRecord([{ title: 'Raw' }], [blocker])));
+    const review = jest.fn(async (input: LocalReviewInput) => {
+      await input.answers!.askCheck('refutation', 'A finding', { message: 'm' }, async () => ({ status: 'confirmed' }));
+      return makeReview('ADDRESS_FIRST', [blocker], true, rawRecord([{ title: 'Raw' }], [blocker]));
+    });
     let calls = 0;
     const flaky: Matcher = async () => {
       if (calls++ === 0) throw new Error('bad reply');
@@ -1053,7 +1056,7 @@ describe('runBench and buildReport', () => {
     expect(failed.runs[0].findings).toEqual([{ severity: 'blocker', title: 'A finding', file: 'src/read.rs', line: 1, description: 'Something.', route: { finderGrade: 'blocker', raisedBy: ['finder'] } }]);
     expect(review).toHaveBeenCalledTimes(2);
     // The run keeps what a replay and a later scoring read, and the summary says that it is unscored.
-    expect(failed.runs[0]).toMatchObject({ unscored: {}, replay: { planner: null, finders: ['reviewer'], answers: { translate: null, dedup: null, judge: null } } });
+    expect(failed.runs[0]).toMatchObject({ unscored: {}, replay: { planner: null, finders: ['reviewer'], answers: { translate: null, dedup: null, judge: null, checks: [{ call: 'refutation', answer: { status: 'confirmed' } }] } } });
     expect(failed.runs[0].raw).toMatchObject({ findings: [expect.objectContaining({ title: 'Raw' })], matches: [], unscored: true, error: 'no such model' });
     const report = buildReport({ startedAt: '2026-11-24T00:00:00.000Z', runsPerCase: 1, matcherModel: 'model-a' }, [{ variant: { name: 'base', overrides: {} }, results: [failed] }]);
     expect(formatBenchSummary(report)).toContain('  run 1: ADDRESS_FIRST: no such model (unscored: the review completed, and `--rescore` scores it without a new review)\n');
@@ -1094,6 +1097,15 @@ describe('runBench and buildReport', () => {
     review.mockImplementation(async () => makeReview('ADDRESS_FIRST', [blocker]));
     await runBench([benchCase], { ...options, matcher: flaky, findingsFrom: { ...report, commit: SHA_C } });
     expect(review.mock.calls[0][0].replay).toMatchObject({ finders: ['reviewer'], findings: [expect.objectContaining({ title: 'Raw' })] });
+    // With the refuter's answers kept, the replay gets the stored one and makes no such call.
+    const live = jest.fn();
+    review.mockImplementationOnce(async (input: LocalReviewInput) => {
+      expect(await input.answers!.askCheck('refutation', 'A finding', { message: 'm' }, live)).toEqual({ status: 'confirmed' });
+      return makeReview('ADDRESS_FIRST', [blocker]);
+    });
+    const [{ results: [replayed] }] = await runBench([benchCase], { ...options, matcher: flaky, findingsFrom: { ...report, commit: SHA_C }, replayLevel: 'refuter' });
+    expect(replayed.runs[0]).toMatchObject({ complete: true });
+    expect(live).not.toHaveBeenCalled();
     // A review that did not complete keeps no such data.
     review.mockResolvedValueOnce(makeReview('INCOMPLETE', [blocker], false, rawRecord([{ title: 'Raw' }], [blocker])));
     const [{ results: [incomplete] }] = await runBench([benchCase], { ...options, matcher: broken });
@@ -1627,6 +1639,15 @@ describe('mergeReports and gateReports', () => {
     expect(gateReports([baseline, again(baseline)], [report([[first, [await run(first, 'blocker', 0, false)]], [second, [await run(second, 'blocker')]]])])[0]).toMatchObject({
       verdict: 'NO DECISION', reason: 'The candidate has incomplete reviews on demo-1. A run with incomplete reviews does not count, so run that side again.',
     });
+    // An unscored run needs a later scoring and no new review, unless its case also holds a run that does.
+    const unscored = async () => ({ ...await run(first, 'blocker', 0, false), unscored: {} });
+    const rescore = 'The review of an unscored run completed, so it needs no new run. Score the reports of that side again with `manki bench --rescore <report.json> --holdout`.';
+    const side = async (firstRuns: Run[], complete = true) => report([[first, firstRuns], [second, [await run(second, 'blocker', 0, complete)]]]);
+    const reasonOf = (base: BenchReport, candidate: BenchReport) => gateReports([base, again(base)], [candidate])[0];
+    expect(reasonOf(baseline, await side([await run(first, 'blocker'), await unscored()]))).toMatchObject({ verdict: 'NO DECISION', reason: `The candidate has unscored runs on demo-1. ${rescore}` });
+    expect(reasonOf(await side([await unscored()]), baseline)).toMatchObject({ verdict: 'NO DECISION', reason: `The baseline has unscored runs on demo-1. ${rescore}` });
+    expect(reasonOf(baseline, await side([await unscored(), await run(first, 'blocker', 0, false)])).reason).toBe('The candidate has incomplete reviews on demo-1. A run with incomplete reviews does not count, so run that side again.');
+    expect(reasonOf(baseline, await side([await unscored()], false)).reason).toBe(`The candidate has incomplete reviews on demo-2. A run with incomplete reviews does not count, so run that side again. The candidate has unscored runs on demo-1. ${rescore}`);
     const unloadable = report([[first, [{ ...await run(first, 'blocker', 0, false), outcome: 'CONFIG_INVALID' }]], [second, [await run(second, 'blocker', 0, false)]]]);
     expect(gateReports([baseline, again(baseline)], [unloadable])[0]).toMatchObject({
       verdict: 'NO DECISION',

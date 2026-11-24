@@ -1570,7 +1570,7 @@ function itemCount(items: GateItem[]): string {
 
 /**
  * Applies the release gate to each variant both sides scored, on the hold-out cases both scored with the same key
- * version. A side with an incomplete review, or a case whose config does not load, decides nothing, and so does a
+ * version. A side with an incomplete review or an unscored run, or a case whose config does not load, decides nothing, and so does a
  * baseline with fewer than `GATE_RUNS` runs per case. Each case pools the runs of every report of a side that holds it.
  * A key item that every baseline run gets right and no candidate run does asks for a rerun of its case on both sides,
  * and fails once both sides have more than `GATE_RUNS` runs of it. An item that only some runs of a side get right is
@@ -1612,15 +1612,18 @@ export function gateReports(baseline: BenchReport[], candidate: BenchReport[]): 
     const runsOf = (side: VariantReport[], id: string) => casesOf(side, id).flatMap(c => c.runs);
     const unloadable = (side: VariantReport[]) => shared.filter(id => runsOf(side, id).some(run => run.outcome === CONFIG_INVALID));
     const incomplete = (side: VariantReport[]) => shared.filter(id => !unloadable(side).includes(id)
-      && casesOf(side, id).some(c => c.runs.length === 0 || c.runs.some(run => !run.complete)));
+      && casesOf(side, id).some(c => c.runs.length === 0 || c.runs.some(run => !run.complete && !run.unscored)));
+    const unscored = (side: VariantReport[]) => shared.filter(id => ![...unloadable(side), ...incomplete(side)].includes(id) && runsOf(side, id).some(run => run.unscored));
     const listed = (ids: (side: VariantReport[]) => string[], sentence: (side: string, ids: string) => string) =>
       ([['baseline', ids(base)], ['candidate', ids(cand)]] as const).filter(([, found]) => found.length > 0).map(([side, found]) => sentence(side, found.join(', ')));
     const noConfig = listed(unloadable, (side, ids) => `The ${side} has no review of ${ids}, because the case's config does not load.`);
     const noReview = listed(incomplete, (side, ids) => `The ${side} has incomplete reviews on ${ids}.`);
-    if (noConfig.length > 0 || noReview.length > 0) {
+    const noScore = listed(unscored, (side, ids) => `The ${side} has unscored runs on ${ids}.`);
+    if (noConfig.length > 0 || noReview.length > 0 || noScore.length > 0) {
       const reason = [
         ...noConfig, ...(noConfig.length > 0 ? ['Another run changes nothing until each such case holds a `config:` that loads.'] : []),
         ...noReview, ...(noReview.length > 0 ? ['A run with incomplete reviews does not count, so run that side again.'] : []),
+        ...noScore, ...(noScore.length > 0 ? ['The review of an unscored run completed, so it needs no new run. Score the reports of that side again with `manki bench --rescore <report.json> --holdout`.'] : []),
       ].join(' ');
       return { variant: name, verdict: 'NO DECISION', reason, shared, ...keyed };
     }
@@ -2076,7 +2079,7 @@ export async function runBench(cases: BenchCase[], options: BenchOptions): Promi
         try {
           const config = await load(benchCase, variant.overrides);
           const stored = replays?.[i % replays.length];
-            answers = new AnswerStore(stored?.answers, options.replayLevel);
+          answers = new AnswerStore(stored?.answers, options.replayLevel);
           local = await review({
             repoRoot: checkouts.get(benchCase.repo)!, base: benchCase.base, head: benchCase.head, title: benchCase.title, body: benchCase.body,
             ...(benchCase.priorRound && { earlier: benchCase.priorRound }),
