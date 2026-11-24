@@ -37,6 +37,14 @@ const UNKNOWN_CHANGES: Record<UnknownChange, string> = {
   unreadable: 'I could not read what this PR changed since the finding was posted.',
 };
 
+/** Ends an answer whose fix no line can show, since the branch was rebased. */
+const REBASED_ANSWER = 'This branch was rebased or force pushed since the finding was posted, so this reply does not settle the thread. The next review checks the fix.';
+
+/** Whether `answer` reads as an outcome word of its own, such as "Fixed by the guard", which the readers of a reply would take as one. */
+function opensWithOutcome(answer: string): boolean {
+  return /^(?:fixed|agreed|withdrawn|kept|unverified|confirmed)\b/i.test(answer.replace(/^[^A-Za-z0-9]+/, ''));
+}
+
 /** How many raw proof entries of the model the reply record keeps, and how much of each. */
 const MAX_CITED_ENTRIES = 10;
 const MAX_CITED_CHARS = 200;
@@ -64,6 +72,8 @@ export interface FixScope {
   hasFile: boolean;
   /** Why the change there is not known. Unset when it is. */
   unknown?: UnknownChange;
+  /** Set on an open PR whose branch was rebased or force pushed since the finding was posted. */
+  rebased?: true;
   /** The commit of the round that still found the thread open, when the change counts from there. */
   openOn?: string;
   /** Whether the thread is a blocking or security one. What clears it is said apart from this answer. */
@@ -140,9 +150,11 @@ export interface CheckedStatement {
 export interface CheckedReply {
   /**
    * Returns the answer as "Outcome. text", which is what the reply handler goes on with. `thread` decides only what an
-   * "Unverified." asks a maintainer for.
+   * "Unverified." asks a maintainer for. An `unsettled` answer opens with no outcome word.
    */
   text: (thread: ThreadState) => string;
+  /** Whether `text` opens with no outcome word, for an unproven fix on a rebased branch. Its readers take it as "Unverified." */
+  unsettled?: true;
   /** The outcome `text` opens with. */
   outcome: AnswerOutcome;
   /** The outcome the model gave before the checks. Unset when its answer could not be read. */
@@ -334,8 +346,12 @@ export function checkReply(content: string, developerReply: string, sources: Rep
     : unproven ? ` ${leftToMaintainer(UNPROVEN_OUTCOME, thread)}`
     : outcome === 'FixedElsewhere' ? ` ${leftToMaintainer(NO_FIXING_PR, thread)}`
       : outcome === 'Unverified' && thread !== 'resolved' ? ` A${maintainerShould('confirm this', thread).slice(1)}.` : '';
+  const unsettled = unproven && outcome === 'Fixed' && !!sources.fixScope?.rebased && sources.fixScope.files.length > 0;
   return {
-    text: thread => `${settled}. ${answer}${note(thread)}`,
+    text: thread => unsettled
+      ? `${opensWithOutcome(answer) ? 'My reading: ' : ''}${answer} ${REBASED_ANSWER}`
+      : `${settled}. ${answer}${note(thread)}`,
+    ...(unsettled && { unsettled: true as const }),
     outcome: settled,
     modelOutcome: outcome,
     cited: rawEntries(parsed.proof),

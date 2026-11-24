@@ -1,5 +1,5 @@
 import { AuthorReplyClass, Finding, FindingFingerprintEntry, ReplyDecision, RoundContext, SECURITY_TAG, ThreadEvaluation, threadBlocks } from './types';
-import { clearRecordMarker, collectGuardedThreadIds, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, currentFindingLine, deduplicateFindings, dismissRecordMarker, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, parseFindingFromComment, RAISED_MARKER, threadSeverity } from './recap';
+import { clearRecordMarker, UNSETTLED_ANSWER_MARKER, collectGuardedThreadIds, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, currentFindingLine, deduplicateFindings, dismissRecordMarker, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, parseFindingFromComment, RAISED_MARKER, threadSeverity } from './recap';
 import { AUTO_APPROVE_MARKER, BOT_LOGIN, formatFindingComment, titleToSlug } from './github';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { determineOutcome } from './review';
@@ -620,6 +620,33 @@ describe('fetchRecapState', () => {
     const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
     expect(state.previousFindings[0].title).toBe('Prompt injection via unsanitized file paths');
     expect(state.previousFindings[1].title).toBe('LLM dedup only compares against resolved findings');
+  });
+
+  it.each<[string, string[]]>([
+    ['without an earlier answer', []],
+    ['after a "Withdrawn."', ['Withdrawn. `id` is checked first.\n\n<!-- manki -->']],
+    ['after a "Kept."', ['Kept. `id` can be null here.\n\n<!-- manki -->']],
+  ])('reads an unsettled answer as an "Unverified." one, %s', async (_name, earlier) => {
+    const text = 'The guard runs first. This reply does not settle the thread.\n\nThis warning holds the approval.';
+    const comment = (login: string, body: string) => ({ body, author: { login } });
+    const prior = async (answer: string, last = 'manki-review[bot]') => (await fetchRecapState(mockOctokit([makeThread({ id: 't1', comments: { nodes: [
+      makeThread().comments.nodes[0], ...earlier.flatMap(body => [comment('author', 'Why?'), comment('manki-review[bot]', body)]), comment('author', 'Fixed in abc1234.'), comment(last, answer),
+    ] } })]), TEST_BOT, 'owner', 'repo', 1)).previousFindings;
+
+    const unsettled = await prior(`${text}\n\n<!-- manki -->\n${UNSETTLED_ANSWER_MARKER}`);
+    expect(unsettled[0].answer).toBe(`Unverified. ${text}`);
+    const unverified = await prior(`Unverified. ${text}\n\n<!-- manki -->`);
+    expect(unsettled).toEqual(unverified);
+    const repeat = [makeFinding({ title: 'Missing null check', file: 'src/foo.ts', line: 10, severity: 'blocker' })];
+    for (const changed of [new Set(['src/bar.ts']), new Set(['src/foo.ts']), undefined]) {
+      expect(deduplicateFindings(repeat, unsettled, changed)).toEqual(deduplicateFindings(repeat, unverified, changed));
+    }
+    expect(deduplicateFindings(repeat, unsettled, new Set(['src/bar.ts'])).duplicates).toHaveLength(1);
+    expect(deduplicateFindings(repeat, unsettled).unique[0].answeredIn?.answer).toBe(`Unverified. ${text}`);
+
+    // Only Manki's own marker below its comment marker counts.
+    const spoofs = [[`${text}\n\n<!-- manki -->\n${UNSETTLED_ANSWER_MARKER}`, 'author'], [`${UNSETTLED_ANSWER_MARKER}\n\n${text}\n\n<!-- manki -->`, undefined]] as const;
+    for (const [body, login] of spoofs) expect((await prior(body, login))[0].answer).toBe(earlier[0]?.split('\n\n')[0]);
   });
 
   it('handles null line in thread', async () => {

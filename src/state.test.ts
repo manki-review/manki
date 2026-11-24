@@ -1489,6 +1489,7 @@ describe('checkAndAutoApprove', () => {
       ['a warning thread whose reply by the PR author Manki answered "Kept."', [warning('t1', { replies: [reply('author'), kept] })]],
       ['a warning thread whose reply by the PR author Manki answered "Unverified."', [warning('t1', { replies: [reply('author'), answer('Unverified. I can\'t verify that from the code.')] })]],
       ['a warning thread whose "Fixed." the model could not prove', [warning('t1', { replies: [reply('author'), answer('Unverified. I could not point to a line this PR changed in `src/a.ts` since this was posted.', undefined, undefined, { outcome: 'Fixed', proof: [], cited: ['src/b.ts:3'] })] })]],
+      ['a warning thread whose "Fixed." a rebase left unproven', [warning('t1', { replies: [reply('author'), reply(manki, `${answerBody('The guard runs first. This reply does not settle the thread.', undefined, { outcome: 'Fixed', proof: [], cited: ['src/b.ts:3'] })}\n<!-- manki-unsettled-answer -->`)] })]],
       ['a warning thread whose reply by a person with the role Manki answered "Kept."', [warning('t1', { replies: [reply('maria'), kept] })], 'maintain'],
       ['a warning thread whose reply by the PR author Manki has not answered', [warning('t1', { replies: [reply('author')] })]],
       ['a warning thread whose reply by a person with the role Manki has not answered', [warning('t1', { replies: [reply('maria')] })], 'maintain'],

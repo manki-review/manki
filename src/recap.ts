@@ -123,6 +123,12 @@ const REPEAT_LINE_TOLERANCE = 5;
 /** Marks Manki's reply on a security thread it reopened after the PR author resolved it. */
 const REOPENED_MARKER = '<!-- manki-reopened -->';
 
+/**
+ * Marks Manki's reply that shows no outcome word and settles nothing, such as after a rebase. Every reader of the thread
+ * takes it as an "Unverified." answer.
+ */
+const UNSETTLED_ANSWER_MARKER = '<!-- manki-unsettled-answer -->';
+
 /** Marks Manki's reply in an answered thread that the problem came back and the code there got worse. */
 const FOUND_AGAIN_MARKER = '<!-- manki-found-again -->';
 
@@ -159,11 +165,13 @@ interface RecordedGrade { grade: FindingSeverity; peak: FindingSeverity; history
 // The outcome a Manki reply to a developer starts with. "Confirmed:" answers a fix in another PR and settles nothing.
 const REPLY_OUTCOME_RE = /^\**(?:(?:Fixed|Withdrawn|Agreed|Kept|Unverified)\.|Confirmed:)/;
 
-/** Returns Manki's latest answer to a developer since `sinceLastRaise`, without its markers: an outcome reply, or a found-again reply. */
+/** Returns Manki's latest answer to a developer since `sinceLastRaise`, without its markers: an outcome reply, an unsettled one read as "Unverified.", or a found-again reply. */
 function latestAnswer(bot: BotIdentity, comments: ReadonlyArray<Pick<ThreadCommentNode, 'body' | 'author'>>): string | undefined {
+  const unsettled = (body: string) => hasOwnMarker(body, UNSETTLED_ANSWER_MARKER, COMMENT_MARKER);
   const answer = sinceLastRaise(bot, comments).filter(c => isBotLogin(bot, c.author?.login) && !!c.body
-    && (REPLY_OUTCOME_RE.test(c.body) || hasOwnMarker(c.body, FOUND_AGAIN_MARKER, COMMENT_MARKER))).pop();
-  return answer?.body.split('\n\n<!--')[0].trim();
+    && (REPLY_OUTCOME_RE.test(c.body) || unsettled(c.body) || hasOwnMarker(c.body, FOUND_AGAIN_MARKER, COMMENT_MARKER))).pop();
+  const text = answer?.body.split('\n\n<!--')[0].trim();
+  return text !== undefined && unsettled(answer!.body) ? `Unverified. ${text}` : text;
 }
 
 /** Returns the issue of Manki's latest `filedIssueReply` since `sinceLastRaise`, which a later answer in the thread does not replace. */
@@ -1717,4 +1725,4 @@ function dropWaivedRestatements(
   return { unique, duplicates };
 }
 
-export { BOT_PREFIX_PATTERN, latestAnswer, RAISED_MARKER, guardedKind, isDisprovedThread, clearRecordLogin, clearRecordMarker, dismissRecordLogins, dismissRecordMarker, dropWaivedRestatements, withoutCode, blockersToRecheck, currentFindingLine, DuplicateMatch, FixClaim, fixClaimMarker, fixClaimOf, namedPullRequests, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, pushTouchesThread, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };
+export { BOT_PREFIX_PATTERN, latestAnswer, RAISED_MARKER, UNSETTLED_ANSWER_MARKER, guardedKind, isDisprovedThread, clearRecordLogin, clearRecordMarker, dismissRecordLogins, dismissRecordMarker, dropWaivedRestatements, withoutCode, blockersToRecheck, currentFindingLine, DuplicateMatch, FixClaim, fixClaimMarker, fixClaimOf, namedPullRequests, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, pushTouchesThread, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };

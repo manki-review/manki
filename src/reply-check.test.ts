@@ -233,6 +233,14 @@ describe('checkReply', () => {
       { quote: snapshot, status: 'confirmed', description: HELD },
     ];
     expect(checkReply(JSON.stringify({ outcome, answer: `${outcome}. The exporter writes CSV.`, proof, statements }), REPLY, sources).text(undefined)).toBe(text);
+    // A rebase rewords only an unproven "Fixed.".
+    const rebased = checkReply(JSON.stringify({ outcome, answer: `${outcome}. The exporter writes CSV.`, proof, statements }), REPLY, {
+      ...sources, fixScope: { files: ['src/ledger.rs'], hasFile: true, guarded: false, unknown: 'not_descendant', rebased: true },
+    });
+    const reworded = outcome === 'Fixed' && text.startsWith('Unverified.');
+    expect(rebased.unsettled).toBe(reworded || undefined);
+    if (reworded) expect(rebased.text(undefined)).toMatch(/^The exporter writes CSV\. This branch was rebased/);
+    else expect(rebased.text(undefined)).toBe(text);
     // When what changed since the thread was posted could not be read, no line shows a fix.
     if (outcome === 'Fixed') {
       const unread = checkReply(JSON.stringify({ outcome, answer: 'The guard runs first.', proof: ['src/ledger.rs:3'] }), REPLY, { ...sources, changedSincePosted: undefined });
