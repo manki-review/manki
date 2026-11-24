@@ -14,7 +14,7 @@ import { NAMED_AGAIN_REASON, UNCONFIRMED_FIX_ENDING, WORKAROUND_REASON } from '.
 import { buildLLMClient } from './review-clients';
 import { expectLinearTime, GIT_TEST_TIMEOUT_MS } from './test-utils';
 import { PRE_EXISTING_TAG, SCOPE_READER_NAME, VERDICT_READER_NAME, VoteLog } from './types';
-import type { Doubt, Finding, FindingFingerprintEntry, FindingSeverity, GradeChange, Refutation, RoundContext, RoundDedup, RoundFix, RoundJudge, RoundLead, RoundMemory, RoundOutcome, RoundRawFinding } from './types';
+import type { Doubt, Finding, FindingFingerprintEntry, FindingSeverity, GradeChange, Refutation, RoundContext, RoundDedup, RoundFix, RoundJudge, RoundLead, RoundMemory, RoundOutcome, RoundRawFinding, VoteCitation } from './types';
 
 jest.mock('@actions/core');
 jest.mock('./review-clients', () => {
@@ -468,12 +468,14 @@ describe('scoreRun', () => {
       premises: [{ premise: 'PREMISE-TEXT', outcome: 'confirmed', reason: 'REASON-TEXT' }],
     };
     const blocker = (title: string, overrides: Partial<Finding>) => makeFinding({ severity: 'blocker', title, ...overrides });
-    const vote = (declined: boolean, line?: string) => ({ finder: 'Other', harm: 'HARM-TEXT', situation: 'SITUATION-TEXT', ...(line && { line, quote: 'QUOTE-TEXT' }), declined });
+    const cite = (held?: boolean) => ({ reason: 'REASON-TEXT', ...(held !== undefined && { line: 'src/read.rs:3', quote: 'QUOTE-TEXT', held }) });
+    const notShown = { reason: 'REASON-TEXT', notShown: true as const };
+    const vote = (answer: 'backs' | 'declines' | 'not_shown', trigger: VoteCitation, result: VoteCitation) => ({ finder: 'Other', trigger, result, answer });
     const findings = [
       // A finder filed it as a blocker. A doubt held it down, and a check gave the blocker back. The judge's own answer for that case is stored too.
       blocker('Kept', {
         file: 'src/read.rs', gradePath: [step('blocker', 'warning', 'judge'), step('warning', 'blocker', 'refutation')], cell: { row: 'wrong', column: 'normal' }, gradeIfConfirmed: 'blocker', judgeIfConfirmed: 'blocker',
-        doubts: [doubt('defect'), doubt('grade'), doubt('defect')], refutation, checkStatus: 'confirmed', otherFinderVote: vote(false, 'src/read.rs:3'),
+        doubts: [doubt('defect'), doubt('grade'), doubt('defect')], refutation, checkStatus: 'confirmed', otherFinderVote: vote('backs', cite(true), cite(true)),
       }),
       // The judge's cell raised it. A check gave back what the cap for want of proof took, which is no raise of its own.
       blocker('Raised', {
@@ -496,7 +498,7 @@ describe('scoreRun', () => {
         title: 'Lowered', toolSource: 'clippy',
         reviewers: [SCOPE_READER_NAME, 'clippy', 'Sweep 2', 'Consumer check: Api', 'Reference check: read', 'Pattern check: helper', 'Sibling code: Codec::decode', 'Sibling field: len vs cap', 'Second read 1', 'Reviewer', 'reviewer'],
         // The vote backed it as a blocker, before the check of the base lowered it.
-        gradePath: [step('blocker', 'warning', 'pre_existing')], checkStatus: 'unconfirmed', otherFinderVote: vote(false, 'src/read.rs:3'), refutation: {
+        gradePath: [step('blocker', 'warning', 'pre_existing')], checkStatus: 'unconfirmed', otherFinderVote: vote('backs', cite(true), cite(true)), refutation: {
           ...refutation, outcome: 'unsettled', defect: 'unsettled', stepsUsedUp: 'yes', outside: { behavior: 'b', stated: false },
           premises: [{ premise: 'p', outcome: 'confirmed', outside: { behavior: 'b', stated: true }, reason: 'r' }, { premise: 'q', outcome: 'unsettled', reason: 'r' }],
         },
@@ -511,9 +513,11 @@ describe('scoreRun', () => {
         doubts: [doubt('defect'), { ...doubt('grade'), consequence: true }], refutation,
       }),
       makeFinding({ title: 'Worked around', severity: 'blocker', reviewers: ['Fix check 1'] }),
-      // A vote that named no line declined a warning, and one whose quoted line did not hold declined a blocker.
-      makeFinding({ title: 'Voted down', severity: 'note', gradePath: [step('warning', 'note', 'other_finder')], otherFinderVote: vote(true) }),
-      makeFinding({ title: 'Misquoted', severity: 'warning', gradePath: [step('blocker', 'warning', 'other_finder')], otherFinderVote: vote(true, 'src/read.rs:9') }),
+      // A vote that named no trigger line declined a warning, and one whose result line did not hold its quote declined a blocker.
+      makeFinding({ title: 'Voted down', severity: 'note', gradePath: [step('warning', 'note', 'other_finder')], otherFinderVote: vote('declines', cite(), cite(true)) }),
+      makeFinding({ title: 'Misquoted', severity: 'warning', gradePath: [step('blocker', 'warning', 'other_finder')], otherFinderVote: vote('declines', cite(true), cite(false)) }),
+      // The code for its trigger was not shown to the voter, so it kept its grade.
+      blocker('Out of view', { otherFinderVote: vote('not_shown', notShown, cite(true)) }),
     ];
     const review = makeReview('ADDRESS_FIRST', findings);
     review.result.verdictReason = 'required_present';
@@ -521,11 +525,11 @@ describe('scoreRun', () => {
 
     const score = await scoreRun(benchCase, review, matcher);
 
-    expect(score).toMatchObject({ verdictReason: 'required_present', falseBlockers: 7 });
+    expect(score).toMatchObject({ verdictReason: 'required_present', falseBlockers: 8 });
     expect(score.findings.map(f => f.route)).toEqual([
       {
         finderGrade: 'blocker', cell: { row: 'wrong', column: 'normal' }, gradeIfConfirmed: 'blocker', judgeIfConfirmed: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'judge' }, { from: 'warning', to: 'blocker', by: 'refutation' }],
-        doubts: { defect: 2, grade: 1 }, refutation: { outcome: 'confirmed', defect: 'confirmed' }, checkStatus: 'confirmed', raisedBy: ['finder'], vote: { grade: 'blocker', answer: 'backs', quote: 'held' },
+        doubts: { defect: 2, grade: 1 }, refutation: { outcome: 'confirmed', defect: 'confirmed' }, checkStatus: 'confirmed', raisedBy: ['finder'], vote: { grade: 'blocker', answer: 'backs', trigger: 'held', result: 'held' },
       },
       {
         finderGrade: 'warning', cell: { row: 'severe', column: 'normal', judgeColumn: 'rare' }, refutation: { outcome: 'confirmed' },
@@ -541,7 +545,7 @@ describe('scoreRun', () => {
       { finderGrade: 'blocker', raisedBy: ['finder', 'claim'] },
       {
         finderGrade: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'pre_existing' }], refutation: { outcome: 'unsettled', defect: 'unsettled', stepsUsedUp: 'yes', outside: { stated: 1, unstated: 1 } }, checkStatus: 'unconfirmed',
-        raisedBy: ['finder', 'second_read', 'comparison', 'pattern', 'related', 'sweep', 'tool', 'scope'], vote: { grade: 'blocker', answer: 'backs', quote: 'held' },
+        raisedBy: ['finder', 'second_read', 'comparison', 'pattern', 'related', 'sweep', 'tool', 'scope'], vote: { grade: 'blocker', answer: 'backs', trigger: 'held', result: 'held' },
       },
       {
         finderGrade: 'warning', gradeIfConfirmed: 'blocker', gradePath: [{ from: 'warning', to: 'blocker', by: 'refutation' }],
@@ -552,8 +556,9 @@ describe('scoreRun', () => {
         doubts: { defect: 1, grade: 1, consequence: 1 }, refutation: { outcome: 'confirmed', defect: 'confirmed' }, raisedBy: ['finder'],
       },
       { finderGrade: 'blocker', byFixCheck: true, raisedBy: ['fix'] },
-      { finderGrade: 'warning', gradePath: [{ from: 'warning', to: 'note', by: 'other_finder' }], raisedBy: ['finder'], vote: { grade: 'warning', answer: 'declines', quote: 'none' } },
-      { finderGrade: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'other_finder' }], raisedBy: ['finder'], vote: { grade: 'blocker', answer: 'declines', quote: 'missed' } },
+      { finderGrade: 'warning', gradePath: [{ from: 'warning', to: 'note', by: 'other_finder' }], raisedBy: ['finder'], vote: { grade: 'warning', answer: 'declines', trigger: 'none', result: 'held' } },
+      { finderGrade: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'other_finder' }], raisedBy: ['finder'], vote: { grade: 'blocker', answer: 'declines', trigger: 'held', result: 'missed' } },
+      { finderGrade: 'blocker', raisedBy: ['finder'], vote: { grade: 'blocker', answer: 'not_shown', trigger: 'not_shown', result: 'held' } },
     ]);
     expect(await scoreRun(benchCase, makeReview('READY', []), stub({}))).not.toHaveProperty('verdictReason');
 
@@ -562,7 +567,7 @@ describe('scoreRun', () => {
     const table = (rows: string[]) => ['| Route of a posted blocker | Key blocker | Key warning | Key note | No key item | Total |', '| --- | --- | --- | --- | --- | --- |', ...rows].join('\n');
     const routed = report([score, { ...score, complete: false }, { ...score, complete: false, matches: [], unexpectedWarnings: 0 }]);
     expect(formatBlockerRoutes(routed.variants)).toBe(table([
-      '| base: filed by a finder and kept | 1 | 0 | 0 | 1 | 2 |',
+      '| base: filed by a finder and kept | 1 | 0 | 0 | 2 | 3 |',
       '| base: raised by the judge | 0 | 1 | 0 | 0 | 1 |',
       '| base: raised by a confirmed doubt | 0 | 0 | 1 | 0 | 1 |',
       '| base: raised by a confirmed doubt and consequence | 0 | 0 | 0 | 2 | 2 |',
@@ -578,7 +583,7 @@ describe('scoreRun', () => {
     expect(formatWarningSources(routed.variants)).toBe(sources('| base: finder, second read, sibling comparison, pattern check, related repo check, sweep, tool result, scope reader | 2 |'));
     expect(formatBenchSummary(routed)).toContain(`\n\n${formatWarningSources(routed.variants)}\n`);
     // The votes count in the complete run alone, by the grade each vote saw and whether the finding matches a key item.
-    expect(formatVotes(routed.variants)).toBe("Other finder's votes, base: on a blocker 2 backed (1 matched) and 1 declined (1 matched, 1 with a quote that did not hold), on a warning 0 backed (0 matched) and 1 declined (0 matched, 0 with a quote that did not hold).");
+    expect(formatVotes(routed.variants)).toBe("Other finder's votes, base: on a blocker 2 backed (1 matched), 1 declined (1 matched, 1 with a line that did not hold its quote) and 1 not shown the code (0 matched), on a warning 0 backed (0 matched), 1 declined (0 matched, 0 with a line that did not hold its quote) and 0 not shown the code (0 matched).");
     expect(formatBenchSummary(routed)).toContain(`\n\n${formatVotes(routed.variants)}\n`);
     expect(formatVotes(report([{ ...score, findings: score.findings.slice(1, 7) }]).variants)).toBe('');
     expect(formatWarningSources(report([{ ...score, findings: score.findings.slice(0, 7) }]).variants)).toBe('');
@@ -587,7 +592,7 @@ describe('scoreRun', () => {
     // A report of a ref that stored no route scores the same, and the route of its blockers is not known.
     const older: BenchReport = JSON.parse(JSON.stringify(routed, (key, value: unknown) => (key === 'route' || key === 'verdictReason' ? undefined : value)));
     expect(older.variants[0].summary).toEqual(routed.variants[0].summary);
-    expect(formatBlockerRoutes(older.variants)).toBe(table(['| base: unknown | 1 | 1 | 1 | 7 | 10 |']));
+    expect(formatBlockerRoutes(older.variants)).toBe(table(['| base: unknown | 1 | 1 | 1 | 8 | 11 |']));
     expect(formatWarningSources(older.variants)).toBe(sources('| base: unknown | 2 |'));
   });
 

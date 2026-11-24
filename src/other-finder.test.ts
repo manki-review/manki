@@ -1,16 +1,21 @@
+import { execFileSync } from 'child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { LLMClient } from './providers';
 import { otherFinderVotes, withVote } from './other-finder';
+import type { LLMClient } from './providers';
+import { GIT_TEST_TIMEOUT_MS } from './test-utils';
 import { DISPROVED_TAG, Finding, isGuardedFinding, OtherFinderVote, VoteLog } from './types';
+import { closePaths } from './workspace';
 
 const finding = (more: Partial<Finding>): Finding => ({
   severity: 'warning', title: 'Totals drift', file: 'src/a.ts', line: 3, description: 'Totals drift.', reviewers: ['Finder A'], judgeNotes: '', soleFinder: true, ...more,
 });
-const declined: OtherFinderVote = { finder: 'Finder B', harm: '', situation: '', declined: true };
-const backed: OtherFinderVote = { finder: 'Finder B', harm: 'A total is wrong.', situation: 'Any export.', line: 'src/a.ts:3', quote: 'total += 1;', declined: false };
+const declined: OtherFinderVote = { finder: 'Finder B', trigger: { reason: '' }, result: { reason: '' }, answer: 'declines' };
+const backed: OtherFinderVote = {
+  finder: 'Finder B', trigger: { reason: 'Any export.', line: 'src/export.ts:9', quote: 'exportAll();', held: true }, result: { reason: 'A total is wrong.', line: 'src/a.ts:3', quote: 'total += 1;', held: true }, answer: 'backs',
+};
 
 describe('withVote', () => {
   it('lowers a declined blocker to a guarded warning and a declined warning to a note, and leaves alone a finding a refuter lowered or a rule grades', () => {
@@ -25,7 +30,7 @@ describe('withVote', () => {
 
     // A declined warning stays visible as a note.
     const note = withVote(finding({}), declined);
-    expect([note.severity, note.gradePath, note.unpostedReason]).toEqual(['note', [{ from: 'warning', to: 'note', by: 'other_finder', reason: 'the other finder named no harm in realistic use' }], undefined]);
+    expect([note.severity, note.gradePath, note.unpostedReason]).toEqual(['note', [{ from: 'warning', to: 'note', by: 'other_finder', reason: 'the other finder cited no trigger and result in normal use' }], undefined]);
     expect(withVote(finding({}), backed).severity).toBe('warning');
 
     // A check confirms the code path, not the harm, so a confirmed blocker still becomes a guarded warning, and a confirmed warning a note.
@@ -55,7 +60,7 @@ describe('otherFinderVotes', () => {
     const workspace = mkdtempSync(join(tmpdir(), 'manki-vote-'));
     mkdirSync(join(workspace, 'src'));
     writeFileSync(join(workspace, 'src', 'a.ts'), 'let total = 0;\ntotal += 1;\ntotal += 1;\n');
-    const client = (): LLMClient => ({ sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify({ harm: '', situation: '', line: 'none' }) }) } as unknown as LLMClient);
+    const client = (): LLMClient => ({ sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify({ trigger: { reason: '', line: 'none' }, result: { reason: '', line: 'none' } }) }) } as unknown as LLMClient);
     const read = finding({ reviewers: ['Second read 1'], soleFinder: undefined });
     const reads = [{ reviewer: 'Second read 1', model: 'opus' }];
     const vote = async (models: string[], reported = read) => (await otherFinderVotes([reported], {
@@ -75,7 +80,7 @@ describe('otherFinderVotes', () => {
 
       // The log of a vote holds the call's model, its tool steps and its cost where the client reports usage.
       const logs: VoteLog[] = [];
-      const reply = { content: JSON.stringify({ harm: '', situation: '', line: 'none' }), model: 'claude-opus-5-5', latencyMs: 4000, usage: { inputTokens: 1000, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 0 }, toolSteps: [] };
+      const reply = { content: JSON.stringify({ trigger: { reason: '', line: 'none' }, result: { reason: '', line: 'none' } }), model: 'claude-opus-5-5', latencyMs: 4000, usage: { inputTokens: 1000, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 0 }, toolSteps: [] };
       const asked = { sendMessage: jest.fn().mockResolvedValue(reply) } as unknown as LLMClient;
       await otherFinderVotes([finding({})], { workspace, restates: () => false, onVote: log => logs.push(log), finders: [{ name: 'Finder A', model: 'opus', client: asked }, { name: 'Finder B', model: 'sol', client: asked }] });
       expect(logs).toEqual([{
@@ -95,4 +100,41 @@ describe('otherFinderVotes', () => {
       rmSync(workspace, { recursive: true, force: true });
     }
   });
+
+  it('shows the code at the trigger and result lines a check cites, without its answer, a closed path or a line of a related repo, and lets the vote quote it', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'manki-vote-lines-'));
+    try {
+      const write = (path: string, text: string) => {
+        mkdirSync(join(workspace, path, '..'), { recursive: true });
+        writeFileSync(join(workspace, path), text);
+      };
+      write('src/a.ts', 'let total = 0;\n\ntotal += 1;\n');
+      write('src/caller.ts', 'exportAll();\n');
+      write('src/sink.ts', 'send(total);\n');
+      write('secrets/key.ts', 'const closedText = 1;\n');
+      // Git allows `:` in a file name, so a PR can hold a file whose path reads like a line of a related repo.
+      write('acme/reports:src/use.ts', 'const relatedText = 1;\n');
+      execFileSync('git', ['init', '-q'], { cwd: workspace });
+      execFileSync('git', ['add', '.'], { cwd: workspace });
+      await closePaths(workspace, ['secrets/']);
+
+      const check = (triggerProof: string[], resultProof: string[]) => ({
+        outcome: 'confirmed' as const, defect: 'confirmed' as const, reason: 'CHECK-ANSWER', files: ['src/a.ts'], codeDigest: 'abc', triggerProof, resultProof,
+        proof: ['src/a.ts:3', 'src/caller.ts:1', 'src/sink.ts:1', 'secrets/key.ts:1'], relatedProof: ['acme/reports:src/use.ts:1'],
+      });
+      const sendMessage = jest.fn().mockResolvedValue({ content: JSON.stringify({
+        trigger: { reason: 'The export runs it.', line: 'src/caller.ts:1', quote: 'exportAll();' }, result: { reason: 'A wrong total is sent.', line: 'src/sink.ts:1', quote: 'send(total);' },
+      }) });
+      const given = finding({ refutation: check(['src/caller.ts:1', 'acme/reports:src/use.ts:1'], ['src/a.ts:3']), pairRefutation: check(['secrets/key.ts:1'], ['src/sink.ts:1']) });
+      const [vote] = await otherFinderVotes([given], { workspace, finders: [{ name: 'Finder A', model: 'opus', client: {} as LLMClient }, { name: 'Finder B', model: 'sol', client: { sendMessage } as unknown as LLMClient }], restates: () => false });
+
+      const message = sendMessage.mock.calls[0][1] as string;
+      expect(message).toContain('1: exportAll();');
+      expect(message).toContain('1: send(total);');
+      expect(message).not.toMatch(/closedText|secrets\/key|relatedText|acme\/reports|CHECK-ANSWER|confirmed/);
+      expect([vote?.answer, vote?.trigger.held, vote?.result.held]).toEqual(['backs', true, true]);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  }, GIT_TEST_TIMEOUT_MS);
 });

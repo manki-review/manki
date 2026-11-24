@@ -1169,18 +1169,28 @@ export interface VoteLog {
   answer: 'backs' | 'declines' | 'not_shown' | 'unreadable' | 'no_answer' | 'unknown_read';
 }
 
-/** The answer of a finder that did not report a `soleFinder` finding, asked for the harm the finding causes. */
+/** One of the two lines a vote cites: what it says happens there, and the line with the code quoted from it. */
+export interface VoteCitation {
+  reason: string;
+  /** The line as `path:line`, missing when the answer named none. */
+  line?: string;
+  /** Set when the answer named no line because the code it would need was not shown to it. */
+  notShown?: true;
+  quote?: string;
+  /** Whether the head holds `quote` near `line`. Missing when the answer named no line. */
+  held?: boolean;
+}
+
+/** The answer of a finder that did not report a `soleFinder` finding, asked how normal use reaches it and where it shows. */
 export interface OtherFinderVote {
   /** The finder whose model answered. */
   finder: string;
-  harm: string;
-  /** The realistic situation in normal use where the harm happens. */
-  situation: string;
-  /** Where the harm happens, as `path:line`, and the code quoted from it. Missing when the answer named no line. */
-  line?: string;
-  quote?: string;
-  /** Whether the answer named no line, or one the head does not hold the quoted code near. */
-  declined: boolean;
+  /** How normal use or outside input reaches the failure. */
+  trigger: VoteCitation;
+  /** What goes wrong or what it costs, and where it shows. */
+  result: VoteCitation;
+  /** `backs` when the head holds both lines, `not_shown` when the code for one was not shown, which changes no grade, and `declines` otherwise. */
+  answer: 'backs' | 'declines' | 'not_shown';
   model?: string;
 }
 
