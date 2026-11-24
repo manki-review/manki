@@ -29,6 +29,7 @@ import { extractPrClaims, prClaimsRecord, runClaimChecks } from './pr-claims';
 import { concernsThread, fixesRecord, listFixes, pushedWorkarounds, runFixChecks, workaroundRemaining } from './fixes';
 import { citedBy, runSweeps, sharesCitedLine, startsSweep } from './sweep';
 import { otherFinderVotes, VOTE_TIMEOUT_MS, withVote } from './other-finder';
+import { rateFindings } from './rate-findings';
 import { confirmDoubt, placeScopeWarning, runScopeReader, scopeWarnings } from './scope';
 import { formatLockfileChanges, isLockfileAlert, LockfileDiff, withLockfiles } from './lockfile';
 
@@ -1291,7 +1292,7 @@ export async function runReview(
   const earlierOf = <R>(answers: Map<string, EarlierAnswer<R>> | undefined): EarlierAnswers<R> | undefined => answers && { answers, confirm: confirmKept };
   // Asked beside the finders on the judge's client. Only the round's end reads the answer, so nothing waits for it before then.
   const scopePromise = runScopeReader(withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'scope'), {
-    diff, rawDiff, prContext, linkedIssues, workspace, trivial: quickCheckOnly(team), changeDigest: options.changeDigest, priorRounds,
+    diff, rawDiff, prContext, linkedIssues, workspace, trivial: quickCheckOnly(team) || !!replay, changeDigest: options.changeDigest, priorRounds,
   });
   // Asked alongside the finders on the first reader's model, at its effort. An unanswered question leaves the round complete, since the finders read the whole change.
   const comparisonEffort = team.finders[0].effort;
@@ -2162,7 +2163,7 @@ export async function runReview(
     if (stopped) return incompleteAfterJudge(stopped);
   }
   // The votes wait for the refuter, since a finding a check confirmed gets none.
-  if (workspace) {
+  if (workspace && !replay?.rating) {
     const kept = finalFindings;
     const logs: VoteLog[] = [];
     const votes = await otherFinderVotes(kept, {
@@ -2268,7 +2269,7 @@ export async function runReview(
   const priorThreads = new Map(priorFindingsFlat.flatMap(e => e.threadId ? [[stringifyFindingFingerprint(e.fingerprint), e.threadId] as const] : []));
   const guard = (f: Finding): Finding => withoutUnfitThreads(f, openThreadIndex, previousFindings, priorThreads, priorFindingsFlat);
   finalFindings = finalFindings.map(guard);
-  const fixedElsewhere = refutation
+  const fixedElsewhere = refutation && !replay
     ? await confirmPushedFixes(refutation.client, refutation.pair, fixesElsewhere(judgeThreadEvaluations, openThreadIndex, pushChangedFiles).filter(({ thread }) =>
       // A thread this round names again, or one a standing workaround concerns, stays open whatever a check says.
       !namedPriorThreadIds(finalFindings, priorBlockers).has(thread.threadId) && !standingWorkarounds.some(fix => concernsThread(fix, thread))), parsePRDiff(interRoundDiff ?? ''), {
@@ -2285,12 +2286,12 @@ export async function runReview(
     ...(unpostedPreExisting.length > 0 && { unpostedPreExisting }), ...(testNitSuppressedCount > 0 && { testNitSuppressedCount }),
     ...(staticSignalMatches.length > 0 && { staticSignalMatches }),
   });
-  const earlierWrap = clients.dedup && lateUsage({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup');
+  const earlierWrap = replay ? undefined : clients.dedup && lateUsage({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup');
   finalFindings = (await foldIntoEarlierFindings(finalFindings, earlier, earlierWrap?.client)).map(guard);
   if (stopped) return incompleteAfterJudge(stopped);
   // Without a second refuter, the judge's refuter alone may confirm the fix, since a confirmation only posts a warning that holds the approval.
   const ownFinding = (f: Finding) => restatesThreadFinding(f, openThreadIndex, priorFindingsFlat);
-  const findOwnFixes = (findings: Finding[]) => restatedAfterOwnFix(findings.filter(ownFinding), openThreadIndex, sortedPriorRounds, interRoundDiff === undefined ? undefined : pushChangedFiles, fixes => refutation
+  const findOwnFixes = (findings: Finding[]) => restatedAfterOwnFix(findings.filter(ownFinding), openThreadIndex, sortedPriorRounds, interRoundDiff === undefined ? undefined : pushChangedFiles, fixes => refutation && !replay
     ? confirmPushedFixes(refutation.client, refutation.pair, fixes, parsePRDiff(interRoundDiff ?? ''), { workspace: refutation.workspace, related: refutation.related, diff: diffWithLockfiles, effort: judgeEffort }, true)
     : Promise.resolve(new Set()));
   ownFixed = await findOwnFixes(finalFindings);
@@ -2304,6 +2305,13 @@ export async function runReview(
   // Listed after the judge and the refuter, so no model reads an earlier blocker a second time.
   const relisting = openThreads != null ? relistThreadlessBlockers(finalFindings, priorFindingsFlat, priorRoundLookup) : { findings: finalFindings, restated: [] };
   finalFindings = relisting.findings;
+  if (replay?.rating) {
+    if (!workspace) throw new Error('A rating needs the PR head checkout');
+    recorded.ratings = await rateFindings(finalFindings, {
+      ...replay.rating, workspace, diff: diffWithLockfiles, reads: replay.reads,
+      raters: team.finders.map(f => ({ name: f.name, model: f.model, client: lateFallback({ client: pickReviewerClient(clients, f.model).client }, 'vote', f.name, false) })),
+    });
+  }
   const unposted = [...proven.unposted, ...relisting.restated];
   const decided = determineOutcome(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, threadEvaluations, priorRoundLookup);
   let outcome: RoundOutcome = decided.outcome;
@@ -2316,7 +2324,8 @@ export async function runReview(
   Object.assign(recorded, {
     threadEvaluations, ...(slicing && { slicing }), ...(openLeads.length > 0 && { openLeads }), ...(unposted.length > 0 && { unposted }),
   });
-  if (outcome === 'READY') {
+  // A replay skips the verdict reader.
+  if (outcome === 'READY' && !replay) {
     const verdictWrap = lateUsage({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'verdict');
     const readerFiles = fileContents && new Map([...fileContents].filter(([path]) => changedFiles.has(path)));
     // The reader reads the slices the finders read, so no slice of the diff is cut.
@@ -2441,6 +2450,7 @@ export async function runReview(
     reviewComplete: true,
     rawFindingCount: checkedFindings.length + sweepRaw.length,
     ...(recorded.votes && { votes: recorded.votes }),
+    ...(recorded.ratings && { ratings: recorded.ratings }),
     ...(toolAlerts.length > 0 && { toolAlertCount: toolAlerts.length }),
     ...(sweepRepeatCount > 0 && { sweepRepeatCount }),
     ...(sweepDedupCount > 0 && { sweepDedupCount }),

@@ -1166,6 +1166,34 @@ export interface VoteLog {
   answer: 'backs' | 'declines' | 'not_shown' | 'unreadable' | 'no_answer' | 'unknown_read';
 }
 
+export interface RatingScore {
+  /** A whole number from 1 to 10. */
+  score: number;
+  reason: string;
+}
+
+/** How easily a finding is triggered, how clearly the PR introduces it, how much it matters, and the whole, each by one model. */
+export type FindingRating = Record<'trigger' | 'introduced' | 'matters' | 'overall', RatingScore>;
+
+/** A finding of an earlier report to rate, by its place, title and posted grade. */
+export interface RatingCandidate {
+  file: string;
+  line: number;
+  title: string;
+  severity: FindingSeverity;
+}
+
+/** One model's rating of one finding, or of a pull request's findings in one call. */
+export interface RatingLog {
+  form: 'single' | 'batch';
+  /** The finder whose model rated, and that model. */
+  rater: string;
+  model: string;
+  calls: VoteCall[];
+  /** In the order the call showed them. `own` when the rater's finder, or a second read on its model, reported the finding. The rater sees none of `severity`, `reviewers` and `own`. */
+  findings: Array<RatingCandidate & { reviewers: string[]; own: boolean; rating?: FindingRating }>;
+}
+
 /** The answer of a finder that did not report a `soleFinder` finding, asked for the harm the finding causes. */
 export interface OtherFinderVote {
   /** The finder whose model answered. */
@@ -1655,6 +1683,8 @@ export interface ReviewResult {
   /** Each sweep the round's findings started, asked or cut. */
   /** How each vote was asked for, for the benchmark's report. No round record holds it. */
   votes?: VoteLog[];
+  /** The ratings of a benchmark replay that asks for them. */
+  ratings?: RatingLog[];
   sweeps?: RoundSweep[];
   /** The reads of the change after the finders. Unset on a round that runs none. */
   secondReads?: RoundSecondReads;
@@ -2641,6 +2671,8 @@ export interface FinderReplay {
   fixes?: RoundFix[];
   /** The model of each second read, without which no vote is asked on what only that read reported. */
   reads?: Array<Pick<RoundSecondRead, 'reviewer' | 'model'>>;
+  /** The findings to rate in place of the votes, and whether each gets a call of its own. */
+  rating?: { form: RatingLog['form']; candidates: RatingCandidate[] };
 }
 
 /** Round-cap accounting captured at the moment a round was admitted. */

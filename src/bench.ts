@@ -18,7 +18,7 @@ import { AnswerStore, holdsEveryCall, ReplayLevel, StoredAnswers } from './store
 import {
   CELL_GRADES, CheckStatus, Doubt, Finding, finderGrade, FinderReplay, FinderError, FindingFingerprintEntry, FindingSeverity, GradeCell, GradeChange, GradeStep, gradedAbove, isGradeCell, isSecondReadName, isSecurityFinding, isSweepName, leftOutUnproven,
   migrateLegacySeverity, migrateStoredSeverities, PRE_EXISTING_TAG, Refutation, RoundContext, RoundRawFinding, RoundRelatedRepo, SCOPE_READER_NAME, SEVERITY_ORDER, SideCheckKind, ThreadEvaluation, UNPOSTED_REASONS, UnpostedReason,
-  UnprovenReason, VERDICT_READER_NAME, VerdictReason, VoteLog,
+  RatingCandidate, RatingLog, UnprovenReason, VERDICT_READER_NAME, VerdictReason, VoteLog,
 } from './types';
 import { runGit } from './workspace';
 
@@ -41,6 +41,8 @@ export const CASE_DIRS: Record<CaseSet, string> = { tuning: 'bench/cases', holdo
 const DEFAULT_MATCHER_MODEL = 'claude-sonnet-5-5';
 /** The outcome of a run that got no review because the config of its case does not load. */
 const CONFIG_INVALID = 'CONFIG_INVALID';
+// A variant whose name ends in one of these asks a replay for ratings in place of the votes.
+const RATING_SUFFIXES = { '-rate': 'single', '-rate-batch': 'batch' } as const;
 const MAX_MATCHER_DESCRIPTION = 2000;
 const MATCHER_TIMEOUT_MS = 300_000;
 /** The model calls a replay of the stored answers makes, by the last stage whose answers it keeps. */
@@ -649,6 +651,8 @@ interface RunScore {
   finders: FinderSteps[];
   /** How each vote was asked for. Set only on a run with votes. */
   votes?: VoteLog[];
+  /** How each posted finding was rated. Set only on a replay that asks for ratings. */
+  ratings?: RatingLog[];
   /** The tool use of each second read, apart from the finders'. Set only on a run with second reads. */
   secondReads?: FinderSteps[];
   /** What the review could read of each related repo: the commit it checked out, and the time it read the repo as of. A report from a ref that records neither has none. */
@@ -941,15 +945,16 @@ function reviewedDigest({ repo, base, head, title, body, config, priorRound }: B
  * may be replayed. A run from a ref that stored none is left out. With `level`, each run must also hold the answers
  * of its calls up to that stage.
  */
-function storedReplays(variant: VariantReport, benchCase: BenchCase, level: ReplayLevel | undefined): Array<{ replay: FinderReplay; answers?: StoredAnswers }> | string {
+function storedReplays(variant: VariantReport, benchCase: BenchCase, level: ReplayLevel | undefined): Array<{ replay: FinderReplay; answers?: StoredAnswers; posted: RatingCandidate[] }> | string {
   const stored = variant.cases.find(c => c.id === benchCase.id);
   if (stored && stored.reviewedDigest !== reviewedDigest(benchCase)) return 'The case\'s commits, title, body, config or earlier round changed since the report to replay, or it does not record them.';
-  const replays = (stored?.runs ?? []).flatMap(({ complete, unscored, raw, replay: kept, secondReads }) => {
+  const replays = (stored?.runs ?? []).flatMap(({ complete, unscored, raw, replay: kept, secondReads, findings }) => {
     if (!(complete || unscored) || !raw || !kept) return [];
     const { answers, ...replay } = kept;
     // A report that did not store the reads' models has them in the reads' tool use, unless it is itself a replay.
     const reads = replay.reads ?? secondReads?.map(({ name, model }) => ({ reviewer: name, model }));
-    return [{ replay: { ...replay, ...(reads && { reads }), findings: raw.findings.map(({ exit: _exit, ...finding }) => finding) }, ...(level && { answers }) }];
+    return [{ replay: { ...replay, ...(reads && { reads }), findings: raw.findings.map(({ exit: _exit, ...finding }) => finding) }, ...(level && { answers }),
+      posted: findings.filter(f => f.severity === 'blocker' || f.severity === 'warning').map(({ file, line, title, severity }) => ({ file, line, title, severity })) }];
   });
   if (level && replays.some(r => !holdsEveryCall(r.answers, level))) return `The report to replay holds a complete run of this case without its ${level === 'refuter' ? 'refuter, sweep, ' : ''}judge, dedup and name translation answers.`;
   return replays.length > 0 ? replays : 'The report to replay holds no complete run of this case with its finder output.';
@@ -1032,10 +1037,10 @@ function gradeRoute(f: Finding): GradeRoute {
 }
 
 /** What a run records about its review whether or not the findings could be matched. `earlier` is the round a follow-up case follows. */
-function reviewFacts(review: LocalReview, earlier?: EarlierRound): Pick<RunScore, 'outcome' | 'verdictReason' | 'finderErrors' | 'findings' | 'finders' | 'votes' | 'secondReads' | 'relatedRepos' | 'costUsd' | 'inputTokens' | 'outputTokens' | 'durationMs'> {
+function reviewFacts(review: LocalReview, earlier?: EarlierRound): Pick<RunScore, 'outcome' | 'verdictReason' | 'finderErrors' | 'findings' | 'finders' | 'votes' | 'ratings' | 'secondReads' | 'relatedRepos' | 'costUsd' | 'inputTokens' | 'outputTokens' | 'durationMs'> {
   const usage = review.context.usage ?? {};
   const secondReads = finderSteps(review, true);
-  const { outcome, verdictReason, agentErrors, votes } = review.result;
+  const { outcome, verdictReason, agentErrors, votes, ratings } = review.result;
   const finderErrors = [...agentErrors ?? []].flatMap(([finder, causes]) => causes.map(cause => ({ finder, ...cause })));
   return {
     outcome,
@@ -1048,6 +1053,7 @@ function reviewFacts(review: LocalReview, earlier?: EarlierRound): Pick<RunScore
     }),
     finders: finderSteps(review),
     ...(votes && { votes }),
+    ...(ratings && { ratings }),
     ...(secondReads.length > 0 && { secondReads }),
     ...(review.context.relatedRepos && { relatedRepos: review.context.relatedRepos.map(({ repo, ref, status, commit, asOf }) => ({ repo, ...(ref && { ref }), status, ...(commit && { commit }), ...(asOf && { asOf }) })) }),
     costUsd: usage.estimatedCostUsd ?? 0,
@@ -2071,6 +2077,7 @@ export async function runBench(cases: BenchCase[], options: BenchOptions): Promi
       const runs: RunScore[] = [];
       const configError = invalid.get(benchCase.id);
       const review = (input: LocalReviewInput) => quietly(benchCase, () => (options.review ?? reviewLocal)(input));
+      const rated = Object.entries(RATING_SUFFIXES).find(([suffix]) => variant.name.endsWith(suffix))?.[1];
       const replays = findingsFrom && storedReplays(replayedVariant(findingsFrom, variant.name)!, benchCase, options.replayLevel);
       for (let i = 0; i < options.runs; i++) {
         if (configError) {
@@ -2092,7 +2099,7 @@ export async function runBench(cases: BenchCase[], options: BenchOptions): Promi
             ...(benchCase.priorRound && { earlier: benchCase.priorRound }),
             // Only a case with related repos needs a date, so a change that cannot be dated fails no other case.
             ...(config.related_repos?.length && { relatedReposAsOf: await changeDate(checkouts.get(benchCase.repo)!, benchCase) }),
-            providerInputs: options.providerInputs, signal: options.signal, answers, ...(stored && { replay: stored.replay }),
+            providerInputs: options.providerInputs, signal: options.signal, answers, ...(stored && { replay: { ...stored.replay, ...(rated && { rating: { form: rated, candidates: stored.posted } }) } }),
             // The case's own config replaces the repository's. Without one, the overrides are set on the repository's.
             ...(benchCase.config ? { config } : Object.keys(variant.overrides).length > 0 && { configOverrides: variant.overrides }),
           });
@@ -2291,7 +2298,10 @@ export function runBenchCommand(argv: string[], root = '.'): Promise<number> {
     if (args.replayLevel && !args.findingsFrom) throw new Error(`--replay-${args.replayLevel} needs --findings-from, whose runs hold the answers to keep`);
     const cases = loadCases([args.cases, ...(args.holdout ? [join(root, CASE_DIRS.holdout)] : [])], args.only, root);
     const cache = loadMatcherCache(args.cache);
-    const matcher = llmMatcher(buildLLMClient(args.matcherModel, providerInputs), args.matcherModel, cache);
+    // A replay is scored outside the run, from the matches of the report it replays.
+    const matcher: Matcher = args.findingsFrom
+      ? async () => ({ verdict: 'NONE', findings: [], reason: 'Not matched in a replay.' })
+      : llmMatcher(buildLLMClient(args.matcherModel, providerInputs), args.matcherModel, cache);
     if (args.rescore) {
       const { report: stored, removed } = readReport(args.rescore, root);
       // A report holds one matcher model, and the gate refuses to compare reports matched by different ones.
