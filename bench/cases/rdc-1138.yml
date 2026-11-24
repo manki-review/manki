@@ -92,7 +92,7 @@ config:
       secrets: true
   memory:
     enabled: true
-key_version: 2
+key_version: 3
 must_catch:
   - id: K1
     severity: blocker
@@ -106,8 +106,8 @@ must_catch:
     fix: "6cd43fc07"
   - id: K3
     severity: blocker
-    mechanism: "The wallet payout matchers in `account_checker.rs` (around lines 636 and 1225) read only `script_payout`, which is empty from version 3, where a ProUpRegTx carries its payees in `payouts`. A wallet that is one of the new payees never matches the transaction, so it never sees the payment."
-    locations: ["key-wallet/src/transaction_checking/account_checker.rs", "script_payout", "payouts"]
+    mechanism: "From version 3 the ProUpRegTx decoder in `provider_update_registrar.rs` leaves `script_payout` empty and carries the payees in `payouts`. Both wallet matchers, `check_transaction_for_match` of the funds account and of the keys account in `account_checker.rs`, still compare only `script_payout` with the account's scripts. A wallet that is one of the new payees never matches the transaction, so it never sees the payment."
+    locations: ["key-wallet/src/transaction_checking/account_checker.rs", "dash/src/blockdata/transaction/special_transaction/provider_update_registrar.rs", "check_transaction_for_match", "script_payout", "payouts"]
     source: "owner /check review"
 nice_to_have:
   - id: N1

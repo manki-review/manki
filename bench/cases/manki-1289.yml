@@ -36,7 +36,7 @@ body: |
 
   Part of #1284, whose item 3 follows in a second PR that closes it.
   Part of #1281
-key_version: 2
+key_version: 3
 must_catch:
   - id: K1
     severity: blocker
@@ -84,4 +84,10 @@ must_catch:
     locations: ["src/symbol-uses.ts", "FIELD_DECLARATION_LINE", "fieldOnLine", "classOnLines"]
     fix: "d04507ef9d57cbf5328caf57f8840c73fcc53d86"
     source: "Manki 7.7 development bench run on the tuning set"
+  - id: K10
+    severity: blocker
+    mechanism: "`classOnLines` walks back from every `git grep` hit whose line declares the lookup field to the nearest less indented line, once per hit, and goes on to the next hit when that line opens no class. In a file without a grammar that the PR adds, a long method or block whose lines each declare a local of that name costs one walk over the block per line, so the time grows with the square of the block length: 20,000 such lines take seconds before any model runs. Unlike K9 no long line is needed."
+    locations: ["src/symbol-uses.ts", "classOnLines", "indentOf"]
+    fix: "da19c894cc78f561ceca34d855224d0d1af85c8f"
+    source: "posted blocker of tuning run 45325005498, checked against the code"
 nice_to_have: []
