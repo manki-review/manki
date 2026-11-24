@@ -10,11 +10,17 @@ body: |
   - The page header names the page's WebMCP tools the first time a tab reports them, collapsing back to a bare count while the set is unchanged.
   - `browser_webmcp_list` / `browser_webmcp_call` stay available over MCP and the CLI for clients that ignore the tools-changed notification.
   - `--no-webmcp` (also `webmcp` config option and `PLAYWRIGHT_MCP_WEBMCP`) opts out of collecting page-registered tools.
-key_version: 1
+key_version: 2
 must_catch:
   - id: K1
     severity: warning
     mechanism: "`BrowserBackend._callDynamicTool` copies the call path of `BrowserBackend.callTool` (building the `Response`, `setRunningTool`, draining unhandled rejections, serializing and logging to the session log) instead of sharing it, and the copy already differs. On a thrown error it reports only the error and leaves the pending unhandled rejections queued, so they show up in the next tool's response, while `callTool` drains them into the error. It also skips the dispose that `callTool` runs after a call when the browser disconnected or the response asks to close. Route page tools through the same call path as the built-in tools, with only the lookup and argument parsing differing."
     locations: ["packages/playwright-core/src/tools/backend/browserBackend.ts", "_callDynamicTool", "callTool"]
     fix: "6ece4eaef3b2bc75d9d4b6e9a03b7b403eaee81a"
+  - id: K2
+    severity: blocker
+    mechanism: "`Context.updateWebMCPTools` compares only the tools' schemas and returns when they are equal, before it replaces `_webmcpTools`. Each cached tool's `handle` is bound to the tab and frame it was listed from (`toMcpToolDefinition`), so after the current tab changes to one that registers the same tool definitions, every `webmcp_*` call still runs in the previous tab, or in its closed frame when closing that tab caused the switch. Two tabs of one web app on different accounts or records then act on the wrong one."
+    locations: ["packages/playwright-core/src/tools/backend/context.ts", "updateWebMCPTools", "_webmcpToolsSignature", "toMcpToolDefinition"]
+    fix: "0c0594d4d377eeb99c22b5da00a5a71d814f46be"
+    source: "posted blocker of tuning run 45325005498, checked against the code"
 nice_to_have: []
