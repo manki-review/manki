@@ -702,8 +702,9 @@ export function disprovedTrigger(finding: Finding): boolean {
 
 /**
  * Whether the review keeps the warning `finding` in the round record only, since it `lacksTrigger`. A finding that is
- * serious if true stays posted until a check `disprovedTrigger`: one that `wouldBlock`, one that
- * `staysWarningIfConfirmed`, since its cell gives a blocker, and one that `isRareClaim`.
+ * serious if true is kept out for its trigger only once a check `disprovedTrigger`: one that `wouldBlock`, one that
+ * `staysWarningIfConfirmed`, since its cell gives a blocker, and one that `isRareClaim`. The proof rule in
+ * `hideUnprovenWarnings` still leaves out one that `staysWarningIfConfirmed` once a check ran without confirming it.
  */
 export function unpostedForTrigger(finding: Finding, wouldBlock = wouldBlockIfTrue): boolean {
   if (!lacksTrigger(finding)) return false;
