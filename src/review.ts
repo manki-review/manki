@@ -26,6 +26,7 @@ import { EarlierAnswer, EarlierAnswers, runComparisons, runPatternChecks, runRel
 import { extractPrClaims, prClaimsRecord, runClaimChecks } from './pr-claims';
 import { concernsThread, fixesRecord, listFixes, pushedWorkarounds, runFixChecks, workaroundRemaining } from './fixes';
 import { citedBy, runSweeps, sharesCitedLine, startsSweep } from './sweep';
+import { otherFinderVotes, VOTE_TIMEOUT_MS, withVote } from './other-finder';
 import { confirmDoubt, placeScopeWarning, runScopeReader, scopeWarnings } from './scope';
 import { formatLockfileChanges, isLockfileAlert, LockfileDiff, withLockfiles } from './lockfile';
 
@@ -1087,14 +1088,17 @@ export async function runReview(
   let stopped: string | undefined;
   // Aborted with `stopped`, so the late calls still running stop.
   const stopLate = new AbortController();
-  // Records `call` as not started and returns `stopped`, when the round has less time left than the call starts with.
-  const noTimeFor = (call: Pick<RoundNotStarted, 'stage' | 'agent'>): string | undefined => {
+  // Records `call` as not started and returns why, when the round has less time left than the call starts with. Only a
+  // call that `endsRound` sets `stopped`, since the round cannot do without it.
+  const noTimeFor = (call: Pick<RoundNotStarted, 'stage' | 'agent'>, endsRound = true): string | undefined => {
     if (stopped) return stopped;
     const leftMs = deadline === undefined ? Infinity : deadline - Date.now();
-    const minMs = call.stage === 'dedup' ? MIN_DEDUP_MS : MIN_JUDGE_MS;
+    // A vote may run for its whole timeout and still leave the later calls their time.
+    const minMs = call.stage === 'dedup' ? MIN_DEDUP_MS : call.stage === 'vote' ? MIN_JUDGE_MS + VOTE_TIMEOUT_MS : MIN_JUDGE_MS;
     if (leftMs >= minMs) return undefined;
     const reason = `the round has ${formatDuration(Math.max(0, leftMs))} left, less than the ${formatDuration(minMs)} a ${lateCallName(call)} starts with`;
     skip({ kind: 'call', ...call, reason });
+    if (!endsRound) return reason;
     stopped = `A ${lateCallName(call)} was not started, since ${reason}. ${retryHint(automaticRetry)}`;
     stopLate.abort();
     return stopped;
@@ -1129,13 +1133,13 @@ export async function runReview(
   // A call `noTimeFor` stops throws a `NotStartedError` before any wrapper records it. So does a call still running then,
   // whatever it returns, so no stage reads its answer. Each stage takes that error as a failed call without a warning, and
   // the round ends incomplete once that stage is done, so its record keeps what the round produced before.
-  const startsInTime = (client: LLMClient, call: Pick<RoundNotStarted, 'stage' | 'agent'>): LLMClient => {
+  const startsInTime = (client: LLMClient, call: Pick<RoundNotStarted, 'stage' | 'agent'>, endsRound = true): LLMClient => {
     // Without a deadline no call is stopped.
     const stoppable = deadline === undefined ? client : withSignal(client, stopLate.signal);
     return {
       ...stoppable,
       sendMessage: async (...args) => {
-        const late = noTimeFor(call);
+        const late = noTimeFor(call, endsRound);
         if (late) throw new NotStartedError(late);
         const reply = await stoppable.sendMessage(...args).catch((error: unknown) => {
           throw stopped ? new NotStartedError(stopped) : error;
@@ -1145,8 +1149,8 @@ export async function runReview(
       },
     };
   };
-  const lateFallback = (stageClient: StageClient, stage: RoundModelFallback['stage'], agent?: string): LLMClient =>
-    startsInTime(withFallback(stageClient, stage, agent), { stage, ...(agent && { agent }) });
+  const lateFallback = (stageClient: StageClient, stage: RoundModelFallback['stage'], agent?: string, endsRound = true): LLMClient =>
+    startsInTime(withFallback(stageClient, stage, agent), { stage, ...(agent && { agent }) }, endsRound);
   // A refused call adds nothing to the usage totals, so it counts as no attempt.
   const lateUsage = (stageClient: StageClient, stage: RoundModelFallback['stage']): ReturnType<typeof wrapClientForUsage> => {
     const wrap = wrapClientForUsage(withFallback(stageClient, stage));
@@ -2118,14 +2122,14 @@ export async function runReview(
     Object.assign(recorded, { ...(suppressionCount > 0 && { suppressionCount }), ...(memorySuppressed.length > 0 && { memorySuppressed }) });
   }
   // Each judge call checked the warnings on changed code that nothing proves. Every other check that shares the limit waits until here, so none takes a check from a later judge call.
+  const earlierForChecks = earlierFindings(priorRounds ?? [], openThreads ?? [], judgeThreadEvaluations);
   if (refutation) {
-    const earlier = earlierFindings(priorRounds ?? [], openThreads ?? [], judgeThreadEvaluations);
     const kept = finalFindings;
     // The origin checks run beside the refuter on the same findings, and only `markPreExisting` reads their answers.
     const [refuted, origins] = await Promise.all([
       refuteBlockers(refutation.client, kept, {
         workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, doubtBudget: refutation.doubtBudget, progress: refutation.progress, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff,
-        outsideInput: config.review?.outside_input, restatesEarlier: finding => restatesEarlier(earlier, finding),
+        outsideInput: config.review?.outside_input, restatesEarlier: finding => restatesEarlier(earlierForChecks, finding),
         unpostedLater: finding => unchangedCheck(finding) === 'pre_existing' && !postedWhenPreExisting(finding), roundEnd: true, rules: config.review?.rules,
       }),
       originsOf(kept, finding => unchangedCheck(finding) === 'pre_existing'),
@@ -2135,6 +2139,18 @@ export async function runReview(
     allJudgedFindings = allJudgedFindings?.map(f => after.get(f) ?? f);
     finalFindings = checked.filter(f => f.severity !== 'ignore');
     if (stopped) return incompleteAfterJudge(stopped);
+  }
+  // The votes wait for the refuter, since a finding a check confirmed gets none.
+  if (workspace) {
+    const kept = finalFindings;
+    const votes = await otherFinderVotes(kept, {
+      workspace, diff: diffWithLockfiles, restates: finding => restatesEarlier(earlierForChecks, finding), rules: config.review?.rules,
+      // A vote only ever lowers a grade, so one without the time to start is skipped and the round goes on.
+      finders: team.finders.map(f => ({ name: f.name, client: lateFallback(pickReviewerClient(clients, f.model), 'vote', f.name, false) })),
+    });
+    finalFindings = kept.map((f, i) => withVote(f, votes[i], config.review?.rules));
+    const after = new Map(kept.map((f, i) => [f, finalFindings[i]]));
+    allJudgedFindings = allJudgedFindings?.map(f => after.get(f) ?? f);
   }
   // After the suppressions, so a blocker the PR did not cause keeps their blocker guard.
   const preExisting = markPreExisting(finalFindings, unchangedCheck, { rules: config.review?.rules });
@@ -2501,6 +2517,7 @@ function secondReadNote(findings: readonly Finding[]): string {
 function lateCallName({ stage, agent }: Pick<RoundNotStarted, 'stage' | 'agent'>): string {
   if (stage === 'verdict') return 'verdict reader call';
   if (stage === 'sweep') return 'sweep call';
+  if (stage === 'vote') return 'vote call';
   if (stage === 'dedup') return agent === 'sweep' ? 'dedup call on the sweep\'s findings' : 'dedup call';
   if (agent === 'refute') return 'refuter call';
   if (agent === 'refute_pair') return 'second refuter call';

@@ -42,7 +42,7 @@ import { relatedReposCacheDir } from './related-repos';
 import * as core from '@actions/core';
 import * as napi from '@ast-grep/napi';
 import { formatFindingComment, holdsApproval, LinkedIssue, titleToSlug } from './github';
-import { CELL_GRADES, cellGrade, EarlierAttempt, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, OriginAnswer, OriginVerdict, Refutation, RefutationOutcome, RelatedItem, RelatedWork, ReviewResult, RoundContext, RoundLead, RoundNotStarted, RoundScope, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG, SweepMode, triggerDoubt } from './types';
+import { CELL_GRADES, cellGrade, DISPROVED_TAG, EarlierAttempt, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, OriginAnswer, OriginVerdict, Refutation, RefutationOutcome, RelatedItem, RelatedWork, ReviewResult, RoundContext, RoundLead, RoundNotStarted, RoundScope, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG, SweepMode, triggerDoubt } from './types';
 import { citedLine, stringifyFindingFingerprint } from './finding-fingerprint';
 import { baseProofFixture, baseProofWorkspace, expectLinearTime, fingerprintEntriesFromLegacy, git, GIT_TEST_TIMEOUT_MS, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
 import { listUsesOutsideDiff } from './symbol-uses';
@@ -2253,6 +2253,10 @@ describe('runReview', () => {
           tools.set('claim', options?.repoTools);
           return { content: JSON.stringify({ status: 'unchecked', reason: 'The importer was not read.' }) };
         }
+        // The other finder backs the blocker only one finder reported.
+        if (system.startsWith('You test a claim')) {
+          return { content: JSON.stringify({ harm: 'An id runs twice.', situation: 'The importer starts a finished id.', line: 'src/queue.ts:6', quote: 'if (this.pending.has(id)) return;' }) };
+        }
         tools.set('finder', options?.repoTools);
         // A finder reads one repo, which fetches it.
         if (options?.repoTools?.related) fetched(options.repoTools.related.stateDir, 'acme/reports');
@@ -2279,7 +2283,8 @@ describe('runReview', () => {
         fetched(join(stateDir, 'dependencies'), 'crates.io/demo@1.0.0');
         writeFileSync(join(stateDir, 'dependencies', `${encodeURIComponent('crates.io/demo@1.0.0')}.from`), JSON.stringify({ registry: 'crates.io', name: 'demo', version: '1.0.0', source: 'lockfile', file: 'Cargo.lock' }));
         const proof = ['src/queue.ts:6', 'acme/billing:src/import.ts:2', 'crates.io/demo@1.0.0:src/import.ts:1'];
-        return { content: JSON.stringify({ outcome: 'confirmed', reason: 'It does.', proof }), relatedReads: { 'acme/billing': 2, 'crates.io/demo@1.0.0': 1 } };
+        // One finder of two reported the blocker, so the check confirms its damage too.
+        return { content: JSON.stringify({ outcome: 'confirmed', reason: 'It does.', proof, premises: [{ outcome: 'confirmed', reason: 'The id runs twice.', proof: ['src/queue.ts:6'] }] }), relatedReads: { 'acme/billing': 2, 'crates.io/demo@1.0.0': 1 } };
       });
       mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
       try {
@@ -3789,7 +3794,9 @@ describe('runReview', () => {
           return { model, content: JSON.stringify({ origin, reason: 'The loop before this PR also only read the entry.', head: ['src/queue.ts:3', 'src/queue.ts:4'], base: baseProof }) };
         }
         refuterMessages.push(user);
-        return { model, content: JSON.stringify({ outcome: 'confirmed', reason: 'Nothing removes an entry.', proof: ['src/queue.ts:4'] }) };
+        // One finder of two reported the blocker, so the check confirms its damage too.
+        const confirmed = { outcome: 'confirmed', reason: 'Nothing removes an entry.', proof: ['src/queue.ts:4'] };
+        return { model, content: JSON.stringify({ ...confirmed, premises: [confirmed] }) };
       };
       const pair = pairModel === null ? undefined : {
         repoTools: true, sendMessage: pairModel === 'failed' ? jest.fn().mockRejectedValue(new Error('timed out')) : jest.fn(reply(pairModel)),
@@ -3824,7 +3831,8 @@ describe('runReview', () => {
     expect(originMessages[0]).toContain("- **A reviewer's claim that it is older than this PR**, to check: The loop read the queue the same way before this PR.");
     expect(result.outcome).toBe('READY');
     expect(result.findings.map(f => [f.title, f.severity, f.originalSeverity, f.tags, f.preExistingCheck])).toEqual([[title, 'warning', 'blocker', ['pre-existing', 'follow-up'], 'touches_diff']]);
-    expect(result.findings[0].gradePath?.map(step => [step.from, step.to, step.by])).toEqual([['blocker', 'warning', 'pre_existing']]);
+    // The judge held the blocker for its one finder until the checks confirmed its damage.
+    expect(result.findings[0].gradePath?.map(step => [step.from, step.to, step.by])).toEqual([['blocker', 'warning', 'judge'], ['warning', 'blocker', 'refutation'], ['blocker', 'warning', 'pre_existing']]);
     expect(result.findings[0].originCheck?.answers.map(a => [a.model, a.verdict, a.base])).toEqual([['judge-model', 'pre_existing', baseProofDefault], ['pair-model', 'pre_existing', baseProofDefault]]);
     expect(formatFindingComment(result.findings[0], TEST_LINKS)).toContain('**Already broken before this PR.** Two checks found the same problem on the base branch at ');
 
@@ -3852,7 +3860,7 @@ describe('runReview', () => {
     for (const [origin, options] of kept) {
       const round = await run(origin, options);
       expect([options, round.result.outcome, round.result.findings.map(f => [f.severity, f.gradeIfConfirmed, f.tags?.filter(t => t !== 'security')])])
-        .toEqual([options, 'ADDRESS_FIRST', [['blocker', undefined, options.security ? [] : undefined]]]);
+        .toEqual([options, 'ADDRESS_FIRST', [['blocker', options.repoTools === false || options.security ? undefined : 'blocker', options.security ? [] : undefined]]]);
       expect(round.originMessages).toHaveLength(options.repoTools === false || options.readsBase === false ? 0 : 2);
     }
     // Both models lower a security blocker.
@@ -3878,12 +3886,13 @@ describe('runReview', () => {
       };
       const refuterPair = pair ? { repoTools: true, sendMessage: jest.fn(reply('pair-model')) } as unknown as LLMClient : undefined;
       const clients = { ...makeClients(), ...(refuterPair && { refuterPair }) };
-      jest.mocked(clients.reviewer.sendMessage).mockResolvedValueOnce({ content: JSON.stringify(found) });
+      // Both finders report them, so each is graded as a blocker every finder filed.
+      jest.mocked(clients.reviewer.sendMessage).mockResolvedValueOnce({ content: JSON.stringify(found) }).mockResolvedValueOnce({ content: JSON.stringify(found) });
       Object.assign(clients.judge, { repoTools: true });
       const refute = reply('judge-model');
       jest.mocked(clients.judge.sendMessage).mockImplementation(async (system: string, user: string) => {
         if (system.startsWith('You are a code review judge')) {
-          return { content: JSON.stringify({ summary: 's', findings: fixture.findings.map((f, i) => ({ id: i + 1, title: f.title, row: 'severe', ...(f.security && { security: true }), reasoning: 'r' })) }) };
+          return { content: JSON.stringify({ summary: 's', findings: [...fixture.findings, ...fixture.findings].map((f, i) => ({ id: i + 1, title: f.title, row: 'severe', ...(f.security && { security: true }), reasoning: 'r' })) }) };
         }
         if (!system.startsWith('You check one finding') && !system.startsWith('You decide whether')) return { content: READY_VERDICT };
         return refute(system, user);
@@ -4030,6 +4039,8 @@ describe('runReview', () => {
     let reported = false;
     jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string) => {
       if (sweeping(system)) return { content: JSON.stringify({ class: 'a cache key leaves out a field the value depends on', general: true, findings: [swept] }) };
+      // The other finder backs each finding only one finder reported.
+      if (system.startsWith('You test a claim')) return { content: JSON.stringify({ harm: 'A wrong entry is served.', situation: 'Two locales share a key.', line: 'src/app.ts:3', quote: 'new 3' }) };
       const content = reported ? '[]' : JSON.stringify([blocker, ...old]);
       reported = true;
       return { content };
@@ -4089,7 +4100,8 @@ describe('runReview', () => {
     // second call without them either. Neither refused call counts as a retry.
     const refuted = (r: ReviewResult) => r.allJudgedFindings?.map(f => [f.title, f.severity, f.refutation, f.checkStatus]);
     expect(lateResults[0]).toMatchObject({ ...notStartedRound({ stage: 'judge', agent: 'refute' }, 'refuter call'), judgeRetryCount: 0 });
-    expect(refuted(lateResults[0])).toEqual([[blocker.title, 'blocker', undefined, undefined], ...old.map(f => [f.title, 'warning', undefined, undefined])]);
+    // One finder of two reported the blocker, so the judge holds it at a warning until a check confirms its damage.
+    expect(refuted(lateResults[0])).toEqual([[blocker.title, 'warning', undefined, undefined], ...old.map(f => [f.title, 'warning', undefined, undefined])]);
     // The round ends after that judge call, so its blocker starts no sweep.
     expect(lateResults[0].sweeps).toBeUndefined();
     expect(lateResults[1]).toMatchObject({ ...notStartedRound({ stage: 'judge' }, 'judge call'), judgeRetryCount: 0 });
@@ -4470,6 +4482,118 @@ describe('runReview', () => {
     clients.fallbacks = { judge: fallback(true) };
     await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: '', workspace: '/work/pr-head' });
     expect(mockedRunJudgeAgent.mock.calls[3][2].toolSteps).toBe(30);
+  });
+
+  it('asks a finder that did not report a blocker or warning one finder alone reported for its harm, and lowers it when the answer names no line the head holds', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'manki-vote-'));
+    mkdirSync(join(workspace, 'src'));
+    writeFileSync(join(workspace, 'src', 'a.ts'), Array.from({ length: 16 }, (_, i) => `const line${i + 1} = ${i + 1};`).join('\n'));
+    const titles = [
+      'Backed blocker', 'Declined blocker', 'Declined warning', 'Misquoted warning', 'Backed warning', 'Security warning', 'Vote fails', 'Both finders found it', 'Restates a thread',
+      'Breaks a rule', 'Held blocker cell', 'Quote nearby', 'Unreadable file', 'Confirmed blocker', 'Confirmed warning',
+    ];
+    const reported = titles.map((title, i) => ({ severity: i < 2 || title === 'Confirmed blocker' ? 'blocker' : 'warning', title, file: 'src/a.ts', line: i + 1, description: `${title}.`, evidence: [`src/a.ts:${i + 1} shows it`], proof: [`src/a.ts:${i + 1}`] }));
+    const declines = { harm: '', situation: '', line: 'none' };
+    const answers: Record<string, unknown> = {
+      'Backed blocker': { harm: 'A total is wrong.', situation: 'Any export.', line: 'src/a.ts:1', quote: 'const line1 = 1;' },
+      'Declined blocker': declines,
+      'Declined warning': declines,
+      // The head holds other code on that line, so the answer names no harm it can show.
+      'Misquoted warning': { harm: 'A total is wrong.', situation: 'Any export.', line: 'src/a.ts:4', quote: 'const total = 0;' },
+      'Backed warning': { harm: 'A total is wrong.', situation: 'Any export.', line: 'src/a.ts:5', quote: 'line5 = 5' },
+      'Vote fails': 'not json',
+      'Held blocker cell': declines,
+      'Confirmed blocker': declines,
+      'Confirmed warning': declines,
+      // A model often names a line next to the one it quotes.
+      'Quote nearby': { harm: 'A total is wrong.', situation: 'Any export.', line: 'src/a.ts:12', quote: 'const line9 = 9;' },
+      // Manki cannot read the line, so the answer neither backs nor declines the finding.
+      'Unreadable file': { harm: 'A total is wrong.', situation: 'Any export.', line: 'src/gone.ts:3', quote: 'const gone = 3;' },
+    };
+    const rule = { file: 'AGENTS.md', quote: 'Every export is logged.', verdict: 'confirmed' as const };
+    /** Runs the round, and calls `afterJudge` once the judge answered. */
+    const run = async (afterJudge = (): void => undefined) => {
+      const asked: string[] = [];
+      const clients = makeClients();
+      let finderCalls = 0;
+      jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string, user: string) => {
+        if (system.startsWith('You test a claim')) {
+          const title = titles.find(t => user.includes(`## Claim: ${t}\n`))!;
+          asked.push(title);
+          const answer = answers[title];
+          return { content: typeof answer === 'string' ? answer : JSON.stringify(answer) };
+        }
+        return { content: finderCalls++ === 0 ? JSON.stringify(reported) : '[]' };
+      });
+      // The judge marks each finding only the first finder reported, as `mapJudgedToFindings` does.
+      mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => {
+        afterJudge();
+        return {
+          summary: 'ok', findings: input.findings.map(f => ({
+            ...f, ...(f.title !== 'Both finders found it' && { soleFinder: true }), ...(f.title === 'Security warning' && { tags: ['security'] }), ...(f.title === 'Restates a thread' && { threadId: 'T9' }),
+            ...(f.title === 'Breaks a rule' && { rule }), ...(f.title === 'Held blocker cell' && { cell: { row: 'wrong' as const, column: 'normal' as const }, gradeIfConfirmed: 'blocker' as const }),
+            ...(f.title === 'Declined blocker' && { cell: { row: 'wrong' as const, column: 'normal' as const } }),
+            ...(f.title.startsWith('Confirmed') && { refutation: { outcome: 'confirmed' as const, defect: 'confirmed' as const, reason: 'It drifts.', files: ['src/a.ts'], codeDigest: 'abc' } }),
+          })),
+        };
+      });
+      const result = await runReview(clients, { config: makeConfig({ review: { rules: 'warn' } }), diff: diffChanging('src/a.ts'), rawDiff: 'raw diff', repoContext: '', workspace, deadline: Date.now() + 20 * 60_000 });
+      return { result, asked };
+    };
+    try {
+      const { result, asked } = await run();
+      // A security finding, one more than one finder reported, one that restates a thread, one a rule grades and a blocker
+      // a check confirmed get no vote, and a failed call asks once more.
+      expect(asked.sort()).toEqual([
+        'Backed blocker', 'Backed warning', 'Confirmed warning', 'Declined blocker', 'Declined warning', 'Held blocker cell', 'Misquoted warning', 'Quote nearby', 'Unreadable file', 'Vote fails', 'Vote fails',
+      ]);
+      const reporter = result.findings[0].reviewers[0];
+      expect(result.findings.map(f => [f.title, f.severity, f.otherFinderVote?.declined, f.gradePath?.at(-1)?.reason])).toEqual([
+        ['Backed blocker', 'blocker', false, undefined],
+        // A blocker the other finder declines is posted as a warning, with the reason.
+        ['Declined blocker', 'warning', true, 'the other finder would not block on it'],
+        // A declined warning stays visible as a note, also one whose quoted line the head does not hold.
+        ['Declined warning', 'note', true, 'the other finder named no harm in realistic use'],
+        ['Misquoted warning', 'note', true, 'the other finder named no harm in realistic use'],
+        ['Backed warning', 'warning', false, undefined],
+        ['Security warning', 'warning', undefined, undefined],
+        ['Vote fails', 'warning', undefined, undefined],
+        ['Both finders found it', 'warning', undefined, undefined],
+        ['Restates a thread', 'warning', undefined, undefined],
+        ['Breaks a rule', 'warning', undefined, undefined],
+        // A vote lowers a finding one step below its cell at most, so a blocker cell held at a warning stays posted.
+        ['Held blocker cell', 'warning', true, undefined],
+        ['Quote nearby', 'warning', false, undefined],
+        ['Unreadable file', 'warning', undefined, undefined],
+        ['Confirmed blocker', 'blocker', undefined, undefined],
+        // A check confirms the code path, not the harm, so a confirmed warning the other finder declines still becomes a note.
+        ['Confirmed warning', 'note', true, 'the other finder named no harm in realistic use'],
+      ]);
+      // A declined blocker's thread is guarded, so the PR author's answer alone does not clear it.
+      // Its cell moves to `judgeCell` in the record, so a later round does not restore the blocker from it.
+      const declinedBlocker = result.allJudgedFindings?.find(f => f.title === 'Declined blocker');
+      expect([declinedBlocker?.tags, declinedBlocker?.cell, declinedBlocker?.judgeCell]).toEqual([expect.arrayContaining([DISPROVED_TAG]), undefined, { row: 'wrong', column: 'normal' }]);
+      // The other finder answered, never the one that reported it, and the record keeps its answer with the quoted line.
+      expect(result.findings[0].otherFinderVote).toEqual({ finder: expect.not.stringMatching(reporter), harm: 'A total is wrong.', situation: 'Any export.', line: 'src/a.ts:1', quote: 'const line1 = 1;', declined: false });
+      expect(result.llmCalls?.filter(c => c.stage === 'vote').length).toBe(11);
+      expect(result.unposted ?? []).toEqual([]);
+
+      // A vote starts only with the time for its whole timeout and a judge call after it, so with 3 minutes left it is
+      // skipped, and the round goes on without it.
+      const start = Date.now();
+      const clock = jest.spyOn(Date, 'now').mockImplementation(() => start);
+      try {
+        const late = await run(() => clock.mockImplementation(() => start + 20 * 60_000 - 180_000));
+        expect(late.asked).toEqual([]);
+        expect(late.result.reviewComplete).toBe(true);
+        expect(late.result.findings.map(f => [f.title, f.severity, f.otherFinderVote])).toContainEqual(['Declined blocker', 'blocker', undefined]);
+        expect(late.result.notStarted).toContainEqual(expect.objectContaining({ kind: 'call', stage: 'vote', reason: 'the round has 3m 0s left, less than the 4m 0s a vote call starts with' }));
+      } finally {
+        clock.mockRestore();
+      }
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 
   describe('open leads', () => {

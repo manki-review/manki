@@ -219,9 +219,17 @@ export function isSecurityFinding(tags: string[] | undefined, priorReviewers: Re
   return Boolean(tags?.includes(SECURITY_TAG)) || priorReviewers.includes(LEGACY_SECURITY_AGENT_NAME);
 }
 
-/** Whether a step that leaves out notes may leave the finding out of the review: only a note, and never a security finding or a tool alert. */
+/**
+ * Whether a step that leaves out notes may leave the finding out of the review: only a note, and never a security
+ * finding, a tool alert or a note the other finder's vote lowered from a warning (`votedDown`).
+ */
 export function canLeaveOut(f: Finding): boolean {
-  return isNote(f.severity) && !f.toolSource && !isSecurityFinding(f.tags, f.reviewers);
+  return isNote(f.severity) && !f.toolSource && !isSecurityFinding(f.tags, f.reviewers) && !votedDown(f);
+}
+
+/** Whether the other finder's vote lowered `f` to a note, which stays in the review so one vote never removes a warning. */
+export function votedDown(f: Pick<Finding, 'severity' | 'gradePath'>): boolean {
+  return isNote(f.severity) && !!f.gradePath?.some(step => step.by === 'other_finder' && step.to === 'note');
 }
 
 /**
@@ -234,8 +242,9 @@ export const UNPROVEN_TAG = 'unproven-blocker' as const;
 /** Marks a blocker posted as a warning because it claims a build, type or test failure that no CI result on the commit reports. */
 export const UNBUILT_TAG = 'unconfirmed-build-claim' as const;
 /**
- * Marks a blocker posted as a warning because every refuter disproved it. Its thread is guarded as a security finding's
- * is: only a fix or someone allowed to clear it lifts it, never the PR author's answer alone.
+ * Marks a blocker posted as a warning because every refuter disproved it, or the other finder's vote declined it. Its
+ * thread is guarded as a security finding's is: only a fix or someone allowed to clear it lifts it, never the PR
+ * author's answer alone.
  */
 export const DISPROVED_TAG = 'disproved-blocker' as const;
 
@@ -354,6 +363,12 @@ export interface Finding {
   reviewerSeverity?: FindingSeverity;
   /** The lowest severity a reviewer gave the finding or a duplicate merged into it. Set only when the reviewers split on the grade. */
   lowestReviewerSeverity?: FindingSeverity;
+  /**
+   * Set when two or more finders ran and one of them alone reported the finding, with no other check beside it. Its
+   * blocker cell then needs a confirmed consequence, as one that not every finder filed as a blocker does. Such a blocker
+   * or warning gets the other finder's vote (`otherFinderVote`), and such a note follows the others of its group.
+   */
+  soleFinder?: boolean;
   /** Each change of the finding's severity after the reviewer graded it, in order, with what changed it. */
   gradePath?: GradeStep[];
   /** Fingerprint key of the earlier finding that names the same defect. */
@@ -421,7 +436,7 @@ export interface Finding {
    * The grade the finding gets once every premise in `doubts` holds. Set when the finding has a doubt. Manki works it
    * out from the `cell`, except that it is `warning` in a cell that gives a blocker when the judge stated `warning`.
    * The refuter checks the finding, and a confirmation of every doubt gives it this grade. A blocker cell that not every
-   * finder filed as a blocker, that is no security finding and that restates no earlier blocker needs more: every
+   * finder filed as a blocker or that is `soleFinder`, that is no security finding and that restates no earlier blocker needs more: every
    * check confirms the defect and a `consequence` premise. Before its checks, `refuteBlockers` sets `warning` here on
    * such a finding without a `consequence` premise. On a finding that `isRareClaim` it is the grade of
    * the `normal` column, which no confirmation gives. On a finding the judge dropped with a `drop` premise, it is the
@@ -440,6 +455,8 @@ export interface Finding {
   pairRefutation?: Refutation;
   /** The origin checks of whether the PR caused the failure. Set on blockers and warnings the round checked. */
   originCheck?: OriginCheck;
+  /** The vote of a finder that did not report the finding, which `otherFinderVotes` asks on a `soleFinder` blocker or warning. */
+  otherFinderVote?: OtherFinderVote;
   /** The line of an origin answer's `fixedElsewhere`, on a pre-existing finding posted as a note because the PR fixes the same failure there. */
   fixedElsewhere?: string;
   /** The id of the memory suppression that hid the finding. */
@@ -960,7 +977,7 @@ export interface RoundSlicing {
 /** What changed a finding's severity. */
 export type GradeChange =
   | 'judge' | 'rule' | 'unproven' | 'build_claim' | 'refutation' | 'in_pr_suppression' | 'own_proposal' | 'ratchet'
-  | 'resolved_thread' | 'pre_existing' | 'own_fix';
+  | 'resolved_thread' | 'pre_existing' | 'own_fix' | 'other_finder';
 
 /** One change of a finding's severity. */
 export interface GradeStep {
@@ -999,7 +1016,8 @@ export function pendingGrade(f: Pick<Finding, 'gradeIfConfirmed' | 'cell'>): Fin
 
 /**
  * Whether the cell of `f` gives a blocker that no confirmation of its doubts gives. Either the judge stated `warning`
- * for that case, or `refuteBlockers` set it because not every finder filed a blocker and the judge named no `consequence` premise.
+ * for that case, or `refuteBlockers` set it because not every finder filed a blocker or one finder alone reported it, and the judge
+ * named no `consequence` premise.
  */
 export function staysWarningIfConfirmed(f: Pick<Finding, 'gradeIfConfirmed' | 'cell'>): boolean {
   return f.gradeIfConfirmed === 'warning' && isGradeCell(f.cell) && cellGrade(f.cell.row, f.cell.column) === 'blocker';
@@ -1114,6 +1132,21 @@ export interface OriginAnswer {
 }
 
 /** The origin checks of a finding. */
+/** The answer of a finder that did not report a `soleFinder` finding, asked for the harm the finding causes. */
+export interface OtherFinderVote {
+  /** The finder whose model answered. */
+  finder: string;
+  harm: string;
+  /** The realistic situation in normal use where the harm happens. */
+  situation: string;
+  /** Where the harm happens, as `path:line`, and the code quoted from it. Missing when the answer named no line. */
+  line?: string;
+  quote?: string;
+  /** Whether the answer named no line, or one the head does not hold the quoted code near. */
+  declined: boolean;
+  model?: string;
+}
+
 export interface OriginCheck {
   /** Whether the PR added or changed the flagged line, so the line has no place at the base. */
   lineChanged: boolean;
@@ -1215,6 +1248,11 @@ function agreedOn(checks: readonly Refutation[]): RefutationOutcome {
  */
 export function confirmsDefect(check: Refutation, finding: Pick<Finding, 'doubts'>): boolean {
   return check.defect === 'confirmed' && openPremises(check, finding).length === 0;
+}
+
+/** Whether a check of `finding` `confirmsDefect` as the refuter answered it (`asAnswered`), whatever another check says. */
+export function confirmedByCheck(finding: Pick<Finding, 'refutation' | 'pairRefutation' | 'doubts'>): boolean {
+  return [finding.refutation, finding.pairRefutation].some(check => !!check && confirmsDefect(asAnswered(check), finding));
 }
 
 /** Returns the premises of `check` that leave the defect of `finding` open, as `confirmsDefect` reads them. */
@@ -3165,6 +3203,8 @@ export interface FindingFingerprintEntry {
   pairRefutation?: Refutation;
   /** Mirrors `Finding.originCheck`. */
   originCheck?: OriginCheck;
+  /** Mirrors `Finding.otherFinderVote`. */
+  otherFinderVote?: OtherFinderVote;
   /** Mirrors `Finding.gradeIfConfirmed`. */
   gradeIfConfirmed?: FindingSeverity;
   /** Mirrors `Finding.judgeIfConfirmed`. */
@@ -3315,7 +3355,7 @@ export interface ReplyDecision {
 export interface RoundUsage extends RoundUsageStage {
   /** Wall-clock time of the review run, from its start to the review it posts. `durationMs` is the time spent in model calls. */
   wallClockMs?: number;
-  perStage?: Partial<Record<'planner' | 'reviewer' | 'compare' | 'claims' | 'claim_terms' | 'claim_check' | 'fixes' | 'fix_check' | 'related_check' | 'pattern_check' | 'sweep' | 'judge' | 'dedup' | 'verdict' | 'scope' | 'related' | 'translate', RoundUsageStage>>;
+  perStage?: Partial<Record<'planner' | 'reviewer' | 'compare' | 'claims' | 'claim_terms' | 'claim_check' | 'fixes' | 'fix_check' | 'related_check' | 'pattern_check' | 'sweep' | 'judge' | 'vote' | 'dedup' | 'verdict' | 'scope' | 'related' | 'translate', RoundUsageStage>>;
   perModel?: Record<string, RoundUsageStage>;
   llmCalls?: LLMCall[];
   /** The newest reading of each subscription usage window the round's calls reported. */

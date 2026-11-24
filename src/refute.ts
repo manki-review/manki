@@ -15,7 +15,7 @@ import { parseProof, sameProblem, titlesMatch, truncateDiff } from './review';
 import { stringifyFindingFingerprint } from './finding-fingerprint';
 import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation, MAX_QUOTED_RANGE } from './static-signals';
 import { wrapUpNoted } from './tool-steps';
-import { DISPROVED_TAG, agreedOutcome, asAnswered, cellGrade, DiffFile, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, CheckProgress, CheckStatus, confirmsAll, confirmsCodePath, confirmsDefect, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isRareClaim, isSecurityFinding, isSweepName, isTriggerDoubt, leadText, OpenThread, OutsideBehavior, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, restsOnDrop, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, towardFinding, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof, wouldBlockIfTrue } from './types';
+import { DISPROVED_TAG, agreedOutcome, asAnswered, cellGrade, confirmedByCheck, DiffFile, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, CheckProgress, CheckStatus, confirmsAll, confirmsCodePath, confirmsDefect, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isRareClaim, isSecurityFinding, isSweepName, isTriggerDoubt, leadText, OpenThread, OutsideBehavior, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, restsOnDrop, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, towardFinding, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof, wouldBlockIfTrue } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -364,16 +364,24 @@ function raisedTo(finding: Finding, grade: FindingSeverity | undefined): Finding
 /**
  * Whether the pending blocker of `finding` needs a confirmed `consequence` premise. A doubt means the judge named the
  * cell for code it had not seen, and only a `consequence` premise asks the refuter how serious the damage is. So the
- * blocker is given on the other premises alone only when every finder that reported it filed one, on a security
- * finding, or when the finding `restates` an earlier blocker. A grade that a step after the judge's moved, such as a rule blocker, is left alone.
+ * blocker is given on the other premises alone only when every finder that reported it filed one and it is no
+ * `soleFinder` finding, on a security finding, or when the finding `restates` an earlier blocker. A grade that a step
+ * after the judge's moved, such as a rule blocker, is left alone.
  */
 function needsConsequence(finding: Finding, restates: boolean): boolean {
   const held = pendingGrade(finding) === 'blocker' && isGradeCell(finding.cell) && cellGrade(finding.cell.row, finding.cell.column) === 'blocker'
     && (finding.gradePath?.at(-1)?.by ?? 'judge') === 'judge';
-  return held && finderGrade(finding, 'lowest') !== 'blocker' && !restates && !isSecurityFinding(finding.tags, finding.reviewers);
+  return held && (finderGrade(finding, 'lowest') !== 'blocker' || !!finding.soleFinder) && !restates && !isSecurityFinding(finding.tags, finding.reviewers);
 }
 
 const namesConsequence = (finding: Pick<Finding, 'doubts'>): boolean => !!finding.doubts?.some(d => d.consequence);
+
+/**
+ * Whether the judge held the blocker cell of `finding` at a warning only because one finder alone reported it: it is
+ * `soleFinder` and its only doubts are its consequence. A disproof treats it as the blocker its cell gives.
+ */
+const heldForOneFinder = (finding: Finding): boolean => !!finding.soleFinder && finding.severity === 'warning' && pendingGrade(finding) === 'blocker'
+  && !!finding.doubts?.length && finding.doubts.every(d => d.consequence);
 
 /** Whether no confirmation gives `finding` the pending blocker of its cell: it `needsConsequence` and the judge named none. */
 function keepsWarning(finding: Finding, restates: boolean): boolean {
@@ -484,7 +492,8 @@ function disprovedGrade(
  * open lead or a capped blocker, and no check raises a finding beside one that disproves it. A finding with an
  * `overruledDisproof` stays at its grade, without its `cell`, `doubts`, `gradeIfConfirmed` and `lead`, so only a
  * confirmation gives a capped blocker back. A disproof lowers a blocker to the grade `disprovedGrade` gives and never
- * drops it. Such a finding loses its `cell`, so a later round does not restate the blocker from it. An unsettled outcome keeps the
+ * drops it, and neither does it drop a blocker cell the judge held only because one finder reported it (`heldForOneFinder`).
+ * Such a finding loses its `cell`, so a later round does not restate the blocker from it. An unsettled outcome keeps the
  * grade, and a security finding changes only when confirmed. A confirmation raises a finding only to the grade
  * `confirmedGrade` gives, so a finding that `isRareClaim` keeps its grade and its cell. One that `needsConsequence`
  * rises only when every check `confirmsAll`.
@@ -505,10 +514,11 @@ function applyRefutation(given: Finding, refutation: Refutation | undefined, pai
     const { cell: _cell, gradeIfConfirmed: _gradeIfConfirmed, doubts: _doubts, lead: _lead, notChecked: _notChecked, ...kept } = graded;
     return kept;
   }
-  const dropped = finding.severity === 'blocker' ? undefined : disproof(graded);
+  const held = heldForOneFinder(finding);
+  const dropped = finding.severity === 'blocker' || held ? undefined : disproof(graded);
   if (dropped) return { ...graded, ...gradeStep(finding, 'ignore', 'refutation', dropped.reason) };
   if (outcome === 'disproved') {
-    const lowered = disprovedGrade(finding, refutation, pairRefutation, restates, rules);
+    const lowered = disprovedGrade(held ? { ...finding, severity: 'blocker' } : finding, refutation, pairRefutation, restates, rules);
     if (!lowered) return graded;
     const { grade, reason, guarded } = lowered;
     core.info(`Posting blocker "${finding.title}" as a ${grade}: ${reason}`);
@@ -612,8 +622,8 @@ function doubtsToCheck(
  * the cited lines decide. A blocker posted as a warning for want of proof stays unproven until a check confirms it.
  */
 export function unprovenReason(finding: Finding): UnprovenReason | undefined {
+  if (confirmedByCheck(finding)) return undefined;
   const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r);
-  if (checks.some(check => confirmsDefect(asAnswered(check), finding))) return undefined;
   const lacksProof = citesNoProof(finding) || !!finding.tags?.some(tag => CHECKED_TAGS.includes(tag));
   const open = lacksProof || doubtsDefect(finding);
   if (checks.length > 0) return open ? 'unsettled_check' : undefined;
