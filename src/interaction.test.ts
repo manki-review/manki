@@ -441,6 +441,7 @@ const MANKI_USER = { login: TEST_BOT.logins[0] };
 
 /** The commit a thread's first comment was posted on. */
 const POSTED_ON = 'f'.repeat(40);
+const FILE_CHANGE = 'diff --git a/src/file.ts b/src/file.ts\n--- a/src/file.ts\n+++ b/src/file.ts\n@@ -9,2 +9,3 @@\n context\n+  log(opts.retries, sessionToken);\n context';
 
 /** `file` empty gives a finding tied to no file, which is posted detached. */
 function findingComment(kind: FindingKind, detached = false, evidence?: Finding['evidence'], file = 'src/file.ts'): string {
@@ -1307,6 +1308,43 @@ describe('handleReviewCommentReply', () => {
     expect(body.split('\n\n<!-- manki -->')[0]).toBe(settles ? 'Fixed. The guard now runs first.' : `Unverified. The guard now runs first. ${UNPROVEN}`);
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(settles ? [[octokit, 'PRRT_this', 'ADDRESSED']] : []);
     expect(extractReplyRecords(body).map(r => (JSON.parse(r) as ReplyRecord).decision)).toEqual([settles ? { outcome: 'Fixed', thread: 'resolves' } : undefined]);
+  });
+
+  const modified = (path: string, from = path) => `diff --git a/${from} b/${path}\n${from === path ? '' : `similarity index 90%\nrename from ${from}\nrename to ${path}\n`}--- a/${from}\n+++ b/${path}\n@@ -9,2 +9,3 @@\n context\n+  closedText();\n context`;
+  it.each<[string, string, string, string | undefined, string | undefined, boolean]>([
+    ['a closed file', 'keys/a.ts', modified('keys/a.ts'), modified('keys/a.ts'), undefined, false],
+    ['a file renamed out of a closed path since the thread was posted', 'src/a.ts', modified('src/a.ts', 'keys/a.ts'), modified('src/a.ts', 'keys/a.ts'), undefined, false],
+    // The comparison starts after the rename, so only the PR's diff shows where the file comes from.
+    ['a file renamed out of a closed path before the thread was posted', 'src/a.ts', modified('src/a.ts'), modified('src/a.ts', 'keys/a.ts'), undefined, false],
+    ['a file renamed into a closed path', 'keys/a.ts', modified('keys/a.ts', 'src/a.ts'), modified('keys/a.ts', 'src/a.ts'), undefined, false],
+    ['a file while the PR\'s diff cannot be read', 'src/a.ts', modified('src/a.ts'), undefined, 'Unknown', false],
+    ['an open file', 'src/a.ts', modified('src/a.ts'), modified('src/a.ts'), undefined, true],
+  ])('shows the model no change to a closed file, and lets none prove a "Fixed.": %s', async (_name, path, since, prDiff, shown, open) => {
+    setContext({
+      comment: { id: 1, body: 'Fixed in abc1234.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'OWNER' },
+      pull_request: { number: 1, user: { login: 'pr-author' }, head: { sha: 'a'.repeat(40) } },
+      sender: { login: 'pr-author' },
+    });
+    const octokit = createMockOctokit();
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { original_commit_id: POSTED_ON, user: MANKI_USER, body: findingComment('warning', false, undefined, path), path, line: 10 } });
+    if (prDiff === undefined) jest.mocked(ghUtils.fetchPRDiff).mockRejectedValueOnce(new Error('Server Error'));
+    else jest.mocked(ghUtils.fetchPRDiff).mockResolvedValueOnce(prDiff);
+    jest.mocked(ghUtils.fetchChangesSince).mockClear().mockResolvedValueOnce(since);
+    const client = createMockClient();
+    jest.mocked(client.sendMessage).mockResolvedValue({ content: structured('Fixed. The guard now runs first.', { proof: [`${path}:10`] }) });
+    jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: false, findingTitle: 'This' }]);
+    jest.mocked(state.authorResolvedNote).mockResolvedValue(undefined);
+    jest.mocked(state.resolveReviewThread).mockClear();
+
+    await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, undefined, { ...CONFIG, closed_paths: ['keys/**'] });
+
+    const prompt = jest.mocked(client.sendMessage).mock.calls[0][1];
+    expect(prompt.split('## Changes That Can Show a Fix\n\n')[1].startsWith(shown ?? (open ? 'The PR' : 'None.'))).toBe(true);
+    expect(prompt.includes('closedText')).toBe(open);
+    const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.at(-1)![0].body as string;
+    expect(body.startsWith('Fixed.')).toBe(open);
+    expect(jest.mocked(state.resolveReviewThread).mock.calls).toHaveLength(open ? 1 : 0);
+    jest.mocked(ghUtils.fetchChangesSince).mockReset().mockResolvedValue(FILE_CHANGE);
   });
 
   it('counts the change for a "Fixed." from the latest round that kept the thread open, and no change when the rounds or the thread cannot be read', async () => {

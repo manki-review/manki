@@ -8,7 +8,7 @@ import { messageBox } from './issue-box';
 import { MemoryStore, patternMatchesTitle, writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
 import { BotIdentity, dynamicFence, findingLocation, hasWriteAccess, inline, isBotLogin, isBotUser, MANKI_VERSION, authorClearRole, reactToIssueComment, reactToReviewComment, fetchChangesSince, fetchPRDiff, sanitizeMarkdown, TooManyFilesError } from './github';
 import { fencePrText, truncateDiff } from './review';
-import { closeRawDiff, diffSections, parsePRDiff } from './diff';
+import { closeRawDiff, diffSections, parsePRDiff, reviewableDiff } from './diff';
 import { eventPrClosed } from './dispatch';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { clearRecordMarker, fetchPriorRoundContexts, RecapState, fixClaimMarker, guardedKind, isDisprovedThread, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, currentFindingLine, findingPlace, withoutCode, BOT_PREFIX_PATTERN } from './recap';
@@ -572,8 +572,14 @@ export async function handleReviewCommentReply(
     let diffContext = '';
     let codeTokens = new Set<string>();
     let diff: ParsedDiff | undefined;
+    const closedPaths = config?.closed_paths ?? [];
+    // A file the PR renamed out of a closed path holds the closed file's text under its open name. Only the PR's diff
+    // shows that rename, so without it no later change is known to be open.
+    let closedSince = closedPaths.length > 0 ? undefined : closedPaths;
     try {
-      const fullDiff = closeRawDiff(await fetchPRDiff(octokit, owner, repo, prNumber), config?.closed_paths ?? []);
+      const rawDiff = await fetchPRDiff(octokit, owner, repo, prNumber);
+      closedSince = reviewableDiff(rawDiff, [], closedPaths).closedPaths;
+      const fullDiff = closeRawDiff(rawDiff, closedPaths);
       diff = parsePRDiff(fullDiff);
       const scopedDiff = filePath ? scopeDiffToFile(fullDiff, filePath) : fullDiff;
       codeTokens = codeTokensFromDiff(parsePRDiff(scopedDiff));
@@ -618,7 +624,8 @@ export async function handleReviewCommentReply(
     // a "Fixed." again. On an open PR a thread that could not be found may have such a judgment, so no change counts.
     const rounds = live ? await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber) : undefined;
     const since = live && rounds ? changesCountFrom(rounds, live.id, root.comment.original_commit_id) : closed ? root.comment.original_commit_id : undefined;
-    const sincePosted = since && head ? await fetchChangesSince(octokit, owner, repo, since, head, [filePath, ...evidenceFiles ?? []]) : undefined;
+    const rawSince = since && head && closedSince ? await fetchChangesSince(octokit, owner, repo, since, head, [filePath, ...evidenceFiles ?? []]) : undefined;
+    const sincePosted = rawSince === undefined ? undefined : closeRawDiff(rawSince, closedSince!);
     const response = await askWithRecord(client, 'thread-reply', prNumber, REPLY_SYSTEM_PROMPT, context + diffContext + sinceContext(sincePosted), tools, related);
     const threadState: ThreadState = live && (live.isResolved ? 'resolved' : 'open');
     // From here on the answer is the plain "Outcome. text" again, so nothing below reads a statement's status.
