@@ -50,8 +50,9 @@ export function plantCheckout(root: string, text: string): GitCall[] {
   symlinkSync(join(root, '.git', 'notes.txt'), join(root, 'link.txt'));
   const inGit = { git: true, open: false };
   const open = { git: false, open: true };
+  const both = { git: true, open: true };
   const read = (path: string, kind = inGit): GitCall => ({ name: 'Read', input: { file_path: path }, ...kind });
-  const grep = (path: string, kind = inGit): GitCall => ({ name: 'Grep', input: { pattern: text, path, output_mode: 'content' }, ...kind });
+  const grep = (path: string, kind = inGit, globbed?: string): GitCall => ({ name: 'Grep', input: { pattern: text, path, output_mode: 'content', ...(globbed && { glob: globbed }) }, ...kind });
   const glob = (path: string, pattern = '*', kind = inGit): GitCall => ({ name: 'Glob', input: { pattern, path }, ...kind });
   const folder = (path: string): GitCall[] => [read(`${path}/notes.txt`), grep(path), grep(`${path}/notes.txt`), glob(path)];
   const calls = [
@@ -59,8 +60,8 @@ export function plantCheckout(root: string, text: string): GitCall[] {
     ...['.git/**', '[.]git/*'].map(pattern => glob(root, pattern)),
     read(`${root}/.github/notes.txt`, open), read(`${root}/my.git/notes.txt`, open), read(`${root}/.gitignore`, open),
     grep(`${root}/.github`, open), glob(`${root}/my.git`, '*', open), glob(root, '.github/*', open),
-    // Grep searches no `.git` from the root, and Glob lists it there.
-    grep(root, open), glob(root, '**/*', { git: true, open: true }),
+    // From the root, Grep searches `.git` only with a glob such as `*`, and Glob lists it.
+    grep(root, open), ...['*', '{*,.git/**}'].map(pattern => grep(root, both, pattern)), glob(root, '**/*', both),
   ];
   if (!existsSync(join(root, '.GIT'))) return calls;
   symlinkSync(join(root, '.GIT'), join(root, 'case-link'));
