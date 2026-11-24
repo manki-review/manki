@@ -9,7 +9,7 @@ import { npmRegistry } from './registries/npm';
 import { Registry } from './registries/types';
 import { fetchedRelatedRepos } from './related-repos';
 import { closePaths } from './workspace';
-import { FakeRegistry, fakeRegistry, git, sha256Hex, sha512Integrity, tarGz } from './test-utils';
+import { expectLinearTime, FakeRegistry, fakeRegistry, git, sha256Hex, sha512Integrity, tarGz } from './test-utils';
 
 const crate = (version: string) => tarGz([{ name: `demo-${version}/src/lib.rs`, data: `pub const VERSION: &str = "${version}";\n` }]);
 const CRATES = { '1.2.0': crate('1.2.0'), '1.2.5': crate('1.2.5'), '2.0.0': crate('2.0.0') };
@@ -323,14 +323,16 @@ describe('dependencyLoader', () => {
     await expect(round({ ...required, '.npmrc': 'x'.repeat(200) }, { maxManifestBytes: 100 }).load('npm/left-pad')).rejects.toThrow('Manki could not read .npmrc, which can change where packages come from, within its size limits.');
     // A line built to make a pattern backtrack is read in linear time.
     for (const [file, text] of [
-      ['.npmrc', `"registry${'='.repeat(100_000)}\nregistry${' '.repeat(100_000)}=${' \\'.repeat(100_000)}a"b"c\n`],
-      ['.yarnrc', `registry${' '.repeat(100_000)}a"b"c\n"registry${'='.repeat(100_000)}"\n`],
-    ]) {
-      // The clock starts after `round` sets up the repository, so its `git` calls are not timed.
-      const { load } = round({ ...required, [file]: text });
-      const started = Date.now();
-      await expect(load('npm/left-pad')).rejects.toThrow(file === '.npmrc' ? `${another} ${file} sets the registry` : `${file} sets \`registry\``);
-      expect(Date.now() - started).toBeLessThan(1_000);
+      ['.npmrc', (n: number) => `"registry${'='.repeat(n)}\nregistry${' '.repeat(n)}=${' \\'.repeat(n)}a"b"c\n`],
+      ['.yarnrc', (n: number) => `registry${' '.repeat(n)}a"b"c\n"registry${'='.repeat(n)}"\n`],
+    ] as const) {
+      await expectLinearTime(async (n) => {
+        // The clock starts after `round` sets up the repository, so its `git` calls are not timed.
+        const { load } = round({ ...required, [file]: text(n) });
+        const started = performance.now();
+        await expect(load('npm/left-pad')).rejects.toThrow(file === '.npmrc' ? `${another} ${file} sets the registry` : `${file} sets \`registry\``);
+        return performance.now() - started;
+      }, 100_000);
     }
     expect(server.requests).toEqual([]);
 
