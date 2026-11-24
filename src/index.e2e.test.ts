@@ -758,6 +758,18 @@ describe('runFullReview end to end', () => {
     }
   });
 
+  it('approves a PR whose only finding is a blocker on code it did not change, which stays in the round record', async () => {
+    const old = { ...BLOCKER, title: 'Unbounded input is trusted', file: 'src/api.ts', line: 3, proof: ['src/api.ts:3'], preExisting: true, preExistingReason: 'The PR does not touch src/api.ts.' };
+    mockLLM.replies = { ...mockLLM.replies, reviewer: JSON.stringify([old]), judge: JSON.stringify({ summary: 'One old blocker.', findings: [{ id: 1, title: old.title, row: 'wrong', preExisting: true, reasoning: 'Reachable from any caller.' }] }) };
+
+    await reviewRound();
+
+    const [review] = postedReviews();
+    // Only the round record in the body's hidden comment names it.
+    expect([review.state, mockGitHub.threads.length, review.body.replace(/<!-- manki-context: .* -->/, '').includes(old.title)]).toEqual(['APPROVED', 0, false]);
+    expect(mockGitHub.roundContext(review).findings.unposted).toMatchObject([{ title: old.title, severity: 'blocker', tags: ['pre-existing'], posted: 'record' }]);
+  });
+
   it('posts a blocker only the judge raised at its finder\'s grade once two refuters on different models disprove it', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'manki-e2e-head-'));
     mkdirSync(join(workspace, 'src'));

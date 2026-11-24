@@ -70,22 +70,20 @@ function withOrigins(refuted: Finding[], origins: Finding[]): Finding[] {
   return refuted.map((f, i) => (origins[i]?.originCheck ? { ...f, originCheck: origins[i].originCheck } : f));
 }
 
-/**
- * Whether a pre-existing finding is worth an author's time: a guarded finding (`isGuardedFinding`), or one that would
- * block had this PR caused it.
- */
+/** Whether a pre-existing finding is posted. Only a security finding is, so a defect this PR did not cause never holds it up. */
 export function postedWhenPreExisting(f: Finding): boolean {
-  return isGuardedFinding(f.tags, f.reviewers) || f.severity === 'blocker';
+  return isSecurityFinding(f.tags, f.reviewers);
 }
 
 /**
  * Tags each finding that `checkOf` finds on code this PR did not change, or that `foundOnBase` finds failing the same
  * way before this PR, as pre-existing. Only the findings `postedWhenPreExisting` accepts are `posted`, the rest are
- * `unposted`, for the round record only. A posted blocker becomes a warning, so no check that reads the severity, in
- * this round or a later one, lets it block. A security blocker on code this PR did not change stays a blocker, whatever
- * the origin checks found. With `incompleteFixes`, a finding `foundOnBase` would leave unposted is posted as a note
- * instead when an origin answer names the line where this PR fixes the same failure (`fixedElsewhere`), since its author
- * wants to know the fix is incomplete. It must pass the proof checks of `hideUnprovenWarnings` under the given `rules`.
+ * `unposted`, for the round record only, whatever their grade. A posted blocker on code this PR did not change stays a
+ * blocker, whatever the origin checks found. Any other posted blocker becomes a warning, so no check that reads the
+ * severity, in this round or a later one, lets it block. With `incompleteFixes`, a finding `foundOnBase` would leave
+ * unposted is posted as a note instead when an origin answer names the line where this PR fixes the same failure
+ * (`fixedElsewhere`), since its author wants to know the fix is incomplete. It must pass the proof checks of
+ * `hideUnprovenWarnings` under the given `rules`.
  */
 function markPreExisting(findings: Finding[], checkOf: (finding: Finding) => PreExistingCheck | undefined, incompleteFixes?: { rules: RulesMode | undefined }): { posted: Finding[]; unposted: Finding[] } {
   const posted: Finding[] = [];
@@ -99,8 +97,6 @@ function markPreExisting(findings: Finding[], checkOf: (finding: Finding) => Pre
       continue;
     }
     const tagged: Finding = { ...f, tags: [...(f.tags ?? []), PRE_EXISTING_TAG], ...(check && { preExistingCheck: check }) };
-    const unchanged = check === 'pre_existing';
-    const lowers = f.severity === 'blocker' && (unchanged ? !isSecurityFinding(f.tags, f.reviewers) : !!base);
     const fixedElsewhere = base && incompleteFixes && f.originCheck?.answers.find(a => a.fixedElsewhere)?.fixedElsewhere;
     if (!postedWhenPreExisting(f) && fixedElsewhere && !unprovenWarningReason(f, incompleteFixes.rules)) {
       core.info(`Posting pre-existing ${f.severity} "${f.title}" on ${f.file}:${f.line} as a note: this PR fixes the same failure at ${fixedElsewhere}`);
@@ -108,10 +104,9 @@ function markPreExisting(findings: Finding[], checkOf: (finding: Finding) => Pre
     } else if (!postedWhenPreExisting(f)) {
       core.info(`Recording pre-existing ${f.severity} "${f.title}" on ${f.file}:${f.line} without posting it`);
       unposted.push(tagged);
-    } else if (lowers) {
-      const why = unchanged ? f.preExisting : `the code before this PR fails the same way: ${base?.reason}`;
-      core.info(`Posting blocker "${f.title}" on ${f.file}:${f.line} as a pre-existing warning: ${unchanged ? 'the PR did not change that line' : 'the code before this PR fails the same way'}`);
-      posted.push({ ...tagged, ...gradeStep(f, 'warning', 'pre_existing', why), originalSeverity: f.originalSeverity ?? 'blocker' });
+    } else if (f.severity === 'blocker' && check !== 'pre_existing') {
+      core.info(`Posting blocker "${f.title}" on ${f.file}:${f.line} as a pre-existing warning: the code before this PR fails the same way`);
+      posted.push({ ...tagged, ...gradeStep(f, 'warning', 'pre_existing', `the code before this PR fails the same way: ${base?.reason}`), originalSeverity: f.originalSeverity ?? 'blocker' });
     } else {
       posted.push(tagged);
     }
@@ -3972,7 +3967,7 @@ export function bodyWarnings(priorRounds: RoundContext[]): FindingFingerprintEnt
  * A changed `citedLine` ends nothing by itself, since an edit next to the line changes it too, so the judge decides. An
  * `unread` warning has no line to compare, so only the judge or a fix ends it, also when its file is gone.
  * A finding left out because nothing proves it does not count, so it ends no carried warning. Neither does a
- * pre-existing warning the review leaves out.
+ * pre-existing warning or blocker the review leaves out.
  * A file `head` cannot read keeps its warnings. A carried entry gets `currentLine` when one place of the file reads like
  * its `citedLine`, which is also the line a finding of this round is compared with. Call it after the last step that
  * takes a finding out of `result.findings`, so each reason says where the naming finding ended up.
@@ -3982,8 +3977,9 @@ export async function carryBodyWarnings(result: ReviewResult, priorRounds: Round
   if (!last) return;
   const warnings = bodyWarnings(priorRounds);
   const fixed = new Set(result.carriedFixed);
-  // A warning left out because nothing proves it or because it is pre-existing withdraws nothing, so the warning an earlier round listed stays listed.
-  const unconfirmed = (result.unpostedPreExisting ?? []).filter(f => f.severity === 'warning');
+  // A finding left out because nothing proves it or because it is pre-existing withdraws nothing, so the warning an earlier round listed stays listed.
+  // A pre-existing note is the judge's lower grade, so it does end the warning.
+  const unconfirmed = (result.unpostedPreExisting ?? []).filter(f => f.severity !== 'note');
   const unproven = new Set([...(result.unposted ?? []).filter(leftOutUnproven), ...unconfirmed].map(findingKey));
   const settled = (findings: Finding[]) => findings.filter(f => !unproven.has(findingKey(f)));
   const judged: Array<[CarriedEndReason, Finding[]]> = [
