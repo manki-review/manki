@@ -892,7 +892,7 @@ async function scoreRaw(benchCase: BenchCase, findings: RawFinding[], posted: It
 }
 
 /** Matches the findings of one review to the case's key and scores it. A complete run also scores the findings the finders reported. */
-export async function scoreRun(benchCase: BenchCase, review: LocalReview, matcher: Matcher, answers?: StoredAnswers): Promise<RunScore> {
+export async function scoreRun(benchCase: BenchCase, review: LocalReview, matcher: Matcher, answers?: StoredAnswers, replayed?: FinderReplay): Promise<RunScore> {
   const { outcome, reviewComplete: complete } = review.result;
   const findings = raisedFindings(review).map(f => ({ ...f, foldedInto: foldedThread(benchCase.priorRound, f) }));
   const followUp = complete ? roundFollowUp(benchCase, review) : undefined;
@@ -902,7 +902,7 @@ export async function scoreRun(benchCase: BenchCase, review: LocalReview, matche
     complete,
     ...(!complete && { error: review.result.summary || 'The review did not complete.' }),
     ...key,
-    ...(complete && { raw: await scoreRaw(benchCase, rawFindings(review.context), key.matches, matcher), replay: { ...storedReplay(review), ...(answers && { answers }) } }),
+    ...(complete && { raw: await scoreRaw(benchCase, rawFindings(review.context), key.matches, matcher), replay: { ...storedReplay(review, replayed), ...(answers && { answers }) } }),
   };
 }
 
@@ -912,19 +912,21 @@ function roundFollowUp(benchCase: BenchCase, review: LocalReview): NonNullable<R
 }
 
 /** A run whose review completed and whose matching failed with `error`: it keeps what the review found for a later scoring. */
-function unscoredRun(benchCase: BenchCase, review: LocalReview, error: unknown, answers?: StoredAnswers): RunScore {
+function unscoredRun(benchCase: BenchCase, review: LocalReview, error: unknown, answers?: StoredAnswers, replayed?: FinderReplay): RunScore {
   const failed = failedRun(error, review);
   const followUp = roundFollowUp(benchCase, review);
   return {
     ...failed, ...reviewFacts(review, benchCase.priorRound),
     raw: { findings: rawFindings(review.context), matches: [], caught: [], unscored: true, error: failed.error, matcherCostUsd: null },
-    replay: { ...storedReplay(review), ...(answers && { answers }) },
+    replay: { ...storedReplay(review, replayed), ...(answers && { answers }) },
     unscored: { ...(followUp && { followUp }) },
   };
 }
 
-function storedReplay({ result }: LocalReview): Omit<FinderReplay, 'findings'> {
-  return { planner: result.plannerAnswer ?? result.plannerResult ?? null, finders: result.agentNames, ...(result.fixes?.fixes && { fixes: result.fixes.fixes }) };
+/** Returns what a replay of `review` reads besides its findings. A replay runs no second read, so it passes on the models of the reads it kept. */
+function storedReplay({ result }: LocalReview, replayed?: FinderReplay): Omit<FinderReplay, 'findings'> {
+  const reads = replayed ? replayed.reads : result.secondReads?.reads.map(({ reviewer, model }) => ({ reviewer, model }));
+  return { planner: result.plannerAnswer ?? result.plannerResult ?? null, finders: result.agentNames, ...(result.fixes?.fixes && { fixes: result.fixes.fixes }), ...(reads?.length && { reads }) };
 }
 
 /** Returns a digest of what a review of the case reads of its file: its commits, text, config and earlier round. The key is left out. */
@@ -940,10 +942,12 @@ function reviewedDigest({ repo, base, head, title, body, config, priorRound }: B
 function storedReplays(variant: VariantReport, benchCase: BenchCase, level: ReplayLevel | undefined): Array<{ replay: FinderReplay; answers?: StoredAnswers }> | string {
   const stored = variant.cases.find(c => c.id === benchCase.id);
   if (stored && stored.reviewedDigest !== reviewedDigest(benchCase)) return 'The case\'s commits, title, body, config or earlier round changed since the report to replay, or it does not record them.';
-  const replays = (stored?.runs ?? []).flatMap(({ complete, unscored, raw, replay: kept }) => {
+  const replays = (stored?.runs ?? []).flatMap(({ complete, unscored, raw, replay: kept, secondReads }) => {
     if (!(complete || unscored) || !raw || !kept) return [];
     const { answers, ...replay } = kept;
-    return [{ replay: { ...replay, findings: raw.findings.map(({ exit: _exit, ...finding }) => finding) }, ...(level && { answers }) }];
+    // A report that did not store the reads' models has them in the reads' tool use, unless it is itself a replay.
+    const reads = replay.reads ?? secondReads?.map(({ name, model }) => ({ reviewer: name, model }));
+    return [{ replay: { ...replay, ...(reads && { reads }), findings: raw.findings.map(({ exit: _exit, ...finding }) => finding) }, ...(level && { answers }) }];
   });
   if (level && replays.some(r => !holdsEveryCall(r.answers, level))) return `The report to replay holds a complete run of this case without its ${level === 'refuter' ? 'refuter, sweep, ' : ''}judge, dedup and name translation answers.`;
   return replays.length > 0 ? replays : 'The report to replay holds no complete run of this case with its finder output.';
@@ -2076,9 +2080,9 @@ export async function runBench(cases: BenchCase[], options: BenchOptions): Promi
         }
         let local: LocalReview | undefined;
         let answers: AnswerStore | undefined;
+        const stored = replays?.[i % replays.length];
         try {
           const config = await load(benchCase, variant.overrides);
-          const stored = replays?.[i % replays.length];
           answers = new AnswerStore(stored?.answers, options.replayLevel);
           local = await review({
             repoRoot: checkouts.get(benchCase.repo)!, base: benchCase.base, head: benchCase.head, title: benchCase.title, body: benchCase.body,
@@ -2090,11 +2094,11 @@ export async function runBench(cases: BenchCase[], options: BenchOptions): Promi
             ...(benchCase.config ? { config } : Object.keys(variant.overrides).length > 0 && { configOverrides: variant.overrides }),
           });
           const [reviewed, stores] = [local, answers];
-          runs.push(await twice(() => scoreRun(benchCase, reviewed, options.matcher, stores.answers)));
+          runs.push(await twice(() => scoreRun(benchCase, reviewed, options.matcher, stores.answers, stored?.replay)));
         } catch (error) {
           options.signal?.throwIfAborted();
           // Only the scoring runs after a review returns, so a complete review whose matcher failed keeps its data.
-          runs.push(local?.result.reviewComplete ? unscoredRun(benchCase, local, error, answers?.answers) : failedRun(error, local));
+          runs.push(local?.result.reviewComplete ? unscoredRun(benchCase, local, error, answers?.answers, stored?.replay) : failedRun(error, local));
         }
       }
       results.push({ benchCase, runs });

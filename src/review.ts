@@ -1796,7 +1796,7 @@ export async function runReview(
         allFindings.push(...findings);
         progress?.ended(findings.length);
         found.set(finder.name, (found.get(finder.name) ?? 0) + findings.length);
-        reads.push({ reviewer, finder: finder.name, status: 'answered', findings: findings.length, added });
+        reads.push({ reviewer, finder: finder.name, model: finder.model, status: 'answered', findings: findings.length, added });
         core.info(`${reviewer} on the model of ${finder.name}: ${findings.length} findings, ${added} of them blockers or warnings near no earlier finding`);
         if (added === 0) return { reads, stop: 'nothing_new' };
       } catch (error) {
@@ -1804,7 +1804,7 @@ export async function runReview(
         const reason = sanitizeLogOutput(String((error as Error)?.message ?? error)).slice(0, 300);
         core.warning(`${reviewer} on the model of ${finder.name} failed, so the round keeps the findings it has: ${reason}`);
         progress?.ended(0);
-        reads.push({ reviewer, finder: finder.name, status: 'failed', error: reason });
+        reads.push({ reviewer, finder: finder.name, model: finder.model, status: 'failed', error: reason });
         return { reads, stop: 'failed' };
       }
     }
@@ -2164,10 +2164,13 @@ export async function runReview(
   // The votes wait for the refuter, since a finding a check confirmed gets none.
   if (workspace) {
     const kept = finalFindings;
+    // A carried lead names a read of an earlier round, so a read of this round under the same name does not tell its model.
+    const reads = (replay ? replay.reads : recorded.secondReads?.reads)?.filter(read => !carried.some(f => f.reviewers.includes(read.reviewer)));
     const votes = await otherFinderVotes(kept, {
-      workspace, diff: diffWithLockfiles, restates: finding => restatesEarlier(earlierForChecks, finding), rules: config.review?.rules, reads: recorded.secondReads?.reads,
+      workspace, diff: diffWithLockfiles, restates: finding => restatesEarlier(earlierForChecks, finding), rules: config.review?.rules, reads,
       // A vote only ever lowers a grade, so one without the time to start is skipped and the round goes on.
-      finders: team.finders.map(f => ({ name: f.name, model: f.model, client: lateFallback(pickReviewerClient(clients, f.model), 'vote', f.name, false) })),
+      // It has no fallback model, which can be the model that reported the finding.
+      finders: team.finders.map(f => ({ name: f.name, model: f.model, client: lateFallback({ client: pickReviewerClient(clients, f.model).client }, 'vote', f.name, false) })),
     });
     finalFindings = kept.map((f, i) => withVote(f, votes[i], config.review?.rules));
     const after = new Map(kept.map((f, i) => [f, finalFindings[i]]));

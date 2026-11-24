@@ -57,18 +57,21 @@ describe('otherFinderVotes', () => {
     writeFileSync(join(workspace, 'src', 'a.ts'), 'let total = 0;\ntotal += 1;\ntotal += 1;\n');
     const client = (): LLMClient => ({ sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify({ harm: '', situation: '', line: 'none' }) }) } as unknown as LLMClient);
     const read = finding({ reviewers: ['Second read 1'], soleFinder: undefined });
-    const reads = [{ reviewer: 'Second read 1', finder: 'Finder A' }];
-    const vote = async (models: string[]) => (await otherFinderVotes([read], {
+    const reads = [{ reviewer: 'Second read 1', model: 'opus' }];
+    const vote = async (models: string[], reported = read) => (await otherFinderVotes([reported], {
       workspace, reads, restates: () => false, finders: models.map((model, i) => ({ name: `Finder ${'ABC'[i]}`, model, client: client() })),
     }))[0]?.finder;
     try {
       expect(await vote(['opus', 'sol'])).toBe('Finder B');
       expect(await vote(['opus', 'opus', 'sol'])).toBe('Finder C');
       expect(await vote(['opus', 'opus'])).toBeUndefined();
+      // A read without a known model could be any finder's, so its finding gets no vote, also beside a read whose model is known.
+      expect(await vote(['sol', 'terra'])).toBeUndefined();
+      expect(await vote(['opus', 'sol'], finding({ reviewers: ['Second read 1', 'Second read 2'], soleFinder: undefined }))).toBeUndefined();
       // A finding a finder reported keeps its voter, also when a second read on that voter's model reported it too.
       const both = finding({ reviewers: ['Finder A', 'Second read 1'] });
       const voters = [{ name: 'Finder A', model: 'opus', client: client() }, { name: 'Finder B', model: 'sol', client: client() }];
-      expect((await otherFinderVotes([both], { workspace, reads: [{ reviewer: 'Second read 1', finder: 'Finder B' }], restates: () => false, finders: voters }))[0]?.finder).toBe('Finder B');
+      expect((await otherFinderVotes([both], { workspace, reads: [{ reviewer: 'Second read 1', model: 'sol' }], restates: () => false, finders: voters }))[0]?.finder).toBe('Finder B');
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }

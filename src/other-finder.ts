@@ -7,7 +7,8 @@ import { sanitizeForPromptEmbed } from './memory';
 import { fenceText } from './github';
 import { LLMClient, NotStartedError, TimeoutError } from './providers';
 import { changeSection, citedChanges, locationFile, locationLines, MAX_PARALLEL_REFUTATIONS } from './refute';
-import { bySecondReadsOnly, DISPROVED_TAG, Finding, FindingSeverity, gradedByRule, gradeStep, isDisprovedBlocker, isSecurityFinding, OtherFinderVote, ParsedDiff, pendingGrade, RulesMode } from './types';
+import { modelIdentity } from './routing';
+import { bySecondReadsOnly, DISPROVED_TAG, Finding, FindingSeverity, gradedByRule, gradeStep, isDisprovedBlocker, isSecurityFinding, OtherFinderVote, ParsedDiff, pendingGrade, RoundSecondRead, RulesMode } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 
 // A safety net for a call without tools, which normally answers in well under a minute.
@@ -113,27 +114,37 @@ export interface VoteOptions {
   diff?: ParsedDiff;
   /** The finders of the round, each with its name, its model and the client of that model. */
   finders: ReadonlyArray<{ name: string; model: string; client: LLMClient }>;
-  /** The round's second reads, each with the finder whose model ran it. */
-  reads?: ReadonlyArray<{ reviewer: string; finder: string }>;
+  /** The round's second reads, each with its model. */
+  reads?: ReadonlyArray<Pick<RoundSecondRead, 'reviewer' | 'model'>>;
   /** Whether `finding` restates a finding of an earlier round, which keeps its own path. */
   restates: (finding: Finding) => boolean;
   rules?: RulesMode;
+}
+
+/** Returns the models of the reads that reported `finding`, or undefined unless each is known to be a finder's. */
+function readModels(finding: Finding, reads: NonNullable<VoteOptions['reads']>, finders: VoteOptions['finders']): string[] | undefined {
+  const models = finding.reviewers.map(reviewer => modelIdentity(reads.find(read => read.reviewer === reviewer)?.model ?? ''));
+  return models.every(model => finders.some(f => modelIdentity(f.model) === model)) ? models : undefined;
 }
 
 /**
  * Returns the vote of another finder on each finding of `findings` that `getsVote`, in the same order, and undefined for
  * every other finding. One call asks the model of the first finder that did not report the finding for the harm, the
  * realistic situation and the line where the harm happens. A finding of second reads goes to a finder on another model
- * than every read that reported it. The answer declines the finding when it names no line, or one whose quoted code the
+ * than every read that reported it, and gets no vote when the model of one is not known. The answer declines the finding when it names no line, or one whose quoted code the
  * head does not hold near it. A call that times out is asked once more. A call that fails, never starts or answers twice
  * in a form that does not parse gives no vote, and so do an answer whose file cannot be read and one that names
  * `not_shown`.
  */
 export async function otherFinderVotes(findings: readonly Finding[], { workspace, diff, finders, reads = [], restates, rules }: VoteOptions): Promise<Array<OtherFinderVote | undefined>> {
   return mapWithConcurrency([...findings], MAX_PARALLEL_REFUTATIONS, async finding => {
-    const readers = new Set(reads.filter(read => finding.reviewers.includes(read.reviewer)).map(read => read.finder));
-    const readModels = bySecondReadsOnly(finding) ? new Set(finders.filter(f => readers.has(f.name)).map(f => f.model)) : new Set<string>();
-    const other = getsVote(finding, restates, rules) ? finders.find(f => !finding.reviewers.includes(f.name) && !readModels.has(f.model)) : undefined;
+    if (!getsVote(finding, restates, rules)) return undefined;
+    const readers = bySecondReadsOnly(finding) ? readModels(finding, reads, finders) : [];
+    if (!readers) {
+      core.info(`No vote on "${finding.title}", since the model of a second read that reported it is not known`);
+      return undefined;
+    }
+    const other = finders.find(f => !finding.reviewers.includes(f.name) && !readers.includes(modelIdentity(f.model)));
     if (!other) return undefined;
     let retried = false;
     const ask = (message: string): ReturnType<LLMClient['sendMessage']> => other.client.sendMessage(VOTE_SYSTEM_PROMPT, message, { timeoutMs: VOTE_TIMEOUT_MS }).catch((error: unknown) => {
