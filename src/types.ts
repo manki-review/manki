@@ -811,6 +811,8 @@ export interface RoundSecondRead {
   reviewer: string;
   /** The finder whose model, effort and message it reused. */
   finder: string;
+  /** That finder's model. A read has no fallback model. */
+  model?: string;
   status: 'answered' | 'failed';
   /** The findings it reported, before dedup and the judge. */
   findings?: number;
@@ -2637,6 +2639,8 @@ export interface FinderReplay {
   findings: RoundRawFinding[];
   /** The fix checks' records, which keep an earlier thread open on a workaround. */
   fixes?: RoundFix[];
+  /** The model of each second read, without which no vote is asked on what only that read reported. */
+  reads?: Array<Pick<RoundSecondRead, 'reviewer' | 'model'>>;
 }
 
 /** Round-cap accounting captured at the moment a round was admitted. */

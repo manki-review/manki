@@ -1101,6 +1101,11 @@ describe('runBench and buildReport', () => {
     review.mockImplementation(async () => makeReview('ADDRESS_FIRST', [blocker]));
     await runBench([benchCase], { ...options, matcher: flaky, findingsFrom: { ...report, commit: SHA_C } });
     expect(review.mock.calls[0][0].replay).toMatchObject({ finders: ['reviewer'], findings: [expect.objectContaining({ title: 'Raw' })] });
+    // A replay that stays unscored passes the models of the reads on like a scored one.
+    const reads = [{ reviewer: 'Second read 1', model: 'claude-sonnet-5-5' }];
+    const withReads = { ...report, commit: SHA_C, variants: [{ ...report.variants[0], cases: [{ ...report.variants[0].cases[0], runs: [{ ...failed.runs[0], replay: { ...failed.runs[0].replay!, reads } }] }] }] };
+    const [{ results: [unscoredReplay] }] = await runBench([benchCase], { ...options, matcher: broken, findingsFrom: withReads });
+    expect(unscoredReplay.runs[0]).toMatchObject({ unscored: {}, replay: { reads } });
     // With the refuter's answers kept, the replay gets the stored one and makes no such call.
     const live = jest.fn();
     review.mockImplementationOnce(async (input: LocalReviewInput) => {
@@ -1148,8 +1153,11 @@ describe('runBench and buildReport', () => {
 
     // A variant the report does not hold replays its only variant.
     const [{ variant, results: [replayed] }] = await runBench([benchCase], options);
-    const replayOf = (title: string) => ({ planner, finders: ['reviewer'], fixes, findings: [{ severity: 'warning', title, file: 'src/other.rs', line: 1, description: 'Something.', reviewers: ['finder-a'] }] });
+    const reads = [{ reviewer: 'Second read 1', model: 'claude-sonnet-5-5' }];
+    const replayOf = (title: string) => ({ planner, finders: ['reviewer'], fixes, reads, findings: [{ severity: 'warning', title, file: 'src/other.rs', line: 1, description: 'Something.', reviewers: ['finder-a'] }] });
+    // This report has the model of the reads in their tool use only. The replay passes it on, so its own report can be replayed too.
     expect(review.mock.calls.map(([input]) => input.replay)).toEqual([replayOf('First'), replayOf('Second'), replayOf('First')]);
+    expect(replayed.runs.map(run => run.replay?.reads)).toEqual([reads, reads, reads]);
     // A case the report holds no complete run of gets no review.
     review.mockClear();
     const [{ results: [, missing] }] = await runBench([benchCase, { ...benchCase, id: 'demo-2' }], { ...options, runs: 1 });
