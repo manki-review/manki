@@ -1981,7 +1981,7 @@ export function mapJudgedToFindings(
  * one, so only a check that confirms that damage gives the blocker. A blocker cell that is `soleFinder` is held the same
  * way when no other doubt holds it, unless it is a security finding. A tool alert takes its cell as stated, with no doubts.
  */
-function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: named = [], security, securityClass, gradeIfConfirmed: judgeGrade, dropRestsOn, rareTrigger, trigger, grade: argued }: JudgedFinding, filedBlocker: boolean, dropCheckable: boolean, soleFinder = false): Partial<Pick<Finding, 'severity' | 'gradePath' | 'cell' | 'gradeIfConfirmed' | 'judgeIfConfirmed' | 'doubts'>> {
+function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: named = [], security, securityClass, gradeIfConfirmed: judgeGrade, dropRestsOn, rareTrigger, trigger, grade: argued }: JudgedFinding, filedBlocker: boolean, dropCheckable: boolean, soleFinder = false): Partial<Pick<Finding, 'severity' | 'gradePath' | 'cell' | 'gradeIfConfirmed' | 'judgeIfConfirmed' | 'doubts' | 'soleHeld'>> {
   // A dropped finding keeps its doubts for the round record. The refuter checks it only for its `dropCheck`.
   if (row === 'none') return { ...gradeStep(o, 'ignore', 'judge'), ...(!o.toolSource && (dropCheck(o, named, dropRestsOn, dropCheckable, security) ?? (named.length > 0 && { doubts: named }))) };
   const isSecurity = !!security || !!o.tags?.includes(SECURITY_TAG);
@@ -2018,7 +2018,7 @@ function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: 
   const gradeIfConfirmed = heldDown && !isSecurity && judgeGrade === 'warning' ? judgeGrade : cellGrade(row, checkedRare ? 'normal' : column);
   const sole = soleHeld || (asksConsequence && filedBlocker);
   const reason = [rare && 'the judge found no realistic trigger', lowerGrade && `the judge's reasoning concludes ${argued}`, sole && 'only one of the finders reported it'].filter(Boolean).join(', and ');
-  return { ...gradeStep(o, heldDown ? 'warning' : stated, 'judge', reason || undefined), cell, gradeIfConfirmed, ...(judgeGrade && { judgeIfConfirmed: judgeGrade }), doubts };
+  return { ...gradeStep(o, heldDown ? 'warning' : stated, 'judge', reason || undefined), cell, gradeIfConfirmed, ...(judgeGrade && { judgeIfConfirmed: judgeGrade }), doubts, ...(soleHeld && !lowerGrade && judgeGrade !== 'warning' && { soleHeld }) };
 }
 
 /**

@@ -3188,12 +3188,13 @@ export function roundSentence(result: ReviewResult): string {
   const droppedLater = (f: Finding) => f.gradePath?.length ? f.gradePath.at(-1)!.by !== 'judge' : false;
   const kept = (result.allJudgedFindings ?? []).filter(f => f.severity !== 'ignore' || droppedLater(f));
   const listed = new Set(result.findings.map(findingKey));
-  // The judge graded a blocker itself when the cell it stated gives `blocker` with no doubt behind it. A doubt leaves `gradeIfConfirmed`.
+  // The judge graded a blocker itself when the cell it stated gives `blocker` with no doubt behind it. A doubt leaves `gradeIfConfirmed`,
+  // and so does the hold on a blocker one finder alone reported, which the judge never saw (`soleHeld`).
   // A blocker two disproofs lowered keeps that cell as `judgeCell`. A sweep's finding is graded in a later judge call, and the verdict reader's has no cell.
   const sweepers = new Set(result.sweeps?.map(sweep => sweep.reviewer));
   const judgeGraded = (f: Finding) => {
     const stated = f.judgeCell ?? f.cell;
-    return isGradeCell(stated) && cellGrade(stated.row, stated.judgeColumn ?? stated.column) === 'blocker' && !f.gradeIfConfirmed && !f.reviewers.some(r => sweepers.has(r));
+    return isGradeCell(stated) && cellGrade(stated.row, stated.judgeColumn ?? stated.column) === 'blocker' && (!f.gradeIfConfirmed || !!f.soleHeld) && !f.reviewers.some(r => sweepers.has(r));
   };
   const blockers = new Set(result.findings.filter(f => f.severity === 'blocker').map(findingKey));
   const sameBlockers = [...(result.allJudgedFindings ?? []), ...result.findings].every(f => judgeGraded(f) === blockers.has(findingKey(f)));

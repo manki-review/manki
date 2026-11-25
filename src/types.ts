@@ -369,6 +369,8 @@ export interface Finding {
    * or warning gets the other finder's vote (`otherFinderVote`), and such a note follows the others of its group.
    */
   soleFinder?: boolean;
+  /** Set when the judge graded the finding a blocker without a doubt and Manki held it at a warning only because it is `soleFinder`. */
+  soleHeld?: true;
   /** Each change of the finding's severity after the reviewer graded it, in order, with what changed it. */
   gradePath?: GradeStep[];
   /** Fingerprint key of the earlier finding that names the same defect. */
