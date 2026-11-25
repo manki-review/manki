@@ -6650,6 +6650,10 @@ describe('postReview non-blocking findings', () => {
       '**The filter misses `pending`**',
       '**What goes wrong:** A pending entry survives.',
     ]);
+    // A reply has no fold, so the base lines its note leaves out show in a line of their own.
+    const older: Finding = { ...variant, originCheck: { lineChanged: false, answers: [{ verdict: 'pre_existing', reason: 'It was so before.', head: ['src/a.ts:20'], base: ['src/a.ts:18', 'src/a.ts:30', 'src/b.ts:4'], commit: 'base', model: 'first-model' }] } };
+    expect(formatVariantReply([older])).toContain('One check found the same problem on the base branch at `src/a.ts:18`. If that is right, a maintainer can dismiss the finding.\n\n');
+    expect(formatVariantReply([older])).toContain('\n\n**Other lines with the same problem on the base branch:** `src/a.ts:30` and `src/b.ts:4`');
     expect(formatVariantReply([variant, { ...variant, title: 'The filter misses `queued`' }]).split('\n\n')).toEqual([
       'This round found 2 more instances of this problem.',
       expect.stringContaining('**Warning'),

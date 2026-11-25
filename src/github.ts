@@ -1983,7 +1983,7 @@ function baseNote(finding: Finding, links?: CodeLinks): string | undefined {
 }
 
 /** Returns the base lines that `baseNote` leaves out. */
-function otherBaseLinesPart(finding: Finding, links: CodeLinks): FoldPart[] {
+function otherBaseLinesPart(finding: Finding, links?: CodeLinks): FoldPart[] {
   const base = baseLines(finding, links);
   if (!base || base.ranges.length < 2) return [];
   const label = `Other lines with the same problem on ${base.branch}`;
@@ -2274,13 +2274,14 @@ function formatReplyListing(lead: string, findings: Finding[]): string {
   return [lead, findings.map(f => formatReplyFinding(f).join('\n\n')).join('\n\n---\n\n')].join('\n\n');
 }
 
-/** Returns the parts of a finding shown in a reply: its header, title, description and fix. */
+/** Returns the parts of a finding shown in a reply: its header, title, description, base lines and fix. A reply has no fold. */
 function formatReplyFinding(finding: Finding): string[] {
   const fix = fixPart(finding, finding.suggestedFix?.trim() ? formatBodyFix(finding.suggestedFix, finding.file) : undefined);
   return [
     `${SEVERITY_EMOJI[finding.severity]} ${formatFindingHeader(finding)}`,
     `**${sanitizeMarkdown(finding.title)}**`,
     ...formatFindingDescription(finding),
+    ...otherBaseLinesPart(finding).flatMap(part => part.open ?? []),
     ...(fix?.open ? [fix.open] : []),
   ];
 }
