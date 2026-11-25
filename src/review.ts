@@ -7,7 +7,7 @@ import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDi
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, formatResetTime, InstructionFile, LinkedIssue, MANKI_VERSION, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, pushTouchesThread, replyClassOf, titleOverlapType, dropWaivedRestatements } from './recap';
-import { isGuardedFinding, canLeaveOut, CheckProgress, UnpostedReason, foundOnBase, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FinderReplay, isSweepName, VERDICT_READER_NAME, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundAgentMetric, RoundComparison, RoundContext, RoundDedupDuplicateMatch, RoundFix, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundPrClaim, RoundRawFinding, RoundRelatedRepo, RoundReusedFrom, RoundStaticSignalMatch, RoundUnitLine, RoundUses, EarlierAttempt, DiffHunk, EffortLevel, Finder, FinderError, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, SCOPE_READER_NAME, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType, secondReadName, RoundSecondReads } from './types';
+import { isGuardedFinding, canLeaveOut, CheckProgress, UnpostedReason, foundOnBase, disproof, GradedCounts, RefutationOutcome, SideCheckKind, StoredGrade, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FinderReplay, isSweepName, VERDICT_READER_NAME, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundAgentMetric, RoundComparison, RoundContext, RoundDedupDuplicateMatch, RoundFix, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundPrClaim, RoundRawFinding, RoundRelatedRepo, RoundReusedFrom, RoundStaticSignalMatch, RoundUnitLine, RoundUses, EarlierAttempt, DiffHunk, EffortLevel, Finder, FinderError, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, SCOPE_READER_NAME, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType, secondReadName, RoundSecondReads } from './types';
 import { countChangedLines, diffSections, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE, repoPath } from './diff';
 import { guessClaimTerms, translateNames } from './name-translation';
 import { dependencyOutcomes } from './dependency-sources';
@@ -170,6 +170,24 @@ function withEarlierImportance(f: Finding, priorEntries: readonly FindingFingerp
   const last = [...entries].reverse().find(e => e.importance);
   if (!last?.importance || restatesGraver(entries)) return f;
   return last.severity === 'note' ? withImportance(f, last.importance, minScore) : { ...f, importance: last.importance };
+}
+
+/**
+ * Returns `findings` at the grades the stored round posted them. Throws before any rating when their blockers and warnings
+ * are not those of `grades`, each once and at the stored grade. A declined warning may be left out, since its vote never ran.
+ */
+function withStoredGrades(findings: readonly Finding[], grades: readonly StoredGrade[]): Finding[] {
+  const key = (f: Pick<Finding, 'file' | 'line' | 'title' | 'severity'>) => JSON.stringify([f.severity, f.file, f.line, f.title]);
+  const raised = findings.filter(f => isBlockingSeverity(f.severity)).map(key);
+  const missing = grades.filter(g => !g.declined && raised.filter(k => k === key(g)).length !== 1);
+  const known = new Set(grades.map(key));
+  const extra = findings.filter(f => isBlockingSeverity(f.severity) && !known.has(key(f)));
+  if (missing.length > 0 || extra.length > 0) {
+    const names = (some: ReadonlyArray<Pick<Finding, 'severity' | 'title'>>) => some.map(f => `${f.severity} "${f.title}"`).join(', ') || 'none';
+    throw new Error(`The replay posts other findings than the stored round. Not posted exactly once: ${names(missing)}. Extra: ${names(extra)}`);
+  }
+  const declined = new Set(grades.filter(g => g.declined).map(key));
+  return findings.map(f => declined.has(key(f)) ? { ...f, ...gradeStep(f, 'note', 'other_finder', 'the stored vote declined it') } : f);
 }
 
 /** Whether the round rates `f`: a warning that `mayBeLowered`, with no earlier score, no place in an earlier thread or review body and no earlier blocker it restates. */
@@ -1320,7 +1338,7 @@ export async function runReview(
   const earlierOf = <R>(answers: Map<string, EarlierAnswer<R>> | undefined): EarlierAnswers<R> | undefined => answers && { answers, confirm: confirmKept };
   // Asked beside the finders on the judge's client. Only the round's end reads the answer, so nothing waits for it before then.
   const scopePromise = runScopeReader(withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'scope'), {
-    diff, rawDiff, prContext, linkedIssues, workspace, trivial: quickCheckOnly(team), changeDigest: options.changeDigest, priorRounds,
+    diff, rawDiff, prContext, linkedIssues, workspace, trivial: quickCheckOnly(team) || !!replay?.grades, changeDigest: options.changeDigest, priorRounds,
   });
   // Asked alongside the finders on the first reader's model, at its effort. An unanswered question leaves the round complete, since the finders read the whole change.
   const comparisonEffort = team.finders[0].effort;
@@ -2191,7 +2209,7 @@ export async function runReview(
     if (stopped) return incompleteAfterJudge(stopped);
   }
   // The votes wait for the refuter, since a finding a check confirmed gets none.
-  if (workspace) {
+  if (workspace && !replay?.grades) {
     const kept = finalFindings;
     const votes = await otherFinderVotes(kept, {
       workspace, diff: diffWithLockfiles, restates: finding => restatesEarlier(earlierForChecks, finding), rules: config.review?.rules,
@@ -2300,7 +2318,7 @@ export async function runReview(
   const matchable = openThreads !== null || sortedPriorRounds.length === 0;
   if (matchable) finalFindings = finalFindings.map(f => withEarlierImportance(f, priorFindingsFlat, minScore, config.review?.rules));
   finalFindings = finalFindings.map(guard);
-  const fixedElsewhere = refutation
+  const fixedElsewhere = refutation && !replay?.grades
     ? await confirmPushedFixes(refutation.client, refutation.pair, fixesElsewhere(judgeThreadEvaluations, openThreadIndex, pushChangedFiles).filter(({ thread }) =>
       // A thread this round names again, or one a standing workaround concerns, stays open whatever a check says.
       !namedPriorThreadIds(finalFindings, priorBlockers).has(thread.threadId) && !standingWorkarounds.some(fix => concernsThread(fix, thread))), parsePRDiff(interRoundDiff ?? ''), {
@@ -2317,12 +2335,12 @@ export async function runReview(
     ...(unpostedPreExisting.length > 0 && { unpostedPreExisting }), ...(testNitSuppressedCount > 0 && { testNitSuppressedCount }),
     ...(staticSignalMatches.length > 0 && { staticSignalMatches }),
   });
-  const earlierWrap = clients.dedup && lateUsage({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup');
+  const earlierWrap = replay?.grades ? undefined : clients.dedup && lateUsage({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup');
   finalFindings = (await foldIntoEarlierFindings(finalFindings, earlier, earlierWrap?.client)).map(guard);
   if (stopped) return incompleteAfterJudge(stopped);
   // Without a second refuter, the judge's refuter alone may confirm the fix, since a confirmation only posts a warning that holds the approval.
   const ownFinding = (f: Finding) => restatesThreadFinding(f, openThreadIndex, priorFindingsFlat);
-  const findOwnFixes = (findings: Finding[]) => restatedAfterOwnFix(findings.filter(ownFinding), openThreadIndex, sortedPriorRounds, interRoundDiff === undefined ? undefined : pushChangedFiles, fixes => refutation
+  const findOwnFixes = (findings: Finding[]) => restatedAfterOwnFix(findings.filter(ownFinding), openThreadIndex, sortedPriorRounds, interRoundDiff === undefined ? undefined : pushChangedFiles, fixes => refutation && !replay?.grades
     ? confirmPushedFixes(refutation.client, refutation.pair, fixes, parsePRDiff(interRoundDiff ?? ''), { workspace: refutation.workspace, related: refutation.related, diff: diffWithLockfiles, effort: judgeEffort }, true)
     : Promise.resolve(new Set()));
   ownFixed = await findOwnFixes(finalFindings);
@@ -2337,6 +2355,7 @@ export async function runReview(
   const relisting = openThreads != null ? relistThreadlessBlockers(finalFindings, priorFindingsFlat, priorRoundLookup) : { findings: finalFindings, restated: [] };
   finalFindings = relisting.findings;
   const unposted = [...proven.unposted, ...relisting.restated];
+  if (replay?.grades) finalFindings = withStoredGrades(finalFindings, replay.grades);
   // After the steps that hide a warning, so only a posted one is rated, and before the outcome, which reads the grades.
   if (workspace && minScore > 1 && matchable) {
     const rated = await rateWarnings(finalFindings.filter(f => getsRating(f, priorFindingsFlat, config.review?.rules)), {
@@ -2363,7 +2382,7 @@ export async function runReview(
   Object.assign(recorded, {
     threadEvaluations, ...(slicing && { slicing }), ...(openLeads.length > 0 && { openLeads }), ...(unposted.length > 0 && { unposted }),
   });
-  if (outcome === 'READY') {
+  if (outcome === 'READY' && !replay?.grades) {
     const verdictWrap = lateUsage({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'verdict');
     const readerFiles = fileContents && new Map([...fileContents].filter(([path]) => changedFiles.has(path)));
     // The reader reads the slices the finders read, so no slice of the diff is cut.

@@ -11,13 +11,13 @@ import { ConfigOverrides, EarlierFinding, EarlierRound, loadConfigWithOverrides,
 import { isFixCheck } from './fixes';
 import { isClaimCheck } from './pr-claims';
 import { cutLegacyCommands, estimateCostUsd, hasAnyProviderCredentials, parseModelSpec, readProviderInputsFromEnv } from './providers';
-import type { LLMClient, ProviderInputs } from './providers';
+import type { LLMCall, LLMClient, ProviderInputs } from './providers';
 import { formatFinderError, NAMED_AGAIN_REASON, UNCONFIRMED_FIX_ENDING, WORKAROUND_REASON } from './review';
 import { buildLLMClient } from './review-clients';
 import { AnswerStore, holdsEveryCall, ReplayLevel, StoredAnswers } from './stored-answers';
 import {
-  CELL_GRADES, CheckStatus, Doubt, Finding, finderGrade, IMPORTANCE_SCORES, isImportance, FinderReplay, FinderError, FindingFingerprintEntry, FindingSeverity, GradeCell, GradeChange, GradeStep, gradedAbove, isGradeCell, isSecondReadName, isSecurityFinding, isSweepName, leftOutUnproven,
-  migrateLegacySeverity, migrateStoredSeverities, PRE_EXISTING_TAG, Refutation, RoundContext, RoundRawFinding, RoundRelatedRepo, SCOPE_READER_NAME, scoresOf, SEVERITY_ORDER, SideCheckKind, ThreadEvaluation, UNPOSTED_REASONS, UnpostedReason,
+  CELL_GRADES, CheckStatus, Doubt, Finding, finderGrade, Importance, IMPORTANCE_SCORES, isImportance, FinderReplay, FinderError, FindingFingerprintEntry, FindingSeverity, GradeCell, GradeChange, GradeStep, gradedAbove, isGradeCell, isSecondReadName, isSecurityFinding, isSweepName, leftOutUnproven,
+  migrateLegacySeverity, migrateStoredSeverities, PRE_EXISTING_TAG, Refutation, RoundContext, RoundRawFinding, RoundRelatedRepo, SCOPE_READER_NAME, scoresOf, SEVERITY_ORDER, SideCheckKind, StoredGrade, ThreadEvaluation, UNPOSTED_REASONS, UnpostedReason,
   UnprovenReason, VERDICT_READER_NAME, VerdictReason,
 } from './types';
 import { runGit } from './workspace';
@@ -480,7 +480,7 @@ interface GradeRoute {
    */
   vote?: { grade: FindingSeverity; answer: 'backs' | 'declines'; quote: 'held' | 'missed' | 'none' };
   /** The overall importance from 1 to 10 of a rated warning, and whether it lowered the warning to a note. */
-  importance?: { overall: number; lowered: boolean };
+  importance?: { overall: number; lowered: boolean; scores: Importance };
 }
 
 // The steps that only come after the vote, so the first of them starts from the grade the vote saw.
@@ -652,6 +652,8 @@ interface RunScore {
    */
   unscored?: { followUp?: Pick<FollowUpScore, 'resolved' | 'threads' | 'foldsStored'> };
   finders: FinderSteps[];
+  /** Every model call of the review. */
+  calls?: LLMCall[];
   /** The tool use of each second read, apart from the finders'. Set only on a run with second reads. */
   secondReads?: FinderSteps[];
   /** What the review could read of each related repo: the commit it checked out, and the time it read the repo as of. A report from a ref that records neither has none. */
@@ -945,10 +947,14 @@ function reviewedDigest({ repo, base, head, title, body, config, priorRound }: B
 function storedReplays(variant: VariantReport, benchCase: BenchCase, level: ReplayLevel | undefined): Array<{ replay: FinderReplay; answers?: StoredAnswers }> | string {
   const stored = variant.cases.find(c => c.id === benchCase.id);
   if (stored && stored.reviewedDigest !== reviewedDigest(benchCase)) return 'The case\'s commits, title, body, config or earlier round changed since the report to replay, or it does not record them.';
-  const replays = (stored?.runs ?? []).flatMap(({ complete, unscored, raw, replay: kept }) => {
+  const replays = (stored?.runs ?? []).flatMap(({ complete, unscored, raw, replay: kept, findings }) => {
     if (!(complete || unscored) || !raw || !kept) return [];
     const { answers, ...replay } = kept;
-    return [{ replay: { ...replay, findings: raw.findings.map(({ exit: _exit, ...finding }) => finding) }, ...(level && { answers }) }];
+    const grades = findings.flatMap(({ file, line, title, severity, route }): StoredGrade[] => {
+      if (severity === 'blocker' || severity === 'warning') return [{ file, line, title, severity }];
+      return route?.vote?.answer === 'declines' && route.vote.grade === 'warning' ? [{ file, line, title, severity: 'warning', declined: true }] : [];
+    });
+    return [{ replay: { ...replay, findings: raw.findings.map(({ exit: _exit, ...finding }) => finding), ...(level === 'refuter' && { grades }) }, ...(level && { answers }) }];
   });
   if (level && replays.some(r => !holdsEveryCall(r.answers, level))) return `The report to replay holds a complete run of this case without its ${level === 'refuter' ? 'refuter, sweep, ' : ''}judge, dedup and name translation answers.`;
   return replays.length > 0 ? replays : 'The report to replay holds no complete run of this case with its finder output.';
@@ -1027,12 +1033,12 @@ function gradeRoute(f: Finding): GradeRoute {
       answer: f.otherFinderVote.declined ? 'declines' as const : 'backs' as const,
       quote: !f.otherFinderVote.declined ? 'held' as const : f.otherFinderVote.line ? 'missed' as const : 'none' as const,
     } }),
-    ...(f.importance && { importance: { overall: f.importance.overall, lowered: !!gradePath?.some(step => step.by === 'importance') } }),
+    ...(f.importance && { importance: { overall: f.importance.overall, lowered: !!gradePath?.some(step => step.by === 'importance'), scores: scoresOf(f.importance) } }),
   };
 }
 
 /** What a run records about its review whether or not the findings could be matched. `earlier` is the round a follow-up case follows. */
-function reviewFacts(review: LocalReview, earlier?: EarlierRound): Pick<RunScore, 'outcome' | 'verdictReason' | 'finderErrors' | 'findings' | 'finders' | 'secondReads' | 'relatedRepos' | 'costUsd' | 'inputTokens' | 'outputTokens' | 'durationMs'> {
+function reviewFacts(review: LocalReview, earlier?: EarlierRound): Pick<RunScore, 'outcome' | 'verdictReason' | 'finderErrors' | 'findings' | 'finders' | 'calls' | 'secondReads' | 'relatedRepos' | 'costUsd' | 'inputTokens' | 'outputTokens' | 'durationMs'> {
   const usage = review.context.usage ?? {};
   const secondReads = finderSteps(review, true);
   const { outcome, verdictReason, agentErrors } = review.result;
@@ -1047,6 +1053,7 @@ function reviewFacts(review: LocalReview, earlier?: EarlierRound): Pick<RunScore
       return { severity, title, file, line, description, ...(howToFix && { howToFix }), ...(suggestedFix && { suggestedFix }), route: gradeRoute(f), ...(foldedInto && { foldedInto }) };
     }),
     finders: finderSteps(review),
+    ...(usage.llmCalls && { calls: usage.llmCalls }),
     ...(secondReads.length > 0 && { secondReads }),
     ...(review.context.relatedRepos && { relatedRepos: review.context.relatedRepos.map(({ repo, ref, status, commit, asOf }) => ({ repo, ...(ref && { ref }), status, ...(commit && { commit }), ...(asOf && { asOf }) })) }),
     costUsd: usage.estimatedCostUsd ?? 0,
@@ -2307,7 +2314,10 @@ export function runBenchCommand(argv: string[], root = '.'): Promise<number> {
     if (args.replayLevel && !args.findingsFrom) throw new Error(`--replay-${args.replayLevel} needs --findings-from, whose runs hold the answers to keep`);
     const cases = loadCases([args.cases, ...(args.holdout ? [join(root, CASE_DIRS.holdout)] : [])], args.only, root);
     const cache = loadMatcherCache(args.cache);
-    const matcher = llmMatcher(buildLLMClient(args.matcherModel, providerInputs), args.matcherModel, cache);
+    // A replay of the score is matched outside the run, by the matches of the report it replays.
+    const matcher: Matcher = args.replayLevel === 'refuter'
+      ? async () => ({ verdict: 'NONE', findings: [], reason: 'Not matched in a replay.' })
+      : llmMatcher(buildLLMClient(args.matcherModel, providerInputs), args.matcherModel, cache);
     if (args.rescore) {
       const { report: stored, removed } = readReport(args.rescore, root);
       // A report holds one matcher model, and the gate refuses to compare reports matched by different ones.

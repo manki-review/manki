@@ -554,8 +554,8 @@ describe('scoreRun', () => {
       { finderGrade: 'blocker', byFixCheck: true, raisedBy: ['fix'] },
       { finderGrade: 'warning', gradePath: [{ from: 'warning', to: 'note', by: 'other_finder' }], raisedBy: ['finder'], vote: { grade: 'warning', answer: 'declines', quote: 'none' } },
       { finderGrade: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'other_finder' }], raisedBy: ['finder'], vote: { grade: 'blocker', answer: 'declines', quote: 'missed' } },
-      { finderGrade: 'warning', gradePath: [{ from: 'warning', to: 'note', by: 'importance' }], raisedBy: ['finder'], vote: { grade: 'warning', answer: 'backs', quote: 'held' }, importance: { overall: 3, lowered: true } },
-      { finderGrade: 'note', raisedBy: ['finder'], importance: { overall: 8, lowered: false } },
+      { finderGrade: 'warning', gradePath: [{ from: 'warning', to: 'note', by: 'importance' }], raisedBy: ['finder'], vote: { grade: 'warning', answer: 'backs', quote: 'held' }, importance: { overall: 3, lowered: true, scores: { trigger: 2, introduced: 9, matters: 4, overall: 3 } } },
+      { finderGrade: 'note', raisedBy: ['finder'], importance: { overall: 8, lowered: false, scores: { trigger: 8, introduced: 9, matters: 7, overall: 8 } } },
     ]);
     expect(await scoreRun(benchCase, makeReview('READY', []), stub({}))).not.toHaveProperty('verdictReason');
 

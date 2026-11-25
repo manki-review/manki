@@ -2638,6 +2638,13 @@ export interface FinderReplay {
   findings: RoundRawFinding[];
   /** The fix checks' records, which keep an earlier thread open on a workaround. */
   fixes?: RoundFix[];
+  /** What the stored round posted, so a replay gives its findings those grades and asks for no vote. */
+  grades?: StoredGrade[];
+}
+
+/** A blocker or warning the stored round posted, or with `declined` a warning its vote lowered to a note. */
+export interface StoredGrade extends Pick<Finding, 'file' | 'line' | 'title' | 'severity'> {
+  declined?: true;
 }
 
 /** Round-cap accounting captured at the moment a round was admitted. */
