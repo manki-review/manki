@@ -236,6 +236,41 @@ export async function fetchHeadSha(octokit: Octokit, owner: string, repo: string
   }
 }
 
+const PUSHED_HEAD_WAIT_MS = 3 * 60_000;
+const PUSHED_HEAD_POLL_MS = 10_000;
+
+export interface HeadedPull {
+  number: number;
+  state: string;
+  head: { sha: string; ref: string; repo: { name: string; owner: { login: string } } | null };
+}
+
+/**
+ * Waits until GitHub has moved the open PR `pull` to the newest commit of its head branch, and returns the PR as it is then.
+ * GitHub moves the branch with a push, and the PR up to minutes later. When the branch or the PR cannot be read, `pull`
+ * counts as current. `unseen` is the branch's newest commit when the PR still does not show it after the wait.
+ */
+export async function awaitPushedHead(octokit: Octokit, owner: string, repo: string, pull: HeadedPull): Promise<{ pull: HeadedPull; unseen?: string }> {
+  const deadline = Date.now() + PUSHED_HEAD_WAIT_MS;
+  let current = pull;
+  for (;;) {
+    const { head, state, number } = current;
+    if (state !== 'open' || !head.ref || !head.repo) return { pull: current };
+    try {
+      const { data: branch } = await octokit.rest.git.getRef({ owner: head.repo.owner.login, repo: head.repo.name, ref: `heads/${head.ref}` });
+      if (branch.object.sha === head.sha) return { pull: current };
+      if (Date.now() >= deadline) return { pull: current, unseen: branch.object.sha };
+      core.info(`PR #${number} is at ${head.sha.slice(0, 7)} and its branch at ${branch.object.sha.slice(0, 7)}, waiting for GitHub to move the PR`);
+      await new Promise(resolve => setTimeout(resolve, PUSHED_HEAD_POLL_MS));
+      const { data } = await octokit.rest.pulls.get({ owner, repo, pull_number: number });
+      current = data;
+    } catch (error) {
+      core.warning(`Could not compare the head of PR #${number} with its branch, proceeding: ${error instanceof Error ? error.message : error}`);
+      return { pull: current };
+    }
+  }
+}
+
 const MERGEABLE_ATTEMPTS = 3;
 const MERGEABLE_RETRY_MS = 1500;
 

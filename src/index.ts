@@ -2778,9 +2778,9 @@ async function handleReviewCommentInteraction(): Promise<void> {
       core.warning('Cannot handle reply — pull request number not available');
       return;
     }
-    const headSha: string | undefined = payload.pull_request?.head?.sha;
     const baseRef: string | undefined = payload.pull_request?.base?.ref;
-    const loadWorkspace = async (commit = headSha) => {
+    // The reply handler replaces the payload's PR when its head moves, so the head is read on each call.
+    const loadWorkspace = async (commit: string | undefined = payload.pull_request?.head?.sha) => {
       if (!commit || !baseRef) return undefined;
       let closedPaths = config.closed_paths ?? [];
       try {

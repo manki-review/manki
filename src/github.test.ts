@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 import { gunzipSync } from 'zlib';
 
-import { readChangesSince, relatedCommits, ApprovalHeld, earlierPlaces, plainCitedFiles, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, autoApproveHeadMarker, reviewedCommit, updateProgressDashboard, startLiveEdits, LIVE_EDIT_MS, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchChangesSince, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, fetchApprovalHold, SupersededError, isFailedProgress, markFailedProgressSuperseded, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError, githubRepoFiles, openRepoFiles, UnreadFileError } from './github';
+import { readChangesSince, relatedCommits, ApprovalHeld, earlierPlaces, plainCitedFiles, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, autoApproveHeadMarker, reviewedCommit, updateProgressDashboard, startLiveEdits, LIVE_EDIT_MS, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchChangesSince, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, fetchApprovalHold, SupersededError, isFailedProgress, markFailedProgressSuperseded, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError, githubRepoFiles, openRepoFiles, UnreadFileError , awaitPushedHead, HeadedPull } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases, RoundFix, Refutation, SideCheckState, OriginAnswer } from './types';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -7485,5 +7485,65 @@ describe('formatUnreviewedNotice', () => {
     const signal = { tool: 'ci', ruleId: '', severity: 'error' as const, file: 'yarn.lock', line: 3, message: 'bad <!-- manki-no-verdict --> `x`\n## @admin', source: 'checks' as const };
     expect(formatUnreviewedNotice('abc1234', { excluded: [], binary: [] }, [signal])).toContain("- `yarn.lock:3`: `ci`: `bad  'x' ## @\u200Badmin`");
     expect(formatUnreviewedNotice('abc1234', { excluded: [], binary: [] }, [])).toBe('**Not reviewed** at `abc1234`: no model read this PR, since Manki skips every file it changes. A person needs to review it.');
+  });
+});
+
+describe('awaitPushedHead', () => {
+  const OLD = 'a'.repeat(40);
+  const NEW = 'b'.repeat(40);
+  const pull = (sha: string, more: Partial<HeadedPull> = {}): HeadedPull => ({ number: 1, state: 'open', head: { sha, ref: 'fix', repo: { name: 'fork', owner: { login: 'ann' } } }, ...more });
+  const getRef = jest.fn();
+  const get = jest.fn();
+  const octokit = { rest: { git: { getRef }, pulls: { get } } } as unknown as Parameters<typeof awaitPushedHead>[0];
+  const wait = async (from: HeadedPull): Promise<{ result: Awaited<ReturnType<typeof awaitPushedHead>>; waited: number }> => {
+    const start = Date.now();
+    const pending = awaitPushedHead(octokit, 'owner', 'repo', from).then(result => ({ result, waited: Date.now() - start }));
+    await jest.advanceTimersByTimeAsync(10 * 60_000);
+    return pending;
+  };
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.spyOn(core, 'info').mockImplementation(() => {});
+    jest.spyOn(core, 'warning').mockImplementation(() => {});
+    getRef.mockReset().mockResolvedValue({ data: { object: { sha: NEW } } });
+    get.mockReset();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  it('returns a PR that shows the newest commit at once, read from the head repository', async () => {
+    expect(await wait(pull(NEW))).toEqual({ result: { pull: pull(NEW) }, waited: 0 });
+    expect(getRef).toHaveBeenCalledWith({ owner: 'ann', repo: 'fork', ref: 'heads/fix' });
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it('waits until the PR shows the newest commit', async () => {
+    get.mockResolvedValueOnce({ data: pull(OLD) }).mockResolvedValue({ data: pull(NEW) });
+    expect(await wait(pull(OLD))).toEqual({ result: { pull: pull(NEW) }, waited: 20_000 });
+  });
+
+  it('names the commit the PR does not show after 3 minutes', async () => {
+    get.mockResolvedValue({ data: pull(OLD) });
+    expect(await wait(pull(OLD))).toEqual({ result: { pull: pull(OLD), unseen: NEW }, waited: 180_000 });
+  });
+
+  it('stops waiting on a PR that closed', async () => {
+    get.mockResolvedValue({ data: pull(OLD, { state: 'closed' }) });
+    expect(await wait(pull(OLD))).toEqual({ result: { pull: pull(OLD, { state: 'closed' }) }, waited: 10_000 });
+  });
+
+  it('takes the PR as current without its branch or when a lookup fails', async () => {
+    for (const closed of [pull(OLD, { state: 'closed' }), pull(OLD, { head: { sha: OLD, ref: 'fix', repo: null } })]) {
+      expect((await wait(closed)).result).toEqual({ pull: closed });
+    }
+    expect(getRef).not.toHaveBeenCalled();
+    get.mockRejectedValue(new Error('API down'));
+    expect((await wait(pull(OLD))).result).toEqual({ pull: pull(OLD) });
+    getRef.mockRejectedValue(new Error('Not Found'));
+    expect((await wait(pull(OLD))).result).toEqual({ pull: pull(OLD) });
   });
 });

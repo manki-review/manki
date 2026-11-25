@@ -6,7 +6,7 @@ import { tokenServiceCalls } from './auth';
 import { LLMCall, LLMClient, recordCalls, SendMessageOptions } from './providers';
 import { messageBox } from './issue-box';
 import { MemoryStore, patternMatchesTitle, writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
-import { BotIdentity, dynamicFence, findingLocation, hasWriteAccess, inline, isBotLogin, isBotUser, MANKI_VERSION, authorClearRole, reactToIssueComment, reactToReviewComment, readChangesSince, fetchPRDiff, sanitizeMarkdown, TooManyFilesError } from './github';
+import { BotIdentity, dynamicFence, findingLocation, hasWriteAccess, inline, isBotLogin, isBotUser, MANKI_VERSION, authorClearRole, reactToIssueComment, reactToReviewComment, awaitPushedHead, HeadedPull, readChangesSince, fetchPRDiff, sanitizeMarkdown, TooManyFilesError } from './github';
 import { fencePrText, truncateDiff } from './review';
 import { closeRawDiff, diffSections, findClosedPattern, parsePRDiff, reviewableDiff } from './diff';
 import { eventPrClosed } from './dispatch';
@@ -496,6 +496,25 @@ async function answerOrSayWhy<T>(octokit: Octokit, owner: string, repo: string, 
 }
 
 /**
+ * Waits for GitHub to move the event's PR to the newest commit of its branch, and keeps the PR as it is then in the event.
+ * Returns the PR's head, and the branch's newest commit when the PR still does not show it.
+ */
+async function eventPushedHead(octokit: Octokit, owner: string, repo: string): Promise<{ head?: string; unseen?: string }> {
+  const { payload } = github.context;
+  if (!payload.pull_request?.head) return {};
+  const { pull, unseen } = await awaitPushedHead(octokit, owner, repo, payload.pull_request as unknown as HeadedPull);
+  payload.pull_request = { ...pull };
+  return { head: pull.head.sha, unseen };
+}
+
+/** The answer to a reply that Manki cannot check, since the PR does not show `unseen`, the newest commit of its branch. */
+function unseenPushNote(head: string | undefined, unseen: string): string {
+  return `I did not check this reply. The branch is at \`${unseen.slice(0, 7)}\`, and GitHub still shows this pull request at \`${head?.slice(0, 7)}\`. Reply again once the pull request shows the push.`;
+}
+
+const HEAD_KEPT_MOVING = 'I did not check this reply, since the pull request got new commits each time I read it. Reply again once the push you mean is on it.';
+
+/**
  * Handle a reply to one of our review comments. `loadWorkspace` checks out the PR head, or another commit it is given,
  * once the thread turns out to be Manki's, and with it a client with `repoTools` checks the developer's point with
  * read-only tools, which also read the `related_repos` of `config`. The model also gets the PR's title and description
@@ -507,7 +526,9 @@ async function answerOrSayWhy<T>(octokit: Octokit, owner: string, repo: string, 
  * answer is then edited to say so. On a merged or closed PR the reply is answered and nothing else happens. Throws when
  * the reply gets no answer, after saying so in a thread that is Manki's. The model reads no file the `closed_paths` of
  * `config` closes: the diff leaves them out, and `loadWorkspace` checks out the head without them. With `closedUnknown`,
- * the thread gets that note and no model is asked.
+ * the thread gets that note and no model is asked. The reply is read on the newest commit of the PR's branch, and once
+ * more when the head moves before the answer is posted. `rereads` says how often. An answer about an older commit is
+ * never posted, and the thread then hears that the reply was not checked.
  */
 export async function handleReviewCommentReply(
   octokit: Octokit,
@@ -520,6 +541,7 @@ export async function handleReviewCommentReply(
   loadWorkspace?: (commit?: string) => Promise<string | undefined>,
   config?: ReviewConfig,
   closedUnknown?: string,
+  rereads = 1,
 ): Promise<void> {
   const payload = github.context.payload;
   const comment = payload.comment;
@@ -563,6 +585,16 @@ export async function handleReviewCommentReply(
 
     if (closedUnknown) {
       await octokit.rest.pulls.createReplyForReviewComment({ owner, repo, pull_number: prNumber, comment_id: comment.id, body: withMarkers(closedUnknown, BOT_MARKER) });
+      return;
+    }
+
+    const { head, unseen } = await eventPushedHead(octokit, owner, repo);
+    const leaveUnchecked = async (note: string): Promise<void> => {
+      await octokit.rest.pulls.createReplyForReviewComment({ owner, repo, pull_number: prNumber, comment_id: comment.id, body: withMarkers(note, BOT_MARKER) });
+      core.info(`Left the reply unchecked: ${note}`);
+    };
+    if (unseen) {
+      await leaveUnchecked(unseenPushNote(head, unseen));
       return;
     }
 
@@ -610,7 +642,6 @@ export async function handleReviewCommentReply(
     const relatedNames = config?.related_repos?.map(r => r.repo) ?? [];
     const findingData = parseFindingData(findingBody);
     const evidenceFiles = findingData?.evidenceFiles;
-    const head: string | undefined = github.context.payload.pull_request?.head?.sha;
     // Without the thread, nothing below reopens it, resolves it or says when it clears.
     const closed = eventPrClosed();
     // The live thread also counts a found-again reply that made it block, which the first comment does not show.
@@ -652,6 +683,23 @@ export async function handleReviewCommentReply(
         timeoutMs: REPLY_TIMEOUT_MS, repoTools: repoTools(checkout, REPLY_STEPS, undefined, 'check'),
       })).content,
     });
+    // Nothing is posted or resolved yet, so an answer about an older commit is dropped here.
+    const now = closed ? { head } : await eventPushedHead(octokit, owner, repo);
+    if (now.unseen) {
+      await leaveUnchecked(unseenPushNote(now.head, now.unseen));
+      return;
+    }
+    if (now.head !== head && rereads === 0) {
+      await leaveUnchecked(HEAD_KEPT_MOVING);
+      return;
+    }
+    if (now.head !== head) {
+      // The second read says itself when it fails.
+      ownThread = false;
+      core.info(`The PR head moved from ${head?.slice(0, 7)} to ${now.head?.slice(0, 7)}, reading the reply again`);
+      await handleReviewCommentReply(octokit, bot, client, owner, repo, prNumber, memory, loadWorkspace, config, closedUnknown, rereads - 1);
+      return;
+    }
     const fixClaim = elsewhere && !closed ? { pr: checked.fixedIn!, status: 'answer' in elsewhere ? 'confirmed' as const : 'unconfirmed' as const } : undefined;
     // The model read PR content, so its text loses mentions, links, markers and fences before Manki adds its own.
     const replyIn = (state: ThreadState): string => {
