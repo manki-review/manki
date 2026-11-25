@@ -6345,8 +6345,9 @@ describe('postReview non-blocking findings', () => {
       '#### Not finished checking · 2 possible problems',
       '',
       `- **Token may not read it** · ${link(3)}`,
-      '  Open since round 2.',
+      '  No check of the code ran on it. Open since round 2.',
       `- **Cache may go stale** · ${link(4)}`,
+      '  No check of the code ran on it.',
       '',
       log,
       '',
@@ -6367,7 +6368,33 @@ describe('postReview non-blocking findings', () => {
     expect(leadsOnly).toContain('<summary>Checked and left out: 2 findings</summary>');
     expect(leadsOnly).not.toContain('Judge decisions');
     // A lead the judge's tools left unsettled has its entry there, so its fold keeps the pointer.
-    expect(await bodyOf({ openLeads: leads, allJudgedFindings: leads.slice(0, 1) })).toContain(`- **Cache may go stale** · ${link(4)}\n\n${log}\n\n</details>`);
+    expect(await bodyOf({ openLeads: leads, allJudgedFindings: leads.slice(0, 1) })).toContain(`- **Cache may go stale** · ${link(4)}\n  No check of the code ran on it.\n\n${log}\n\n</details>`);
+
+    // A lead a check left unsettled says why, from the check that did, cleaned and cut like any other reason.
+    const check = (outcome: Refutation['outcome'], reason: string, extra: Partial<Refutation> = {}): Refutation => ({ outcome, defect: outcome, reason, files: [], codeDigest: '', ...extra });
+    const premise = { premise: 'The size can be 0', decides: 'defect' as const };
+    const openLeads = ([
+      { refutation: check('unsettled', 'Manki refused to read <i>tokio</i>,\nso its lock order stays open') },
+      { refutation: check('disproved', 'The caller holds it.'), pairRefutation: check('unsettled', 'The caller is generated. A build step writes it. A third sentence stays in the record.'), leadSince: 2 },
+      { refutation: check('unsettled', 'The loop divides by the size.', { defect: 'confirmed', premises: [{ ...premise, outcome: 'confirmed', reason: 'Set on line 3.' }, { ...premise, outcome: 'unsettled', reason: 'No caller in the repository sets the size.' }] }) },
+      { refutation: check('confirmed', 'It fails.'), pairRefutation: check('disproved', 'It holds.') },
+      { refutation: check('unsettled', ' ') },
+      { refutation: check('unsettled', `${'x'.repeat(290)}. More than fits here.`), leadSince: 1 },
+    ]).map((extra, i) => nonBlocking('warning', `Lead ${i}`, i + 1, extra));
+    expect(await bodyOf({ openLeads })).toContain([
+      `- **Lead 0** · ${link(1)}`,
+      '  Manki refused to read tokio, so its lock order stays open.',
+      `- **Lead 1** · ${link(2)}`,
+      '  The caller is generated. A build step writes it. Open since round 2.',
+      `- **Lead 2** · ${link(3)}`,
+      '  No caller in the repository sets the size.',
+      `- **Lead 3** · ${link(4)}`,
+      '  Two checks of the code disagreed about it.',
+      `- **Lead 4** · ${link(5)}`,
+      '  A check of the code could not settle it.',
+      `- **Lead 5** · ${link(6)}`,
+      `  ${'x'.repeat(290)}. Open since round 1.`,
+    ].join('\n'));
 
     // Each kind lists its first ten. A reason ends at its second sentence, or its first when two pass 300 characters.
     const many = Array.from({ length: 12 }, (_, i) => ({ title: `Finding ${i}`, file: 'src/`a`.ts', line: i + 1, reason: `${'Long reason. '.repeat(i === 0 ? 1 : 0)}${'x'.repeat(290)}. More than fits here.` }));
