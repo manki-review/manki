@@ -534,7 +534,7 @@ const RAW_EXITS: Record<RawExit, string> = {
   memory_suppression: UNPOSTED_REASONS.memory_suppression,
   static_signal_match: UNPOSTED_REASONS.static_signal_match,
   no_trigger: UNPOSTED_REASONS.no_trigger,
-  low_importance: UNPOSTED_REASONS.low_importance,
+  rare_trigger: UNPOSTED_REASONS.rare_trigger,
   reviewed_code: UNPOSTED_REASONS.reviewed_code,
   listed_earlier: UNPOSTED_REASONS.listed_earlier,
   note_cap: UNPOSTED_REASONS.note_cap,
@@ -625,7 +625,7 @@ interface RunScore {
   finderErrors?: Array<FinderError & { finder: string }>;
   /** Each finding with the text the matcher read. A report from a ref that kept no finding text holds no `description`, and one from a ref that stored no route holds no `route`. `foldedInto` is the id of the earlier open thread the round folded the finding into, by `foldedThread`. */
   findings: Array<Omit<MatchedFinding, 'description'> & Partial<Pick<MatchedFinding, 'description'>> & { route?: GradeRoute; foldedInto?: string }>;
-  /** Each warning the review left out for its importance, with its scores. It counts as not posted. */
+  /** Each warning the review left out for its trigger, with its scores. It counts as not posted. */
   leftOut?: Array<RecordedPlace & { importance: Importance }>;
   matches: ItemMatch[];
   /** Must-catch items matched, over all must-catch items. `null` for a clean case and an incomplete run. */
@@ -1039,7 +1039,7 @@ function reviewFacts(review: LocalReview, earlier?: EarlierRound): Pick<RunScore
   const usage = review.context.usage ?? {};
   const secondReads = finderSteps(review, true);
   const { outcome, verdictReason, agentErrors } = review.result;
-  const leftOut = (review.result.unposted ?? []).flatMap(({ title, file, line, importance, unpostedReason }) => (unpostedReason === 'low_importance' && importance ? [{ title, file, line, importance: scoresOf(importance) }] : []));
+  const leftOut = (review.result.unposted ?? []).flatMap(({ title, file, line, importance, unpostedReason }) => (unpostedReason === 'rare_trigger' && importance ? [{ title, file, line, importance: scoresOf(importance) }] : []));
   const finderErrors = [...agentErrors ?? []].flatMap(([finder, causes]) => causes.map(cause => ({ finder, ...cause })));
   return {
     outcome,
@@ -1905,7 +1905,7 @@ export function formatImportance(variants: VariantReport[]): string {
     const leftOut = runs.reduce((sum, run) => sum + (run.leftOut?.length ?? 0), 0);
     const rated = leftOut + runs.reduce((sum, run) => sum + run.findings.filter(f => f.route?.importance).length, 0);
     if (rated === 0) return [];
-    const lost = runs.reduce((sum, run) => sum + (run.raw?.caught.filter(c => !c.posted && c.exits?.[0] === 'low_importance').length ?? 0), 0);
+    const lost = runs.reduce((sum, run) => sum + (run.raw?.caught.filter(c => !c.posted && c.exits?.[0] === 'rare_trigger').length ?? 0), 0);
     return [`Importance, ${label ? `${v.name} ${label}` : v.name}: ${rated} warnings rated, ${leftOut} left out, ${lost} must-catch ${lost === 1 ? 'item' : 'items'} lost with them.`];
   })).join('\n');
 }

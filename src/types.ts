@@ -1155,7 +1155,7 @@ export interface OtherFinderVote {
 
 export const IMPORTANCE_SCORES = ['trigger', 'introduced', 'matters', 'overall'] as const;
 
-/** The scores of a warning, each a whole number from 1 to 10. Only `overall` decides whether the review leaves it out. */
+/** The scores of a warning, each a whole number from 1 to 10. `trigger` and `matters` decide whether the review leaves it out. */
 export interface Importance {
   overall: number;
   /** How easily it is triggered. */
@@ -1164,9 +1164,9 @@ export interface Importance {
   introduced: number;
   /** How much it matters when it happens. */
   matters: number;
-  /** Why `overall`, in one sentence of the model. */
+  /** Why `trigger`, in one sentence of the model. */
   reason?: string;
-  /** The `review.min_warning_score` it is below. Set on a warning left out with `low_importance`. */
+  /** The `review.min_warning_trigger` its trigger is below. Set on a warning left out with `rare_trigger`. */
   cutOff?: number;
 }
 
@@ -1391,7 +1391,7 @@ export function overruledDisproof(finding: Pick<Finding, 'severity' | 'rule' | '
 /** `earlier` restates a finding an earlier round listed in its review body, whatever code it sits on. */
 export type FindingOrigin = 'new' | 'reviewed' | 'earlier';
 
-/** Why a review leaves out a finding the judge kept, with the words that say it to a reader. The first four are set on a note, `listed_earlier` also on a finding that restates an earlier blocker the round lists again, `no_trigger` on a warning with no realistic trigger, `low_importance` on a warning rated below `review.min_warning_score`, and the last three on a warning nothing proves. */
+/** Why a review leaves out a finding the judge kept, with the words that say it to a reader. The first four are set on a note, `listed_earlier` also on a finding that restates an earlier blocker the round lists again, `no_trigger` on a warning with no realistic trigger, `rare_trigger` on a warning whose trigger is below `review.min_warning_trigger`, and the last three on a warning nothing proves. */
 export const UNPOSTED_REASONS = {
   reviewed_code: 'on code an earlier round reviewed',
   listed_earlier: 'listed by an earlier round',
@@ -1401,7 +1401,7 @@ export const UNPOSTED_REASONS = {
   memory_suppression: 'hidden by a memory suppression',
   static_signal_match: 'a CI tool reports the same line',
   no_trigger: 'it names no trigger that happens in realistic use',
-  low_importance: 'its importance is below `review.min_warning_score`',
+  rare_trigger: 'its trigger is rated below `review.min_warning_trigger`',
   unsettled_check: 'a check of the code could not confirm it',
   not_checked: 'nothing proves it, and no check of the code ran on it',
   no_proof: 'it cites no lines that prove it',
@@ -1845,8 +1845,8 @@ export interface ReviewRoutingConfig {
   notes?: number;
   /** Whether a broken required rule of the instruction files is graded by its damage alone (`auto`), at least a warning (`warn`) or blocks (`block`). */
   rules?: RulesMode;
-  /** The lowest importance from 1 to 10 a warning is posted with. 1 rates none and leaves none out. */
-  min_warning_score?: number;
+  /** The lowest trigger score from 1 to 10 a warning is posted with. 1 rates none and leaves none out. */
+  min_warning_trigger?: number;
   /** Whether the scope reader's doubt or split is posted as a warning that holds the approval, instead of only listed in the review body. */
   scope_blocks?: boolean;
 }

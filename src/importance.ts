@@ -14,6 +14,8 @@ import { UNTRUSTED_CONTENT_RULE } from './writing-rules';
 export const RATING_TIMEOUT_MS = 120_000;
 const MAX_REASON_CHARS = 300;
 const SHUFFLE_SEED = 'rate-1';
+/** A warning that matters this much is posted however rare its trigger, so a rare but very harmful one stays in sight. */
+const ALWAYS_POSTED_MATTERS = 7;
 
 const RATING_SYSTEM_PROMPT = `You rate findings of a code review of a pull request. Read each finding, the code it cites and the PR's change, and give each finding four whole scores from 1 to 10, each with the reason in one sentence:
 
@@ -72,7 +74,7 @@ function parseScores(entry: unknown): Importance | undefined {
   const given = entry as Record<string, { reason?: unknown; score?: unknown } | null | undefined>;
   const scores = Object.fromEntries(IMPORTANCE_SCORES.map(name => [name, given[name]?.score]));
   if (!isImportance(scores)) return undefined;
-  const reason = given.overall?.reason;
+  const reason = given.trigger?.reason;
   return { ...scores, ...(typeof reason === 'string' && reason.trim() && { reason: safeTruncate(reason.trim(), MAX_REASON_CHARS) }) };
 }
 
@@ -131,9 +133,12 @@ export async function rateWarnings(findings: readonly Finding[], { workspace, di
   return rated;
 }
 
-/** Returns `finding` with its `importance`, left out with `low_importance` when that is below `cutOff`. */
+/**
+ * Returns `finding` with its `importance`, left out with `rare_trigger` when its trigger is below `cutOff` and it
+ * matters less than `ALWAYS_POSTED_MATTERS`.
+ */
 export function withImportance(finding: Finding, importance: Importance, cutOff: number): Finding {
-  if (importance.overall >= cutOff) return { ...finding, importance };
-  core.info(`Recording warning "${finding.title}" on ${finding.file}:${finding.line} without posting it: importance ${importance.overall} of 10, below the cut-off of ${cutOff}`);
-  return { ...finding, importance: { ...importance, cutOff }, unpostedReason: 'low_importance' };
+  if (importance.trigger >= cutOff || importance.matters >= ALWAYS_POSTED_MATTERS) return { ...finding, importance };
+  core.info(`Recording warning "${finding.title}" on ${finding.file}:${finding.line} without posting it: trigger ${importance.trigger} of 10, below the cut-off of ${cutOff}`);
+  return { ...finding, importance: { ...importance, cutOff }, unpostedReason: 'rare_trigger' };
 }

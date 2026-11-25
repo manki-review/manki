@@ -180,8 +180,8 @@
 #                                    # "every migration needs a rollback", is graded by the damage it can do.
 #                                    # `warn` makes it at least a warning. `block` makes it a blocker, so the PR
 #                                    # is not approved until the rule is followed
-#   min_warning_score: 4             # a warning rated below this importance, 1 to 10, is not posted and holds no
-#                                    # merge. 1 leaves none out and skips the rating
+#   min_warning_trigger: 5           # a warning whose trigger is rated below this, 1 to 10, is not posted and holds no
+#                                    # merge, unless it is very harmful. 1 leaves none out and skips the rating
 #   scope_blocks: false              # a doubt that the PR is useful, or a proposed split of a PR that mixes
 #                                    # topics, is listed in the review body. `true` posts each as a warning,
 #                                    # a doubt only once the refuter confirms it, which holds the approval

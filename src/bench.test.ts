@@ -516,7 +516,7 @@ describe('scoreRun', () => {
     const review = makeReview('ADDRESS_FIRST', findings);
     review.result.verdictReason = 'required_present';
     // A warning left out for its importance counts as not posted.
-    review.result.unposted = [makeFinding({ title: 'Minor', severity: 'warning', file: 'src/minor.rs', line: 9, unpostedReason: 'low_importance', importance: { overall: 3, trigger: 2, introduced: 9, matters: 4, reason: 'Few get there.', cutOff: 4 } })];
+    review.result.unposted = [makeFinding({ title: 'Minor', severity: 'warning', file: 'src/minor.rs', line: 9, unpostedReason: 'rare_trigger', importance: { overall: 3, trigger: 2, introduced: 9, matters: 4, reason: 'Few get there.', cutOff: 4 } })];
     const matcher = stub({ K1: { verdict: 'MATCH', findings: [0], reason: 'same' }, K2: { verdict: 'MATCH', findings: [0], reason: 'same' }, N1: { verdict: 'PARTIAL', findings: [2, 12], reason: 'vague' } });
 
     const score = await scoreRun(benchCase, review, matcher);
@@ -586,7 +586,7 @@ describe('scoreRun', () => {
     expect(formatBenchSummary(routed)).toContain(`\n\n${formatVotes(routed.variants)}\n`);
     expect(formatImportance(routed.variants)).toBe('Importance, base: 2 warnings rated, 1 left out, 0 must-catch items lost with them.');
     expect(formatBenchSummary(routed)).toContain(`\n\n${formatImportance(routed.variants)}\n`);
-    const lostOne = { ...score, raw: { ...score.raw!, caught: [{ item: 'K1', finders: ['A'], posted: false, exits: ['low_importance' as const] }] } };
+    const lostOne = { ...score, raw: { ...score.raw!, caught: [{ item: 'K1', finders: ['A'], posted: false, exits: ['rare_trigger' as const] }] } };
     expect(formatImportance(report([lostOne]).variants)).toContain('1 left out, 1 must-catch item lost with them.');
     expect(formatImportance(report([{ ...score, leftOut: undefined, findings: score.findings.slice(1, 7) }]).variants)).toBe('');
     expect(formatVotes(report([{ ...score, findings: score.findings.slice(1, 7) }]).variants)).toBe('');

@@ -102,7 +102,7 @@ The summary gets one line per variant and set with the votes of its complete run
 
 ### The importance of the warnings
 
-The summary gets one line per variant and set with the rated warnings of its complete runs: how many were rated, how many of them the review left out for their score, and how many must-catch items it lost with them. A warning left out counts as not posted, so recall and the unexpected warnings cover what a reader sees. Each run lists its own under `leftOut` with their scores, and a must-catch item lost this way has the exit `low_importance`. A variant and set without a rated warning has no line. It holds counts only, so it also covers hold-out cases.
+The summary gets one line per variant and set with the rated warnings of its complete runs: how many were rated, how many of them the review left out for their rare trigger, and how many must-catch items it lost with them. A warning left out counts as not posted, so recall and the unexpected warnings cover what a reader sees. Each run lists its own under `leftOut` with their scores, and a must-catch item lost this way has the exit `rare_trigger`. A variant and set without a rated warning has no line. It holds counts only, so it also covers hold-out cases.
 
 ### Where the finders' findings went
 

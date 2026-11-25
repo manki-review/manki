@@ -22,7 +22,7 @@ import { combineVerdictReports, runVerdictReader } from './verdict';
 import { buildRepositoryRules, CLAIMS_MISSING_RULE, COST_SCALE_RULE, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, PRE_EXISTING_RULE, ROOT_CAUSE_FIX_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
 import type { AnswerStore } from './stored-answers';
-import { DEFAULT_MIN_WARNING_SCORE, resolveModel } from './config';
+import { DEFAULT_MIN_WARNING_TRIGGER, resolveModel } from './config';
 import { mayBeLeftOut, rateWarnings, RATING_TIMEOUT_MS, withImportance } from './importance';
 import { ChangeUnit, listClaimLines, listRelatedUses, listUsesOutsideDiff, MappedChange, relatedQuestions, TEST_PATH } from './symbol-uses';
 import { EarlierAnswer, EarlierAnswers, runComparisons, runPatternChecks, runRelatedChecks } from './compare';
@@ -165,11 +165,11 @@ function getsScore(f: Finding, entries: readonly FindingFingerprintEntry[], open
 }
 
 /** Returns `f` with the importance an earlier round gave it, so no push changes it. It is left out only when that round left it out. */
-function withEarlierImportance(f: Finding, entries: readonly FindingFingerprintEntry[], minScore: number): Finding {
+function withEarlierImportance(f: Finding, entries: readonly FindingFingerprintEntry[], minTrigger: number): Finding {
   const last = [...entries].reverse().find(e => e.importance);
   if (!last?.importance) return f;
   const { cutOff: _, ...importance } = last.importance;
-  return last.unpostedReason === 'low_importance' ? withImportance(f, importance, minScore) : { ...f, importance };
+  return last.unpostedReason === 'rare_trigger' ? withImportance(f, importance, minTrigger) : { ...f, importance };
 }
 
 const UNRELATED_RULE = 'never report a change only for being unrelated to the PR\'s purpose';
@@ -2327,24 +2327,24 @@ export async function runReview(
   const relisting = openThreads != null ? relistThreadlessBlockers(finalFindings, priorFindingsFlat, priorRoundLookup) : { findings: finalFindings, restated: [] };
   finalFindings = relisting.findings;
   const unposted = [...proven.unposted, ...relisting.restated];
-  const minScore = config.review?.min_warning_score ?? DEFAULT_MIN_WARNING_SCORE;
+  const minTrigger = config.review?.min_warning_trigger ?? DEFAULT_MIN_WARNING_TRIGGER;
   // After the steps that hide a warning, so only a posted one is rated, and before the outcome, which a warning left out
   // does not hold. Without the threads nothing is matched to an earlier round, so no score is kept or given.
-  if (minScore > 1 && (openThreads !== null || sortedPriorRounds.length === 0)) {
-    const recordedBefore = sortedPriorRounds.flatMap(r => [...r.findings.entries, ...(r.findings.unposted ?? []).filter(e => e.unpostedReason === 'low_importance')]);
+  if (minTrigger > 1 && (openThreads !== null || sortedPriorRounds.length === 0)) {
+    const recordedBefore = sortedPriorRounds.flatMap(r => [...r.findings.entries, ...(r.findings.unposted ?? []).filter(e => e.unpostedReason === 'rare_trigger')]);
     const scorable = new Map(finalFindings.flatMap(f => {
       const entries = earlierEntriesOf(f, recordedBefore);
-      return getsScore(f, entries, openThreadIndex, config.review?.rules) ? [[f, withEarlierImportance(f, entries, minScore)] as const] : [];
+      return getsScore(f, entries, openThreadIndex, config.review?.rules) ? [[f, withEarlierImportance(f, entries, minTrigger)] as const] : [];
     }));
     const rated = workspace ? await rateWarnings([...scorable].flatMap(([f, kept]) => kept.importance ? [] : [f]), {
       workspace, diff: diffWithLockfiles, client: lateFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'rating', undefined, false),
     }) : new Map<Finding, Importance>();
     const scored = finalFindings.map(f => {
       const importance = rated.get(f);
-      return importance ? withImportance(f, importance, minScore) : scorable.get(f) ?? f;
+      return importance ? withImportance(f, importance, minTrigger) : scorable.get(f) ?? f;
     });
-    unposted.push(...scored.filter(f => f.unpostedReason === 'low_importance'));
-    finalFindings = scored.filter(f => f.unpostedReason !== 'low_importance');
+    unposted.push(...scored.filter(f => f.unpostedReason === 'rare_trigger'));
+    finalFindings = scored.filter(f => f.unpostedReason !== 'rare_trigger');
     const importances = new Map(scored.flatMap(f => f.importance ? [[findingKey(f), f.importance] as const] : []));
     allJudgedFindings = allJudgedFindings?.map(f => {
       const importance = f.severity === 'ignore' ? undefined : importances.get(findingKey(f));
@@ -4033,7 +4033,7 @@ export function bodyWarnings(priorRounds: RoundContext[]): FindingFingerprintEnt
  * this round names its problem, kept or not, or its file is gone, or the judge found it fixed (`result.carriedFixed`).
  * A changed `citedLine` ends nothing by itself, since an edit next to the line changes it too, so the judge decides. An
  * `unread` warning has no line to compare, so only the judge or a fix ends it, also when its file is gone.
- * A finding left out because nothing proves it or for its importance does not count, so it ends no carried warning.
+ * A finding left out because nothing proves it or for its trigger does not count, so it ends no carried warning.
  * Neither does a pre-existing warning or blocker the review leaves out.
  * A file `head` cannot read keeps its warnings. A carried entry gets `currentLine` when one place of the file reads like
  * its `citedLine`, which is also the line a finding of this round is compared with. Call it after the last step that
@@ -4044,10 +4044,10 @@ export async function carryBodyWarnings(result: ReviewResult, priorRounds: Round
   if (!last) return;
   const warnings = bodyWarnings(priorRounds);
   const fixed = new Set(result.carriedFixed);
-  // A finding left out because nothing proves it, for its importance or because it is pre-existing withdraws nothing, so the warning an earlier round listed stays listed.
+  // A finding left out because nothing proves it, for its trigger or because it is pre-existing withdraws nothing, so the warning an earlier round listed stays listed.
   // A pre-existing note is the judge's lower grade, so it does end the warning.
   const unconfirmed = (result.unpostedPreExisting ?? []).filter(f => f.severity !== 'note');
-  const withdrawsNothing = new Set([...(result.unposted ?? []).filter(f => leftOutUnproven(f) || f.unpostedReason === 'low_importance'), ...unconfirmed].map(findingKey));
+  const withdrawsNothing = new Set([...(result.unposted ?? []).filter(f => leftOutUnproven(f) || f.unpostedReason === 'rare_trigger'), ...unconfirmed].map(findingKey));
   const settled = (findings: Finding[]) => findings.filter(f => !withdrawsNothing.has(findingKey(f)));
   const judged: Array<[CarriedEndReason, Finding[]]> = [
     ['restated', result.findings],

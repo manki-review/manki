@@ -191,7 +191,7 @@ function withoutSection(key: 'relatedWork' | 'sweeps' | 'staticAnalysis' | 'depe
 
 /**
  * The parts a record that is still too large without its diagnostics leaves out, in this order. No later round reads
- * the parts up to `output`. Without `findings.unposted`, a warning left out with `low_importance` is rated again. The
+ * the parts up to `output`. Without `findings.unposted`, a warning left out with `rare_trigger` is rated again. The
  * parts from `comparisons` to `models.fallbacks` are read only to reuse an attempt, and a cut record is never reused.
  */
 const RECORD_CUTS: RecordCut[] = [

@@ -1148,7 +1148,7 @@ const RECORD_ONLY_NAMES: Record<RecordOnlyReason, string> = {
   memory_suppression: 'suppressed by memory',
   static_signal_match: 'reported by a CI tool',
   no_trigger: 'no realistic trigger',
-  low_importance: 'low importance',
+  rare_trigger: 'rare trigger',
   unsettled_check: 'no proof',
   not_checked: 'no proof',
   no_proof: 'no proof',
@@ -1534,7 +1534,7 @@ export async function updateProgressComment(
       parts.push('**Judge decisions:**');
       for (const d of metadata.judgeDecisions) {
         const outcome = d.listed ? 'Not finished' : d.kept ? 'Kept' : d.unpostedReason ? `Not listed, ${UNPOSTED_REASONS[d.unpostedReason]}` : 'Dropped';
-        const importance = d.importance ? `, importance ${d.importance.overall} of 10${d.importance.reason ? `: "${sanitizeMarkdown(d.importance.reason)}"` : ''}` : '';
+        const importance = d.importance ? `, trigger ${d.importance.trigger} and harm ${d.importance.matters} of 10${d.importance.reason ? `: "${sanitizeMarkdown(d.importance.reason)}"` : ''}` : '';
         parts.push(`- ${outcome}: "${sanitizeMarkdown(d.title)}" (${SEVERITY_NAME[d.severity]}): "${sanitizeMarkdown(d.reasoning)}"${importance}`);
       }
       parts.push('');
@@ -2318,18 +2318,18 @@ function formatLeftOutEntry({ title, file, line, reason }: LeftOutEntry, linkTo:
 
 /**
  * Returns the fold that lists what the round checked and left out: each finding of `disproved`, each warning of
- * `result.unposted` that nothing proves or whose importance is too low, and each lead of `result.openLeads`. Every kind shows its first
+ * `result.unposted` that nothing proves or whose trigger is too rare, and each lead of `result.openLeads`. Every kind shows its first
  * `MAX_LISTED_FINDINGS`. Returns none when there is nothing to list.
  */
 function formatLeftOut(result: ReviewResult, disproved: DisprovedFinding[], linkTo: LineLink): string | null {
   const because = (f: Finding, why: string): LeftOutEntry => ({ ...f, reason: `${why[0].toUpperCase()}${why.slice(1)}.` });
   const unproven = (result.unposted ?? []).flatMap(f => f.unpostedReason && leftOutUnproven(f) ? [because(f, UNPOSTED_REASONS[f.unpostedReason])] : []);
-  const minor = (result.unposted ?? []).flatMap(f => f.unpostedReason === 'low_importance' && f.importance ? [because(f, `importance ${f.importance.overall} of 10, below the cut-off of ${f.importance.cutOff}`)] : []);
+  const rare = (result.unposted ?? []).flatMap(f => f.unpostedReason === 'rare_trigger' && f.importance ? [because(f, `trigger ${f.importance.trigger} of 10, below the cut-off of ${f.importance.cutOff}`)] : []);
   const leads = (result.openLeads ?? []).map((f): LeftOutEntry => ({ ...f, reason: f.leadSince ? `Open since round ${f.leadSince}.` : undefined }));
   const kinds = [
     { heading: 'Disproved by a check of the code', noun: 'finding', short: 'disproved', entries: disproved },
     { heading: 'Not proven, so not listed', noun: 'warning', short: 'unproven', entries: unproven },
-    { heading: 'Not important enough to list', noun: 'warning', short: 'minor', entries: minor },
+    { heading: 'Rare trigger, so not listed', noun: 'warning', short: 'rare', entries: rare },
     { heading: 'Not finished checking', noun: 'possible problem', short: 'not finished', entries: leads },
   ].filter(kind => kind.entries.length > 0);
   if (kinds.length === 0) return null;
@@ -2342,7 +2342,7 @@ function formatLeftOut(result: ReviewResult, disproved: DisprovedFinding[], link
   });
   // A lead the judge never saw has no entry in that log, so the line shows only with a finding the judge decided.
   const judgedLead = (result.openLeads ?? []).some(lead => result.allJudgedFindings?.includes(lead));
-  const log = disproved.length + unproven.length + minor.length > 0 || judgedLead ? ['<sub>The progress comment has the full log under "Judge decisions", in its "Review metadata" fold.</sub>'] : [];
+  const log = disproved.length + unproven.length + rare.length > 0 || judgedLead ? ['<sub>The progress comment has the full log under "Judge decisions", in its "Review metadata" fold.</sub>'] : [];
   return `<details>\n<summary>Checked and left out: ${countOf(total, 'finding')}${split}</summary>\n\n${[...sections, ...log].join('\n\n')}\n\n</details>`;
 }
 
