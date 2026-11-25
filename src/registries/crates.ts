@@ -1,6 +1,6 @@
 import { Minimatch } from 'minimatch';
 import { posix } from 'path';
-import { validRange } from 'semver';
+import { satisfies, valid, validRange } from 'semver';
 import { parse } from 'smol-toml';
 
 import { shown } from './shown';
@@ -103,12 +103,30 @@ function cargoManifest(text: string, name: string): ManifestFacts {
 }
 
 /**
+ * Returns the full version a `rust-version` stands for, or `undefined` for one Manki does not read. A missing part
+ * counts as 0, as in Cargo.
+ */
+function fullRustVersion(value: unknown): string | undefined {
+  if (typeof value !== 'string' || !/^[1-9][0-9]*(?:\.[0-9]+){0,2}$/.test(value)) return undefined;
+  return valid(value + '.0'.repeat(3 - value.split('.').length)) ?? undefined;
+}
+
+/**
  * Returns which of `files` lets Cargo pick an older version than the highest a requirement allows: a `rust-version`
  * together with the resolver that honours it, from edition 2024, `resolver = "3"` or a Cargo config's
  * `incompatible-rust-versions`. The setting and the `rust-version` can sit in different manifests of one workspace.
+ *
+ * That resolver prefers the version that fits the most `rust-version`s of the workspace's members, and the highest of
+ * those. One without a `rust_version` in the index fits all. With every package stating a `rust-version`, the highest
+ * version that fits each of them is the pick of any workspace, so that is left to a test. A workspace whose members
+ * state none goes by the compiler's version, which Manki does not know.
  */
-function cargoFreshPick(files: readonly RegistryConfig[]): string | undefined {
+function cargoFreshPick(files: readonly RegistryConfig[]): ReturnType<Registry['freshPick']> {
+  const stated: Array<{ file: string; version?: string }> = [];
   let rustVersion: string | undefined;
+  let missing: string | undefined;
+  let inherits: string | undefined;
+  let shares = false;
   let resolver: string | undefined;
   for (const { file, text } of files) {
     let toml: TomlTable;
@@ -121,13 +139,33 @@ function cargoFreshPick(files: readonly RegistryConfig[]): string | undefined {
       if (Object.hasOwn(tableOf(toml.resolver), 'incompatible-rust-versions')) resolver ??= file;
       continue;
     }
-    const pkg = tableOf(toml.package);
+    const pkg = tableOf(toml.package ?? toml.project);
     const workspace = tableOf(toml.workspace);
     const shared = tableOf(workspace.package);
-    if (Object.hasOwn(pkg, 'rust-version') || Object.hasOwn(shared, 'rust-version')) rustVersion ??= file;
+    const own = pkg['rust-version'];
+    if (own !== undefined || shared['rust-version'] !== undefined) rustVersion ??= file;
+    if (tableOf(own).workspace === true) inherits ??= file;
+    else if (own !== undefined) stated.push({ file, version: fullRustVersion(own) });
+    else if (toml.package !== undefined || toml.project !== undefined) missing ??= file;
+    if (shared['rust-version'] !== undefined) {
+      shares = true;
+      stated.push({ file, version: fullRustVersion(shared['rust-version']) });
+    }
     if ([pkg.edition, shared.edition].includes('2024') || [pkg.resolver, workspace.resolver].includes('3')) resolver ??= file;
   }
-  return rustVersion && resolver ? `${shown(rustVersion)} sets \`rust-version\` and ${shown(resolver)} lets Cargo pick by it, so a fresh install may pick an older version` : undefined;
+  if (!rustVersion || !resolver) return undefined;
+  const why = (lacking: string) => `${shown(rustVersion)} sets \`rust-version\` and ${shown(resolver)} lets Cargo pick by it, so a fresh install may pick an older version, since ${lacking}`;
+  if (missing) return why(`${shown(missing)} states none`);
+  if (inherits && !shares) return why(`${shown(inherits)} inherits one that no workspace states`);
+  const unread = stated.find(s => s.version === undefined);
+  if (unread) return why(`the one in ${shown(unread.file)} is no version Manki reads`);
+  return highest => {
+    if (highest.rustVersion === undefined) return undefined;
+    const needs = fullRustVersion(highest.rustVersion);
+    if (needs === undefined) return why(`crates.io states a Rust version Manki does not read for ${highest.version}`);
+    const older = stated.find(s => !satisfies(s.version!, `^${needs}`));
+    return older && why(`the newest, ${highest.version}, needs Rust ${needs} and ${shown(older.file)} states ${older.version}`);
+  };
 }
 
 /** How Cargo's `glob` crate matches the `members` of a workspace: no braces, no extglobs, and `*` matches a leading dot. */
@@ -278,10 +316,10 @@ export function cratesIo({ index = CRATES_IO.index, download = CRATES_IO.downloa
       const lines = (await fetch(`${index}/${indexPath(name)}`, maxIndexBytes)).toString('utf8').split('\n').filter(Boolean);
       let own = name;
       const versions = lines.flatMap((line): PublishedVersion[] => {
-        const entry = JSON.parse(line) as { name?: unknown; vers?: unknown; cksum?: unknown; yanked?: unknown };
+        const entry = JSON.parse(line) as { name?: unknown; vers?: unknown; cksum?: unknown; yanked?: unknown; rust_version?: unknown };
         if (typeof entry.vers !== 'string' || typeof entry.cksum !== 'string') return [];
         if (typeof entry.name === 'string') own = entry.name;
-        return [{ version: entry.vers, checksum: entry.cksum, ...(entry.yanked === true && { yanked: true as const }) }];
+        return [{ version: entry.vers, checksum: entry.cksum, ...(entry.yanked === true && { yanked: true as const }), ...(entry.rust_version != null && { rustVersion: entry.rust_version }) }];
       });
       return { name: own, versions };
     },

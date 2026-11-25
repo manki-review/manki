@@ -262,7 +262,7 @@ async function resolveDependency(
   const range = registry.range(first.requirement);
   if (range === undefined) refuse(`${shown(first.file)} requires it as \`${shown(first.requirement)}\`, a form Manki does not read with certainty`, origin);
   const fresh = certain(first.file, () => registry.freshPick([...configs, ...manifests]));
-  if (fresh) refuse(fresh, origin);
+  if (typeof fresh === 'string') refuse(fresh, origin);
   let published: Awaited<ReturnType<Registry['published']>>;
   try {
     // The registry files a package under its own spelling, which the manifest holds and the call may not.
@@ -274,6 +274,8 @@ async function resolveDependency(
   if (!registry.validName(published.name) || !registry.sameName(published.name, first.name)) throw unread(`${registry.id} lists ${label} under a name Manki does not read.`);
   const picked = pickVersion(published.versions, range!, published.latest);
   if (!picked) throw unread(`No published version of ${label} matches what the PR requires: \`${shown(first.requirement)}\` in ${shown(first.file)}.`);
+  const older = typeof fresh === 'function' ? fresh(picked) : undefined;
+  if (older) refuse(older, origin);
   if (version !== undefined && version !== picked.version) throw unread(`The PR does not use ${label}@${version}. It uses ${picked.version} (resolved from \`${shown(first.requirement)}\` in ${shown(first.file)}).`, `${label}@${version}`);
   return {
     registry, name: published.name, version: picked.version, key: `${registry.id}/${published.name}@${picked.version}`,

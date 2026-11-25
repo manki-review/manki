@@ -57,6 +57,13 @@ describe('dependencyLoader', () => {
       // Build metadata is part of a published version, as for the crate `wasi`.
       '/index/1/w': ['0.10.0', '0.11.0+wasi-snapshot-preview1'].map(vers => JSON.stringify({ name: 'w', vers, cksum: sha256Hex(CRATES['1.2.0']) })).join('\n'),
       '/dl/crates/w/w-0.11.0%2Bwasi-snapshot-preview1.crate': CRATES['1.2.0'],
+      '/index/fi/ts/fits': [['1.0.0', '1.60'], ['1.1.0', '1.75.0'], ['1.2.0', '1.60', true], ['1.3.0-beta.1', '1.60']]
+        .map(([vers, rust_version, yanked]) => JSON.stringify({ name: 'fits', vers, cksum: sha256Hex(CRATES['1.2.0']), rust_version, yanked })).join('\n'),
+      '/dl/crates/fits/fits-1.0.0.crate': CRATES['1.2.0'],
+      '/dl/crates/fits/fits-1.1.0.crate': CRATES['1.2.0'],
+      '/index/un/fi/unfit': [['1.0.0', '1.60'], ['1.1.0', '>=1.60'], ['2.0.0', 1.6], ['3.0.0', null], ['4.0.0', '2.0']]
+        .map(([vers, rust_version]) => JSON.stringify({ name: 'unfit', vers, cksum: sha256Hex(CRATES['1.2.0']), rust_version })).join('\n'),
+      '/dl/crates/unfit/unfit-3.0.0.crate': CRATES['1.2.0'],
       '/index/ti/me/time': ['0.2.27', '0.3.47'].map(vers => JSON.stringify({ name: 'time', vers, cksum: sha256Hex(CRATES['1.2.0']) })).join('\n'),
       '/dl/crates/time/time-0.3.47.crate': CRATES['1.2.0'],
       '/npm/undeprecated': JSON.stringify({ name: 'undeprecated', versions: { '1.0.0': { dist: { integrity: sha512Integrity(PAD) } }, '1.1.0': { dist: { integrity: sha512Integrity(PAD) }, deprecated: '' } } }),
@@ -565,12 +572,64 @@ describe('dependencyLoader', () => {
       expect((await round({ ...required(), 'package-lock.json': lock, [file]: text }).load('npm/left-pad')).key).toBe('npm/left-pad@1.2.0');
     }
     const cargo = (pkg: string) => `[package]\nname = "app"\n${pkg}\n[dependencies]\ndemo = "1.2"\n`;
-    await expect(round({ 'Cargo.toml': cargo('edition = "2024"\nrust-version = "1.85"\n') }).load('crates.io/demo'))
-      .rejects.toThrow('Cargo.toml sets `rust-version` and Cargo.toml lets Cargo pick by it, so a fresh install may pick an older version.');
-    // The `rust-version` and the resolver that reads it can sit in different files of one workspace.
-    await expect(round({ 'Cargo.toml': '[workspace]\nmembers = ["a"]\nresolver = "3"\n', 'a/Cargo.toml': cargo('rust-version = "1.80"\n') }).load('crates.io/demo')).rejects.toThrow('a/Cargo.toml sets `rust-version` and Cargo.toml lets');
-    await expect(round({ 'Cargo.toml': cargo('rust-version = "1.80"\n'), '.cargo/config.toml': '[resolver]\nincompatible-rust-versions = "fallback"\n' }).load('crates.io/demo')).rejects.toThrow('and .cargo/config.toml lets Cargo pick by it');
     expect((await round({ 'Cargo.toml': cargo('edition = "2021"\nrust-version = "1.80"\n') }).load('crates.io/demo')).key).toBe('crates.io/demo@1.2.5');
+  });
+
+  it('reads the newest version under a Cargo resolver that honours `rust-version` only when no older one can be picked', async () => {
+    const pkg = (fields: string, dependency = 'fits = "1"') => `[package]\nname = "app"\n${fields}\n[dependencies]\n${dependency}\n`;
+    const edition = 'edition = "2024"\n';
+    const root = (fields: string) => `[workspace]\nmembers = ["a", "b"]\nresolver = "3"\n${fields}`;
+    const shared = root('[workspace.package]\nrust-version = "1.89.0"\n');
+    const inherits = 'rust-version.workspace = true\n';
+    const none = '[package]\nname = "b"\n';
+    const config = { '.cargo/config.toml': '[resolver]\nincompatible-rust-versions = "fallback"\n' };
+    const read: Array<[Record<string, string>, string?]> = [
+      [{ 'Cargo.toml': pkg(`${edition}rust-version = "1.89.0"\n`) }],
+      // The yanked 1.2.0 and the prerelease need an older Rust and are no candidates. An equal or a partial version fits.
+      [{ 'Cargo.toml': pkg(`${edition}rust-version = "1.75"\n`) }],
+      [{ 'Cargo.toml': pkg('rust-version = "1.80"\n'), ...config }],
+      [{ 'Cargo.toml': shared, 'a/Cargo.toml': pkg(inherits), 'b/Cargo.toml': `${none}${inherits}` }],
+      [{ 'Cargo.toml': root(''), 'a/Cargo.toml': pkg('rust-version = "1.80"\n'), 'b/Cargo.toml': `${none}rust-version = "1.76"\n` }],
+      // A version the index states no Rust version for fits every one.
+      [{ 'Cargo.toml': pkg(`${edition}rust-version = "1.31"\n`, 'demo = "1.2"') }, 'demo@1.2.5'],
+      [{ 'Cargo.toml': pkg(`${edition}rust-version = "1.31"\n`, 'unfit = "3"') }, 'unfit@3.0.0'],
+      // The requirement alone leaves one version that fits.
+      [{ 'Cargo.toml': pkg(`${edition}rust-version = "1.60"\n`, 'fits = "=1.0.0"') }, 'fits@1.0.0'],
+    ];
+    for (const [files, key = 'fits@1.1.0'] of read) {
+      expect((await round(files).load(`crates.io/${key.split('@')[0]}`)).key).toBe(`crates.io/${key}`);
+    }
+    const older = 'so a fresh install may pick an older version, since';
+    // The manifests alone decide these, so the index is not fetched.
+    const refused: Array<[Record<string, string>, string]> = [
+      [{ 'Cargo.toml': root(''), 'a/Cargo.toml': pkg('rust-version = "1.89"\n'), 'b/Cargo.toml': none }, `a/Cargo.toml sets \`rust-version\` and Cargo.toml lets Cargo pick by it, ${older} b/Cargo.toml states none.`],
+      [{ 'Cargo.toml': shared, 'a/Cargo.toml': pkg('') }, `${older} a/Cargo.toml states none.`],
+      [{ 'Cargo.toml': pkg(`${edition}rust-version = "1.89"\n`), 'b/Cargo.toml': '[project]\nname = "b"\n' }, 'b/Cargo.toml states none.'],
+      [{ 'Cargo.toml': root(''), 'a/Cargo.toml': pkg(inherits) }, `${older} a/Cargo.toml inherits one that no workspace states.`],
+      ...['"1.89.0-nightly"', '"^1.89"', '"1.x"', '""', '"0.9"', '"1.89.0.1"', '"1.089"', '1.89', '{ workspace = false }'].map((value): [Record<string, string>, string] => (
+        [{ 'Cargo.toml': pkg(`${edition}rust-version = ${value}\n`) }, `${older} the one in Cargo.toml is no version Manki reads.`])),
+      [{ 'Cargo.toml': pkg('rust-version = "x"\n'), ...config }, 'Cargo.toml sets `rust-version` and .cargo/config.toml lets Cargo pick by it'],
+    ];
+    const asked = server.requests.length;
+    for (const [files, reason] of refused) await expect(round(files).load('crates.io/fits')).rejects.toThrow(reason);
+    expect(server.requests).toHaveLength(asked);
+    // The index decides these, and their archives are not fetched.
+    const needs = 'the newest, 1.1.0, needs Rust 1.75.0 and';
+    const unfit: Array<[Record<string, string>, string, string?]> = [
+      [{ 'Cargo.toml': pkg(`${edition}rust-version = "1.74"\n`) }, `Cargo.toml sets \`rust-version\` and Cargo.toml lets Cargo pick by it, ${older} ${needs} Cargo.toml states 1.74.0.`],
+      [{ 'Cargo.toml': root(''), 'a/Cargo.toml': pkg('rust-version = "1.89"\n'), 'b/Cargo.toml': `${none}rust-version = "1.60"\n` }, `${needs} b/Cargo.toml states 1.60.0.`],
+      [{ 'Cargo.toml': shared, 'a/Cargo.toml': pkg(inherits), 'b/Cargo.toml': `${none}rust-version = "1.70"\n` }, `${needs} b/Cargo.toml states 1.70.0.`],
+      [{ 'Cargo.toml': root('[workspace.package]\nrust-version = "1.70"\n'), 'a/Cargo.toml': pkg(inherits) }, `${needs} Cargo.toml states 1.70.0.`],
+      [{ 'Cargo.toml': pkg(`${edition}rust-version = "1.89"\n`, 'unfit = "1"') }, `${older} crates.io states a Rust version Manki does not read for 1.1.0.`, 'unfit'],
+      [{ 'Cargo.toml': pkg(`${edition}rust-version = "1.89"\n`, 'unfit = "2"') }, 'crates.io states a Rust version Manki does not read for 2.0.0.', 'unfit'],
+      [{ 'Cargo.toml': pkg(`${edition}rust-version = "1.89"\n`, 'unfit = "4"') }, 'the newest, 4.0.0, needs Rust 2.0.0 and Cargo.toml states 1.89.0.', 'unfit'],
+    ];
+    for (const [files, reason, name = 'fits'] of unfit) {
+      const { stateDir, load } = round(files);
+      await expect(load(`crates.io/${name}`)).rejects.toThrow(reason);
+      expect(dependencyOutcomes(stateDir)).toEqual([expect.objectContaining({ package: `crates.io/${name}`, source: 'requirement', status: 'refused' })]);
+    }
+    expect(server.requests.slice(asked).filter(url => url.startsWith('/dl/'))).toEqual([]);
   });
 
   it('resolves a package once per round, and takes an empty deprecation as none', async () => {
