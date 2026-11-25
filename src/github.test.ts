@@ -2676,6 +2676,12 @@ describe('postReview body lead', () => {
     // A finding the judge graded below blocker changes nothing, and neither does a blocker cell held down by a doubt nobody confirmed.
     const below = (more: Partial<Finding>): Finding => ({ ...blocker, title: 'Offset is off by one', line: 30, description: 'The offset skips a row.', severity: 'warning', tags: ['follow-up'], ...more });
     expect(roundSentence(blocked([lowered, kept, below({ gradeIfConfirmed: 'blocker', ...path(['blocker', 'warning', 'judge']) })]))).toBe('Nothing blocks merge.');
+    // A blocker held only because one finder reported it is one the judge graded a blocker, so the summary goes when it
+    // stays a warning and stands when a check gives the blocker back.
+    const soleHeld = below({ gradeIfConfirmed: 'blocker', soleFinder: true, soleHeld: true, ...path(['blocker', 'warning', 'judge']) });
+    expect(roundSentence(blocked([lowered, soleHeld]))).toBe('The first item is read unchecked.');
+    expect(roundSummary(round({ summary: 'The offset blocks merge.', allJudgedFindings: [soleHeld], findings: [soleHeld] }))).toBe('');
+    expect(sentences({ ...confirmed, soleHeld: true })).toEqual(['Nothing blocks merge.']);
     // A rule warning kept after a disproof of its damage holds no cell, so it is no blocker of the judge's that a later step lowered.
     const keptByRule = below({
       cell: undefined, rule: { file: 'AGENTS.md', quote: 'Every change needs a test.', verdict: 'confirmed' },
