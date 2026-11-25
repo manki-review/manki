@@ -4748,6 +4748,11 @@ describe('runReview', () => {
       delete cut.findings.unposted;
       const again = await run([warning('Minor', 10)], message => reply(message, { Minor: 9 }), { ...followUp, priorRounds: [cut] });
       expect([again.asked.length, again.grades]).toEqual([1, { Minor: 'warning' }]);
+      // So is one whose stored score is damaged.
+      const damaged = structuredClone(record);
+      Object.assign(damaged.findings.unposted![0].importance!, { trigger: '3' });
+      const rerated = await run([warning('Minor', 10)], message => reply(message, { Minor: 9 }), { ...followUp, priorRounds: [damaged] });
+      expect([rerated.asked.length, rerated.grades]).toEqual([1, { Minor: 'warning' }]);
       // A lower cut-off posts the warning with the stored score.
       const lower = await run([warning('Minor', 10)], () => 'no', { ...followUp, config: config(2) });
       expect([lower.asked, lower.grades, lower.result.findings[0].importance]).toEqual([[], { Minor: 'warning' }, expect.not.objectContaining({ cutOff: 5 })]);
