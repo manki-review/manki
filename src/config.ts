@@ -91,7 +91,7 @@ const MAX_JUDGE_TOOL_STEPS = 100;
 export const MODEL_KEYS: ReadonlySet<string> = new Set(['planner', 'judge', 'second_refuter', 'dedup', 'fallback']);
 /** How many notes a review lists when `review.notes` is not set. */
 export const DEFAULT_NOTES = 3;
-export const DEFAULT_MIN_WARNING_TRIGGER = 5;
+export const DEFAULT_MIN_WARNING_TRIGGER = 4;
 
 export const REVIEW_KEYS: ReadonlySet<string> = new Set(['groups', 'classes', 'routing', 'critical_paths', 'outside_input', 'examples', 'sweep', 'notes', 'rules', 'min_warning_trigger', 'scope_blocks']);
 export const GROUP_REVIEWER_KEYS: ReadonlySet<string> = new Set(['model', 'effort', 'focus']);
