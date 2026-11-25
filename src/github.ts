@@ -8,7 +8,7 @@ import * as github from '@actions/github';
 import { assertWritesAllowed } from './abort';
 import { isAllowedAccount } from './auth';
 import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig, readClosedPaths } from './config';
-import { AgentProgressEntry, ApprovalRecord, RecordOnlyReason, SideCheckKind, agreedOutcome, oneCheckOnBase, sameOnBase, confirmsAll, confirmsCodePath, confirmsDefect, openCodePremise, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, RoundDependencySource, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundScope, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, SCOPE_READER_NAME, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
+import { AgentProgressEntry, ApprovalRecord, RecordOnlyReason, SideCheckKind, agreedOutcome, oneCheckOnBase, sameOnBase, confirmsAll, confirmsCodePath, confirmsDefect, openCodePremise, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, RoundDependencySource, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundScope, ScopeTopic, isScopeSplit, isScopeThread, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, SCOPE_READER_NAME, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { holdsLines } from './code-window';
 import { firstCommentableLine, isLineInDiff, listedFilesDiff, findClosedPattern } from './diff';
 import { issueBox, ISSUE_BOX_LABEL, messageBox, withMessageBoxes } from './issue-box';
@@ -1939,12 +1939,15 @@ export function findingLocation(finding: Pick<Finding, 'file' | 'line'>): string
 
 /**
  * Returns `description` under its label: what goes wrong for a blocking severity, why it is worth changing for the rest.
+ * The scope reader's split takes no label.
  * The label goes on its own line above a list, heading or quote, whose marker would show as text after it.
  */
 function labelDescription(finding: Finding, description: string): string {
-  const label = isBlockingSeverity(finding.severity) ? WHAT_GOES_WRONG_LABEL : WHY_LABEL;
   // `parseFindingFromComment` ends the description at a line that starts with `FIX_LABEL`, so no line of the description does.
   const text = description.replace(/^\*\*Fix:\*\*/gm, '**Fix**:');
+  // The split is a suggestion about the whole PR, which a code defect's label would misstate.
+  if (isScopeSplit(finding)) return text;
+  const label = isBlockingSeverity(finding.severity) ? WHAT_GOES_WRONG_LABEL : WHY_LABEL;
   return `${label}${/^(?:[-*+]\s|#{1,6}\s|>|\d+[.)]\s)/.test(text) ? '\n\n' : ' '}${text}`;
 }
 
@@ -3368,6 +3371,33 @@ export function fileList(files: readonly string[]): string {
   return files.length > MAX_LISTED_FILES ? `${shown} and ${files.length - MAX_LISTED_FILES} more` : shown;
 }
 
+/** Why the scope reader proposes a split, as its thread and the review body say it. */
+export const SPLIT_REASON = 'The parts make sense on their own and are easier to review and revert separately.';
+
+/** Returns `files` as one line per folder: the folder, then the names in it, as `fileList` writes them. */
+function folderLines(files: readonly string[]): string[] {
+  const byFolder = new Map<string, string[]>();
+  for (const file of files) {
+    const folder = file.slice(0, file.lastIndexOf('/') + 1);
+    byFolder.set(folder, [...(byFolder.get(folder) ?? []), file.slice(folder.length)]);
+  }
+  return [...byFolder].map(([folder, names]) => `${folder ? `${inlineCode(sanitizeFilePath(folder))}: ` : ''}${fileList(names)}`);
+}
+
+/**
+ * Returns the proposed PRs of `split`, each under its number and name, with what it would contain, its files by folder and
+ * the PRs it needs first. A part without `contents` or `needs`, such as one of an older round record, shows neither line.
+ * The model's text is not sanitized here, so the caller sanitizes the whole.
+ */
+export function formatSplit(split: readonly ScopeTopic[]): string {
+  return split.map((part, i) => [
+    `**PR ${i + 1}: ${part.name}**`,
+    ...(part.contents ? [part.contents] : []),
+    ...folderLines(part.files),
+    ...(part.needs?.length ? [`Needs ${joinCounts(part.needs.map(n => `PR ${n}`))} first.`] : []),
+  ].join('\n')).join('\n\n');
+}
+
 /**
  * Returns the review body's Scope section: the scope reader's doubt that the change is useful and its proposed split,
  * or null when it has neither, or when `review.scope_blocks` posted them as warnings.
@@ -3380,7 +3410,7 @@ function formatScope(scope: RoundScope | undefined, linkTo: LineLink): string | 
   }), linkTo);
   const parts = [
     scope.doubt && `**Is this change useful?** ${sanitizeMarkdown(scope.doubt)}${cited ? ` See ${cited}.` : ''}`,
-    scope.split && `**Split into ${scope.split.length} PRs?** The change covers topics that each make sense on their own:\n\n${scope.split.map((part, i) => `${i + 1}. ${sanitizeMarkdown(part.name)}: ${fileList(part.files)}`).join('\n')}`,
+    scope.split && `**Split into ${scope.split.length} PRs?** ${SPLIT_REASON}\n\n${sanitizeMarkdown(formatSplit(scope.split))}`,
   ].filter(Boolean);
   return `**Scope:** a judgment of the PR as a whole, not a defect in its code. It never holds the approval.\n\n${parts.join('\n\n')}`;
 }
@@ -4211,7 +4241,8 @@ function issueBoxFor(finding: Finding): string {
 
 /**
  * Returns the line that opens a thread posted on another file than its finding's, saying where the problem is. It is always
- * written with `detached` in the finding data, which is how `parseFindingFromComment` knows the line is there.
+ * written with `detached` in the finding data, which is how `parseFindingFromComment` knows the line is there. The scope
+ * reader's thread gets none (`isScopeThread`).
  */
 function detachedNote(finding: Finding, linkTo: LineLink): string {
   const file = sanitizeFilePath(encodeCommentBreakers(finding.file));
@@ -4239,7 +4270,7 @@ function formatFindingComment(finding: Finding, links: CodeLinks, place: 'line' 
   const detached = place === 'detached';
   const onLine = place === 'file' ? `${lineNote(finding, links.linkTo)}\n\n` : '';
   let comment = `${SEVERITY_EMOJI[finding.severity]} ${formatFindingHeader(finding)}\n\n**${sanitizeMarkdown(finding.title)}**\n\n${onLine}`;
-  if (detached) comment += `${detachedNote(finding, links.linkTo)}\n\n`;
+  if (detached && !isScopeThread(finding.file, finding.reviewers)) comment += `${detachedNote(finding, links.linkTo)}\n\n`;
   for (const note of [trustNote(finding), trackedNote(finding), baseNote(finding, links)]) {
     if (note) comment += `${note}\n\n`;
   }
@@ -4255,8 +4286,8 @@ function formatFindingComment(finding: Finding, links: CodeLinks, place: 'line' 
   // The line note takes no room, so a thread shows the same description with it as without it.
   const room = Math.max(MIN_VISIBLE_DESCRIPTION, MAX_VISIBLE_COMMENT - (visibleLength(comment) - visibleLength(onLine)) - label.length - visibleLength(open));
   const description = sanitizeMarkdown(finding.description);
-  // A scope warning's list is what it proposes, so no length budget folds it.
-  const { lead, rest } = splitLead(description, 3, finding.reviewers.includes(SCOPE_READER_NAME) ? Infinity : room, MAX_WHOLE_FIRST_SENTENCE);
+  // A scope warning's list is what it proposes, so no length budget folds it, and the split shows whole.
+  const { lead, rest } = isScopeSplit(finding) ? { lead: description.trim(), rest: '' } : splitLead(description, 3, finding.reviewers.includes(SCOPE_READER_NAME) ? Infinity : room, MAX_WHOLE_FIRST_SENTENCE);
   // A fold never holds a single sentence, so one sentence past the lead shows with it, unless the lead was cut short.
   const folds = rest.includes('\n') || rest.split(/(?<=[.!?])\s+/).length > 1 || !description.trim().startsWith(lead);
   const shown = folds ? lead : description.trim();

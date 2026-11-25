@@ -16,7 +16,7 @@ import { stringifyFindingFingerprint } from './finding-fingerprint';
 import type { AnswerStore } from './stored-answers';
 import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation, MAX_QUOTED_RANGE } from './static-signals';
 import { wrapUpNoted } from './tool-steps';
-import { DISPROVED_TAG, agreedOutcome, asAnswered, cellGrade, confirmedByCheck, DiffFile, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, CheckProgress, CheckStatus, confirmsAll, confirmsCodePath, confirmsDefect, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isRareClaim, isSecurityFinding, isSweepName, isTriggerDoubt, leadText, OpenThread, OutsideBehavior, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, restsOnDrop, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, towardFinding, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof, wouldBlockIfTrue } from './types';
+import { DISPROVED_TAG, agreedOutcome, asAnswered, cellGrade, confirmedByCheck, DiffFile, SCOPE_READER_NAME, isScopeSplit, CheckProgress, CheckStatus, confirmsAll, confirmsCodePath, confirmsDefect, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isRareClaim, isSecurityFinding, isSweepName, isTriggerDoubt, leadText, OpenThread, OutsideBehavior, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, restsOnDrop, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, towardFinding, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof, wouldBlockIfTrue } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -633,7 +633,7 @@ const citesNoProof = (finding: Finding): boolean => !finding.evidence?.proof.len
  */
 export function needsProof(finding: Finding, rules?: RulesMode): boolean {
   return finding.severity === 'warning' && !finding.toolSource && !isSecurityFinding(finding.tags, finding.reviewers) && !gradedByRule(finding, rules)
-    && !(finding.reviewers.includes(SCOPE_READER_NAME) && finding.title === SCOPE_SPLIT_TITLE);
+    && !isScopeSplit(finding);
 }
 
 /**

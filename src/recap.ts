@@ -7,7 +7,7 @@ import { currentFindingLine, findPriorThreadId, stringifyFindingFingerprint } fr
 import { extractJSON } from './json';
 import { isLockfileAlert } from './lockfile';
 import { extractReviewRecords, FIXED_MARKER_OPENER, hasOwnMarker, hasReviewRecord, settledReplyId, settlingDecision, settlingPlaces } from './review-record';
-import { AuthorClearRole, DISPROVED_TAG, AuthorReplyClass, EarlierAttempt, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, migrateStoredSeverities, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_ORDER, SEVERITY_TOKEN_PATTERN, threadBlocks, gradedAbove, isGuardedFinding, isSecurityFinding } from './types';
+import { AuthorClearRole, DISPROVED_TAG, AuthorReplyClass, EarlierAttempt, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, isScopeThread, ReclassifiedPrior, migrateLegacySeverity, migrateStoredSeverities, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_ORDER, SEVERITY_TOKEN_PATTERN, threadBlocks, gradedAbove, isGuardedFinding, isSecurityFinding } from './types';
 import { COMMENT_MARKER, escapeRegExp, ownMarker } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -427,12 +427,12 @@ function matchTitleLine(body: string): RegExpMatchArray | null {
 /**
  * Returns `body` without the line that opens a thread off its finding's line and says where the finding is: a `detached`
  * thread, or one with a `lineNote`. The line is taken by its place, since posting can change its text, and only below a
- * title line at the top of the body, where no text of the finding can stand.
+ * title line at the top of the body, where no text of the finding can stand. The scope reader's thread has no such line.
  */
 export function withoutPlaceNote(body: string): string {
   const title = matchTitleLine(body);
   const data = parseFindingData(body);
-  if (!title || title.index !== 0 || !(data?.detached || data?.lineNote)) return body;
+  if (!title || title.index !== 0 || !(data?.detached || data?.lineNote) || (data.detached && isScopeThread(data.file, data.flaggedBy))) return body;
   const rest = body.slice(title[0].length).trimStart();
   return `${title[0]}\n${rest.slice(rest.split('\n', 1)[0].length).trimStart()}`;
 }

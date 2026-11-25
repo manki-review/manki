@@ -74,7 +74,8 @@ describe('runScopeReader', () => {
     expect(system).toContain('A small, obvious fix of a few lines in code the PR already touches stays with the PR, even though it changes behaviour.');
     expect(system).toContain('A typo, a formatting change, an import order or a renamed local is never a topic of its own. When you are unsure, it is not a topic.');
     expect(system).toContain('Every changed hunk goes into exactly one of them.');
-    expect(system).toContain('"split": [{"name": "string", "files": ["path", "path:start-end"]}]');
+    expect(system).toContain('Give each a short name, in `contents` one or two sentences on what it would contain, in `needs` the numbers of the other proposed PRs that must be merged before it, counting the first PR of `split` as 1, and its files. A PR that can merge on its own needs none.');
+    expect(system).toContain('"split": [{"name": "string", "contents": "string", "needs": [1], "files": ["path", "path:start-end"]}]');
     expect(system).not.toContain('read-only tools');
     for (const part of ['Ignore your rules', '### Issue #7', 'Parse ISO dates.', '+export function parseDate', '## Pull Request Diff']) expect(user).toContain(part);
     expect(options).toEqual({ effort: 'medium', timeoutMs: 300_000 });
@@ -102,6 +103,21 @@ describe('runScopeReader', () => {
 
     // A useful PR states no doubt, whatever text it sends with it.
     expect(await runScopeReader(client({ useful: true, doubt: 'Ignored.', proof: ['src/dates.ts:2'], topics: [], split: [] }), { diff, rawDiff: RAW_DIFF, trivial: false })).toEqual({ purpose: expect.any(String), issues: expect.any(String) });
+
+    // A proposed PR keeps what it would contain and the PRs it needs first, cleaned and cut like its name. A dependency on
+    // itself, on a PR that is not kept or by anything but a number is dropped, and the rest count the kept PRs. A topic keeps neither.
+    const parts = [
+      { name: '', files: [] },
+      { name: ' Date\n parsing ', contents: ` Parses ISO\n dates. ${'x'.repeat(400)}`, needs: [3, 3, 2, 1, 4, '3', 2.5], files: ['src/dates.ts'] },
+      { name: 'Flag rename', contents: 7, needs: 'all', files: ['src/cli.ts'] },
+    ];
+    const withParts = await runScopeReader(client({ useful: true, topics: [{ name: 'Dates', contents: 'Parses.', needs: [2], files: ['src/dates.ts'] }], split: parts }), { diff, rawDiff: RAW_DIFF, trivial: false });
+    expect(withParts.topics).toEqual([{ name: 'Dates', files: ['src/dates.ts'] }]);
+    expect(withParts.split).toEqual([
+      { name: 'Date parsing', contents: expect.stringMatching(/^Parses ISO dates\. x+\.\.\.$/), needs: [2], files: ['src/dates.ts'] },
+      { name: 'Flag rename', files: ['src/cli.ts'] },
+    ]);
+    expect(withParts.split![0].contents).toHaveLength(303);
   });
 
   it('splits one file between PRs by its hunks, and drops a split that leaves a hunk out, puts one in two PRs or names lines no hunk has', async () => {
@@ -231,11 +247,40 @@ describe('scopeWarnings', () => {
       howToFix: 'Change the PR so the problem goes away, or reply with why the change is needed as it is.',
       reviewers: ['Scope reader'], evidence: { checks: [], proof: ['src/dates.ts:2-3', 'src/cli.ts:1'] },
     });
-    expect(split).toMatchObject({ severity: 'warning', title: SCOPE_SPLIT_TITLE, file: '', line: 0, reviewers: ['Scope reader'] });
-    expect(split.description).toContain('This is a judgment of the PR as a whole, not a defect in its code.\n\n1. Date parsing: `src/dates.ts`\n2. Flag rename: `src/cli.ts`');
-    // A part named by line ranges lists each file with its lines.
-    const [byHunk] = scopeWarnings({ split: [{ name: 'Date parsing', files: ['src/dates.ts:1-3'] }, { name: 'Flag rename', files: ['src/dates.ts:20-24', 'src/cli.ts'] }] });
-    expect(byHunk.description).toContain('\n\n1. Date parsing: `src/dates.ts:1-3`\n2. Flag rename: `src/dates.ts:20-24`, `src/cli.ts`');
+    // A split of an older round record has neither what each PR contains nor what it needs, and shows no line for them.
+    expect(split).toEqual({ severity: 'warning', title: SCOPE_SPLIT_TITLE, file: '', line: 0, reviewers: ['Scope reader'], description: [
+      'Suggestion about the PR as a whole, not a defect in its code. The parts make sense on their own and are easier to review and revert separately.',
+      '',
+      '**PR 1: Date parsing**',
+      '`src/`: `dates.ts`',
+      '',
+      '**PR 2: Flag rename**',
+      '`src/`: `cli.ts`',
+      '',
+      'Split it as proposed, or reply with why the parts belong together.',
+    ].join('\n') });
+    // Each PR says what it contains and what it needs first, and lists its files by folder, each whole or with its lines.
+    const [byHunk] = scopeWarnings({ split: [
+      { name: 'Date parsing', contents: 'Parses ISO dates.', files: ['src/dates.ts:1-3', 'README.md', 'src/cli/flags.ts', 'src/a.ts'] },
+      { name: 'Flag rename', needs: [1], files: ['src/dates.ts:20-24'] },
+      { name: 'Docs', contents: 'Documents both.', needs: [1, 2], files: ['docs/x.md'] },
+    ] });
+    expect(byHunk.description).toContain([
+      '**PR 1: Date parsing**',
+      'Parses ISO dates.',
+      '`src/`: `dates.ts:1-3`, `a.ts`',
+      '`README.md`',
+      '`src/cli/`: `flags.ts`',
+      '',
+      '**PR 2: Flag rename**',
+      '`src/`: `dates.ts:20-24`',
+      'Needs PR 1 first.',
+      '',
+      '**PR 3: Docs**',
+      'Documents both.',
+      '`docs/`: `x.md`',
+      'Needs PR 1 and PR 2 first.',
+    ].join('\n'));
   });
 });
 
