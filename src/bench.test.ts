@@ -511,12 +511,12 @@ describe('scoreRun', () => {
       // A vote that named no line declined a warning, and one whose quoted line did not hold declined a blocker.
       makeFinding({ title: 'Voted down', severity: 'note', gradePath: [step('warning', 'note', 'other_finder')], otherFinderVote: vote(true) }),
       makeFinding({ title: 'Misquoted', severity: 'warning', gradePath: [step('blocker', 'warning', 'other_finder')], otherFinderVote: vote(true, 'src/read.rs:9') }),
-      // One warning the score lowered to a note after a vote backed it, and one it kept.
-      makeFinding({ title: 'Minor', severity: 'note', gradePath: [step('warning', 'note', 'importance')], otherFinderVote: vote(false), importance: { overall: 3, trigger: 2, introduced: 9, matters: 4, reason: 'Few get there.' } }),
       makeFinding({ title: 'Major', severity: 'note', importance: { overall: 8, trigger: 8, introduced: 9, matters: 7 } }),
     ];
     const review = makeReview('ADDRESS_FIRST', findings);
     review.result.verdictReason = 'required_present';
+    // A warning left out for its importance counts as not posted.
+    review.result.unposted = [makeFinding({ title: 'Minor', severity: 'warning', file: 'src/minor.rs', line: 9, unpostedReason: 'low_importance', importance: { overall: 3, trigger: 2, introduced: 9, matters: 4, reason: 'Few get there.', cutOff: 4 } })];
     const matcher = stub({ K1: { verdict: 'MATCH', findings: [0], reason: 'same' }, K2: { verdict: 'MATCH', findings: [0], reason: 'same' }, N1: { verdict: 'PARTIAL', findings: [2, 12], reason: 'vague' } });
 
     const score = await scoreRun(benchCase, review, matcher);
@@ -554,10 +554,12 @@ describe('scoreRun', () => {
       { finderGrade: 'blocker', byFixCheck: true, raisedBy: ['fix'] },
       { finderGrade: 'warning', gradePath: [{ from: 'warning', to: 'note', by: 'other_finder' }], raisedBy: ['finder'], vote: { grade: 'warning', answer: 'declines', quote: 'none' } },
       { finderGrade: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'other_finder' }], raisedBy: ['finder'], vote: { grade: 'blocker', answer: 'declines', quote: 'missed' } },
-      { finderGrade: 'warning', gradePath: [{ from: 'warning', to: 'note', by: 'importance' }], raisedBy: ['finder'], vote: { grade: 'warning', answer: 'backs', quote: 'held' }, importance: { overall: 3, lowered: true } },
-      { finderGrade: 'note', raisedBy: ['finder'], importance: { overall: 8, lowered: false } },
+      { finderGrade: 'note', raisedBy: ['finder'], importance: { overall: 8, trigger: 8, introduced: 9, matters: 7 } },
     ]);
-    expect(await scoreRun(benchCase, makeReview('READY', []), stub({}))).not.toHaveProperty('verdictReason');
+    expect(score.leftOut).toEqual([{ title: 'Minor', file: 'src/minor.rs', line: 9, importance: { overall: 3, trigger: 2, introduced: 9, matters: 4 } }]);
+    expect(score.findings.map(f => f.title)).not.toContain('Minor');
+    const none = await scoreRun(benchCase, makeReview('READY', []), stub({}));
+    for (const field of ['verdictReason', 'leftOut']) expect(none).not.toHaveProperty(field);
 
     // An incomplete run counts in no row. Neither does the warning. The last run is one the matcher failed on, which keeps its findings.
     const report = (runs: Array<typeof score>) => buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 1, matcherModel: 'model-a' }, [{ variant: { name: 'base', overrides: {} }, results: [{ benchCase, runs }] }]);
@@ -580,11 +582,13 @@ describe('scoreRun', () => {
     expect(formatWarningSources(routed.variants)).toBe(sources('| base: finder, second read, sibling comparison, pattern check, related repo check, sweep, tool result, scope reader | 2 |'));
     expect(formatBenchSummary(routed)).toContain(`\n\n${formatWarningSources(routed.variants)}\n`);
     // The votes count in the complete run alone, by the grade each vote saw and whether the finding matches a key item.
-    expect(formatVotes(routed.variants)).toBe("Other finder's votes, base: on a blocker 2 backed (1 matched) and 1 declined (1 matched, 1 with a quote that did not hold), on a warning 1 backed (0 matched) and 1 declined (0 matched, 0 with a quote that did not hold).");
+    expect(formatVotes(routed.variants)).toBe("Other finder's votes, base: on a blocker 2 backed (1 matched) and 1 declined (1 matched, 1 with a quote that did not hold), on a warning 0 backed (0 matched) and 1 declined (0 matched, 0 with a quote that did not hold).");
     expect(formatBenchSummary(routed)).toContain(`\n\n${formatVotes(routed.variants)}\n`);
-    expect(formatImportance(routed.variants)).toBe('Importance, base: 2 warnings rated (0 matched), 1 lowered to a note (0 matched).');
+    expect(formatImportance(routed.variants)).toBe('Importance, base: 2 warnings rated, 1 left out, 0 must-catch items lost with them.');
     expect(formatBenchSummary(routed)).toContain(`\n\n${formatImportance(routed.variants)}\n`);
-    expect(formatImportance(report([{ ...score, findings: score.findings.slice(1, 7) }]).variants)).toBe('');
+    const lostOne = { ...score, raw: { ...score.raw!, caught: [{ item: 'K1', finders: ['A'], posted: false, exits: ['low_importance' as const] }] } };
+    expect(formatImportance(report([lostOne]).variants)).toContain('1 left out, 1 must-catch item lost with them.');
+    expect(formatImportance(report([{ ...score, leftOut: undefined, findings: score.findings.slice(1, 7) }]).variants)).toBe('');
     expect(formatVotes(report([{ ...score, findings: score.findings.slice(1, 7) }]).variants)).toBe('');
     expect(formatWarningSources(report([{ ...score, findings: score.findings.slice(0, 7) }]).variants)).toBe('');
     expect(formatBlockerRoutes(report([{ ...score, findings: score.findings.slice(7, 8) }]).variants)).toBe('');

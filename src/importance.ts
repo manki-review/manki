@@ -7,7 +7,7 @@ import { sanitizeForPromptEmbed } from './memory';
 import { citedCode } from './other-finder';
 import { LLMClient, NotStartedError } from './providers';
 import { changeSection, citedChanges } from './refute';
-import { Finding, FOLLOW_UP_TAG, gradedByRule, gradeStep, Importance, IMPORTANCE_SCORES, isGuardedFinding, isImportance, ParsedDiff, PRE_EXISTING_TAG, RulesMode, SCOPE_READER_NAME, wouldBlockIfTrue } from './types';
+import { Finding, gradedByRule, Importance, IMPORTANCE_SCORES, isGuardedFinding, isImportance, ParsedDiff, PRE_EXISTING_TAG, RulesMode, SCOPE_READER_NAME, wouldBlockIfTrue } from './types';
 import { safeTruncate, sendWithParseRetry } from './utils';
 import { UNTRUSTED_CONTENT_RULE } from './writing-rules';
 
@@ -87,11 +87,11 @@ function parseRatings(text: string, count: number): Array<Importance | undefined
 }
 
 /**
- * Whether the score may lower the warning `finding` to a note. A security finding, the warning of a disproved or declined
+ * Whether the score may leave out the warning `finding`. A security finding, the warning of a disproved or declined
  * blocker, a tool alert, a finding `gradedByRule` under `rules`, one that `wouldBlockIfTrue`, a pre-existing finding, a
- * scope warning and an open lead keep their grade.
+ * scope warning and an open lead stay posted.
  */
-export function mayBeLowered(finding: Finding, rules?: RulesMode): boolean {
+export function mayBeLeftOut(finding: Finding, rules?: RulesMode): boolean {
   return finding.severity === 'warning' && !isGuardedFinding(finding.tags, finding.reviewers) && !finding.toolSource
     && !gradedByRule(finding, rules) && !wouldBlockIfTrue(finding) && !finding.tags?.includes(PRE_EXISTING_TAG) && !finding.reviewers.includes(SCOPE_READER_NAME)
     && !finding.lead && finding.leadSince === undefined;
@@ -123,19 +123,17 @@ export async function rateWarnings(findings: readonly Finding[], { workspace, di
       error => core.warning(`The rating of the warnings could not be used (${error}), asking once more`),
     );
   } catch (error) {
-    if (!(error instanceof NotStartedError)) core.warning(`Could not rate the warnings, so each one without a score keeps its grade: ${error}`);
+    if (!(error instanceof NotStartedError)) core.warning(`Could not rate the warnings, so each one without a score is posted: ${error}`);
     ratings = first ?? [];
   }
   const rated = new Map(asked.flatMap((f, i): Array<[Finding, Importance]> => ratings[i] ? [[f, ratings[i]]] : []));
-  if (ratings.length > 0 && rated.size < asked.length) core.warning(`${asked.length - rated.size} of ${asked.length} warnings got no usable rating, so they keep their grade`);
+  if (ratings.length > 0 && rated.size < asked.length) core.warning(`${asked.length - rated.size} of ${asked.length} warnings got no usable rating, so they are posted`);
   return rated;
 }
 
-/** Returns `finding` with its `importance`, as a note when that is below `cutOff`. */
+/** Returns `finding` with its `importance`, left out with `low_importance` when that is below `cutOff`. */
 export function withImportance(finding: Finding, importance: Importance, cutOff: number): Finding {
   if (importance.overall >= cutOff) return { ...finding, importance };
-  const reason = `Importance ${importance.overall} of 10, below this repository's cut-off of ${cutOff}`;
-  core.info(`Posting warning "${finding.title}" on ${finding.file}:${finding.line} as a note: ${reason}`);
-  const { checkStatus: _, tags, ...rest } = finding;
-  return { ...rest, importance, ...gradeStep(finding, 'note', 'importance', reason), ...(tags && { tags: tags.filter(tag => tag !== FOLLOW_UP_TAG) }) };
+  core.info(`Recording warning "${finding.title}" on ${finding.file}:${finding.line} without posting it: importance ${importance.overall} of 10, below the cut-off of ${cutOff}`);
+  return { ...finding, importance: { ...importance, cutOff }, unpostedReason: 'low_importance' };
 }

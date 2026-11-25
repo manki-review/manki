@@ -7,7 +7,7 @@ import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDi
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, formatResetTime, InstructionFile, LinkedIssue, MANKI_VERSION, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, pushTouchesThread, replyClassOf, titleOverlapType, dropWaivedRestatements } from './recap';
-import { isGuardedFinding, canLeaveOut, CheckProgress, UnpostedReason, foundOnBase, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FinderReplay, isSweepName, VERDICT_READER_NAME, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundAgentMetric, RoundComparison, RoundContext, RoundDedupDuplicateMatch, RoundFix, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundPrClaim, RoundRawFinding, RoundRelatedRepo, RoundReusedFrom, RoundStaticSignalMatch, RoundUnitLine, RoundUses, EarlierAttempt, DiffHunk, EffortLevel, Finder, FinderError, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, SCOPE_READER_NAME, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType, secondReadName, RoundSecondReads } from './types';
+import { isGuardedFinding, canLeaveOut, CheckProgress, UnpostedReason, foundOnBase, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, Importance, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FinderReplay, isSweepName, VERDICT_READER_NAME, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundAgentMetric, RoundComparison, RoundContext, RoundDedupDuplicateMatch, RoundFix, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundPrClaim, RoundRawFinding, RoundRelatedRepo, RoundReusedFrom, RoundStaticSignalMatch, RoundUnitLine, RoundUses, EarlierAttempt, DiffHunk, EffortLevel, Finder, FinderError, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, SCOPE_READER_NAME, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType, secondReadName, RoundSecondReads } from './types';
 import { countChangedLines, diffSections, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE, repoPath } from './diff';
 import { guessClaimTerms, translateNames } from './name-translation';
 import { dependencyOutcomes } from './dependency-sources';
@@ -23,7 +23,7 @@ import { buildRepositoryRules, CLAIMS_MISSING_RULE, COST_SCALE_RULE, GRADE_DEFIN
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
 import type { AnswerStore } from './stored-answers';
 import { DEFAULT_MIN_WARNING_SCORE, resolveModel } from './config';
-import { mayBeLowered, rateWarnings, RATING_TIMEOUT_MS, withImportance } from './importance';
+import { mayBeLeftOut, rateWarnings, RATING_TIMEOUT_MS, withImportance } from './importance';
 import { ChangeUnit, listClaimLines, listRelatedUses, listUsesOutsideDiff, MappedChange, relatedQuestions, TEST_PATH } from './symbol-uses';
 import { EarlierAnswer, EarlierAnswers, runComparisons, runPatternChecks, runRelatedChecks } from './compare';
 import { extractPrClaims, prClaimsRecord, runClaimChecks } from './pr-claims';
@@ -155,26 +155,21 @@ function earlierEntriesOf(f: Finding, priorEntries: readonly FindingFingerprintE
     || sameProblem({ title: e.title ?? '', file: e.fingerprint.file, line: e.fingerprint.lineStart }, f)));
 }
 
-/** Whether one of `entries` was a blocker or is guarded, so no score lowers a finding that restates it. */
-function restatesGraver(entries: readonly FindingFingerprintEntry[]): boolean {
-  return entries.some(e => e.severity === 'blocker' || e.severity === 'unknown' || isGuardedFinding(e.tags, e.reviewers));
-}
-
 /**
- * Returns the warning `f` with the importance an earlier round gave it, so no push changes it. It becomes a note again
- * only when that round also posted it as one.
+ * Whether the score may leave `f` out: a warning that `mayBeLeftOut`, with no place in an earlier thread or review body,
+ * and that restates no earlier blocker, guarded finding or finding of an open thread. `entries` are its `earlierEntriesOf`.
  */
-function withEarlierImportance(f: Finding, priorEntries: readonly FindingFingerprintEntry[], minScore: number, rules: RulesMode | undefined): Finding {
-  if (!mayBeLowered(f, rules)) return f;
-  const entries = earlierEntriesOf(f, priorEntries);
-  const last = [...entries].reverse().find(e => e.importance);
-  if (!last?.importance || restatesGraver(entries)) return f;
-  return last.severity === 'note' ? withImportance(f, last.importance, minScore) : { ...f, importance: last.importance };
+function getsScore(f: Finding, entries: readonly FindingFingerprintEntry[], openThreads: ReadonlyMap<string, OpenThread>, rules: RulesMode | undefined): boolean {
+  return mayBeLeftOut(f, rules) && !f.threadId && !f.answeredIn && f.raisedIn === undefined && !f.raises
+    && !entries.some(e => e.severity === 'blocker' || e.severity === 'unknown' || isGuardedFinding(e.tags, e.reviewers) || (!!e.threadId && openThreads.has(e.threadId)));
 }
 
-/** Whether the round rates `f`: a warning that `mayBeLowered`, with no earlier score, no place in an earlier thread or review body and no earlier blocker it restates. */
-function getsRating(f: Finding, priorEntries: readonly FindingFingerprintEntry[], rules: RulesMode | undefined): boolean {
-  return mayBeLowered(f, rules) && !f.importance && !f.threadId && !f.answeredIn && f.raisedIn === undefined && !f.raises && !restatesGraver(earlierEntriesOf(f, priorEntries));
+/** Returns `f` with the importance an earlier round gave it, so no push changes it. It is left out only when that round left it out. */
+function withEarlierImportance(f: Finding, entries: readonly FindingFingerprintEntry[], minScore: number): Finding {
+  const last = [...entries].reverse().find(e => e.importance);
+  if (!last?.importance) return f;
+  const { cutOff: _, ...importance } = last.importance;
+  return last.unpostedReason === 'low_importance' ? withImportance(f, importance, minScore) : { ...f, importance };
 }
 
 const UNRELATED_RULE = 'never report a change only for being unrelated to the PR\'s purpose';
@@ -2294,11 +2289,6 @@ export async function runReview(
   // Unlinked before the threads are graded, so the grades, the fold and the verdict all see the finding on its own.
   const priorThreads = new Map(priorFindingsFlat.flatMap(e => e.threadId ? [[stringifyFindingFingerprint(e.fingerprint), e.threadId] as const] : []));
   const guard = (f: Finding): Finding => withoutUnfitThreads(f, openThreadIndex, previousFindings, priorThreads, priorFindingsFlat);
-  const minScore = config.review?.min_warning_score ?? DEFAULT_MIN_WARNING_SCORE;
-  // Before any finding is linked to an earlier one, so a warning that restates a note the score lowered joins that note.
-  // Without the threads nothing is matched to an earlier round, so no score is kept or given.
-  const matchable = openThreads !== null || sortedPriorRounds.length === 0;
-  if (matchable) finalFindings = finalFindings.map(f => withEarlierImportance(f, priorFindingsFlat, minScore, config.review?.rules));
   finalFindings = finalFindings.map(guard);
   const fixedElsewhere = refutation
     ? await confirmPushedFixes(refutation.client, refutation.pair, fixesElsewhere(judgeThreadEvaluations, openThreadIndex, pushChangedFiles).filter(({ thread }) =>
@@ -2337,21 +2327,30 @@ export async function runReview(
   const relisting = openThreads != null ? relistThreadlessBlockers(finalFindings, priorFindingsFlat, priorRoundLookup) : { findings: finalFindings, restated: [] };
   finalFindings = relisting.findings;
   const unposted = [...proven.unposted, ...relisting.restated];
-  // After the steps that hide a warning, so only a posted one is rated, and before the outcome, which reads the grades.
-  if (workspace && minScore > 1 && matchable) {
-    const rated = await rateWarnings(finalFindings.filter(f => getsRating(f, priorFindingsFlat, config.review?.rules)), {
+  const minScore = config.review?.min_warning_score ?? DEFAULT_MIN_WARNING_SCORE;
+  // After the steps that hide a warning, so only a posted one is rated, and before the outcome, which a warning left out
+  // does not hold. Without the threads nothing is matched to an earlier round, so no score is kept or given.
+  if (minScore > 1 && (openThreads !== null || sortedPriorRounds.length === 0)) {
+    const recordedBefore = sortedPriorRounds.flatMap(r => [...r.findings.entries, ...(r.findings.unposted ?? []).filter(e => e.unpostedReason === 'low_importance')]);
+    const scorable = new Map(finalFindings.flatMap(f => {
+      const entries = earlierEntriesOf(f, recordedBefore);
+      return getsScore(f, entries, openThreadIndex, config.review?.rules) ? [[f, withEarlierImportance(f, entries, minScore)] as const] : [];
+    }));
+    const rated = workspace ? await rateWarnings([...scorable].flatMap(([f, kept]) => kept.importance ? [] : [f]), {
       workspace, diff: diffWithLockfiles, client: lateFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'rating', undefined, false),
-    });
-    finalFindings = finalFindings.map(f => {
+    }) : new Map<Finding, Importance>();
+    const scored = finalFindings.map(f => {
       const importance = rated.get(f);
-      return importance ? withImportance(f, importance, minScore) : f;
+      return importance ? withImportance(f, importance, minScore) : scorable.get(f) ?? f;
+    });
+    unposted.push(...scored.filter(f => f.unpostedReason === 'low_importance'));
+    finalFindings = scored.filter(f => f.unpostedReason !== 'low_importance');
+    const importances = new Map(scored.flatMap(f => f.importance ? [[findingKey(f), f.importance] as const] : []));
+    allJudgedFindings = allJudgedFindings?.map(f => {
+      const importance = f.severity === 'ignore' ? undefined : importances.get(findingKey(f));
+      return importance ? { ...f, importance } : f;
     });
   }
-  const scored = new Map(finalFindings.flatMap(f => f.importance ? [[findingKey(f), f] as const] : []));
-  allJudgedFindings = allJudgedFindings?.map(f => {
-    const { severity, gradePath, importance } = scored.get(findingKey(f)) ?? {};
-    return importance && severity && f.severity !== 'ignore' ? { ...f, severity, importance, ...(gradePath && { gradePath }) } : f;
-  });
   const decided = determineOutcome(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, threadEvaluations, priorRoundLookup);
   let outcome: RoundOutcome = decided.outcome;
   let { verdictReason, verdictTrace } = decided;
@@ -4034,8 +4033,8 @@ export function bodyWarnings(priorRounds: RoundContext[]): FindingFingerprintEnt
  * this round names its problem, kept or not, or its file is gone, or the judge found it fixed (`result.carriedFixed`).
  * A changed `citedLine` ends nothing by itself, since an edit next to the line changes it too, so the judge decides. An
  * `unread` warning has no line to compare, so only the judge or a fix ends it, also when its file is gone.
- * A finding left out because nothing proves it does not count, so it ends no carried warning. Neither does a
- * pre-existing warning or blocker the review leaves out.
+ * A finding left out because nothing proves it or for its importance does not count, so it ends no carried warning.
+ * Neither does a pre-existing warning or blocker the review leaves out.
  * A file `head` cannot read keeps its warnings. A carried entry gets `currentLine` when one place of the file reads like
  * its `citedLine`, which is also the line a finding of this round is compared with. Call it after the last step that
  * takes a finding out of `result.findings`, so each reason says where the naming finding ended up.
@@ -4045,11 +4044,11 @@ export async function carryBodyWarnings(result: ReviewResult, priorRounds: Round
   if (!last) return;
   const warnings = bodyWarnings(priorRounds);
   const fixed = new Set(result.carriedFixed);
-  // A finding left out because nothing proves it or because it is pre-existing withdraws nothing, so the warning an earlier round listed stays listed.
+  // A finding left out because nothing proves it, for its importance or because it is pre-existing withdraws nothing, so the warning an earlier round listed stays listed.
   // A pre-existing note is the judge's lower grade, so it does end the warning.
   const unconfirmed = (result.unpostedPreExisting ?? []).filter(f => f.severity !== 'note');
-  const unproven = new Set([...(result.unposted ?? []).filter(leftOutUnproven), ...unconfirmed].map(findingKey));
-  const settled = (findings: Finding[]) => findings.filter(f => !unproven.has(findingKey(f)));
+  const withdrawsNothing = new Set([...(result.unposted ?? []).filter(f => leftOutUnproven(f) || f.unpostedReason === 'low_importance'), ...unconfirmed].map(findingKey));
+  const settled = (findings: Finding[]) => findings.filter(f => !withdrawsNothing.has(findingKey(f)));
   const judged: Array<[CarriedEndReason, Finding[]]> = [
     ['restated', result.findings],
     ['hidden_note', settled(result.unposted ?? [])],

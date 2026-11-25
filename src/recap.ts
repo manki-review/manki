@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { LLMClient, NotStartedError } from './providers';
-import { BotIdentity, isAutoApproval, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, BASE_NOTE_RE, IMPORTANCE_NOTE_RE, TRACKED_NOTE_RE, TRUST_NOTE_RE, WHAT_GOES_WRONG_LABEL, WHY_LABEL, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, authorClearRole, paginateGraphql, plainCitedFiles, titleToSlug } from './github';
+import { BotIdentity, isAutoApproval, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, BASE_NOTE_RE, TRACKED_NOTE_RE, TRUST_NOTE_RE, WHAT_GOES_WRONG_LABEL, WHY_LABEL, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, authorClearRole, paginateGraphql, plainCitedFiles, titleToSlug } from './github';
 import { BOX_ANCHOR, filedIssueOf } from './issue-box';
 import { currentFindingLine, findPriorThreadId, stringifyFindingFingerprint } from './finding-fingerprint';
 import { extractJSON } from './json';
@@ -1225,7 +1225,7 @@ function parseFindingFromComment(posted: string): FindingMetadata {
   const data = parseFindingData(body);
   // The other notes under the title are skipped in whatever order they come.
   const leadingNote = (): string | undefined => [MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, ...OLD_MISSED_EARLIER_NOTES].find(n => descSlice.startsWith(n))
-    ?? descSlice.match(TRUST_NOTE_RE)?.[0] ?? descSlice.match(IMPORTANCE_NOTE_RE)?.[0] ?? descSlice.match(TRACKED_NOTE_RE)?.[0] ?? descSlice.match(BASE_NOTE_RE)?.[0];
+    ?? descSlice.match(TRUST_NOTE_RE)?.[0] ?? descSlice.match(TRACKED_NOTE_RE)?.[0] ?? descSlice.match(BASE_NOTE_RE)?.[0];
   for (let note = leadingNote(); note; note = leadingNote()) descSlice = descSlice.slice(note.length).trimStart();
   const label = [WHAT_GOES_WRONG_LABEL, WHY_LABEL].find(l => descSlice === l || descSlice.startsWith(`${l} `));
   if (label) descSlice = descSlice.slice(label.length).trimStart();

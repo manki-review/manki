@@ -4394,8 +4394,8 @@ describe('updateProgressComment', () => {
     judgeDecisions: [
       { title: 'Null dereference', severity: 'blocker', reasoning: 'Valid bug', kept: true },
       { title: 'Style nitpick', severity: 'ignore', reasoning: 'Intentional pattern', kept: false },
-      { title: 'Rare race', severity: 'note', reasoning: 'True but rare', kept: true, importance: { overall: 3, trigger: 2, introduced: 9, matters: 4, reason: 'Few get there.' } },
       { title: 'Rename', severity: 'note', reasoning: 'Clearer', kept: false, unpostedReason: 'reviewed_code' },
+      { title: 'Rare race', severity: 'warning', reasoning: 'True but rare', kept: false, unpostedReason: 'low_importance', importance: { overall: 3, trigger: 2, introduced: 9, matters: 4, reason: 'Few get there.', cutOff: 4 } },
       { title: 'Slow path', severity: 'warning', reasoning: 'May be slow', kept: false, unpostedReason: 'unsettled_check' },
     ],
     timing: {
@@ -4515,8 +4515,8 @@ describe('updateProgressComment', () => {
     expect(body).toContain('**Judge decisions:**');
     expect(body).toContain('- Kept: "Null dereference" (blocker): "Valid bug"');
     expect(body).toContain('- Dropped: "Style nitpick" (ignore): "Intentional pattern"');
-    expect(body).toContain('- Kept: "Rare race" (suggestion): "True but rare", importance 3 of 10: "Few get there."\n');
     expect(body).toContain('- Not listed, on code an earlier round reviewed: "Rename" (suggestion): "Clearer"');
+    expect(body).toContain('- Not listed, its importance is below `review.min_warning_score`: "Rare race" (warning): "True but rare", importance 3 of 10: "Few get there."\n');
     expect(body).toContain('- Not listed, a check of the code could not confirm it: "Slow path" (warning): "May be slow"');
   });
 
@@ -5935,7 +5935,6 @@ describe('postReview non-blocking findings', () => {
     return { octokit, createReview, createReviewComment, updateReview, getContent };
   }
 
-  const importance = (overall: number) => ({ overall, trigger: overall, introduced: 9, matters: 5 });
   const nonBlocking = (severity: Finding['severity'], title: string, line: number, extra: Partial<Finding> = {}): Finding => ({
     severity, title, file: 'src/a.ts', line, description: 'It goes wrong. Second sentence. Third sentence.', reviewers: [], ...extra,
   });
@@ -6202,6 +6201,7 @@ describe('postReview non-blocking findings', () => {
     const link = (line: number, file = 'src/a.ts'): string => `[\`${file}:${line}\`](https://github.com/owner/repo/blob/abc1234/${file}#L${line})`;
     const unproven = [nonBlocking('warning', 'Unsettled', 15, { unpostedReason: 'unsettled_check' }), nonBlocking('warning', 'Unchecked', 16, { unpostedReason: 'not_checked' }), nonBlocking('warning', 'Uncited', 17, { unpostedReason: 'no_proof' })];
     const capped = nonBlocking('note', 'Left out', 11, { unpostedReason: 'note_cap' });
+    const minor = nonBlocking('warning', 'Rare race', 20, { unpostedReason: 'low_importance', importance: { overall: 3, trigger: 2, introduced: 9, matters: 4, reason: 'Few get there.', cutOff: 4 } });
     // A pre-existing finding left out of the review is in the round record only, so the fold lists none of them.
     const unpostedPreExisting = [nonBlocking('warning', 'Old loop', 18), nonBlocking('note', 'Old name', 19)];
     const leads = [nonBlocking('warning', 'Token may not read it', 3, { leadSince: 2 }), nonBlocking('note', 'Cache <b>may</b> go stale', 4)];
@@ -6209,7 +6209,7 @@ describe('postReview non-blocking findings', () => {
     const log = '<sub>The progress comment has the full log under "Judge decisions", in its "Review metadata" fold.</sub>';
 
     // Every kind has its heading and count, and the summary gives the total and the split.
-    const all = await bodyOf({ unposted: [...unproven, capped], unpostedPreExisting, openLeads: leads }, [overflow]);
+    const all = await bodyOf({ unposted: [...unproven, capped, minor], unpostedPreExisting, openLeads: leads }, [overflow]);
     expect(all).toContain([
       'Summary',
       '',
@@ -6220,7 +6220,7 @@ describe('postReview non-blocking findings', () => {
       '---',
       '',
       '<details>',
-      '<summary>Checked and left out: 6 findings (1 disproved, 3 unproven, 2 not finished)</summary>',
+      '<summary>Checked and left out: 7 findings (1 disproved, 3 unproven, 1 minor, 2 not finished)</summary>',
       '',
       '#### Disproved by a check of the code · 1 finding',
       '',
@@ -6235,6 +6235,11 @@ describe('postReview non-blocking findings', () => {
       '  Nothing proves it, and no check of the code ran on it.',
       `- **Uncited** · ${link(17)}`,
       '  It cites no lines that prove it.',
+      '',
+      '#### Not important enough to list · 1 warning',
+      '',
+      `- **Rare race** · ${link(20)}`,
+      '  Importance 3 of 10, below the cut-off of 4.',
       '',
       '#### Not finished checking · 2 possible problems',
       '',
@@ -6253,7 +6258,8 @@ describe('postReview non-blocking findings', () => {
     // One kind needs no split, and a kind with no entries has no heading.
     const one = await bodyOf({}, [overflow]);
     expect(one).toContain(`<summary>Checked and left out: 1 finding</summary>\n\n#### Disproved by a check of the code · 1 finding\n\n- **Overflow** · ${link(2, 'src/m.ts')}\n  Checked at src/api.ts:3. Both inputs are bounded.\n\n${log}\n\n</details>`);
-    expect(one).not.toMatch(/Not proven|Not finished/);
+    expect(one).not.toMatch(/Not proven|Not important|Not finished/);
+    expect(await bodyOf({ unposted: [minor] })).toContain(`  Importance 3 of 10, below the cut-off of 4.\n\n${log}\n\n</details>`);
     expect(await bodyOf({ unposted: unproven.slice(0, 1), openLeads: leads.slice(0, 1) })).toContain('<summary>Checked and left out: 2 findings (1 unproven, 1 not finished)</summary>');
     // The judge never saw a lead that was only listed, so a fold of leads names no log.
     const leadsOnly = await bodyOf({ openLeads: leads });
@@ -6380,12 +6386,10 @@ describe('postReview non-blocking findings', () => {
     const shared = buildResult(rows.map(f => (f.title === 'Test the empty list' ? { ...f, soleFinder: true } : f)));
     capNotes(shared, [], 4);
     expect(titles(shared.findings)).toEqual(['Document the limit', 'Reuse the parser', 'Test the empty list', 'Rename the flag']);
-    // A note the other finder's vote or the importance score lowered from a warning comes first and stays, also past a limit of none.
-    for (const by of ['other_finder', 'importance'] as const) {
-      const lowered = buildResult(rows.map(f => (f.title === 'Rename the flag' ? { ...f, gradePath: [{ from: 'warning' as const, to: 'note' as const, by }] } : f)));
-      capNotes(lowered, [], 0);
-      expect([titles(lowered.findings), lowered.unposted?.length]).toEqual([['Rename the flag'], 4]);
-    }
+    // A note the other finder's vote lowered from a warning comes first and stays, also past a limit of none.
+    const voted = buildResult(rows.map(f => (f.title === 'Rename the flag' ? { ...f, gradePath: [{ from: 'warning' as const, to: 'note' as const, by: 'other_finder' as const }] } : f)));
+    capNotes(voted, [], 0);
+    expect([titles(voted.findings), voted.unposted?.length]).toEqual([['Rename the flag'], 4]);
     // With fewer improvement notes than places, the style notes fill the rest in the judge's order.
     const styleFills = buildResult([...rows]);
     capNotes(styleFills, [], 4);
@@ -6643,13 +6647,12 @@ describe('postReview non-blocking findings', () => {
     expect([...codeTokensFromDiff(quoting)]).toEqual(expect.arrayContaining(['_An', 'approval._', '_Manki', 'it._', '_The']));
 
     await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([
-      nonBlocking('warning', 'On new code', 11, { origin: 'new', tags: ['follow-up'], importance: importance(7) }),
-      nonBlocking('warning', 'On old code', 3, { origin: 'reviewed', tags: ['follow-up'], checkStatus: 'unconfirmed', importance: importance(5), trackedIn: { kind: 'issue', number: 17 } }),
+      nonBlocking('warning', 'On new code', 11, { origin: 'new', tags: ['follow-up'] }),
+      nonBlocking('warning', 'On old code', 3, { origin: 'reviewed', tags: ['follow-up'], checkStatus: 'unconfirmed', trackedIn: { kind: 'issue', number: 17 } }),
       nonBlocking('warning', 'Old code off the diff', 40, { origin: 'reviewed', tags: ['follow-up'], checkStatus: 'unconfirmed' }),
       nonBlocking('note', 'Untouched file', 3, { file: 'src/b.ts', origin: 'reviewed', tags: ['security'] }),
       nonBlocking('note', 'Token logged on old code', 5, { origin: 'reviewed', tags: ['security'] }),
       nonBlocking('note', 'Note on old code', 4, { origin: 'reviewed' }),
-      nonBlocking('note', 'Was a warning', 12, { origin: 'new', importance: importance(3), gradePath: [{ from: 'warning', to: 'note', by: 'importance', reason: 'Importance 3 of 10, below this repository\'s cut-off of 4' }] }),
       nonBlocking('blocker', 'Old blocker', 3, { origin: 'reviewed' }),
       // A blocker on code the PR did not change, lowered to a warning without the follow-up tag a verdict reader blocker lacks.
       nonBlocking('warning', 'Old race in the pool', 90, { origin: 'reviewed', tags: ['pre-existing'], originalSeverity: 'blocker', trackedIn: { kind: 'pr', number: 23 } }),
@@ -6660,13 +6663,8 @@ describe('postReview non-blocking findings', () => {
     // which open issue tracks it. Each note is posted as written, so the next round reads the description without them.
     const threads: string[] = review.comments.map((c: { body: string }) => c.body);
     expect(threads.map(body => body.split('\n')[2])).toEqual(['**On new code**', '**On old code**', '**Old code off the diff**', '**Old blocker**']);
-    expect(threads[1].startsWith(`\u26A0\uFE0F **Warning**\n\n**On old code**\n\n${unconfirmedNote}\n\nImportance 5 of 10.\n\nTracked in #17.\n\n${missedNote}\n\n**What goes wrong:** It goes wrong.`)).toBe(true);
+    expect(threads[1].startsWith(`\u26A0\uFE0F **Warning**\n\n**On old code**\n\n${unconfirmedNote}\n\nTracked in #17.\n\n${missedNote}\n\n**What goes wrong:** It goes wrong.`)).toBe(true);
     expect(parseFindingFromComment(threads[1]).description).toBe('It goes wrong. Second sentence. Third sentence.');
-    // A PR that adds the word wraps it in backticks, and the note is skipped all the same.
-    expect(parseFindingFromComment(threads[1].replace('Importance 5', '`Importance` 5')).description).toBe('It goes wrong. Second sentence. Third sentence.');
-    // A lowered warning gets no thread, and its entry in the body says why it is a suggestion.
-    expect(review.body).toMatch(/<b>Was a warning<\/b>[^\n]*<\/summary>\n\nImportance 3 of 10, below this repository's cut-off of 4\.\n\n/);
-    expect(threads[0]).toContain('**On new code**\n\nImportance 7 of 10.\n\n**What goes wrong:**');
     expect([threads[0], threads[3]].join('\n')).not.toContain('An earlier round');
     // A late warning off the changed lines gets its thread in the review on the first changed line, with the same notes.
     const offDiff = review.comments[2] as { path: string; line: number; body: string };
@@ -6682,7 +6680,7 @@ describe('postReview non-blocking findings', () => {
     expect(review.body).toContain('<summary>\u2728 <b>Token logged on old code</b>');
     expect(review.body).not.toContain('On old code</b>');
     // A note on reviewed code gets no thread, even on a changed line, and sits in the section of listed suggestions.
-    expect(review.body).toMatch(/### Pre-existing[\s\S]*\n\n---\n\n<details>\n<summary><b>2 suggestions<\/b> · not blocking<\/summary>\n\n<details>\n<summary>\u2728 <b>Note on old code<\/b>/u);
+    expect(review.body).toMatch(/### Pre-existing[\s\S]*\n\n---\n\n<details>\n<summary><b>1 suggestion<\/b> · not blocking<\/summary>\n\n<details>\n<summary>\u2728 <b>Note on old code<\/b>/u);
     expect(review.body).toMatch(/\n\n---\n\n### Pre-existing · 1 warning\n\nThis PR did not cause it, so it doesn't block: it is on lines the PR did not change, or the code fails the same way without the PR\.\n\n<details>\n<summary>\u26A0\uFE0F <b>Old race in the pool<\/b><br><sub><b>Warning, not blocking<\/b> · Pre-existing · <a /u);
     // A pre-existing finding in the body names the open PR that tracks it, and one no issue tracks names none.
     expect(review.body).toMatch(/<b>Old race in the pool<\/b>[^\n]*<\/summary>\n\nTracked in #23\.\n\n\*\*What goes wrong:\*\*/u);

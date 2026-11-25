@@ -191,15 +191,15 @@ function withoutSection(key: 'relatedWork' | 'sweeps' | 'staticAnalysis' | 'depe
 
 /**
  * The parts a record that is still too large without its diagnostics leaves out, in this order. No later round reads
- * the parts up to `output`. The parts from `comparisons` to `models.fallbacks` are read only to reuse an attempt, and a
- * cut record is never reused.
+ * the parts up to `output`. Without `findings.unposted`, a warning left out with `low_importance` is rated again. The
+ * parts from `comparisons` to `models.fallbacks` are read only to reuse an attempt, and a cut record is never reused.
  */
 const RECORD_CUTS: RecordCut[] = [
   ['usage.llmCalls', c => c.usage.llmCalls && { ...c, usage: { ...c.usage, llmCalls: undefined } }],
   ['findings.entries.judgeNotes', c => withoutEntryField(c, 'judgeNotes')],
-  ['findings.unposted', c => c.findings.unposted && { ...c, findings: { ...c.findings, unposted: undefined } }],
   ['memory.suppressed', c => c.memory.suppressed && { ...c, memory: { ...c.memory, suppressed: undefined } }],
   ...(['relatedWork', 'sweeps', 'staticAnalysis', 'dependencySources', 'instructions', 'slicing', 'tokenService', 'runner', 'notStarted', 'recap', 'output'] as const).map(withoutSection),
+  ['findings.unposted', c => c.findings.unposted && { ...c, findings: { ...c.findings, unposted: undefined } }],
   ...(['comparisons', 'prClaims', 'fixes', 'secondReads', 'relatedRepos'] as const).map(withoutSection),
   ['reviewers.agentMetrics', c => c.reviewers.agentMetrics && { ...c, reviewers: { ...c.reviewers, agentMetrics: undefined } }],
   ['models.fallbacks', c => c.models.fallbacks && { ...c, models: { ...c.models, fallbacks: undefined } }],

@@ -15,7 +15,7 @@ import { issueBox, ISSUE_BOX_LABEL, messageBox, withMessageBoxes } from './issue
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import type { FixClaim, PreviousFinding } from './recap';
-import { AUTHOR_CLEAR_ROLES, REVERT_CAUGHT, AuthorClearRole, breaksRule, cellGrade, loweredFromWarning, findingKey, isDisprovedBlocker, isGuardedFinding, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, overruledDisproof, gradedAbove, pendingGrade, SEVERITY_NAME, SEVERITY_ORDER, threadBlocks } from './types';
+import { AUTHOR_CLEAR_ROLES, REVERT_CAUGHT, AuthorClearRole, breaksRule, cellGrade, votedDown, findingKey, isDisprovedBlocker, isGuardedFinding, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, overruledDisproof, gradedAbove, pendingGrade, SEVERITY_NAME, SEVERITY_ORDER, threadBlocks } from './types';
 import { formatDuration, hiddenCharacters, ownMarker, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { compressReviewRecord, extractApprovalRecords, formatReviewRecord, hasOwnMarker, hasReviewRecord, smallerRecords } from './review-record';
 import { modelDisplayName } from './providers/model-registry';
@@ -1148,6 +1148,7 @@ const RECORD_ONLY_NAMES: Record<RecordOnlyReason, string> = {
   memory_suppression: 'suppressed by memory',
   static_signal_match: 'reported by a CI tool',
   no_trigger: 'no realistic trigger',
+  low_importance: 'low importance',
   unsettled_check: 'no proof',
   not_checked: 'no proof',
   no_proof: 'no proof',
@@ -1940,16 +1941,6 @@ function trackedNote(finding: Finding): string | undefined {
   return finding.trackedIn && `Tracked in #${finding.trackedIn.number}.`;
 }
 
-/** Matches the line `importanceNote` writes. `highlightCode` can wrap its first word in backticks. */
-const IMPORTANCE_NOTE_RE = /^(?:Importance|`Importance`) \d+ of 10[^\n]*/;
-
-/** Returns the line with the importance of a rated warning, or of a note it was lowered to. */
-function importanceNote(finding: Finding): string | undefined {
-  if (!finding.importance || isBlockingFinding(finding)) return undefined;
-  const lowered = finding.gradePath?.find(step => step.by === 'importance')?.reason;
-  return `${lowered ?? `Importance ${finding.importance.overall} of 10`}.`;
-}
-
 /** Matches the line `baseNote` writes. */
 const BASE_NOTE_RE = /^\*\*(?:Possibly older than this PR|Already broken before this PR)\.\*\* [^\n]*/;
 
@@ -1987,11 +1978,11 @@ function fixedElsewhereNote(finding: Finding, links?: CodeLinks): string | undef
 }
 
 /**
- * Returns the `trustNote`, the `importanceNote`, the `trackedNote`, the `fixedElsewhereNote`, the `baseNote` and what goes wrong, as listed
+ * Returns the `trustNote`, the `trackedNote`, the `fixedElsewhereNote`, the `baseNote` and what goes wrong, as listed
  * under a finding in the review body. `oneBaseLine` keeps one base line in the `baseNote`.
  */
 function formatFindingDescription(finding: Finding, links?: CodeLinks, oneBaseLine = false): string[] {
-  const lines = [trustNote(finding), importanceNote(finding), trackedNote(finding), fixedElsewhereNote(finding, links), baseNote(finding, links, oneBaseLine)].filter((line): line is string => !!line);
+  const lines = [trustNote(finding), trackedNote(finding), fixedElsewhereNote(finding, links), baseNote(finding, links, oneBaseLine)].filter((line): line is string => !!line);
   const description = sanitizeMarkdown(finding.description).trim();
   if (description) lines.push(labelDescription(finding, description));
   return lines;
@@ -2284,7 +2275,7 @@ function carriedBy(finding: Finding, matched: string | undefined): string | unde
 
 /**
  * Puts the notes of `result.findings` last and keeps the first `limit` of them. The others move to `result.unposted`,
- * marked `note_cap`. A note lowered from a warning (`loweredFromWarning`) comes first and is never capped.
+ * marked `note_cap`. A note the other finder's vote lowered from a warning (`votedDown`) comes first and is never capped.
  * A note on a failure this PR fixes elsewhere (`fixedElsewhere`) follows. Every note in the
  * `style` row of the severity table follows every other note, so a style note takes only a slot no other note fills.
  * Within each group a `soleFinder` note follows the notes more than one finder or check reported, and then the notes keep
@@ -2296,7 +2287,7 @@ function carriedBy(finding: Finding, matched: string | undefined): string | unde
 export function capNotes(result: ReviewResult, existingThreads: PreviousFinding[], limit = DEFAULT_NOTES): void {
   const listable = new Set(result.findings.filter(f => isListedNote(f) && !carriedBy(f, openThreadFor(f, existingThreads))));
   const caught = new Set([...listable].filter(f => f.category === 'testing' && f.revertGap === REVERT_CAUGHT && canLeaveOut(f)));
-  const group = (f: Finding): number => (loweredFromWarning(f) ? -2 : f.fixedElsewhere ? -1 : f.cell?.row === 'style' ? 2 : f.category === 'testing' && !f.revertGap ? 1 : 0);
+  const group = (f: Finding): number => (votedDown(f) ? -2 : f.fixedElsewhere ? -1 : f.cell?.row === 'style' ? 2 : f.category === 'testing' && !f.revertGap ? 1 : 0);
   const rank = (f: Finding): number => f.noteRank ?? Number.MAX_SAFE_INTEGER;
   const ordered = [...listable].filter(f => !caught.has(f)).sort((a, b) => group(a) - group(b) || Number(!!a.soleFinder) - Number(!!b.soleFinder) || rank(a) - rank(b));
   const capped = new Set(ordered.filter(canLeaveOut).slice(limit));
@@ -2327,16 +2318,18 @@ function formatLeftOutEntry({ title, file, line, reason }: LeftOutEntry, linkTo:
 
 /**
  * Returns the fold that lists what the round checked and left out: each finding of `disproved`, each warning of
- * `result.unposted` that nothing proves, and each lead of `result.openLeads`. Every kind shows its first
+ * `result.unposted` that nothing proves or whose importance is too low, and each lead of `result.openLeads`. Every kind shows its first
  * `MAX_LISTED_FINDINGS`. Returns none when there is nothing to list.
  */
 function formatLeftOut(result: ReviewResult, disproved: DisprovedFinding[], linkTo: LineLink): string | null {
   const because = (f: Finding, why: string): LeftOutEntry => ({ ...f, reason: `${why[0].toUpperCase()}${why.slice(1)}.` });
   const unproven = (result.unposted ?? []).flatMap(f => f.unpostedReason && leftOutUnproven(f) ? [because(f, UNPOSTED_REASONS[f.unpostedReason])] : []);
+  const minor = (result.unposted ?? []).flatMap(f => f.unpostedReason === 'low_importance' && f.importance ? [because(f, `importance ${f.importance.overall} of 10, below the cut-off of ${f.importance.cutOff}`)] : []);
   const leads = (result.openLeads ?? []).map((f): LeftOutEntry => ({ ...f, reason: f.leadSince ? `Open since round ${f.leadSince}.` : undefined }));
   const kinds = [
     { heading: 'Disproved by a check of the code', noun: 'finding', short: 'disproved', entries: disproved },
     { heading: 'Not proven, so not listed', noun: 'warning', short: 'unproven', entries: unproven },
+    { heading: 'Not important enough to list', noun: 'warning', short: 'minor', entries: minor },
     { heading: 'Not finished checking', noun: 'possible problem', short: 'not finished', entries: leads },
   ].filter(kind => kind.entries.length > 0);
   if (kinds.length === 0) return null;
@@ -2349,7 +2342,7 @@ function formatLeftOut(result: ReviewResult, disproved: DisprovedFinding[], link
   });
   // A lead the judge never saw has no entry in that log, so the line shows only with a finding the judge decided.
   const judgedLead = (result.openLeads ?? []).some(lead => result.allJudgedFindings?.includes(lead));
-  const log = disproved.length + unproven.length > 0 || judgedLead ? ['<sub>The progress comment has the full log under "Judge decisions", in its "Review metadata" fold.</sub>'] : [];
+  const log = disproved.length + unproven.length + minor.length > 0 || judgedLead ? ['<sub>The progress comment has the full log under "Judge decisions", in its "Review metadata" fold.</sub>'] : [];
   return `<details>\n<summary>Checked and left out: ${countOf(total, 'finding')}${split}</summary>\n\n${[...sections, ...log].join('\n\n')}\n\n</details>`;
 }
 
@@ -4164,7 +4157,7 @@ function formatFindingComment(finding: Finding, links: CodeLinks, place: 'line' 
   const onLine = place === 'file' ? `${lineNote(finding, links.linkTo)}\n\n` : '';
   let comment = `${SEVERITY_EMOJI[finding.severity]} ${formatFindingHeader(finding)}\n\n**${sanitizeMarkdown(finding.title)}**\n\n${onLine}`;
   if (detached) comment += `${detachedNote(finding, links.linkTo)}\n\n`;
-  for (const note of [trustNote(finding), importanceNote(finding), trackedNote(finding), baseNote(finding, links)]) {
+  for (const note of [trustNote(finding), trackedNote(finding), baseNote(finding, links)]) {
     if (note) comment += `${note}\n\n`;
   }
   if (finding.origin === 'reviewed' && holdsApproval(finding)) comment += `${isGuardedFinding(finding.tags, finding.reviewers) ? MISSED_EARLIER_SECURITY_NOTE : MISSED_EARLIER_NOTE}\n\n`;
@@ -4779,5 +4772,5 @@ async function standingOnCommit<T extends { id: number; state?: string; body?: s
 }
 
 export type { CodeLinks };
-export { APPROVED_LINE, CHECKS_MARKER, isAutoApproval, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, BASE_NOTE_RE, IMPORTANCE_NOTE_RE, TRACKED_NOTE_RE, TRUST_NOTE_RE, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isBotUser, authorClearRole, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, givesVerdict, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, standingOnCommit, fetchStandingVerdict, REVIEW_STATE_VERDICTS, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, HELD_FOR_PERSON_MARKER };
+export { APPROVED_LINE, CHECKS_MARKER, isAutoApproval, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, BASE_NOTE_RE, TRACKED_NOTE_RE, TRUST_NOTE_RE, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isBotUser, authorClearRole, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, givesVerdict, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, standingOnCommit, fetchStandingVerdict, REVIEW_STATE_VERDICTS, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, HELD_FOR_PERSON_MARKER };
 export type { StandingVerdict };

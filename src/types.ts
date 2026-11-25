@@ -221,15 +221,15 @@ export function isSecurityFinding(tags: string[] | undefined, priorReviewers: Re
 
 /**
  * Whether a step that leaves out notes may leave the finding out of the review: only a note, and never a security
- * finding, a tool alert or a note that was lowered from a warning (`loweredFromWarning`).
+ * finding, a tool alert or a note the other finder's vote lowered from a warning (`votedDown`).
  */
 export function canLeaveOut(f: Finding): boolean {
-  return isNote(f.severity) && !f.toolSource && !isSecurityFinding(f.tags, f.reviewers) && !loweredFromWarning(f);
+  return isNote(f.severity) && !f.toolSource && !isSecurityFinding(f.tags, f.reviewers) && !votedDown(f);
 }
 
-/** Whether the other finder's vote or the importance score lowered `f` to a note, which stays in the review so one answer never removes a warning. */
-export function loweredFromWarning(f: Pick<Finding, 'severity' | 'gradePath'>): boolean {
-  return isNote(f.severity) && !!f.gradePath?.some(step => (step.by === 'other_finder' || step.by === 'importance') && step.to === 'note');
+/** Whether the other finder's vote lowered `f` to a note, which stays in the review so one vote never removes a warning. */
+export function votedDown(f: Pick<Finding, 'severity' | 'gradePath'>): boolean {
+  return isNote(f.severity) && !!f.gradePath?.some(step => step.by === 'other_finder' && step.to === 'note');
 }
 
 /**
@@ -979,7 +979,7 @@ export interface RoundSlicing {
 /** What changed a finding's severity. */
 export type GradeChange =
   | 'judge' | 'rule' | 'unproven' | 'build_claim' | 'refutation' | 'in_pr_suppression' | 'own_proposal' | 'ratchet'
-  | 'resolved_thread' | 'pre_existing' | 'own_fix' | 'other_finder' | 'importance' | 'unconfirmed_raise';
+  | 'resolved_thread' | 'pre_existing' | 'own_fix' | 'other_finder' | 'unconfirmed_raise';
 
 /** One change of a finding's severity. */
 export interface GradeStep {
@@ -1155,7 +1155,7 @@ export interface OtherFinderVote {
 
 export const IMPORTANCE_SCORES = ['trigger', 'introduced', 'matters', 'overall'] as const;
 
-/** The scores of a warning, each a whole number from 1 to 10. Only `overall` decides whether it is lowered. */
+/** The scores of a warning, each a whole number from 1 to 10. Only `overall` decides whether the review leaves it out. */
 export interface Importance {
   overall: number;
   /** How easily it is triggered. */
@@ -1166,6 +1166,8 @@ export interface Importance {
   matters: number;
   /** Why `overall`, in one sentence of the model. */
   reason?: string;
+  /** The `review.min_warning_score` it is below. Set on a warning left out with `low_importance`. */
+  cutOff?: number;
 }
 
 /** Whether `value` holds the scores of an `Importance`. */
@@ -1389,7 +1391,7 @@ export function overruledDisproof(finding: Pick<Finding, 'severity' | 'rule' | '
 /** `earlier` restates a finding an earlier round listed in its review body, whatever code it sits on. */
 export type FindingOrigin = 'new' | 'reviewed' | 'earlier';
 
-/** Why a review leaves out a finding the judge kept, with the words that say it to a reader. The first four are set on a note, `listed_earlier` also on a finding that restates an earlier blocker the round lists again, `no_trigger` on a warning with no realistic trigger, and the last three on a warning nothing proves. */
+/** Why a review leaves out a finding the judge kept, with the words that say it to a reader. The first four are set on a note, `listed_earlier` also on a finding that restates an earlier blocker the round lists again, `no_trigger` on a warning with no realistic trigger, `low_importance` on a warning rated below `review.min_warning_score`, and the last three on a warning nothing proves. */
 export const UNPOSTED_REASONS = {
   reviewed_code: 'on code an earlier round reviewed',
   listed_earlier: 'listed by an earlier round',
@@ -1399,6 +1401,7 @@ export const UNPOSTED_REASONS = {
   memory_suppression: 'hidden by a memory suppression',
   static_signal_match: 'a CI tool reports the same line',
   no_trigger: 'it names no trigger that happens in realistic use',
+  low_importance: 'its importance is below `review.min_warning_score`',
   unsettled_check: 'a check of the code could not confirm it',
   not_checked: 'nothing proves it, and no check of the code ran on it',
   no_proof: 'it cites no lines that prove it',
@@ -1842,7 +1845,7 @@ export interface ReviewRoutingConfig {
   notes?: number;
   /** Whether a broken required rule of the instruction files is graded by its damage alone (`auto`), at least a warning (`warn`) or blocks (`block`). */
   rules?: RulesMode;
-  /** The lowest importance from 1 to 10 a warning keeps its grade with. 1 rates and lowers none. */
+  /** The lowest importance from 1 to 10 a warning is posted with. 1 rates none and leaves none out. */
   min_warning_score?: number;
   /** Whether the scope reader's doubt or split is posted as a warning that holds the approval, instead of only listed in the review body. */
   scope_blocks?: boolean;
@@ -3180,7 +3183,7 @@ export interface RoundFindings {
   severityCounts: Record<string, number>;
   entries: FindingFingerprintEntry[];
   /**
-   * The findings Manki recorded without posting them: pre-existing ones, and notes with an `unpostedReason`. Nothing that
+   * The findings Manki recorded without posting them: pre-existing ones, and those with an `unpostedReason`. Nothing that
    * reads posted findings sees them.
    */
   unposted?: FindingFingerprintEntry[];
