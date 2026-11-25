@@ -374,6 +374,11 @@ describe('formatFindingComment', () => {
     const oneLong = render({ ...baseFinding, description: `${'A very long only sentence '.repeat(40)}ends here.` });
     expect(visible(oneLong)).toBeLessThan(700);
     expect(oneLong).toContain('**Why it matters**\nA very long only sentence');
+    // A first sentence is cut after a whole word, and one short enough to read stays whole, however little room there is.
+    expect(oneLong).toMatch(/ (?:A|very|long|only|sentence)\.\.\.\n/);
+    const readable = `${'A first sentence that is long enough to pass the room '.repeat(5)}ends here.`;
+    const crowded = render({ ...baseFinding, title: 'T'.repeat(550), description: `${readable} Then more. And more. And more.` });
+    expect(crowded).toContain(`**What goes wrong:** ${readable}\n\n`);
     // A description with no text before its code shows no empty label.
     expect(render({ ...baseFinding, description: '' })).not.toContain('What goes wrong');
     expect(render({ ...baseFinding, description: '```ts\nuse(value);\n```\nThen more.' })).not.toContain('What goes wrong');
@@ -663,10 +668,31 @@ describe('formatFindingComment', () => {
       expect(onMain(one)).toContain(`**${baseFinding.title}**\n\n${older}\n\n`);
       expect(onMain(one)).not.toContain('Already broken');
     }
-    // Several base lines in one file name the file once and link each line, and a line of another file keeps its own link.
+    // With several base lines the note names only the first. The fold lists the rest: several lines in one file name the
+    // file once and link each line, and a line of another file keeps its own link.
     const lineAt = (line: number) => links.linkAt!('base')('src/main.ts', line);
     const spread = answering(blocking, { ...same('first-model'), base: ['src/main.ts:40', 'src/main.ts:52-54', 'src/main.ts:60', 'src/queue.ts:7'] });
-    expect(onMain(spread)).toContain(`at \`src/main.ts\` lines [40](${lineAt(40)}), [52-54](${links.linkAt!('base')('src/main.ts', 52, 54)}), and [60](${lineAt(60)}), and [\`src/queue.ts:7\`](${links.linkAt!('base')('src/queue.ts', 7)}). If that`);
+    expect(onMain(spread)).toContain(`${older}\n\n`);
+    const others = `\`src/main.ts\` lines [52-54](${links.linkAt!('base')('src/main.ts', 52, 54)}) and [60](${lineAt(60)}), and [\`src/queue.ts:7\`](${links.linkAt!('base')('src/queue.ts', 7)})`;
+    expect(onMain(spread)).toContain(`\n\n**Other lines with the same problem on \`main\`**\n${others}\n\n</details>`);
+    // Alone they need no fold, and next to a finding with no check they join its line in one.
+    expect(onMain({ ...spread, evidence: undefined, refutation: undefined, pairRefutation: undefined, toolSource: 'CodeQL' })).toContain(`<!-- manki-checks -->\n**Other lines with the same problem on \`main\`:** ${others}\n`);
+    expect(onMain({ ...spread, evidence: undefined, refutation: undefined, pairRefutation: undefined })).toContain(`<summary>How this was checked: not checked against the code</summary>\n\n**Not checked against the code**\nNothing was cited to back it.\n\n**Other lines with the same problem on \`main\`**\n${others}\n`);
+    // A reader sees no link target, so the links take no room from the description.
+    const told = [1, 2, 3].map(n => `Sentence ${n} explains one more part of why the queue fills up when two tenants share it.`).join(' ');
+    for (const at of [{}, { linkAt: undefined }]) {
+      const { linkAt } = links;
+      const deep: Partial<typeof links> = 'linkAt' in at ? at : { linkAt: commit => (...line) => linkAt!(commit)(...line)?.replace('/blob/', `/blob/${'deep/'.repeat(120)}`) };
+      expect(onMain({ ...spread, description: `${told} And more. And more.` }, deep)).toContain(`**What goes wrong:** ${told}\n\n`);
+    }
+    // The note on a finding an earlier round missed does not call the code the PR's own below one that says otherwise.
+    for (const [tags, holds] of [[['follow-up'], 'still holds the approval'], [['follow-up', 'security'], 'still needs a fix or a maintainer to resolve it']] as const) {
+      const late: Finding = { ...spread, severity: 'warning', origin: 'reviewed', tags: [...tags] };
+      const missed = '_An earlier round already reviewed these lines and missed this. It';
+      expect(onMain(late)).toContain(`${older}\n\n${missed} ${holds}._\n\n`);
+      expect(onMain({ ...late, originCheck: undefined })).toContain(`${missed} is in this PR's own code, so it ${holds}._\n\n`);
+      expect(parseFindingFromComment(onMain(late)).description).toBe(baseFinding.description);
+    }
     // A pre-existing security blocker on code the PR did not touch still blocks. Both checks say it was already broken,
     // and that a maintainer decides, never that it does not block, and the summary agrees.
     const stillBlocking = onMain({ ...confirmedBefore, severity: 'blocker', tags: ['pre-existing', 'security'] });
@@ -6630,6 +6656,10 @@ describe('postReview non-blocking findings', () => {
       '**The filter misses `pending`**',
       '**What goes wrong:** A pending entry survives.',
     ]);
+    // A reply has no fold, so the base lines its note leaves out show in a line of their own.
+    const older: Finding = { ...variant, originCheck: { lineChanged: false, answers: [{ verdict: 'pre_existing', reason: 'It was so before.', head: ['src/a.ts:20'], base: ['src/a.ts:18', 'src/a.ts:30', 'src/b.ts:4'], commit: 'base', model: 'first-model' }] } };
+    expect(formatVariantReply([older])).toContain('One check found the same problem on the base branch at `src/a.ts:18`. If that is right, a maintainer can dismiss the finding.\n\n');
+    expect(formatVariantReply([older])).toContain('\n\n**Other lines with the same problem on the base branch:** `src/a.ts:30` and `src/b.ts:4`');
     expect(formatVariantReply([variant, { ...variant, title: 'The filter misses `queued`' }]).split('\n\n')).toEqual([
       'This round found 2 more instances of this problem.',
       expect.stringContaining('**Warning'),
@@ -6832,7 +6862,8 @@ describe('postReview non-blocking findings', () => {
     for (const evidence of ['src/a.ts:30', 'Checked in the code', 'How this was checked', 'Double-checked', 'related repository', 'src/a.ts#L18-L22']) expect(fold).not.toContain(evidence);
     // Its thread, as on a finding that holds the approval, keeps every base line and the checks.
     const thread = formatFindingComment(old, TEST_LINKS);
-    expect(thread).toMatch(/`src\/a\.ts` lines \[18\]\([^)]+\), \[30\]\([^)]+\), and \[40\]\([^)]+\)/);
+    expect(thread).toMatch(/at \[`src\/a\.ts:18`\]\([^)]+\), so/);
+    expect(thread).toMatch(/`src\/a\.ts` lines \[30\]\([^)]+\) and \[40\]\([^)]+\)/);
     expect(thread).toContain('Double-checked');
   });
 });

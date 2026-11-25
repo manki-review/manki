@@ -1896,11 +1896,11 @@ function formatBodyFix(fix: string, file: string): string {
 
 /**
  * Splits `text` after its first sentences: at most `maxSentences`, and fewer when they would pass `maxLength`.
- * The first sentence is always kept, truncated when it alone passes `maxLength`. A code fence, a blank line or a line
- * that starts a list ends the lead. A list right after the lead joins it whole when both fit in `maxLength`, and is
- * never cut, also across blank lines between its items.
+ * The first sentence is always kept, cut at a word when it alone passes both `maxLength` and `keepFirst`. A code fence,
+ * a blank line or a line that starts a list ends the lead. A list right after the lead joins it whole when both fit in
+ * `maxLength`, and is never cut, also across blank lines between its items.
  */
-function splitLead(text: string, maxSentences: number, maxLength: number): { lead: string; rest: string } {
+function splitLead(text: string, maxSentences: number, maxLength: number, keepFirst = 0): { lead: string; rest: string } {
   const trimmed = text.trim();
   const stopAt = trimmed.search(/`{3}|~{3}|\n[ \t]*\n|\n[ \t]*(?:[-*+]|\d+[.)])\s/);
   const prose = stopAt === -1 ? trimmed : trimmed.slice(0, stopAt);
@@ -1914,8 +1914,9 @@ function splitLead(text: string, maxSentences: number, maxLength: number): { lea
   const withList = list && !/`{3}|~{3}/.test(list[0]) && sentences.length + list[0].length <= maxLength;
   const lead = withList ? trimmed.slice(0, sentences.length + list[0].length) : sentences;
   const rest = trimmed.slice(lead.length).trim();
-  if (lead.length <= maxLength) return { lead, rest };
-  return { lead: safeTruncate(lead, maxLength), rest: trimmed };
+  if (lead.length <= Math.max(maxLength, keepFirst)) return { lead, rest };
+  const atWord = lead.slice(0, maxLength + 1).search(/\s+\S{0,40}$/);
+  return { lead: safeTruncate(lead, atWord > 0 ? atWord : maxLength), rest: trimmed };
 }
 
 export function findingLocation(finding: Pick<Finding, 'file' | 'line'>): string {
@@ -1945,29 +1946,49 @@ function trackedNote(finding: Finding): string | undefined {
 const BASE_NOTE_RE = /^\*\*(?:Possibly older than this PR|Already broken before this PR)\.\*\* [^\n]*/;
 
 /**
- * Returns the line that says the origin checks found the failure of `finding` at the PR's base, with the base lines they
- * cited, linked at the base commit when `links` can. Two checks on different models (`sameOnBase`) say the failure was already
- * there: on a pre-existing finding that no longer blocks, and on a security finding that still blocks, which a
- * maintainer decides. One check only says the finding may be older. A pre-existing finding that stopped blocking for
- * another reason needs neither. `oneLine` keeps only the first base line.
+ * Returns what `baseNote` says of `finding`, with the branch and the base lines the origin checks cited, linked at the
+ * base commit when `links` can. Two checks on different models (`sameOnBase`) say the failure was already there: on a
+ * pre-existing finding that no longer blocks, and on a security finding that still blocks, which a maintainer decides.
+ * One check only says the finding may be older. A pre-existing finding that stopped blocking for another reason needs neither.
  */
-function baseNote(finding: Finding, links?: CodeLinks, oneLine = false): string | undefined {
+function baseLines(finding: Finding, links?: CodeLinks): { says: 'stopped' | 'security' | 'older'; branch: string; ranges: CodeRange[]; linkTo: LineLink } | undefined {
   const stopped = isPreExisting(finding) && finding.severity !== 'blocker';
   const both = sameOnBase(finding);
   const security = !stopped && !!both && isSecurityFinding(finding.tags, finding.reviewers);
   const base = stopped || security ? both : oneCheckOnBase(finding);
   if (!base?.base?.length) return undefined;
-  const linkTo = base.commit && links?.linkAt ? links.linkAt(base.commit) : () => undefined;
-  const lines = linkedRanges(base.base.flatMap(location => {
+  const ranges = base.base.flatMap(location => {
     const [, file, range] = location.match(/^(.+):(\d+(?:-\d+)?)$/) ?? [];
     const at = file ? lineRange(file, range) : undefined;
     return at ? [at] : [];
-  }).slice(0, oneLine ? 1 : undefined), linkTo);
-  const branch = links?.baseBranch ? inlineCode(links.baseBranch) : 'the base branch';
-  if (security) return `**Already broken before this PR.** Two checks found the same problem on ${branch} at ${lines}. It is a security finding, so it stays until it is fixed or a maintainer clears it.`;
-  return stopped
-    ? `**Already broken before this PR.** Two checks found the same problem on ${branch} at ${lines}, so it doesn't block this PR.`
-    : `**Possibly older than this PR.** One check found the same problem on ${branch} at ${lines}. If that is right, a maintainer can dismiss the finding.`;
+  });
+  return {
+    says: stopped ? 'stopped' : security ? 'security' : 'older',
+    branch: links?.baseBranch ? inlineCode(links.baseBranch) : 'the base branch',
+    ranges,
+    linkTo: (base.commit && links?.linkAt?.(base.commit)) || (() => undefined),
+  };
+}
+
+/** Returns the line that says the origin checks found the failure of `finding` at the PR's base, with the first base line. */
+function baseNote(finding: Finding, links?: CodeLinks): string | undefined {
+  const base = baseLines(finding, links);
+  if (!base) return undefined;
+  const { says, branch } = base;
+  const line = linkedRanges(base.ranges.slice(0, 1), base.linkTo);
+  if (says === 'security') return `**Already broken before this PR.** Two checks found the same problem on ${branch} at ${line}. It is a security finding, so it stays until it is fixed or a maintainer clears it.`;
+  return says === 'stopped'
+    ? `**Already broken before this PR.** Two checks found the same problem on ${branch} at ${line}, so it doesn't block this PR.`
+    : `**Possibly older than this PR.** One check found the same problem on ${branch} at ${line}. If that is right, a maintainer can dismiss the finding.`;
+}
+
+/** Returns the base lines that `baseNote` leaves out. */
+function otherBaseLinesPart(finding: Finding, links?: CodeLinks): FoldPart[] {
+  const base = baseLines(finding, links);
+  if (!base || base.ranges.length < 2) return [];
+  const label = `Other lines with the same problem on ${base.branch}`;
+  const text = linkedRanges(base.ranges.slice(1), base.linkTo);
+  return [{ label, text, open: `**${label}:** ${text}` }];
 }
 
 /** Returns the line that says this PR fixes the failure of `finding` at its `fixedElsewhere` line, linked when `links` can. */
@@ -1979,10 +2000,10 @@ function fixedElsewhereNote(finding: Finding, links?: CodeLinks): string | undef
 
 /**
  * Returns the `trustNote`, the `trackedNote`, the `fixedElsewhereNote`, the `baseNote` and what goes wrong, as listed
- * under a finding in the review body. `oneBaseLine` keeps one base line in the `baseNote`.
+ * under a finding in the review body.
  */
-function formatFindingDescription(finding: Finding, links?: CodeLinks, oneBaseLine = false): string[] {
-  const lines = [trustNote(finding), trackedNote(finding), fixedElsewhereNote(finding, links), baseNote(finding, links, oneBaseLine)].filter((line): line is string => !!line);
+function formatFindingDescription(finding: Finding, links?: CodeLinks): string[] {
+  const lines = [trustNote(finding), trackedNote(finding), fixedElsewhereNote(finding, links), baseNote(finding, links)].filter((line): line is string => !!line);
   const description = sanitizeMarkdown(finding.description).trim();
   if (description) lines.push(labelDescription(finding, description));
   return lines;
@@ -2047,11 +2068,21 @@ function inlineHtml(markdown: string): string {
 /** Heads the findings on code an earlier round already reviewed. */
 const MISSED_EARLIER = 'Missed by an earlier review';
 
-/** Shown under the title of a thread for a warning on such code. */
-const MISSED_EARLIER_NOTE = '_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still holds the approval._';
+/** Matches the line under the title of a thread for a warning on such code, in every wording threads carry. */
+const MISSED_EARLIER_NOTE_RE = /^_An earlier round already reviewed these lines and missed this[^\n]*/;
+const missedEarlierNote = (says: string): string => `_An earlier round already reviewed these lines and missed this. ${says}._`;
+
+const MISSED_EARLIER_NOTE = missedEarlierNote('It is in this PR\'s own code, so it still holds the approval');
 
 /** `MISSED_EARLIER_NOTE` for a security warning, which a reply does not clear. */
-const MISSED_EARLIER_SECURITY_NOTE = '_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still needs a fix or a maintainer to resolve it._';
+const MISSED_EARLIER_SECURITY_NOTE = missedEarlierNote('It is in this PR\'s own code, so it still needs a fix or a maintainer to resolve it');
+
+/** Returns the note for `finding`, which does not call the code the PR's own below a `baseNote` that says otherwise. */
+function missedEarlierNoteFor(finding: Finding): string {
+  const guarded = isGuardedFinding(finding.tags, finding.reviewers);
+  if (baseLines(finding)) return missedEarlierNote(guarded ? 'It still needs a fix or a maintainer to resolve it' : 'It still holds the approval');
+  return guarded ? MISSED_EARLIER_SECURITY_NOTE : MISSED_EARLIER_NOTE;
+}
 
 /** Lines shown on each side of the flagged line in a finding's code preview. */
 const PREVIEW_CONTEXT = 2;
@@ -2078,7 +2109,7 @@ function formatFindingFold(finding: Finding, links: CodeLinks, offerIssue = fals
   const checks = compact ? undefined : checksSection(finding, links, 'flagged');
   const fix = bodyFixPart(finding, files);
   const parts = [...(fix ? [labelledPart(fix)] : []), ...(checks?.status ? [`**How this was checked:** ${checks.status}`] : []), ...(checks?.parts ?? []).map(labelledPart)];
-  const fold = `<details>\n${summary}\n\n${[...formatFindingDescription(finding, links, compact), ...preview, ...parts].join('\n\n')}\n\n</details>`;
+  const fold = `<details>\n${summary}\n\n${[...formatFindingDescription(finding, links), ...preview, ...parts].join('\n\n')}\n\n</details>`;
   // The box goes right under the fold, so it shows without opening it.
   return offerIssue ? `${fold}\n\n${issueBoxFor(finding)}` : fold;
 }
@@ -2243,13 +2274,14 @@ function formatReplyListing(lead: string, findings: Finding[]): string {
   return [lead, findings.map(f => formatReplyFinding(f).join('\n\n')).join('\n\n---\n\n')].join('\n\n');
 }
 
-/** Returns the parts of a finding shown in a reply: its header, title, description and fix. */
+/** Returns the parts of a finding shown in a reply: its header, title, description, base lines and fix. A reply has no fold. */
 function formatReplyFinding(finding: Finding): string[] {
   const fix = fixPart(finding, finding.suggestedFix?.trim() ? formatBodyFix(finding.suggestedFix, finding.file) : undefined);
   return [
     `${SEVERITY_EMOJI[finding.severity]} ${formatFindingHeader(finding)}`,
     `**${sanitizeMarkdown(finding.title)}**`,
     ...formatFindingDescription(finding),
+    ...otherBaseLinesPart(finding).flatMap(part => part.open ?? []),
     ...(fix?.open ? [fix.open] : []),
   ];
 }
@@ -3449,14 +3481,16 @@ export function titleToSlug(title: string): string {
 const SUGGESTION_MAX_LINES = 3;
 const SUGGESTION_MAX_LENGTH = 120;
 
-// An inline finding shows about 700 characters at most, this budget plus line breaks and a truncation mark.
-// The rest of its description is collapsed.
+// An inline finding shows about 700 characters at most, this budget plus line breaks and a truncation mark. It shows a
+// first sentence of up to `MAX_WHOLE_FIRST_SENTENCE` whole even past that. The rest of its description is collapsed.
 const MAX_VISIBLE_COMMENT = 650;
 const MIN_VISIBLE_DESCRIPTION = 150;
 
-/** Returns the length of `text` without collapsed `<details>` blocks and HTML comments, which a reader does not see. */
+const MAX_WHOLE_FIRST_SENTENCE = 300;
+
+/** Returns the length of `text` without collapsed `<details>` blocks, HTML comments and link targets, which a reader does not see. */
 function visibleLength(text: string): number {
-  return text.replace(/<details>[\s\S]*?<\/details>/g, '').replace(/<!--[\s\S]*?-->/g, '').length;
+  return text.replace(/<details>[\s\S]*?<\/details>/g, '').replace(/<!--[\s\S]*?-->/g, '').replace(/\]\(https?:[^\s)]*\)/g, ']').length;
 }
 const FENCE_LINE_RE = /^\s*(`{3,}|~{3,})(.*)$/;
 // A run that could open a fence, anywhere in a line, since later splitting can move it to the start of one.
@@ -4015,7 +4049,8 @@ function evidenceFiles(finding: Finding, links: CodeLinks): string[] {
 
 /**
  * Returns how `finding` was checked: the rule it breaks, the check on its own line, a code preview with a sentence for up to
- * `MAX_CHECK_PREVIEWS` other places and the rest as links, then each refuter's outcome. A finding that cites nothing
+ * `MAX_CHECK_PREVIEWS` other places and the rest as links, then each refuter's outcome and the base lines its
+ * `baseNote` leaves out. A finding that cites nothing
  * says so, unless a tool reported it or it is an earlier round's finding.
  */
 function checksSection(finding: Finding, links: CodeLinks, ownLine: string): FindingChecks {
@@ -4038,8 +4073,9 @@ function checksSection(finding: Finding, links: CodeLinks, ownLine: string): Fin
   const relatedLines = [...repoLines, ...packageLines];
   const status = finding.checkStatus && { status: CHECK_STATUSES[finding.checkStatus] };
   const rule = rulePart(finding);
+  const otherBase = otherBaseLinesPart(finding, links);
   if (checks.length === 0 && refutations.length === 0 && !rule && relatedLines.length === 0) {
-    return { ...(finding.toolSource || finding.reviewers.length === 0 || finding.reviewers.includes(SCOPE_READER_NAME) ? { parts: [], reads: [], outcomes: [] } : NOT_CHECKED), ...status };
+    return { ...(finding.toolSource || finding.reviewers.length === 0 || finding.reviewers.includes(SCOPE_READER_NAME) ? { parts: otherBase, reads: [], outcomes: [] } : { ...NOT_CHECKED, parts: [...NOT_CHECKED.parts, ...otherBase] }), ...status };
   }
   const isOwn = (c: Check): boolean => !!c.at && c.at.file === finding.file && c.at.start <= finding.line && finding.line <= c.at.end;
   const ownChecks = checks.filter(isOwn);
@@ -4078,7 +4114,7 @@ function checksSection(finding: Finding, links: CodeLinks, ownLine: string): Fin
   const other = checks.length - read;
   const places = read + relatedLines.length;
   return {
-    parts: [...(rule ? [rule] : []), ...checked, ...refutations],
+    parts: [...(rule ? [rule] : []), ...checked, ...refutations, ...otherBase],
     reads: [places && `${places} ${places === 1 ? 'place' : 'places'} read`, other && plural(other, 'other check')].filter(r => typeof r === 'string'),
     outcomes: [
       rule && 'breaks a repository rule', finding.refutation && REFUTATION_SUMMARY[outcomeOf(finding.refutation)], finding.pairRefutation && `second check: ${REFUTATION_SUMMARY[outcomeOf(finding.pairRefutation)]}`,
@@ -4161,7 +4197,7 @@ function formatFindingComment(finding: Finding, links: CodeLinks, place: 'line' 
   for (const note of [trustNote(finding), trackedNote(finding), baseNote(finding, links)]) {
     if (note) comment += `${note}\n\n`;
   }
-  if (finding.origin === 'reviewed' && holdsApproval(finding)) comment += `${isGuardedFinding(finding.tags, finding.reviewers) ? MISSED_EARLIER_SECURITY_NOTE : MISSED_EARLIER_NOTE}\n\n`;
+  if (finding.origin === 'reviewed' && holdsApproval(finding)) comment += `${missedEarlierNoteFor(finding)}\n\n`;
   // A committable suggestion stays open, so GitHub offers to commit it. Any other code fix goes in the fold. Committing
   // writes the block over the commented line, so only a thread on the finding's line gets one.
   const fixParts = finding.suggestedFix?.trim() ? splitFix(finding.suggestedFix, finding.file) : [];
@@ -4171,10 +4207,10 @@ function formatFindingComment(finding: Finding, links: CodeLinks, place: 'line' 
   const label = labelDescription(finding, '');
   const open = `${suggestion ? `\n\n${suggestion}` : ''}\n\n${formatFold(fix, '', checks)}`;
   // The line note takes no room, so a thread shows the same description with it as without it.
-  const room = Math.max(MIN_VISIBLE_DESCRIPTION, MAX_VISIBLE_COMMENT - (comment.length - onLine.length) - label.length - visibleLength(open));
+  const room = Math.max(MIN_VISIBLE_DESCRIPTION, MAX_VISIBLE_COMMENT - (visibleLength(comment) - visibleLength(onLine)) - label.length - visibleLength(open));
   const description = sanitizeMarkdown(finding.description);
   // A scope warning's list is what it proposes, so no length budget folds it.
-  const { lead, rest } = splitLead(description, 3, finding.reviewers.includes(SCOPE_READER_NAME) ? Infinity : room);
+  const { lead, rest } = splitLead(description, 3, finding.reviewers.includes(SCOPE_READER_NAME) ? Infinity : room, MAX_WHOLE_FIRST_SENTENCE);
   // A fold never holds a single sentence, so one sentence past the lead shows with it, unless the lead was cut short.
   const folds = rest.includes('\n') || rest.split(/(?<=[.!?])\s+/).length > 1 || !description.trim().startsWith(lead);
   const shown = folds ? lead : description.trim();
@@ -4773,5 +4809,5 @@ async function standingOnCommit<T extends { id: number; state?: string; body?: s
 }
 
 export type { CodeLinks };
-export { APPROVED_LINE, CHECKS_MARKER, isAutoApproval, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, BASE_NOTE_RE, TRACKED_NOTE_RE, TRUST_NOTE_RE, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isBotUser, authorClearRole, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, givesVerdict, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, standingOnCommit, fetchStandingVerdict, REVIEW_STATE_VERDICTS, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, HELD_FOR_PERSON_MARKER };
+export { APPROVED_LINE, CHECKS_MARKER, isAutoApproval, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_NOTE_RE, MISSED_EARLIER_SECURITY_NOTE, BASE_NOTE_RE, TRACKED_NOTE_RE, TRUST_NOTE_RE, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isBotUser, authorClearRole, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, givesVerdict, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, standingOnCommit, fetchStandingVerdict, REVIEW_STATE_VERDICTS, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, HELD_FOR_PERSON_MARKER };
 export type { StandingVerdict };

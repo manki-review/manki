@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { LLMClient, NotStartedError } from './providers';
-import { BotIdentity, isAutoApproval, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, BASE_NOTE_RE, TRACKED_NOTE_RE, TRUST_NOTE_RE, WHAT_GOES_WRONG_LABEL, WHY_LABEL, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, authorClearRole, paginateGraphql, plainCitedFiles, titleToSlug } from './github';
+import { BotIdentity, isAutoApproval, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE_RE, BASE_NOTE_RE, TRACKED_NOTE_RE, TRUST_NOTE_RE, WHAT_GOES_WRONG_LABEL, WHY_LABEL, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, authorClearRole, paginateGraphql, plainCitedFiles, titleToSlug } from './github';
 import { BOX_ANCHOR, filedIssueOf } from './issue-box';
 import { currentFindingLine, findPriorThreadId, stringifyFindingFingerprint } from './finding-fingerprint';
 import { extractJSON } from './json';
@@ -1193,12 +1193,6 @@ interface ReviewThread extends FindingMetadata {
   clearLogin?: string;
 }
 
-/** Earlier wordings of `MISSED_EARLIER_NOTE` that threads posted before still carry. */
-const OLD_MISSED_EARLIER_NOTES = [
-  '_An earlier round already reviewed these lines and missed this, and it doesn\'t block this PR._',
-  '_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still needs a fix or an answer._',
-];
-
 /**
  * Parse the prose description and suggested-fix excerpt from a manki-authored
  * thread's first comment body. Returns `undefined` for either field when the
@@ -1234,7 +1228,7 @@ function parseFindingFromComment(posted: string): FindingMetadata {
   descSlice = descSlice.slice(0, earliest).replace(/^[\s\n]+|[\s\n]+$/g, '');
   const data = parseFindingData(body);
   // The other notes under the title are skipped in whatever order they come.
-  const leadingNote = (): string | undefined => [MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, ...OLD_MISSED_EARLIER_NOTES].find(n => descSlice.startsWith(n))
+  const leadingNote = (): string | undefined => descSlice.match(MISSED_EARLIER_NOTE_RE)?.[0]
     ?? descSlice.match(TRUST_NOTE_RE)?.[0] ?? descSlice.match(TRACKED_NOTE_RE)?.[0] ?? descSlice.match(BASE_NOTE_RE)?.[0];
   for (let note = leadingNote(); note; note = leadingNote()) descSlice = descSlice.slice(note.length).trimStart();
   const label = [WHAT_GOES_WRONG_LABEL, WHY_LABEL].find(l => descSlice === l || descSlice.startsWith(`${l} `));
