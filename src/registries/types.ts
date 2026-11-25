@@ -30,6 +30,8 @@ export interface PublishedVersion {
   yanked?: true;
   /** Marked deprecated, so an install picks it only when no other version matches. */
   deprecated?: true;
+  /** The oldest Rust version it says it builds with, as the registry states it, which may be no version at all. */
+  rustVersion?: unknown;
 }
 
 /**
@@ -85,9 +87,10 @@ export interface Registry {
   overriddenBy(name: string, configs: readonly RegistryConfig[]): string | undefined;
   /**
    * Returns which of `files`, the settings and manifests of the checkout, makes a fresh install pick another version
-   * than the highest a requirement allows, and how, or `undefined`. Throws when Manki cannot read one with certainty.
+   * than the highest a requirement allows, and how, or `undefined`. When that depends on the highest version, returns a
+   * test that takes it and returns the same. Throws when Manki cannot read one with certainty.
    */
-  freshPick(files: readonly RegistryConfig[]): string | undefined;
+  freshPick(files: readonly RegistryConfig[]): string | ((highest: PublishedVersion) => string | undefined) | undefined;
   /**
    * Returns what a manifest's `text` says of the package `name`: its requirements, in the manifest's own syntax, and
    * whether it overrides the package. Throws when Manki cannot read the manifest with certainty.
