@@ -998,7 +998,7 @@ describe('handleReviewCommentReply', () => {
     const octokit = createMockOctokit();
     octokit.rest.pulls.getReviewComment.mockImplementation(async ({ comment_id }: { comment_id: number }) => ({
       data: comment_id === 200
-        ? { user: MANKI_USER, body: '<!-- manki -->\nStill open. The retry path still leaks.', path: 'src/file.ts', line: 10, in_reply_to_id: 50 }
+        ? { user: MANKI_USER, body: '<!-- manki -->\nStill open. The retry path still leaks.\n\n<b>What I cited against this reply:</b>\n- Line cited against it exists at `src/file.ts:3`: "It is closed."\n\n<details>\n<summary>1 statement checked, evidence cited against 1</summary>\n\n**Statements of this reply, and what I checked of each:**\n- Line cited against it exists at `src/file.ts:3`: "It is closed."\n\n</details>', path: 'src/file.ts', line: 10, in_reply_to_id: 50 }
         : { user: MANKI_USER, body: '<!-- manki -->\n**Retry leaks a timer**', path: 'src/file.ts', line: 10 },
     }));
     const client = createMockClient();
@@ -1012,7 +1012,7 @@ describe('handleReviewCommentReply', () => {
 
     const userMessage = (client.sendMessage as jest.Mock).mock.calls[0][1] as string;
     expect(userMessage).toContain('## Original Review Comment\n\n**Retry leaks a timer**');
-    expect(userMessage).toContain('## Your Earlier Reply\n\nStill open. The retry path still leaks.');
+    expect(userMessage).toContain('## Your Earlier Reply\n\nStill open. The retry path still leaks.\n\n**Statements of this reply, and what I checked of each:**\n- Line cited against it exists at `src/file.ts:3`: "It is closed."\n\n##');
     expect(state.resolveReviewThread).toHaveBeenCalledWith(octokit, 'PRRT_root', 'WONT_FIX');
 
     // A reply with Manki's marker from another account is not Manki's earlier reply.
@@ -1205,8 +1205,10 @@ describe('handleReviewCommentReply', () => {
   // The statements of the developer's reply are listed below the answer. No status of one reaches a thread.
   const CSV = 'The exporter writes rows as CSV columns.';
   const CONFIRMED = { statements: [{ quote: CSV, status: 'confirmed', places: ['src/file.ts:10'] }] };
-  const LISTED = `**Statements of this reply, and what I checked of each:**\n- Line cited for it exists at \`src/file.ts:10\`: "${CSV}"`;
+  const LIST = `**Statements of this reply, and what I checked of each:**\n- Line cited for it exists at \`src/file.ts:10\`: "${CSV}"`;
   const CHECKED = 'Each line says what I checked, not that the statement is right.';
+  const folded = (text: string, summary = '1 statement checked') => `<details>\n<summary>${summary}</summary>\n\n${text}\n\n</details>`;
+  const LISTED = folded(LIST);
   const MAINTAINER = `${CHECKED} What they mean for this finding is for a maintainer to decide.`;
   const NEXT_REVIEW = 'the next review confirms the fix, or someone other than the PR author with write access';
   const STAYS_OPEN = `This is a blocking finding, so the thread stays open until ${NEXT_REVIEW} closes it.`;
@@ -1232,14 +1234,14 @@ describe('handleReviewCommentReply', () => {
     ['the PR author hears that a disproved blocker stays open after "Withdrawn."', 'Withdrawn. The caller already checks for null.', CONFIRMED, 'pr-author', 'disproved',
       `Withdrawn. The caller already checks for null.\n\n${LISTED}\n\n${MAINTAINER}\n\nThis is a finding a check lowered from a blocker, so the thread stays open until someone other than the PR author with write access closes it. A PR author can close it only with the \`maintain\` role or a higher one.`, undefined],
     ['a maintainer clears a disproved blocker with "Withdrawn."', 'Withdrawn. The caller already checks for null.', CONFIRMED, 'someone', 'disproved',
-      `Withdrawn. The caller already checks for null.\n\n${LISTED}\n\n${CHECKED}`, 'INVALID'],
+      `Withdrawn. The caller already checks for null.\n\n${folded(`${LIST}\n\n${CHECKED}`)}`, 'INVALID'],
     ['a maintainer hears it after "Unverified." too', 'Unverified. The code does not show it.', CONFIRMED, 'someone', 'blocker',
       `Unverified. The code does not show it. A maintainer should confirm this and resolve this thread.\n\n${LISTED}\n\n${MAINTAINER}\n\n${STAYS_OPEN}`, undefined],
     // A maintainer's settling answer clears the thread as before, so the list says nothing about a decision left.
     ['a maintainer clears a blocker with "Withdrawn." on a line of the PR', 'Withdrawn. The caller already checks for null.', CONFIRMED, 'someone', 'blocker',
-      `Withdrawn. The caller already checks for null.\n\n${LISTED}\n\n${CHECKED}`, 'INVALID'],
+      `Withdrawn. The caller already checks for null.\n\n${folded(`${LIST}\n\n${CHECKED}`)}`, 'INVALID'],
     ['the PR author resolves a warning with "Fixed."', 'Fixed. The guard now runs first.', CONFIRMED, 'pr-author', 'warning',
-      `Fixed. The guard now runs first.\n\n${LISTED}\n\n${CHECKED}`, 'ADDRESSED'],
+      `Fixed. The guard now runs first.\n\n${folded(`${LIST}\n\n${CHECKED}`)}`, 'ADDRESSED'],
     // A "Withdrawn." or "Fixed." that no line of the PR backs settles nothing, for anyone.
     ['a maintainer does not clear a blocker with "Withdrawn." on related lines alone', 'Withdrawn. The caller already checks for null.', { ...CONFIRMED, proof: ['acme/reports:lib/rows.py:9'] }, 'someone', 'blocker',
       `Unverified. The caller already checks for null. ${UNPROVEN}\n\n${LISTED}\n\n${MAINTAINER}\n\n${STAYS_OPEN}`, undefined],
@@ -1608,7 +1610,7 @@ describe('handleReviewCommentReply', () => {
 
     await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, undefined, CONFIG);
 
-    const listed = `**Statements of this reply, and what I checked of each:**\n- ${line}: "${said}"\n\n${summary}`;
+    const listed = folded(`**Statements of this reply, and what I checked of each:**\n- ${line}: "${said}"\n\n${summary}`, summary === CHECKED ? '1 statement checked' : '1 statement not checked');
     const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.at(-1)![0].body as string;
     // A fix is a line the PR changed, which no text of the description is, so "Fixed." settles nothing whatever the check of the description shows.
     expect(body.split('\n\n<!-- manki -->')[0]).toBe(`Unverified. The description no longer names the constant. ${noLine('`src/file.ts`')} ${WHOLE_PUSH}\n\n${listed}`);

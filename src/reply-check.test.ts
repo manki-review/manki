@@ -5,7 +5,7 @@ import { join } from 'path';
 
 import { parsePRDiff } from './diff';
 import * as mcpServer from './mcp-server';
-import { checkFixedElsewhere, checkReply, ElsewhereSources, fixedElsewhereText, ReplySources, statementList, statementRecords, statementSummary } from './reply-check';
+import { checkFixedElsewhere, checkReply, ElsewhereSources, fixedElsewhereText, ReplySources, statementFold, statementList, statementRecords, statementSummary } from './reply-check';
 import { ParsedDiff, RelatedRepoTools } from './types';
 import { registerSecret } from './utils';
 
@@ -327,24 +327,32 @@ describe('checkReply', () => {
     expect(statementList(checked)).toBe(`**Statements of this reply, and what I checked of each:**\n- Line cited for it exists at \`src/ledger.rs:3\`: "${csv}"`);
   });
 
-  it.each<[string, Record<string, unknown>[], number, string, string]>([
+  it.each<[string, Record<string, unknown>[], number, string, string, string]>([
     ['every statement checked', [{ quote: csv, status: 'confirmed', places: ['src/ledger.rs:3'] }, { quote: snapshot, status: 'confirmed', search: 'Ledger::snapshot(' }], 0,
-      'Each line says what I checked, not that the statement is right.', 'What they mean for this finding is for a maintainer to decide.'],
+      'Each line says what I checked, not that the statement is right.', 'What they mean for this finding is for a maintainer to decide.', '2 statements checked'],
     ['one not checked', [{ quote: csv, status: 'confirmed', places: ['src/ledger.rs:3'] }, { quote: snapshot, status: 'not_checkable' }], 0,
-      'I could not check every one of these statements.', 'A maintainer has to judge the unchecked ones, and what the statements mean for this finding.'],
+      'I could not check every one of these statements.', 'A maintainer has to judge the unchecked ones, and what the statements mean for this finding.', '1 statement checked, 1 not checked'],
     ['more statements than a reply gets', [{ quote: csv, status: 'confirmed', places: ['src/ledger.rs:3'] }], 1,
-      'I could not check every one of these statements.', 'A maintainer has to judge the unchecked ones, and what the statements mean for this finding.'],
+      'I could not check every one of these statements.', 'A maintainer has to judge the unchecked ones, and what the statements mean for this finding.', '1 statement checked, 1 not checked'],
     ['one contradicted', [{ quote: csv, status: 'contradicted', places: ['src/ledger.rs:3'] }, { quote: snapshot, status: 'confirmed', search: 'Ledger::snapshot(' }], 0,
-      'I cited a line against at least one of these statements.', 'What they mean for this finding is for a maintainer to decide.'],
+      'I cited a line against at least one of these statements.', 'What they mean for this finding is for a maintainer to decide.', '2 statements checked, evidence cited against 1'],
     ['one contradicted by the PR description', [{ quote: csv, status: 'contradicted', description: HELD }, { quote: rewrote, status: 'confirmed', description_search: 'MAX_ROWS' }], 0,
-      'I cited text of the PR description against at least one of these statements.', 'What they mean for this finding is for a maintainer to decide.'],
+      'I cited text of the PR description against at least one of these statements.', 'What they mean for this finding is for a maintainer to decide.', '2 statements checked, evidence cited against 1'],
     ['one contradicted and one not checked', [{ quote: csv, status: 'contradicted', places: ['src/ledger.rs:3'] }, { quote: snapshot, status: 'not_checkable' }], 0,
-      'I cited a line against at least one of these statements.', 'A maintainer has to judge the unchecked ones, and what the statements mean for this finding.'],
-  ])('sums the checks up without a word on the finding, and leaves a blocking one to a maintainer: %s', (_name, statements, unchecked, checks, decision) => {
+      'I cited a line against at least one of these statements.', 'A maintainer has to judge the unchecked ones, and what the statements mean for this finding.', '1 statement checked, evidence cited against 1, 1 not checked'],
+    ['none checked', [{ quote: snapshot, status: 'not_checkable' }], 1,
+      'I could not check every one of these statements.', 'A maintainer has to judge the unchecked ones, and what the statements mean for this finding.', '2 statements not checked'],
+  ])('sums the checks up without a word on the finding, and leaves a blocking one to a maintainer: %s', (_name, statements, unchecked, checks, decision, summary) => {
     const checked = { ...checkReply(answer({ statements }), REPLY, sources), unchecked };
 
     expect(statementSummary(checked, false)).toBe(checks);
     expect(statementSummary(checked, true)).toBe(`${checks} ${decision}`);
+    // Folded, the list shows how the checks went and what was cited against the reply. What a maintainer has to do stays open too.
+    const list = statementList(checked)!;
+    const against = list.split('\n').filter(line => /cited against it/.test(line));
+    const cited = against.length > 0 ? [['<b>What I cited against this reply:</b>', ...against].join('\n')] : [];
+    expect(statementFold(checked, false)).toEqual([...cited, `<details>\n<summary>${summary}</summary>\n\n${list}\n\n${checks}\n\n</details>`]);
+    expect(statementFold(checked, true)).toEqual([...cited, `<details>\n<summary>${summary}</summary>\n\n${list}\n\n</details>`, `${checks} ${decision}`]);
   });
 });
 

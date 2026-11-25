@@ -5,6 +5,7 @@ import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, namingCommit,
 import { APPROVED_LINE, autoApproveHeadMarker, formatFindingComment, postReview, reviewedCommit, titleToSlug } from './github';
 import { extractApprovalRecords, formatApprovalRecord, formatReplyRecord, formatReviewRecord, roundReplyMarker } from './review-record';
 import { DEFAULT_CONFIG, fallbackConfig } from './config';
+import { CheckedReply, statementFold } from './reply-check';
 import { determineOutcome } from './review';
 import { ApprovalRecord, AuthorClearRole, Finding, FindingFingerprintEntry, ReplyDecision, ReplyModelAnswer, RoundContext, ThreadEvaluation, VerdictTraceEntry } from './types';
 import * as authModule from './auth';
@@ -1485,6 +1486,8 @@ describe('checkAndAutoApprove', () => {
     const answer = (text: string, decision?: ReplyDecision, createdAt?: string, modelAnswer?: ReplyModelAnswer) => reply(manki, answerBody(text, decision, modelAnswer), undefined, createdAt);
     const accepted = (outcome: ReplyDecision['outcome'] = 'Agreed', thread: ReplyDecision['thread'] = 'resolves', createdAt?: string) => answer(`${outcome}. Fine.`, { outcome, thread }, createdAt);
     const kept = answer('Kept. `src/a.ts:12` still loops.');
+    // The folded list quotes an accepting answer of Manki's, which settles nothing there.
+    const listed = statementFold({ statements: [{ quote: accepted().body, status: 'contradicted', places: ['src/a.ts:3'] }], unchecked: 0 } as unknown as CheckedReply, true).join('\n\n');
     const tracked = `**Agreed.** Filed as #5 for later work.\n\n${BOT_MARKER}\n${TRACKED_MARKER}`;
 
     it.each<[string, ReturnType<typeof makeGraphqlFetchThreadNode>[], string?]>([
@@ -1492,6 +1495,7 @@ describe('checkAndAutoApprove', () => {
       ['a warning thread a bot replied in', [warning('t1', { replies: [reply('ci-app', 'Looks fine.', 'Bot')] })]],
       ['a warning thread only Manki replied in', [warning('t1', { replies: [reply(manki, 'Kept. The retry still loops.')] })]],
       ['a warning thread whose reply by the PR author Manki answered "Kept."', [warning('t1', { replies: [reply('author'), kept] })]],
+      ['a warning thread whose reply by the PR author Manki answered "Kept." with a folded list', [warning('t1', { replies: [reply('author'), answer(`Kept. It still loops.\n\n${listed}`)] })]],
       ['a warning thread whose reply by the PR author Manki answered "Unverified."', [warning('t1', { replies: [reply('author'), answer('Unverified. I can\'t verify that from the code.')] })]],
       ['a warning thread whose "Fixed." the model could not prove', [warning('t1', { replies: [reply('author'), answer('Unverified. I could not point to a line this PR changed in `src/a.ts` since this was posted.', undefined, undefined, { outcome: 'Fixed', proof: [], cited: ['src/b.ts:3'] })] })]],
       ['a warning thread whose "Fixed." a rebase left unproven', [warning('t1', { replies: [reply('author'), reply(manki, `${answerBody('The guard runs first. This reply does not settle the thread.', undefined, { outcome: 'Fixed', proof: [], cited: ['src/b.ts:3'] })}\n<!-- manki-unsettled-answer -->`)] })]],
@@ -1571,6 +1575,7 @@ describe('checkAndAutoApprove', () => {
       ['answered "Fixed." by Manki, which resolved it', [warning('t1', { isResolved: true, resolvedBy: manki, replies: [reply('author'), accepted('Fixed')] })]],
       ['answered "Withdrawn." by Manki, which resolved it', [warning('t1', { isResolved: true, resolvedBy: manki, replies: [reply('author'), accepted('Withdrawn')] })]],
       ['answered "Agreed." by Manki, which resolved it', [warning('t1', { isResolved: true, resolvedBy: manki, replies: [reply('author'), accepted('Agreed')] })]],
+      ['answered "Agreed." by Manki with a folded list', [warning('t1', { replies: [reply('author'), answer(`Agreed. Fine.\n\n${listed}`, { outcome: 'Agreed', thread: 'resolves' })] })]],
       ['answered "Agreed." by Manki after an earlier "Kept."', [warning('t1', { replies: [reply('author'), kept, reply('author'), accepted()] })]],
       // Only a later round that raises the warning again takes an accepted answer back, never a later answer.
       ['answered "Agreed." by Manki before a later "Kept."', [warning('t1', { replies: [reply('author'), accepted(), reply('bob'), kept] })]],
