@@ -3293,13 +3293,19 @@ function withEarlierLeads(
   const open = candidates.filter((l, i) => candidates.findIndex(other => sameLead(other, l)) === i);
   const current = findings.map(f => {
     const match = f.lead && open.find(l => sameLead(l, f));
-    return match ? { ...f, leadSince: match.since } : f;
+    return match ? { ...f, leadSince: match.since, ...earlierChecksOf(match, last!.meta.round) } : f;
   });
   const carried = open.filter(l => !findings.some(f => sameLead(l, f))).map((l): Finding => ({
     severity: l.severity, title: l.title, file: l.file, line: l.line, description: l.description, reviewers: l.reviewers, lead: l.lead, leadSince: l.since,
-    ...((l.refutation || l.pairRefutation) && { earlierChecks: { round: last!.meta.round, refutation: l.refutation, pairRefutation: l.pairRefutation } }),
+    ...earlierChecksOf(l, last!.meta.round),
   }));
   return { current, carried };
+}
+
+/** Returns the checks of `round` on the lead `l`, or the earlier checks it kept when no check of `round` reached it. */
+function earlierChecksOf(l: RoundLead, round: number): Pick<Finding, 'earlierChecks'> {
+  if (l.refutation || l.pairRefutation) return { earlierChecks: { round, refutation: l.refutation, pairRefutation: l.pairRefutation } };
+  return l.earlierChecks ? { earlierChecks: l.earlierChecks } : {};
 }
 
 /** Records how each open lead of the round ended, from what the judge made of it and whether it was posted. */
@@ -3317,6 +3323,7 @@ function recordLeads(leads: Finding[], listed: Finding[], judged: Finding[], pos
       title: l.title, file: l.file, line: l.line, severity: l.severity, reviewers: l.reviewers, description: l.description, lead: l.lead!,
       outcome, since: l.leadSince ?? round, ...(posted.some(p => sameLead(p, l)) && { posted: true as const }),
       ...(verdict?.refutation && { refutation: verdict.refutation }), ...(verdict?.pairRefutation && { pairRefutation: verdict.pairRefutation }),
+      ...(!verdict?.refutation && !verdict?.pairRefutation && l.earlierChecks && { earlierChecks: l.earlierChecks }),
     };
   });
 }

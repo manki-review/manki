@@ -4962,10 +4962,23 @@ describe('runReview', () => {
 
       // With no tools to settle it, a carried lead is only listed, and the check of the round it came from is not this round's.
       const unchecked = buildPriorRound(2, []);
-      unchecked.leads = [earlier('The token may not read the other repository', 'src/a.ts', 'warning', 'unsettled', { refutation: refuted('unsettled') })];
-      const listed = await runReview(leadClients([], false), { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', priorRounds: [buildPriorRound(1, []), unchecked], interRoundDiff: 'diff --git a/src/b.ts b/src/b.ts\n--- a/src/b.ts\n+++ b/src/b.ts\n@@ -1 +1 @@\n-a\n+b\n' });
-      // It keeps that check apart, for the review body only, with the round it comes from.
-      expect(listed.openLeads?.map(f => [f.file, f.leadSince, f.refutation, f.earlierChecks])).toEqual([['src/a.ts', 1, undefined, { round: 2, refutation: refuted('unsettled'), pairRefutation: undefined }]]);
+      unchecked.leads = [
+        earlier('The token may not read the other repository', 'src/a.ts', 'warning', 'unsettled', { refutation: refuted('unsettled') }),
+        earlier('The helper name may confuse a reader', 'src/d.ts', 'note', 'unsettled', { pairRefutation: refuted('unsettled') }),
+      ];
+      const unchangedSinceThen = 'diff --git a/src/b.ts b/src/b.ts\n--- a/src/b.ts\n+++ b/src/b.ts\n@@ -1 +1 @@\n-a\n+b\n';
+      const raisedAgain = leadClients([leadOf('note', 'The helper name may confuse a reader', 'src/d.ts', 7)], false);
+      const listed = await runReview(raisedAgain, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', priorRounds: [buildPriorRound(1, []), unchecked], interRoundDiff: unchangedSinceThen });
+      // It keeps that check apart, for the review body only, with the round it comes from. So does a lead a finder raised again.
+      const fromRound2 = [{ round: 2, refutation: refuted('unsettled'), pairRefutation: undefined }, { round: 2, refutation: undefined, pairRefutation: refuted('unsettled') }];
+      expect(listed.openLeads?.map(f => [f.file, f.leadSince, f.refutation, f.earlierChecks])).toEqual([['src/d.ts', 1, undefined, fromRound2[1]], ['src/a.ts', 1, undefined, fromRound2[0]]]);
+      expect(listed.leads?.map(l => [l.file, l.refutation, l.earlierChecks])).toEqual([['src/d.ts', undefined, fromRound2[1]], ['src/a.ts', undefined, fromRound2[0]]]);
+
+      // A round that again checks neither still shows the checks of round 2.
+      const stillUnchecked = buildPriorRound(3, []);
+      stillUnchecked.leads = listed.leads;
+      const third = await runReview(leadClients([], false), { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', priorRounds: [buildPriorRound(1, []), unchecked, stillUnchecked], interRoundDiff: unchangedSinceThen });
+      expect(third.openLeads?.map(f => [f.file, f.earlierChecks])).toEqual([['src/d.ts', fromRound2[1]], ['src/a.ts', fromRound2[0]]]);
     });
   });
 

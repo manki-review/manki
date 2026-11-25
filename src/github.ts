@@ -2356,27 +2356,27 @@ function isListedNote(finding: Finding): boolean {
 const MAX_LISTED_FINDINGS = 10;
 
 /** One finding the review checked and left out, with the line that says why, and Manki's own sentence that follows it. */
+/** Returns the first two sentences of `reason`, at most 300 characters, safe to show in the review body. */
+function shortReason(reason: string): string {
+  return splitLead(sanitizeMarkdown(reason).replace(/\s+/g, ' '), 2, 300).lead;
+}
+
 type LeftOutEntry = Pick<Finding, 'title' | 'file' | 'line'> & { reason?: string; note?: string };
 
 /** Renders a left out finding as a list item: the title and a link to its line, then the start of the reason and the note on a line of its own. */
 function formatLeftOutEntry({ title, file, line, reason, note }: LeftOutEntry, linkTo: LineLink): string {
   const location = file ? ` · ${linked(inlineCode(findingLocation({ file, line })), linkTo(file, line))}` : '';
-  const start = reason && splitLead(sanitizeMarkdown(reason).replace(/\s+/g, ' '), 2, 300).lead;
-  const shown = [start, note].filter(Boolean).join(' ');
+  const shown = [reason && shortReason(reason), note].filter(Boolean).join(' ');
   return `- **${sanitizeMarkdown(title)}**${location}${shown ? `\n  ${shown}` : ''}`;
 }
 
 /**
  * Returns why no check settled the lead `f`: the reason of the first check that ended unsettled, or of the premise such a
- * check left open once it confirmed the defect. A check without one gave no answer the lead could rest on. Without a
- * check in this round, a carried lead shows the reason of the round it comes from.
+ * check left open once it confirmed the defect. A check without one gave no answer the lead could rest on.
  */
-function unfinishedReason({ refutation, pairRefutation, earlierChecks }: Pick<Finding, 'refutation' | 'pairRefutation' | 'earlierChecks'>): string {
+function unfinishedReason({ refutation, pairRefutation }: Pick<Finding, 'refutation' | 'pairRefutation'>): string {
   const checks = [refutation, pairRefutation].filter((r): r is Refutation => !!r);
-  if (checks.length === 0) {
-    const none = 'No check in this round settled it.';
-    return earlierChecks && (earlierChecks.refutation || earlierChecks.pairRefutation) ? `${none} In round ${earlierChecks.round}: ${unfinishedReason(earlierChecks)}` : none;
-  }
+  if (checks.length === 0) return 'No check in this round settled it.';
   const unsettled = checks.find(check => outcomeOf(check) === 'unsettled');
   const premise = unsettled?.defect === 'confirmed' ? unsettled.premises?.find(p => p.outcome === 'unsettled') : undefined;
   const reason = premise?.reason.trim() || unsettled?.reason.trim();
@@ -2393,7 +2393,13 @@ function formatLeftOut(result: ReviewResult, disproved: DisprovedFinding[], link
   const because = (f: Finding, why: string): LeftOutEntry => ({ ...f, reason: `${why[0].toUpperCase()}${why.slice(1)}.` });
   const unproven = (result.unposted ?? []).flatMap(f => f.unpostedReason && leftOutUnproven(f) ? [because(f, UNPOSTED_REASONS[f.unpostedReason])] : []);
   const rare = (result.unposted ?? []).flatMap(f => f.unpostedReason === 'rare_trigger' && f.importance ? [because(f, `trigger ${f.importance.trigger} of 10, below the cut-off of ${f.importance.cutOff}`)] : []);
-  const leads = (result.openLeads ?? []).map((f): LeftOutEntry => ({ ...f, reason: unfinishedReason(f), ...(f.leadSince && { note: `Open since round ${f.leadSince}.` }) }));
+  // The earlier reason goes in the note with its own cut, so the fixed first sentence never pushes it out.
+  const earlier = ({ refutation, pairRefutation, earlierChecks: e }: Finding): string | undefined => !refutation && !pairRefutation && e && (e.refutation || e.pairRefutation)
+    ? `In round ${e.round}: ${shortReason(unfinishedReason(e))}` : undefined;
+  const leads = (result.openLeads ?? []).map((f): LeftOutEntry => {
+    const note = [earlier(f), f.leadSince && `Open since round ${f.leadSince}.`].filter(Boolean).join(' ');
+    return { ...f, reason: unfinishedReason(f), ...(note && { note }) };
+  });
   const kinds = [
     { heading: 'Disproved by a check of the code', noun: 'finding', short: 'disproved', entries: disproved },
     { heading: 'Not proven, so not listed', noun: 'warning', short: 'unproven', entries: unproven },

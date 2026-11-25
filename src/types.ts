@@ -1510,6 +1510,8 @@ export interface RoundLead {
   /** Mirror `Finding.refutation` and `Finding.pairRefutation` of the judged lead. */
   refutation?: Refutation;
   pairRefutation?: Refutation;
+  /** Mirrors `Finding.earlierChecks` of a lead no check of its round reached, so a later round still shows them. */
+  earlierChecks?: Finding['earlierChecks'];
 }
 
 /** `none` means no tool spoke to the claim. Silence is never evidence against a finding. */
