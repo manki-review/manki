@@ -2369,7 +2369,7 @@ function formatLeftOutEntry({ title, file, line, reason, note }: LeftOutEntry, l
  */
 function unfinishedReason({ refutation, pairRefutation }: Finding): string {
   const checks = [refutation, pairRefutation].filter((r): r is Refutation => !!r);
-  if (checks.length === 0) return 'No check of the code ran on it.';
+  if (checks.length === 0) return 'No check in this round settled it.';
   const unsettled = checks.find(check => outcomeOf(check) === 'unsettled');
   const premise = unsettled?.defect === 'confirmed' ? unsettled.premises?.find(p => p.outcome === 'unsettled') : undefined;
   const reason = premise?.reason.trim() || unsettled?.reason.trim();

@@ -829,7 +829,7 @@ describe('runFullReview end to end', () => {
 
     const progress = mockGitHub.comments.find(c => c.body.startsWith('✅ **Review complete**'))!.body;
     expect(progress).not.toContain('Not finished checking');
-    expect(postedReviews()[0].body).toContain(`<summary>Checked and left out: 1 finding</summary>\n\n#### Not finished checking · 1 possible problem\n\n- **Cache may go stale** · [\`src/math.ts:2\`](https://github.com/${OWNER}/${REPO}/blob/${HEAD_SHA}/src/math.ts#L2)\n  No check of the code ran on it.\n\n</details>`);
+    expect(postedReviews()[0].body).toContain(`<summary>Checked and left out: 1 finding</summary>\n\n#### Not finished checking · 1 possible problem\n\n- **Cache may go stale** · [\`src/math.ts:2\`](https://github.com/${OWNER}/${REPO}/blob/${HEAD_SHA}/src/math.ts#L2)\n  No check in this round settled it.\n\n</details>`);
     expect(progress).toContain('Dropped: "Sum may overflow" (ignore)');
     // The listed lead never reached the judge, so it is no duplicate the judge merged.
     const record = mockGitHub.roundContext(postedReviews()[0]);

@@ -6305,6 +6305,7 @@ describe('postReview non-blocking findings', () => {
     const rare = nonBlocking('warning', 'Rare race', 20, { unpostedReason: 'rare_trigger', importance: { overall: 3, trigger: 2, introduced: 9, matters: 4, reason: 'Few get there.', cutOff: 4 } });
     // A pre-existing finding left out of the review is in the round record only, so the fold lists none of them.
     const unpostedPreExisting = [nonBlocking('warning', 'Old loop', 18), nonBlocking('note', 'Old name', 19)];
+    // The first lead is carried over, without the check of the round it came from.
     const leads = [nonBlocking('warning', 'Token may not read it', 3, { leadSince: 2 }), nonBlocking('note', 'Cache <b>may</b> go stale', 4)];
     const overflow = { title: 'Overflow', file: 'src/m.ts', line: 2, reason: 'Checked at <i>src/api.ts:3</i>.\nBoth inputs are bounded. A third sentence stays in the log.' };
     const log = '<sub>The progress comment has the full log under "Judge decisions", in its "Review metadata" fold.</sub>';
@@ -6345,9 +6346,9 @@ describe('postReview non-blocking findings', () => {
       '#### Not finished checking · 2 possible problems',
       '',
       `- **Token may not read it** · ${link(3)}`,
-      '  No check of the code ran on it. Open since round 2.',
+      '  No check in this round settled it. Open since round 2.',
       `- **Cache may go stale** · ${link(4)}`,
-      '  No check of the code ran on it.',
+      '  No check in this round settled it.',
       '',
       log,
       '',
@@ -6368,7 +6369,7 @@ describe('postReview non-blocking findings', () => {
     expect(leadsOnly).toContain('<summary>Checked and left out: 2 findings</summary>');
     expect(leadsOnly).not.toContain('Judge decisions');
     // A lead the judge's tools left unsettled has its entry there, so its fold keeps the pointer.
-    expect(await bodyOf({ openLeads: leads, allJudgedFindings: leads.slice(0, 1) })).toContain(`- **Cache may go stale** · ${link(4)}\n  No check of the code ran on it.\n\n${log}\n\n</details>`);
+    expect(await bodyOf({ openLeads: leads, allJudgedFindings: leads.slice(0, 1) })).toContain(`- **Cache may go stale** · ${link(4)}\n  No check in this round settled it.\n\n${log}\n\n</details>`);
 
     // A lead a check left unsettled says why, from the check that did, cleaned and cut like any other reason.
     const check = (outcome: Refutation['outcome'], reason: string, extra: Partial<Refutation> = {}): Refutation => ({ outcome, defect: outcome, reason, files: [], codeDigest: '', ...extra });

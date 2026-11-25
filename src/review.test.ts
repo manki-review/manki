@@ -4959,6 +4959,12 @@ describe('runReview', () => {
       mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => ({ summary: 'ok', findings: input.findings }));
       const unknownChange = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: '/work/pr-head', priorRounds: [buildPriorRound(1, []), last] });
       expect(unknownChange.leads ?? []).toEqual([]);
+
+      // With no tools to settle it, a carried lead is only listed, and the check of the round it came from is not this round's.
+      const unchecked = buildPriorRound(2, []);
+      unchecked.leads = [earlier('The token may not read the other repository', 'src/a.ts', 'warning', 'unsettled', { refutation: refuted('unsettled') })];
+      const listed = await runReview(leadClients([], false), { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', priorRounds: [buildPriorRound(1, []), unchecked], interRoundDiff: 'diff --git a/src/b.ts b/src/b.ts\n--- a/src/b.ts\n+++ b/src/b.ts\n@@ -1 +1 @@\n-a\n+b\n' });
+      expect(listed.openLeads?.map(f => [f.file, f.leadSince, f.refutation])).toEqual([['src/a.ts', 1, undefined]]);
     });
   });
 
