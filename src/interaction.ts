@@ -527,7 +527,7 @@ const HEAD_KEPT_MOVING = 'I did not check this reply, since the pull request got
  * the reply gets no answer, after saying so in a thread that is Manki's. The model reads no file the `closed_paths` of
  * `config` closes: the diff leaves them out, and `loadWorkspace` checks out the head without them. With `closedUnknown`,
  * the thread gets that note and no model is asked. The reply is read on the newest commit of the PR's branch, and once
- * more when the head moves before the answer is posted. `rereads` says how often. An answer about an older commit is
+ * more, with `secondRead`, when the head moves before the answer is posted. An answer about an older commit is
  * never posted, and the thread then hears that the reply was not checked.
  */
 export async function handleReviewCommentReply(
@@ -541,7 +541,7 @@ export async function handleReviewCommentReply(
   loadWorkspace?: (commit?: string) => Promise<string | undefined>,
   config?: ReviewConfig,
   closedUnknown?: string,
-  rereads = 1,
+  secondRead = false,
 ): Promise<void> {
   const payload = github.context.payload;
   const comment = payload.comment;
@@ -689,15 +689,13 @@ export async function handleReviewCommentReply(
       await leaveUnchecked(unseenPushNote(now.head, now.unseen));
       return;
     }
-    if (now.head !== head && rereads === 0) {
+    if (now.head !== head && secondRead) {
       await leaveUnchecked(HEAD_KEPT_MOVING);
       return;
     }
     if (now.head !== head) {
-      // The second read says itself when it fails.
-      ownThread = false;
       core.info(`The PR head moved from ${head?.slice(0, 7)} to ${now.head?.slice(0, 7)}, reading the reply again`);
-      await handleReviewCommentReply(octokit, bot, client, owner, repo, prNumber, memory, loadWorkspace, config, closedUnknown, rereads - 1);
+      await handleReviewCommentReply(octokit, bot, client, owner, repo, prNumber, memory, loadWorkspace, config, closedUnknown, true);
       return;
     }
     const fixClaim = elsewhere && !closed ? { pr: checked.fixedIn!, status: 'answer' in elsewhere ? 'confirmed' as const : 'unconfirmed' as const } : undefined;
@@ -830,7 +828,8 @@ export async function handleReviewCommentReply(
       if (saved) await addNote(saved).catch((error: unknown) => core.warning(`Saved the learning, but failed to say so in the answer: ${error}`));
     }
   } catch (error) {
-    if (ownThread) {
+    // The first read also says it for the second one, which can fail before it finds the thread.
+    if (ownThread && !secondRead) {
       await sayUnanswered('reply', error, body => octokit.rest.pulls.createReplyForReviewComment({ owner, repo, pull_number: prNumber, comment_id: comment.id, body }));
     }
     throw error;
