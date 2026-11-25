@@ -254,9 +254,13 @@ function modesOf(items: unknown, keep: (item: Record<string, unknown>) => boolea
   return modes;
 }
 
-/** Returns the review comments whose own run `queue` still holds. */
+/**
+ * Returns the review comments whose own run `queue` still holds. Returns none while a review is queued too, since the
+ * answer to a reply may then read a newer commit and not what the running review found.
+ */
 function queuedRepliesOf(queue: unknown): Set<number> {
   const items: Array<Record<string, unknown> | null> = Array.isArray(queue) ? queue : [];
+  if (items.some(item => item?.kind === 'review')) return new Set();
   return new Set(items.flatMap(item => (item?.kind === 'thread' && Number.isSafeInteger(item.comment_id) ? [item.comment_id as number] : [])));
 }
 

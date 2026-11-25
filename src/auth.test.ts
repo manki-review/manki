@@ -164,6 +164,10 @@ describe('fetchPrState', () => {
 
     expect(await fetchPrState(OWNER, REPO, 12, 7)).toEqual({ settings: { paused: false }, runModes: new Set(), queuedModes: new Set(), queuedReplies: new Set() });
     expect((global.fetch as jest.Mock).mock.calls[0][0]).toBe('https://custom.example.com/api/state');
+
+    // A queued review means a newer commit may come first, so no reply counts as queued.
+    mockFetch(async () => Response.json({ active: [], queue: [{ kind: 'thread', comment_id: 41, modes: [] }, { kind: 'review', comment_id: null, modes: [] }] }));
+    expect((await fetchPrState(OWNER, REPO, 12, 7))?.queuedReplies).toEqual(new Set());
   });
 
   const stateReply = () => Response.json({ active: [], queue: [], settings: { paused: true }, last_reviewed: null });

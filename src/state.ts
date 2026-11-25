@@ -104,7 +104,7 @@ interface ReviewThread {
   /** When the review of each head commit replied that this thread is not fixed, from `roundReplyMarker`. */
   roundReplies?: Array<{ commit: string; at: string }>;
   /** The replies in this thread that neither Manki nor another bot wrote, oldest first. */
-  personReplies?: Array<{ id: number; login: string; body: string }>;
+  personReplies?: Array<{ id: number; login: string; body: string; at: string }>;
   /** Whether Manki answered a developer in this thread since the finding was last raised, by `latestAnswer`. Also set at the comment limit, which may hide an answer. */
   answered?: true;
 }
@@ -263,7 +263,7 @@ async function fetchBotReviewThreads(
         const commit = markedSha(c, ROUND_REPLY_OPENER);
         return commit && c.createdAt ? [{ commit, at: c.createdAt }] : [];
       });
-      const replies = personReplies(bot, thread.comments.nodes).flatMap(c => (c.databaseId != null && c.author ? [{ id: c.databaseId, login: c.author.login, body: c.body }] : []));
+      const replies = personReplies(bot, thread.comments.nodes).flatMap(c => (c.databaseId != null && c.author && c.createdAt ? [{ id: c.databaseId, login: c.author.login, body: c.body, at: c.createdAt }] : []));
       return {
         id: thread.id,
         ...(rootCommentId != null && { rootCommentId }),

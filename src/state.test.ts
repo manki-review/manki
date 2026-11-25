@@ -236,9 +236,9 @@ describe('fetchBotReviewThreads', () => {
     expect(threads[2]).toEqual({ id: 't2', isResolved: true, resolvedByLogin: 'reviewer', writerResolverLogin: 'reviewer', isBlocking: false, findingTitle: 'rename var', place: { file: 'src/a.ts', line: 10, markerSlug: 'rename-var' }, fixedOn: ['ab'.repeat(20)], roundReplies: [{ commit: 'ab'.repeat(20), at: '2026-11-06T14:34:11Z' }], answered: true });
     // Only a person's reply with an id counts, so a run queued for it can be found.
     const [withReplies] = await fetchBotReviewThreads(threadsOctokit(jest.fn().mockResolvedValueOnce(makeGraphqlFetchResponse([makeGraphqlFetchThreadNode({
-      id: 't6', replies: [{ body: 'Done.', author: { login: 'alice' }, databaseId: 61 }, { body: 'Fixed in abababa.', author: { login: 'manki-review' }, databaseId: 62 }, { body: 'No id.', author: { login: 'alice' } }],
+      id: 't6', replies: [{ body: 'Done.', author: { login: 'alice' }, databaseId: 61, createdAt: '2026-11-06T14:30:00Z' }, { body: 'Fixed in abababa.', author: { login: 'manki-review' }, databaseId: 62 }, { body: 'No id.', author: { login: 'alice' }, createdAt: '2026-11-06T14:30:00Z' }, { body: 'No time.', author: { login: 'alice' }, databaseId: 63 }],
     })]))), TEST_BOT, 'owner', 'repo', 1);
-    expect(withReplies.personReplies).toEqual([{ id: 61, login: 'alice', body: 'Done.' }]);
+    expect(withReplies.personReplies).toEqual([{ id: 61, login: 'alice', body: 'Done.', at: '2026-11-06T14:30:00Z' }]);
   });
 
   it('reads every page of review threads', async () => {

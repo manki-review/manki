@@ -7053,7 +7053,7 @@ describe('runFullReview orchestration', () => {
 
     // A thread whose reply still waits for its own answer hears there what remains. A command and someone without write
     // access get no such answer, a reply that is not queued had its answer, and a thread that is open again hears it at once.
-    const waiting = (id: string, reply: number, body = 'Fixed in abc.') => ({ id, isResolved: false, isBlocking: false, findingTitle: 'x', personReplies: [{ id: reply, login: 'alice', body }] });
+    const waiting = (id: string, reply: number, body = 'Fixed in abc.', at = '2025-01-01T00:00:00Z') => ({ id, isResolved: false, isBlocking: false, findingTitle: 'x', personReplies: [{ id: reply, login: 'alice', body, at }] });
     const threadsRead = jest.mocked(stateModule.fetchBotReviewThreads);
     const readThreads = threadsRead.getMockImplementation()!;
     threadsRead.mockResolvedValue([waiting('PRRT_abc', 11), waiting('PRRT_ghi', 21, '/manki dismiss'), waiting('PRRT_jkl', 31)]);
@@ -7068,6 +7068,9 @@ describe('runFullReview orchestration', () => {
     expect(await repliedTo(settingsState(false, [], [], [11]))).toEqual(EVERY);
     expect(await repliedTo(settingsState(false, [], [], [12]))).toEqual(EVERY);
     expect(await repliedTo(settingsState())).toEqual(EVERY);
+    // The answer to a reply written after the round's record does not say what that round found.
+    threadsRead.mockResolvedValue([waiting('PRRT_abc', 11, 'Fixed in abc.', '2999-01-01T00:00:00Z')]);
+    expect(await repliedTo(settingsState(false, [], [], [11]))).toEqual(EVERY);
     threadsRead.mockRejectedValue(new Error('GraphQL timeout'));
     expect(await repliedTo(settingsState(false, [], [], [11]))).toEqual(EVERY);
     jest.mocked(authModule.fetchPrState).mockResolvedValue(null);

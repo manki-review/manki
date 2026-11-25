@@ -1847,15 +1847,17 @@ function holdsAtLeast(to: ReviewThread, from: ReviewThread): boolean {
 }
 
 /**
- * Returns the threads with a reply whose own run is still queued and certain to answer it: its writer has write access,
- * and it is no command. That answer says what this round found open. Returns none when any of it cannot be read.
+ * Returns the threads with a reply whose own run is still queued and certain to answer it: it was written before
+ * `judgedAt`, the time of this round's record, its writer has write access, and it is no command. That answer says what
+ * this round found open. Returns none when any of it cannot be read.
  */
-async function threadsAwaitingAnswer({ octokit, bot, owner, repo, prNumber }: ReviewRun): Promise<Set<string>> {
+async function threadsAwaitingAnswer({ octokit, bot, owner, repo, prNumber }: ReviewRun, judgedAt: string): Promise<Set<string>> {
   try {
     const { queuedReplies } = await loadSettings(owner, repo, prNumber);
     if (queuedReplies.size === 0) return new Set();
     const threads = await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber);
-    const queued = threads.flatMap(t => (t.personReplies ?? []).filter(r => queuedReplies.has(r.id) && parseCommand(r.body).type === 'generic').map(r => ({ id: t.id, login: r.login })));
+    const answered = (r: { id: number; body: string; at: string }) => queuedReplies.has(r.id) && Date.parse(r.at) < Date.parse(judgedAt) && parseCommand(r.body).type === 'generic';
+    const queued = threads.flatMap(t => (t.personReplies ?? []).filter(answered).map(r => ({ id: t.id, login: r.login })));
     const writers = new Map<string, boolean>();
     for (const login of new Set(queued.map(r => r.login))) writers.set(login, await hasWriteAccess(octokit, owner, repo, login));
     return new Set(queued.filter(r => writers.get(r.login)).map(r => r.id));
@@ -1867,11 +1869,12 @@ async function threadsAwaitingAnswer({ octokit, bot, owner, repo, prNumber }: Re
 
 /**
  * Tells each thread whose grade a partial fix sets or changes what happened. The round record keeps the grade, so a
- * reply that fails loses only the note. A partly fixed thread of `threadsAwaitingAnswer` hears it in that answer. A partly fixed thread hears what remains, but not again while it already
- * carries that grade and the push changes neither its file nor a file its finding cited. A thread an earlier partial
- * fix lowered hears that it is open again at its own grade.
+ * reply that fails loses only the note. A partly fixed thread hears what remains, but not again while it already
+ * carries that grade and the push changes neither its file nor a file its finding cited. A thread of
+ * `threadsAwaitingAnswer` hears it in that answer. A thread an earlier partial fix lowered hears that it is open again
+ * at its own grade.
  */
-async function replyPartlyFixedThreads(run: ReviewRun, result: ReviewResult): Promise<void> {
+async function replyPartlyFixedThreads(run: ReviewRun, result: ReviewResult, judgedAt: string): Promise<void> {
   const changed = filesChangedByPush(run.interRoundDiff);
   const threads = new Map(run.openThreads.map(t => [t.threadId, t]));
   let awaiting: Promise<Set<string>> | undefined;
@@ -1882,7 +1885,7 @@ async function replyPartlyFixedThreads(run: ReviewRun, result: ReviewResult): Pr
     let body: string;
     if (status === 'partly_addressed' && remaining) {
       if (thread.recordedGrade === grade && run.interRoundDiff !== undefined && !pushTouchesThread(thread, changed)) continue;
-      if ((await (awaiting ??= threadsAwaitingAnswer(run))).has(threadId)) {
+      if ((await (awaiting ??= threadsAwaitingAnswer(run, judgedAt))).has(threadId)) {
         core.info(`Thread ${threadId} is partly fixed, and the queued answer to the reply there says so`);
         continue;
       }
@@ -2525,7 +2528,7 @@ async function runFullReview(
     });
     await replyFixedThreads(run, resolved);
     await closeRaisedThreads(run, result, posted.placements);
-    await replyPartlyFixedThreads(run, result);
+    await replyPartlyFixedThreads(run, result, context.meta.timestamp);
     await replyFixedElsewhere(run, result);
     await replyAnsweredThreads(run, result);
     await completeProgressComment(run, stage, reviewTimeMs, context);
