@@ -50,13 +50,14 @@ export function withoutOutcomeOpener(answer: string): string {
 
 /**
  * Returns the lines that lead an unproven "Fixed": the bold state, then why no line counts the fix. Only an open thread
- * whose file a review reads hears of the next review.
+ * whose file a review reads hears of the next review. An open guarded thread gets no ask, since the note below the answer
+ * names who closes it.
  */
 function unsettledAnswer(scope: FixScope, thread: ThreadState): string {
   const { rebased, guarded, reviewable } = scope;
   const state = thread === 'open' && reviewable ? `Not settled yet: the next review ${rebased ? '' : 'after a push '}checks the fix.`
     : thread === 'resolved' ? 'Not settled by this reply.'
-      : guarded ? 'Not settled yet.' : `Not settled yet: ${maintainerShould('decide', thread)}.`;
+      : guarded && thread === 'open' ? 'Not settled yet.' : `Not settled yet: ${maintainerShould('decide', thread)}.`;
   return `**${state}** ${unprovenFix(scope, thread)}`;
 }
 

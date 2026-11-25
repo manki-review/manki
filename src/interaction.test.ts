@@ -1377,7 +1377,7 @@ describe('handleReviewCommentReply', () => {
   // shows no outcome word: nothing settles, and every reader takes it as an "Unverified.".
   const NOT_TIED = 'This finding is not tied to a file, so a reply cannot show a fix.';
   const BLOCKS = `\n\nThis is a blocking finding, so the thread stays open until ${REVIEW_OR_CLEARED}`;
-  it.each<[string, FindingKind, { resolved?: boolean; sender?: string; nowhere?: boolean; evidence?: boolean; list?: boolean; closed?: boolean; closedFile?: boolean; unknown?: 'not_descendant' | 'unreadable' }, keyof typeof NOT_SETTLED, string, string]>([
+  it.each<[string, FindingKind, { resolved?: boolean; sender?: string; nowhere?: boolean; evidence?: boolean; list?: boolean; closed?: boolean; closedFile?: boolean; byAuthor?: boolean; unknown?: 'not_descendant' | 'unreadable' }, keyof typeof NOT_SETTLED, string, string]>([
     ['an open warning thread', 'warning', {}, 'push', `${noLine('`src/file.ts`')} ${WHOLE_PUSH}`, `\n\n${HOLDS}`],
     // No review reads a file `closed_paths` closes, so the thread is left to a maintainer.
     ['an open warning thread on a closed file', 'warning', { closedFile: true }, 'maintainer', noLine('`src/file.ts`'), `\n\n${HOLDS}`],
@@ -1387,6 +1387,8 @@ describe('handleReviewCommentReply', () => {
     ['an open blocker thread, with a list', 'blocker', { list: true }, 'push', noLine('`src/file.ts`'), `\n\n${LISTED}\n\n${MAINTAINER}${BLOCKS}`],
     ['a resolved warning thread that still holds', 'warning', { resolved: true }, 'decides', noLine('`src/file.ts`'), `\n\n${HOLDS}`],
     ['a resolved blocker thread', 'blocker', { resolved: true }, 'resolved', noLine('`src/file.ts`'), ''],
+    // A blocker thread the PR author resolved still blocks, and no note below names who clears it, so the lead does.
+    ['a blocker thread the PR author resolved', 'blocker', { resolved: true, byAuthor: true }, 'decides', noLine('`src/file.ts`'), ''],
     ['a warning tied to no file', 'warning', { nowhere: true }, 'maintainer', NOT_TIED, `\n\n${HOLDS}`],
     ['a blocker tied to no file that cited one', 'blocker', { nowhere: true, evidence: true }, 'open', noLine('`src/util.ts`'), `\n\nThis is a blocking finding, so the thread stays open until ${CLEARED_BY}`],
     ['a warning tied to no file that cited one', 'warning', { nowhere: true, evidence: true }, 'maintainer', noLine('`src/util.ts`'), `\n\n${HOLDS}`],
@@ -1394,7 +1396,7 @@ describe('handleReviewCommentReply', () => {
     ['a warning tied to no file, after a rebase', 'warning', { unknown: 'not_descendant', nowhere: true }, 'maintainer', NOT_TIED, `\n\n${HOLDS}`],
     ['a closed PR whose comparison fails', 'warning', { closed: true, unknown: 'unreadable' }, 'decides', UNREAD, ''],
     ['a closed PR', 'warning', { closed: true }, 'decides', noLine('`src/file.ts`'), ''],
-  ])('says where a reply counts a fix when the cited line is in another file, and settles nothing: %s', async (_name, kind, { resolved = false, sender = 'pr-author', nowhere = false, evidence = false, list = false, closed = false, closedFile = false, unknown }, threadState, reason, notes) => {
+  ])('says where a reply counts a fix when the cited line is in another file, and settles nothing: %s', async (_name, kind, { resolved = false, sender = 'pr-author', nowhere = false, evidence = false, list = false, closed = false, closedFile = false, byAuthor = false, unknown }, threadState, reason, notes) => {
     const text = `**${NOT_SETTLED[threadState]}** ${reason}\n\nThe guard now runs first.${notes}`;
     setContext({
       comment: { id: 1, body: `${CSV} Fixed in abc1234.`, user: { type: 'User' }, in_reply_to_id: 99, author_association: 'OWNER' },
@@ -1410,7 +1412,7 @@ describe('handleReviewCommentReply', () => {
     if (unknown) jest.mocked(ghUtils.readChangesSince).mockResolvedValueOnce({ unknown });
     jest.mocked(client.sendMessage).mockResolvedValue({ content: structured('Fixed. The guard now runs first.', { ...(list && CONFIRMED), proof: ['src/other.ts:10'] }) });
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{
-      id: 'PRRT_this', rootCommentId: 99, isResolved: resolved, ...(resolved && { resolvedByLogin: 'manki-review[bot]', addressed: true }),
+      id: 'PRRT_this', rootCommentId: 99, isResolved: resolved, ...(resolved && (byAuthor ? { resolvedByLogin: 'pr-author' } : { resolvedByLogin: 'manki-review[bot]', addressed: true })),
       isBlocking: kind === 'blocker', ...(kind === 'security' && { isSecurity: true }), ...(kind === 'warning' && { isWarning: true as const }), findingTitle: 'This',
     }]);
     jest.mocked(state.authorResolvedNote).mockResolvedValue(undefined);

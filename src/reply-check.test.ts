@@ -268,13 +268,14 @@ describe('checkReply', () => {
     ['a resolved thread that holds nothing, after a rebase', 'resolved', rebasedOn(true), `**Not settled by this reply.** ${REBASED}`],
     ['a resolved guarded thread that holds nothing, after a rebase', 'resolved', { ...rebasedOn(true), guarded: true }, `**Not settled by this reply.** ${REBASED}`],
     ['a thread that still holds or was not read, after a rebase', undefined, rebasedOn(true), `**Not settled yet: a maintainer should decide.** ${REBASED}`],
-    ['a guarded thread that still holds or was not read, after a rebase', undefined, { ...rebasedOn(true), guarded: true }, `**Not settled yet.** ${REBASED}`],
+    // Nothing below the answer names who settles a guarded thread that is not open, so the lead does.
+    ['a guarded thread that still holds or was not read, after a rebase', undefined, { ...rebasedOn(true), guarded: true }, `**Not settled yet: a maintainer should decide.** ${REBASED}`],
     // Without a rebase, the next review after a push reads an open thread tied to a file, and only one that is not guarded hears that it reads the whole push.
     ['an open thread', 'open', {}, `**Not settled yet: the next review after a push checks the fix.** ${NO_LINE} The next review after a push checks the whole push, also other files.`],
     ['an open guarded thread', 'open', { guarded: true }, `**Not settled yet: the next review after a push checks the fix.** ${NO_LINE}`],
     ['a resolved thread that holds nothing', 'resolved', {}, `**Not settled by this reply.** ${NO_LINE}`],
     ['a thread that still holds or was not read', undefined, {}, `**Not settled yet: a maintainer should decide.** ${NO_LINE}`],
-    ['a guarded thread that still holds or was not read', undefined, { guarded: true }, `**Not settled yet.** ${NO_LINE}`],
+    ['a guarded thread that still holds or was not read', undefined, { guarded: true }, `**Not settled yet: a maintainer should decide.** ${NO_LINE}`],
     ['an open thread whose change could not be read', 'open', { unknown: 'unreadable' }, '**Not settled yet: the next review after a push checks the fix.** I could not read what this PR changed since the finding was posted. The next review after a push checks the whole push, also other files.'],
     ['an open thread on a file `closed_paths` closes', 'open', { reviewable: false }, `**Not settled yet: a maintainer should decide and resolve this thread.** ${NO_LINE}`],
     ['an open guarded thread on a file `closed_paths` closes', 'open', { reviewable: false, guarded: true }, `**Not settled yet.** ${NO_LINE}`],
