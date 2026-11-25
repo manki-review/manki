@@ -195,6 +195,10 @@ export const SCOPE_READER_NAME = 'Scope reader';
 export const SCOPE_DOUBT_TITLE = 'This change may not be useful as it stands';
 /** The title of the warning `review.scope_blocks` posts for a split. Fixed, so a repeat folds into its thread. */
 export const SCOPE_SPLIT_TITLE = 'This PR mixes topics that belong in separate PRs';
+/** Whether `finding` is the split the scope reader proposes. */
+export function isScopeSplit(finding: Pick<Finding, 'title' | 'reviewers'>): boolean {
+  return finding.reviewers.includes(SCOPE_READER_NAME) && finding.title === SCOPE_SPLIT_TITLE;
+}
 /** Returns the reviewer name of a round's sweep number `n`, which the findings of that sweep carry. */
 export const sweepName = (n: number): string => `Sweep ${n}`;
 /** Whether `reviewer` is the name of a sweep. */
