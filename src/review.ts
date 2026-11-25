@@ -22,7 +22,8 @@ import { combineVerdictReports, runVerdictReader } from './verdict';
 import { buildRepositoryRules, CLAIMS_MISSING_RULE, COST_SCALE_RULE, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, PRE_EXISTING_RULE, ROOT_CAUSE_FIX_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
 import type { AnswerStore } from './stored-answers';
-import { resolveModel } from './config';
+import { DEFAULT_MIN_WARNING_SCORE, resolveModel } from './config';
+import { mayBeLowered, rateWarnings, RATING_TIMEOUT_MS, withImportance } from './importance';
 import { ChangeUnit, listClaimLines, listRelatedUses, listUsesOutsideDiff, MappedChange, relatedQuestions, TEST_PATH } from './symbol-uses';
 import { EarlierAnswer, EarlierAnswers, runComparisons, runPatternChecks, runRelatedChecks } from './compare';
 import { extractPrClaims, prClaimsRecord, runClaimChecks } from './pr-claims';
@@ -146,6 +147,34 @@ function unprovenWarningReason(f: Finding, rules: RulesMode | undefined, wouldBl
   if (lacksTrigger(f) && unpostedForTrigger(f, wouldBlock)) return 'no_trigger';
   const keptInBlockerCell = staysWarningIfConfirmed(f) && !f.refutation && !f.pairRefutation;
   return wouldBlock(f) || isRareClaim(f.cell) || keptInBlockerCell ? undefined : unprovenReason(f);
+}
+
+/** Returns the entries of earlier rounds that recorded `f`: the ones the judge's `sameAs` names, or with the same title and place. */
+function earlierEntriesOf(f: Finding, priorEntries: readonly FindingFingerprintEntry[]): FindingFingerprintEntry[] {
+  return priorEntries.filter(e => e.severity !== 'ignore' && ((!!f.sameAs && (f.sameAs === stringifyFindingFingerprint(e.fingerprint) || f.sameAs === e.sameAs))
+    || sameProblem({ title: e.title ?? '', file: e.fingerprint.file, line: e.fingerprint.lineStart }, f)));
+}
+
+/** Whether one of `entries` was a blocker or is guarded, so no score lowers a finding that restates it. */
+function restatesGraver(entries: readonly FindingFingerprintEntry[]): boolean {
+  return entries.some(e => e.severity === 'blocker' || e.severity === 'unknown' || isGuardedFinding(e.tags, e.reviewers));
+}
+
+/**
+ * Returns the warning `f` with the importance an earlier round gave it, so no push changes it. It becomes a note again
+ * only when that round also posted it as one.
+ */
+function withEarlierImportance(f: Finding, priorEntries: readonly FindingFingerprintEntry[], minScore: number, rules: RulesMode | undefined): Finding {
+  if (!mayBeLowered(f, rules)) return f;
+  const entries = earlierEntriesOf(f, priorEntries);
+  const last = [...entries].reverse().find(e => e.importance);
+  if (!last?.importance || restatesGraver(entries)) return f;
+  return last.severity === 'note' ? withImportance(f, last.importance, minScore) : { ...f, importance: last.importance };
+}
+
+/** Whether the round rates `f`: a warning that `mayBeLowered`, with no earlier score, no place in an earlier thread or review body and no earlier blocker it restates. */
+function getsRating(f: Finding, priorEntries: readonly FindingFingerprintEntry[], rules: RulesMode | undefined): boolean {
+  return mayBeLowered(f, rules) && !f.importance && !f.threadId && !f.answeredIn && f.raisedIn === undefined && !f.raises && !restatesGraver(earlierEntriesOf(f, priorEntries));
 }
 
 const UNRELATED_RULE = 'never report a change only for being unrelated to the PR\'s purpose';
@@ -1096,8 +1125,8 @@ export async function runReview(
   const noTimeFor = (call: Pick<RoundNotStarted, 'stage' | 'agent'>, endsRound = true): string | undefined => {
     if (stopped) return stopped;
     const leftMs = deadline === undefined ? Infinity : deadline - Date.now();
-    // A vote may run for its whole timeout and still leave the later calls their time.
-    const minMs = call.stage === 'dedup' ? MIN_DEDUP_MS : call.stage === 'vote' ? MIN_JUDGE_MS + VOTE_TIMEOUT_MS : MIN_JUDGE_MS;
+    // A vote or a rating may run for its whole timeout and still leave the later calls their time.
+    const minMs = call.stage === 'dedup' ? MIN_DEDUP_MS : call.stage === 'vote' ? MIN_JUDGE_MS + VOTE_TIMEOUT_MS : call.stage === 'rating' ? MIN_JUDGE_MS + RATING_TIMEOUT_MS : MIN_JUDGE_MS;
     if (leftMs >= minMs) return undefined;
     const reason = `the round has ${formatDuration(Math.max(0, leftMs))} left, less than the ${formatDuration(minMs)} a ${lateCallName(call)} starts with`;
     skip({ kind: 'call', ...call, reason });
@@ -2265,6 +2294,11 @@ export async function runReview(
   // Unlinked before the threads are graded, so the grades, the fold and the verdict all see the finding on its own.
   const priorThreads = new Map(priorFindingsFlat.flatMap(e => e.threadId ? [[stringifyFindingFingerprint(e.fingerprint), e.threadId] as const] : []));
   const guard = (f: Finding): Finding => withoutUnfitThreads(f, openThreadIndex, previousFindings, priorThreads, priorFindingsFlat);
+  const minScore = config.review?.min_warning_score ?? DEFAULT_MIN_WARNING_SCORE;
+  // Before any finding is linked to an earlier one, so a warning that restates a note the score lowered joins that note.
+  // Without the threads nothing is matched to an earlier round, so no score is kept or given.
+  const matchable = openThreads !== null || sortedPriorRounds.length === 0;
+  if (matchable) finalFindings = finalFindings.map(f => withEarlierImportance(f, priorFindingsFlat, minScore, config.review?.rules));
   finalFindings = finalFindings.map(guard);
   const fixedElsewhere = refutation
     ? await confirmPushedFixes(refutation.client, refutation.pair, fixesElsewhere(judgeThreadEvaluations, openThreadIndex, pushChangedFiles).filter(({ thread }) =>
@@ -2303,6 +2337,21 @@ export async function runReview(
   const relisting = openThreads != null ? relistThreadlessBlockers(finalFindings, priorFindingsFlat, priorRoundLookup) : { findings: finalFindings, restated: [] };
   finalFindings = relisting.findings;
   const unposted = [...proven.unposted, ...relisting.restated];
+  // After the steps that hide a warning, so only a posted one is rated, and before the outcome, which reads the grades.
+  if (workspace && minScore > 1 && matchable) {
+    const rated = await rateWarnings(finalFindings.filter(f => getsRating(f, priorFindingsFlat, config.review?.rules)), {
+      workspace, diff: diffWithLockfiles, client: lateFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'rating', undefined, false),
+    });
+    finalFindings = finalFindings.map(f => {
+      const importance = rated.get(f);
+      return importance ? withImportance(f, importance, minScore) : f;
+    });
+  }
+  const scored = new Map(finalFindings.flatMap(f => f.importance ? [[findingKey(f), f] as const] : []));
+  allJudgedFindings = allJudgedFindings?.map(f => {
+    const { severity, gradePath, importance } = scored.get(findingKey(f)) ?? {};
+    return importance && severity && f.severity !== 'ignore' ? { ...f, severity, importance, ...(gradePath && { gradePath }) } : f;
+  });
   const decided = determineOutcome(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, threadEvaluations, priorRoundLookup);
   let outcome: RoundOutcome = decided.outcome;
   let { verdictReason, verdictTrace } = decided;
@@ -2540,6 +2589,7 @@ function lateCallName({ stage, agent }: Pick<RoundNotStarted, 'stage' | 'agent'>
   if (stage === 'verdict') return 'verdict reader call';
   if (stage === 'sweep') return 'sweep call';
   if (stage === 'vote') return 'vote call';
+  if (stage === 'rating') return 'rating call';
   if (stage === 'dedup') return agent === 'sweep' ? 'dedup call on the sweep\'s findings' : 'dedup call';
   if (agent === 'refute') return 'refuter call';
   if (agent === 'refute_pair') return 'second refuter call';

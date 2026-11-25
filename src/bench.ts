@@ -16,8 +16,8 @@ import { formatFinderError, NAMED_AGAIN_REASON, UNCONFIRMED_FIX_ENDING, WORKAROU
 import { buildLLMClient } from './review-clients';
 import { AnswerStore, holdsEveryCall, ReplayLevel, StoredAnswers } from './stored-answers';
 import {
-  CELL_GRADES, CheckStatus, Doubt, Finding, finderGrade, FinderReplay, FinderError, FindingFingerprintEntry, FindingSeverity, GradeCell, GradeChange, GradeStep, gradedAbove, isGradeCell, isSecondReadName, isSecurityFinding, isSweepName, leftOutUnproven,
-  migrateLegacySeverity, migrateStoredSeverities, PRE_EXISTING_TAG, Refutation, RoundContext, RoundRawFinding, RoundRelatedRepo, SCOPE_READER_NAME, SEVERITY_ORDER, SideCheckKind, ThreadEvaluation, UNPOSTED_REASONS, UnpostedReason,
+  CELL_GRADES, CheckStatus, Doubt, Finding, finderGrade, IMPORTANCE_SCORES, isImportance, FinderReplay, FinderError, FindingFingerprintEntry, FindingSeverity, GradeCell, GradeChange, GradeStep, gradedAbove, isGradeCell, isSecondReadName, isSecurityFinding, isSweepName, leftOutUnproven,
+  migrateLegacySeverity, migrateStoredSeverities, PRE_EXISTING_TAG, Refutation, RoundContext, RoundRawFinding, RoundRelatedRepo, SCOPE_READER_NAME, scoresOf, SEVERITY_ORDER, SideCheckKind, ThreadEvaluation, UNPOSTED_REASONS, UnpostedReason,
   UnprovenReason, VERDICT_READER_NAME, VerdictReason,
 } from './types';
 import { runGit } from './workspace';
@@ -163,6 +163,8 @@ function parsePriorRound(raw: unknown, file: string): EarlierRound {
     if (doubts !== undefined && !(Array.isArray(doubts) && doubts.every(validDoubt))) {
       throw caseError(where, '`doubts` must be a list of mappings with a `premise`, a `decides` of defect or grade, and `consequence: true` only beside `decides: grade`');
     }
+    const { importance } = f;
+    if (importance !== undefined && !isImportance(importance)) throw caseError(where, `\`importance\` must have a whole number from 1 to 10 as ${IMPORTANCE_SCORES.join(', ')}`);
     const [description, howToFix, suggestedFix] = PRIOR_FIELDS.map((field) => {
       if (f[field] !== undefined && typeof f[field] !== 'string') throw caseError(where, `\`${field}\` must be a string`);
       return f[field] as string | undefined;
@@ -172,6 +174,7 @@ function parsePriorRound(raw: unknown, file: string): EarlierRound {
       ...(f.grade_if_confirmed !== undefined && { gradeIfConfirmed: f.grade_if_confirmed as KeySeverity }),
       ...(cell && { cell: { row: cell.row, column: cell.column } }),
       ...(doubts && { doubts: doubts.map((d): Doubt => ({ premise: d.premise as string, decides: d.decides as Doubt['decides'], ...(d.consequence === true && { consequence: true }) })) }),
+      ...(importance && { importance: scoresOf(importance) }),
       ...(description && { description }), ...(howToFix && { howToFix }), ...(suggestedFix && { suggestedFix }), ...(f.security === true && { security: true }),
       ...(f.disproved === true && { disproved: true }),
       ...(f.posted === 'thread' && { thread: f.state as EarlierFinding['thread'] }),
@@ -476,10 +479,12 @@ interface GradeRoute {
    * whether the quote of its line held (`held`), named a line that does not hold it (`missed`) or named no line (`none`).
    */
   vote?: { grade: FindingSeverity; answer: 'backs' | 'declines'; quote: 'held' | 'missed' | 'none' };
+  /** The overall importance from 1 to 10 of a rated warning, and whether it lowered the warning to a note. */
+  importance?: { overall: number; lowered: boolean };
 }
 
 // The steps that only come after the vote, so the first of them starts from the grade the vote saw.
-const AFTER_VOTE: readonly GradeChange[] = ['other_finder', 'pre_existing', 'own_fix'];
+const AFTER_VOTE: readonly GradeChange[] = ['other_finder', 'pre_existing', 'own_fix', 'importance'];
 
 /** The kinds of step that report findings, in pipeline order, by the label a report prints. */
 const RAISED_BY = {
@@ -1022,6 +1027,7 @@ function gradeRoute(f: Finding): GradeRoute {
       answer: f.otherFinderVote.declined ? 'declines' as const : 'backs' as const,
       quote: !f.otherFinderVote.declined ? 'held' as const : f.otherFinderVote.line ? 'missed' as const : 'none' as const,
     } }),
+    ...(f.importance && { importance: { overall: f.importance.overall, lowered: !!gradePath?.some(step => step.by === 'importance') } }),
   };
 }
 
@@ -1884,6 +1890,23 @@ export function formatWarningSources(variants: VariantReport[]): string {
 }
 
 /**
+ * Returns one line per variant and set with the rated warnings in the complete runs: how many were rated and how many
+ * the score lowered to a note, each with how many match a key item. It holds counts only, so it covers hold-out cases.
+ * Returns an empty string when no run recorded a rating.
+ */
+export function formatImportance(variants: VariantReport[]): string {
+  return variants.flatMap(v => setSummaries(v).flatMap(({ label, set }) => {
+    const rated = v.cases.filter(c => c.set === set).flatMap(c => c.runs.filter(run => run.complete).flatMap(run => run.findings.flatMap((f, n) => (
+      f.route?.importance ? [{ ...f.route.importance, matched: matchedKeyGrade(c, run, n) !== undefined }] : []
+    ))));
+    if (rated.length === 0) return [];
+    const lowered = rated.filter(r => r.lowered);
+    const matched = (some: typeof rated) => some.filter(r => r.matched).length;
+    return [`Importance, ${label ? `${v.name} ${label}` : v.name}: ${rated.length} warnings rated (${matched(rated)} matched), ${lowered.length} lowered to a note (${matched(lowered)} matched).`];
+  })).join('\n');
+}
+
+/**
  * Returns one line per variant and set with the other finder's votes in the complete runs: how many backed and declined a
  * blocker and a warning, how many of those findings match a key item, and how many declines named a line whose quote
  * did not hold. It holds counts only, so it covers hold-out cases. Returns an empty string when no run recorded a vote.
@@ -1953,7 +1976,7 @@ export function formatBenchSummary(report: BenchReport): string {
     lines.push('');
   }
   lines.push(formatComparison(report.variants));
-  for (const table of [formatBlockerRoutes(report.variants), formatWarningSources(report.variants), formatVotes(report.variants)]) if (table) lines.push('', table);
+  for (const table of [formatBlockerRoutes(report.variants), formatWarningSources(report.variants), formatVotes(report.variants), formatImportance(report.variants)]) if (table) lines.push('', table);
   return `${lines.join('\n')}\n`;
 }
 

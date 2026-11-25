@@ -18,7 +18,7 @@ import { buildRoundContext } from './round-context';
 import { makeScratchDir } from './tool-install';
 import type { AnswerStore } from './stored-answers';
 import { DISPROVED_TAG, SECURITY_TAG, threadWarns } from './types';
-import type { ConfigSource, Doubt, Finding, FinderReplay, FindingSeverity, GradeCell, OpenThread, ParsedDiff, ReviewConfig, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RulesMode } from './types';
+import type { ConfigSource, Doubt, Finding, FinderReplay, FindingSeverity, GradeCell, Importance, OpenThread, ParsedDiff, ReviewConfig, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RulesMode } from './types';
 import { closePaths, fetchWorkspace, gitEnv, runGit } from './workspace';
 
 
@@ -74,6 +74,8 @@ export interface EarlierFinding {
   /** The cell and the doubts behind `gradeIfConfirmed`, when the earlier round recorded them. */
   cell?: GradeCell;
   doubts?: Doubt[];
+  /** The scores of a warning the earlier round rated. */
+  importance?: Importance;
   description?: string;
   howToFix?: string;
   suggestedFix?: string;
@@ -308,7 +310,7 @@ async function followUpInputs(
   const posted: Finding[] = earlier.findings.map(f => ({
     severity: f.severity, title: f.title, file: f.file, line: f.line, description: f.description ?? '', reviewers: [],
     ...(f.howToFix && { howToFix: f.howToFix }), ...(f.suggestedFix && { suggestedFix: f.suggestedFix }), ...(f.gradeIfConfirmed && { gradeIfConfirmed: f.gradeIfConfirmed }),
-    ...(f.cell && { cell: f.cell }), ...(f.doubts && { doubts: f.doubts }), ...((f.security || f.disproved) && { tags: [...(f.security ? [SECURITY_TAG] : []), ...(f.disproved ? [DISPROVED_TAG] : [])] }), ...(f.thread && { threadId: f.id }),
+    ...(f.cell && { cell: f.cell }), ...(f.doubts && { doubts: f.doubts }), ...(f.importance && { importance: f.importance }), ...((f.security || f.disproved) && { tags: [...(f.security ? [SECURITY_TAG] : []), ...(f.disproved ? [DISPROVED_TAG] : [])] }), ...(f.thread && { threadId: f.id }),
   }));
   const blocks = posted.some(f => f.severity === 'blocker');
   // A pull request round reads a thread as fixed from the earlier judge's `addressed` evaluation.

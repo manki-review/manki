@@ -221,15 +221,15 @@ export function isSecurityFinding(tags: string[] | undefined, priorReviewers: Re
 
 /**
  * Whether a step that leaves out notes may leave the finding out of the review: only a note, and never a security
- * finding, a tool alert or a note the other finder's vote lowered from a warning (`votedDown`).
+ * finding, a tool alert or a note that was lowered from a warning (`loweredFromWarning`).
  */
 export function canLeaveOut(f: Finding): boolean {
-  return isNote(f.severity) && !f.toolSource && !isSecurityFinding(f.tags, f.reviewers) && !votedDown(f);
+  return isNote(f.severity) && !f.toolSource && !isSecurityFinding(f.tags, f.reviewers) && !loweredFromWarning(f);
 }
 
-/** Whether the other finder's vote lowered `f` to a note, which stays in the review so one vote never removes a warning. */
-export function votedDown(f: Pick<Finding, 'severity' | 'gradePath'>): boolean {
-  return isNote(f.severity) && !!f.gradePath?.some(step => step.by === 'other_finder' && step.to === 'note');
+/** Whether the other finder's vote or the importance score lowered `f` to a note, which stays in the review so one answer never removes a warning. */
+export function loweredFromWarning(f: Pick<Finding, 'severity' | 'gradePath'>): boolean {
+  return isNote(f.severity) && !!f.gradePath?.some(step => (step.by === 'other_finder' || step.by === 'importance') && step.to === 'note');
 }
 
 /**
@@ -457,6 +457,8 @@ export interface Finding {
   originCheck?: OriginCheck;
   /** The vote of a finder that did not report the finding, which `otherFinderVotes` asks on a `soleFinder` blocker or warning. */
   otherFinderVote?: OtherFinderVote;
+  /** How important the finding is, set on a warning that `rateWarnings` rated in this round or an earlier one. */
+  importance?: Importance;
   /** The line of an origin answer's `fixedElsewhere`, on a pre-existing finding posted as a note because the PR fixes the same failure there. */
   fixedElsewhere?: string;
   /** The id of the memory suppression that hid the finding. */
@@ -977,7 +979,7 @@ export interface RoundSlicing {
 /** What changed a finding's severity. */
 export type GradeChange =
   | 'judge' | 'rule' | 'unproven' | 'build_claim' | 'refutation' | 'in_pr_suppression' | 'own_proposal' | 'ratchet'
-  | 'resolved_thread' | 'pre_existing' | 'own_fix' | 'other_finder' | 'unconfirmed_raise';
+  | 'resolved_thread' | 'pre_existing' | 'own_fix' | 'other_finder' | 'importance' | 'unconfirmed_raise';
 
 /** One change of a finding's severity. */
 export interface GradeStep {
@@ -1149,6 +1151,32 @@ export interface OtherFinderVote {
   /** Whether the answer named no line, or one the head does not hold the quoted code near. */
   declined: boolean;
   model?: string;
+}
+
+export const IMPORTANCE_SCORES = ['trigger', 'introduced', 'matters', 'overall'] as const;
+
+/** The scores of a warning, each a whole number from 1 to 10. Only `overall` decides whether it is lowered. */
+export interface Importance {
+  overall: number;
+  /** How easily it is triggered. */
+  trigger: number;
+  /** How clearly the PR introduces it. */
+  introduced: number;
+  /** How much it matters when it happens. */
+  matters: number;
+  /** Why `overall`, in one sentence of the model. */
+  reason?: string;
+}
+
+/** Whether `value` holds the scores of an `Importance`. */
+export function isImportance(value: unknown): value is Importance {
+  const scores = value as Record<string, unknown> | null | undefined;
+  return IMPORTANCE_SCORES.every(name => Number.isInteger(scores?.[name]) && (scores![name] as number) >= 1 && (scores![name] as number) <= 10);
+}
+
+/** Returns the scores of `importance` without its reason. */
+export function scoresOf({ trigger, introduced, matters, overall }: Importance): Importance {
+  return { trigger, introduced, matters, overall };
 }
 
 export interface OriginCheck {
@@ -1814,6 +1842,8 @@ export interface ReviewRoutingConfig {
   notes?: number;
   /** Whether a broken required rule of the instruction files is graded by its damage alone (`auto`), at least a warning (`warn`) or blocks (`block`). */
   rules?: RulesMode;
+  /** The lowest importance from 1 to 10 a warning keeps its grade with. 1 rates and lowers none. */
+  min_warning_score?: number;
   /** Whether the scope reader's doubt or split is posted as a warning that holds the approval, instead of only listed in the review body. */
   scope_blocks?: boolean;
 }
@@ -2336,6 +2366,7 @@ export interface JudgeDecision {
   listed?: true;
   /** Why the review leaves out a finding the judge kept. */
   unpostedReason?: UnpostedReason;
+  importance?: Importance;
 }
 
 export interface ReviewMetadata {
@@ -3227,6 +3258,8 @@ export interface FindingFingerprintEntry {
   originCheck?: OriginCheck;
   /** Mirrors `Finding.otherFinderVote`. */
   otherFinderVote?: OtherFinderVote;
+  /** Mirrors `Finding.importance`. */
+  importance?: Importance;
   /** Mirrors `Finding.gradeIfConfirmed`. */
   gradeIfConfirmed?: FindingSeverity;
   /** Mirrors `Finding.judgeIfConfirmed`. */
@@ -3389,7 +3422,7 @@ export interface ReplyDecision {
 export interface RoundUsage extends RoundUsageStage {
   /** Wall-clock time of the review run, from its start to the review it posts. `durationMs` is the time spent in model calls. */
   wallClockMs?: number;
-  perStage?: Partial<Record<'planner' | 'reviewer' | 'compare' | 'claims' | 'claim_terms' | 'claim_check' | 'fixes' | 'fix_check' | 'related_check' | 'pattern_check' | 'sweep' | 'judge' | 'vote' | 'dedup' | 'verdict' | 'scope' | 'related' | 'translate', RoundUsageStage>>;
+  perStage?: Partial<Record<'planner' | 'reviewer' | 'compare' | 'claims' | 'claim_terms' | 'claim_check' | 'fixes' | 'fix_check' | 'related_check' | 'pattern_check' | 'sweep' | 'judge' | 'vote' | 'rating' | 'dedup' | 'verdict' | 'scope' | 'related' | 'translate', RoundUsageStage>>;
   perModel?: Record<string, RoundUsageStage>;
   llmCalls?: LLMCall[];
   /** The newest reading of each subscription usage window the round's calls reported. */
