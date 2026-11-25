@@ -107,6 +107,19 @@ describe('checkOrigins', () => {
     // Each check that finds the failure older than the PR reports 1, so the progress comment can count them.
     const older = progress.ended.mock.calls.reduce((n: number, [found]: [number]) => n + found, 0);
     expect([older, checked.filter(f => foundOnBase(f)).length]).toEqual([2, 2]);
+    // A worsened answer counts as the same case only when it says so itself, with lines that would let a pre-existing answer stand.
+    const worse = { ...same, origin: 'worsened', new_case: 'none' };
+    const named = { case: ' A sum over 1000 throws. ', head: ['src/api.ts:9'], base: ['src/api.ts:8'] };
+    const worsened: Record<string, unknown> = {
+      'Same case': worse, 'No base line': { ...worse, base: [] }, 'A base line of the head': { ...worse, base: ['src/math.ts:2', 'src/api.ts:9'] }, 'Not at the flagged line': { ...worse, base: ['src/math.ts:1'] },
+      'Not said': { ...worse, new_case: undefined }, 'Null': { ...worse, new_case: null }, 'Empty': { ...worse, new_case: {} }, 'Another word': { ...worse, new_case: 'no' },
+      'New case': { ...worse, new_case: named }, 'New case not at the base': { ...worse, new_case: { ...named, base: ['src/api.ts:9'] } }, 'New case without its text': { ...worse, new_case: { ...named, case: 5 } },
+      'Not worsened': { ...worse, origin: 'introduced' },
+    };
+    const worsenedChecks = (await Promise.all(Object.keys(worsened).map(title => checkOrigins(originClient(worsened, 'm'), [finding(title)], { workspace: root, diff })))).map(([f]) => f);
+    expect(worsenedChecks.map(f => [f.title, f.originCheck!.answers[0].verdict, f.originCheck!.answers[0].sameCase ?? false, f.originCheck!.answers[0].newCase])).toEqual(
+      Object.keys(worsened).map(title => [title, title === 'Not worsened' ? 'introduced' : 'worsened', title === 'Same case', title === 'New case' ? { ...named, case: 'A sum over 1000 throws.' } : undefined]),
+    );
     // The message shows the claim as one to check, the other files the PR changes, and the PR's change to a cited file.
     const message = (title: string) => client.calls.find(c => c.user.includes(`: ${title}\n`))!.user;
     expect(message('Claimed older')).toContain("- **A reviewer's claim that it is older than this PR**, to check: The sum never had a bound.");
@@ -115,6 +128,7 @@ describe('checkOrigins', () => {
     expect(message('In a file the PR added')).toContain("## The PR's Change to the Cited Files");
     expect(client.calls[0].system).toContain("A failure that comes from what this PR added to a line, such as a new argument, is the PR's own.");
     expect(client.calls[0].system).toContain('`fixed_elsewhere_in_pr`');
+    expect(client.calls[0].system).toContain('More memory, time or work for a case that fails at the base too, or that case happening more often, is none, also when a limit lies between the two.');
     expect(client.calls[0].system).toContain('a new caller of old code that reaches a crash, a wrong result or a security hole.');
     expect(client.calls[0].system).toContain('When the PR\'s new path runs existing work no more often and on no larger input than a path at the base already runs it for the same input, the cost is pre_existing');
     expect(client.calls[0].system).toContain('A cost that outside input can now trigger through the new caller, and could not trigger at the base, is a security hole such as resource exhaustion, and stays introduced.');
@@ -242,6 +256,29 @@ describe('checkOrigins', () => {
     for (const other of [{ verdict: 'introduced' as const, reason: 'r' }, { verdict: 'worsened' as const, reason: 'r' }]) {
       const disputed = withAnswers([proven('a'), { ...other, model: 'b' }], {}, true);
       expect([sameOnBase(disputed), oneCheckOnBase(disputed), foundOnBase(disputed)]).toEqual([undefined, undefined, undefined]);
+    }
+    // A worsened answer without a new failing case agrees only on a warning that is not guarded, beside one on another
+    // model that finds the failure at the base. The finding then goes on that one's reason.
+    const sameCase = (model?: string): OriginAnswer => ({ ...proven(model), verdict: 'worsened', sameCase: true });
+    for (const answers of [[proven('a'), sameCase('b')], [sameCase('b'), proven('a')]]) {
+      // A finder's blocker the judge graded a warning counts as a warning, and so does a warning posted as a note by this rule.
+      const judged = { from: 'blocker' as const, to: 'warning' as const, by: 'judge' as const };
+      for (const overrides of [{}, { reviewerSeverity: 'blocker' as const, gradePath: [judged] }, { severity: 'note' as const, gradePath: [judged, { from: 'warning' as const, to: 'note' as const, by: 'pre_existing' as const }] }]) {
+        expect(foundOnBase(withAnswers(answers, overrides, true))).toEqual(proven('a'));
+      }
+      const keptByRule: Array<Partial<Finding>> = [
+        { severity: 'blocker' }, { severity: 'note' }, { tags: ['security'] }, { tags: ['disproved-blocker'] }, { gradeIfConfirmed: 'blocker' },
+        { gradePath: [{ from: 'blocker', to: 'warning', by: 'unproven' }] }, { gradePath: [{ from: 'warning', to: 'blocker', by: 'judge' }, { from: 'blocker', to: 'warning', by: 'refutation' }] },
+        { gradePath: [{ from: 'blocker', to: 'warning', by: 'pre_existing' }] },
+      ];
+      for (const overrides of keptByRule) {
+        const kept = withAnswers(answers, overrides);
+        expect([foundOnBase(kept), oneCheckOnBase(kept)]).toEqual([undefined, undefined]);
+      }
+    }
+    for (const answers of [[sameCase('a')], [sameCase('a'), sameCase('b')], [proven('a'), sameCase('a')], [proven('a'), sameCase()], [proven('a'), { ...sameCase('b'), sameCase: undefined }], [proven('a'), sameCase('b'), { ...proven('c'), verdict: 'unsure' as const }]]) {
+      const kept = withAnswers(answers);
+      expect([foundOnBase(kept), oneCheckOnBase(kept)]).toEqual([undefined, undefined]);
     }
     expect(oneCheckOnBase(withAnswers([{ ...proven('a'), commit: undefined }]))).toBeUndefined();
     expect(foundOnBase(withAnswers(two, { severity: 'ignore' }))).toBeUndefined();

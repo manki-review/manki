@@ -5584,6 +5584,7 @@ describe('runReview', () => {
     const keptBlockers = [
       onLine('Left open', checked(answer('unsure'), answer('pre_existing', 'pair-model'))), onLine('Newly reachable', checked(answer('introduced'), answer('pre_existing', 'pair-model'))),
       onLine('Worse now', checked(answer('pre_existing'), answer('worsened', 'pair-model'))), onLine('Not asked', { originCheck: undefined }),
+      onLine('Worse in the same case', checked(answer('pre_existing'), { ...answer('worsened', 'pair-model'), sameCase: true })),
       onLine('No proof', checked({ ...answer('pre_existing'), base: [] }, answer('pre_existing', 'pair-model'))),
       onLine('Not checked at the base', checked({ ...answer('pre_existing'), commit: undefined }, answer('pre_existing', 'pair-model'))),
       onLine('One check', checked(answer('pre_existing'))), onLine('Two checks on one model', checked(answer('pre_existing'), answer('pre_existing'))),
@@ -5606,12 +5607,21 @@ describe('runReview', () => {
     mockedRunJudgeAgent.mockResolvedValue({ findings: [warningOn(false)], summary: 'One defect.' });
     const unchangedWarning = await run(makeClients());
     expect([unchangedWarning.findings, unchangedWarning.unpostedPreExisting?.map(f => [f.title, f.tags])]).toEqual([[], [['Queue may stall', ['pre-existing']]]]);
+    // One answer without a new failing case may stand for the second on a changed line.
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [{ ...warningOn(true), ...checked(answer('pre_existing'), { ...answer('worsened', 'pair-model'), sameCase: true }) }], summary: 'One defect.' });
+    const sameCase = await run(makeClients());
+    expect([sameCase.outcome, sameCase.findings, sameCase.unpostedPreExisting?.map(f => f.title)]).toEqual(['READY', [], ['Queue may stall']]);
     // When an answer names the line where this PR fixes the same failure, the warning is posted as a note instead, which never holds the approval.
     const fixedAt = { ...answer('pre_existing'), fixedElsewhere: 'src/a.ts:20' };
     mockedRunJudgeAgent.mockResolvedValue({ findings: [{ ...warningOn(false), originCheck: { lineChanged: false, answers: [fixedAt] } }], summary: 'One defect.' });
     const incomplete = await run(makeClients());
     expect([incomplete.outcome, incomplete.findings.map(f => [f.severity, f.tags, f.fixedElsewhere, f.gradePath?.at(-1)?.by]), incomplete.unpostedPreExisting ?? []]).toEqual(['READY', [['note', ['pre-existing'], 'src/a.ts:20', 'pre_existing']], []]);
     expect(holdsApproval(incomplete.findings[0])).toBe(false);
+    // The note keeps its base line when the second answer is one without a new failing case.
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [{ ...warningOn(true), ...checked({ ...answer('pre_existing'), fixedElsewhere: 'src/a.ts:20' }, { ...answer('worsened', 'pair-model'), sameCase: true }) }], summary: 'One defect.' });
+    const incompleteSameCase = await run(makeClients());
+    const sameCaseNote = formatFindingComment(incompleteSameCase.findings[0], { linkTo: () => undefined, files: new Map(), related: new Map() });
+    expect([incompleteSameCase.findings[0].severity, sameCaseNote.includes('**Already broken before this PR.**')]).toEqual(['note', true]);
     // A warning the proof checks would leave out stays in the round record only, whatever line the answer names.
     mockedRunJudgeAgent.mockResolvedValue({ findings: [{ ...warningOn(false), evidence: { checks: [], proof: [] }, originCheck: { lineChanged: false, answers: [fixedAt] } }], summary: 'One defect.' });
     const unprovenFix = await run(makeClients());

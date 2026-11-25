@@ -37,7 +37,9 @@ Answer \`origin\` with one of:
 
 For a cost finding, about time, memory, calls or work, a new caller alone does not make it the PR's own. When the PR's new path runs existing work no more often and on no larger input than a path at the base already runs it for the same input, the cost is pre_existing, and \`base\` cites that path. A cost that outside input can now trigger through the new caller, and could not trigger at the base, is a security hole such as resource exhaustion, and stays introduced. A cost the PR makes grow faster, such as a new loop around the work, a larger or unbounded input or a repeat that grows with the input, is introduced. Running the work again for an input the base already runs it for, such as a second delivery of the same data, is pre_existing even though the total work grows. A cost is worsened only when the PR makes each run of the work more expensive.
 
-Cite in \`head\` the lines that show the failure at the head, with the line the finding flags. For pre_existing, cite in \`base\` the lines that show the same failure at the base, numbered as \`read_file\` with \`ref\` set to \`base\` shows them. When this PR left the flagged line unchanged, cite it there at its number in the base. An answer without lines on both sides counts as unsure.
+Cite in \`head\` the lines that show the failure at the head, with the line the finding flags. For pre_existing and worsened, cite in \`base\` the lines that show the same failure at the base, numbered as \`read_file\` with \`ref\` set to \`base\` shows them. When this PR left the flagged line unchanged, cite it there at its number in the base. An answer without lines on both sides counts as unsure.
+
+For worsened, name in \`new_case\` a case this PR breaks: a state or input that goes wrong at the head and goes right at the base, with the \`head\` lines where it goes wrong and the \`base\` lines where it goes right. A state that lasts longer is such a case when at some moment only the head fails. More memory, time or work for a case that fails at the base too, or that case happening more often, is none, also when a limit lies between the two. Without such a case, set \`new_case\` to "none". Leave it out for any other origin.
 
 For pre_existing, when a line this PR adds or changes fixes the same failure on another path, such as the same check added to a sibling function, cite that line in \`fixed_elsewhere_in_pr\`. Leave it out otherwise.
 
@@ -45,7 +47,7 @@ ${VERIFY_CLAIMS_RULE} A reviewer's claim that the defect is older than this PR i
 
 Respond with ONLY a JSON object:
 
-{"origin": "introduced" | "worsened" | "pre_existing" | "unsure", "reason": "One or two plain sentences on what decides it", "head": ["file:line"], "base": ["file:line"], "fixed_elsewhere_in_pr": "file:line"}`;
+{"origin": "introduced" | "worsened" | "pre_existing" | "unsure", "reason": "One or two plain sentences on what decides it", "head": ["file:line"], "base": ["file:line"], "new_case": {"case": "One sentence", "head": ["file:line"], "base": ["file:line"]} | "none", "fixed_elsewhere_in_pr": "file:line"}`;
 
 export interface OriginOptions {
   /** The PR head checkout, which holds the PR's base for `read_file` when `baseReadsOf` finds it. */
@@ -135,6 +137,7 @@ interface RawOrigin {
   head: unknown;
   base: unknown;
   fixedElsewhere: unknown;
+  newCase?: unknown;
   model?: string;
 }
 
@@ -143,7 +146,7 @@ function parseOrigin(text: string): Omit<RawOrigin, 'model'> {
   const verdict = VERDICTS.find(v => v === parsed.origin);
   if (!verdict) throw new Error(`origin is ${JSON.stringify(parsed.origin)}, not one of ${VERDICTS.join(', ')}`);
   const reason = typeof parsed.reason === 'string' ? safeTruncate(parsed.reason.trim(), MAX_REASON_CHARS) : '';
-  return { verdict, reason, head: parsed.head, base: parsed.base, fixedElsewhere: parsed.fixed_elsewhere_in_pr };
+  return { verdict, reason, head: parsed.head, base: parsed.base, fixedElsewhere: parsed.fixed_elsewhere_in_pr, newCase: parsed.new_case };
 }
 
 /**
@@ -154,7 +157,9 @@ function parseOrigin(text: string): Omit<RawOrigin, 'model'> {
  * the base, so a finding in a file the PR added never stands. Any doubt makes it `unsure`, as does a workspace without a
  * base and a message whose list of other changed files is cut, since a change it leaves out looks the same at the base.
  * A `pre_existing` answer keeps its `fixedElsewhere` line only when the head holds it, the PR added or changed it
- * (`citesChangedLine`), and it is not the flagged line.
+ * (`citesChangedLine`), and it is not the flagged line. A `worsened` answer is marked `sameCase` only when it says "none"
+ * for its new case and its lines pass what a `pre_existing` answer's must. Anything else, such as a named case whose
+ * lines are not there, leaves it unmarked.
  */
 async function checkLines(raw: RawOrigin, finding: Finding, workspace: string, diff: ParsedDiff | undefined, excludedPaths: readonly string[], related?: RelatedRepoTools): Promise<OriginAnswer> {
   const { verdict: claimed, reason, model } = raw;
@@ -187,7 +192,15 @@ async function checkLines(raw: RawOrigin, finding: Finding, workspace: string, d
     return locationFile(at) === finding.file && start <= finding.line && finding.line <= end;
   };
   const fixedElsewhere = fix && !citesFlagged(fix) && citesChangedLine(fix, diff?.files) ? fix : undefined;
-  return { verdict, reason, ...(head.length > 0 && { head }), ...(base.length > 0 && { base, commit }), ...(fixedElsewhere && { fixedElsewhere }), ...(model && { model }) };
+  const sameCase = claimed === 'worsened' && proven && raw.newCase === 'none';
+  const named = (claimed === 'worsened' && raw.newCase && typeof raw.newCase === 'object' ? raw.newCase : {}) as Record<string, unknown>;
+  const newHead = shownLines(named.head, workspace, related).proof;
+  const newBase = excludePaths && commit ? (await linesAtBase(workspace, parseProof(named.base, undefined), excludePaths)).map(h => h.location) : [];
+  const newCase = typeof named.case === 'string' && newHead.length > 0 && newBase.length > 0 ? { case: safeTruncate(named.case.trim(), MAX_REASON_CHARS), head: newHead, base: newBase } : undefined;
+  return {
+    verdict, reason, ...(head.length > 0 && { head }), ...(base.length > 0 && { base, commit }), ...(fixedElsewhere && { fixedElsewhere }),
+    ...(sameCase && { sameCase: true as const }), ...(newCase && { newCase }), ...(model && { model }),
+  };
 }
 
 /**

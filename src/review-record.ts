@@ -177,10 +177,10 @@ function withoutEntryField(context: RoundContext, field: 'judgeNotes' | 'refutat
   return withEntriesCut(context, e => e[field] !== undefined, e => ({ ...e, [field]: undefined }));
 }
 
-/** Returns `context` without the `fixedElsewhere` line of each origin answer, which no later round reads, or `undefined` when no answer has one. */
-function withoutFixedElsewhere(context: RoundContext): RoundContext | undefined {
-  return withEntriesCut(context, e => !!e.originCheck?.answers.some(a => a.fixedElsewhere), e => (e.originCheck
-    ? { ...e, originCheck: { ...e.originCheck, answers: e.originCheck.answers.map(a => ({ ...a, fixedElsewhere: undefined })) } }
+/** Returns `context` without `field` of each origin answer, which no later round reads, or `undefined` when no answer has it. */
+function withoutOriginField(context: RoundContext, field: 'fixedElsewhere' | 'newCase'): RoundContext | undefined {
+  return withEntriesCut(context, e => !!e.originCheck?.answers.some(a => a[field]), e => (e.originCheck
+    ? { ...e, originCheck: { ...e.originCheck, answers: e.originCheck.answers.map(a => ({ ...a, [field]: undefined })) } }
     : e));
 }
 
@@ -207,7 +207,8 @@ const RECORD_CUTS: RecordCut[] = [
   ['findings.entries.pairRefutation', c => withoutEntryField(c, 'pairRefutation')],
   ['findings.entries.suggestedFix', c => withoutEntryField(c, 'suggestedFix')],
   ['findings.entries.evidence', c => withoutEntryField(c, 'evidence')],
-  ['findings.entries.originCheck.fixedElsewhere', withoutFixedElsewhere],
+  ['findings.entries.originCheck.newCase', c => withoutOriginField(c, 'newCase')],
+  ['findings.entries.originCheck.fixedElsewhere', c => withoutOriginField(c, 'fixedElsewhere')],
 ];
 
 /**
@@ -216,7 +217,7 @@ const RECORD_CUTS: RecordCut[] = [
  * keeps what later rounds need to follow findings and threads: the meta, each finding with its fingerprint, grade,
  * thread and the description a finding without a thread is listed again with, and the judge's thread evaluations. It
  * also keeps each finding's `originCheck`, which stays small since a round makes at most `MAX_ORIGIN_CHECKS`, without
- * the `fixedElsewhere` lines no later round reads. It loses each finding's refuter checks, proposed fix and evidence, so
+ * the `fixedElsewhere` lines and the `newCase` no later round reads. It loses each finding's refuter checks, proposed fix and evidence, so
  * a later round checks such a finding again and its own-proposal check does not see the fix. `meta.omitted` names every
  * part a form left out.
  */

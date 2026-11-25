@@ -1135,6 +1135,10 @@ export interface OriginAnswer {
   commit?: string;
   /** On a `pre_existing` answer, the line the PR added or changed that fixes the same failure on another path. */
   fixedElsewhere?: string;
+  /** Set on a `worsened` answer that says no new case fails, with lines at the base that would let a `pre_existing` one stand. */
+  sameCase?: true;
+  /** The case a `worsened` answer says fails at the head and not at the base, with its lines as the code found them. */
+  newCase?: { case: string; head: string[]; base: string[] };
   /** The model that answered. */
   model?: string;
 }
@@ -1329,13 +1333,19 @@ function failsOnBase(answer: OriginAnswer): boolean {
 
 /**
  * Returns the origin answer that shows the code at the PR's base fails the same way as `finding`, when two answers on
- * different known models do so (`failsOnBase`) and none says otherwise. One model's answer, read from files the PR
- * author controls, never lowers a blocker, so one answer alone, or two on one model, keep the finding as it is.
+ * different known models do so (`failsOnBase`) and none says otherwise. On a warning that is neither guarded nor
+ * `wouldBlockIfTrue`, one of them may be a `worsened` answer without a new failing case (`sameCase`), beside one that
+ * `failsOnBase`. The grade counts as it was before a `pre_existing` step, so the answer stays the same after it. One
+ * model's answer, read from files the PR author controls, never lowers a blocker, so one answer alone, or two on one
+ * model, keep the finding as it is.
  */
-export function sameOnBase(finding: Pick<Finding, 'originCheck'>): OriginAnswer | undefined {
+export function sameOnBase(finding: Pick<Finding, 'originCheck' | 'severity' | 'tags' | 'reviewers' | 'gradePath' | 'gradeIfConfirmed' | 'cell'>): OriginAnswer | undefined {
   const answers = finding.originCheck?.answers ?? [];
-  const models = new Set(answers.filter(failsOnBase).map(a => a.model).filter(Boolean));
-  return models.size >= 2 && answers.every(failsOnBase) ? answers[0] : undefined;
+  const grade = finding.gradePath?.find(step => step.by === 'pre_existing')?.from ?? finding.severity;
+  const mayDiffer = grade === 'warning' && !wouldBlockIfTrue(finding) && !isGuardedFinding(finding.tags, finding.reviewers);
+  const agrees = (a: OriginAnswer): boolean => failsOnBase(a) || (mayDiffer && !!a.sameCase);
+  const models = new Set(answers.filter(agrees).map(a => a.model).filter(Boolean));
+  return models.size >= 2 && answers.every(agrees) ? answers.find(failsOnBase) : undefined;
 }
 
 /**
@@ -1343,7 +1353,7 @@ export function sameOnBase(finding: Pick<Finding, 'originCheck'>): OriginAnswer 
  * does not and no answer found the failure the PR's own. On its own it changes no grade. The finding only notes that it
  * may be older than this PR, unless `foundOnBase` accepts one answer for it.
  */
-export function oneCheckOnBase(finding: Pick<Finding, 'originCheck'>): OriginAnswer | undefined {
+export function oneCheckOnBase(finding: Parameters<typeof sameOnBase>[0]): OriginAnswer | undefined {
   const answers = finding.originCheck?.answers ?? [];
   if (sameOnBase(finding) || answers.some(a => a.verdict === 'introduced' || a.verdict === 'worsened')) return undefined;
   return answers.find(failsOnBase);

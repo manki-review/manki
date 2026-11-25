@@ -711,6 +711,7 @@ describe('formatFindingComment', () => {
       answering(blocking, { ...same('first-model'), verdict: 'unsure' }),
       answering(blocking, same('first-model'), { verdict: 'introduced', reason: 'This PR adds the caller.', model: 'pair-model' }),
       answering(blocking, { ...same('first-model'), commit: undefined }),
+      answering({ ...blocking, tags: ['security'] }, same('first-model'), { ...same('pair-model'), verdict: 'worsened', sameCase: true }),
     ]) expect(onMain(none)).not.toMatch(/Possibly older|Already broken/);
 
     // A disproof keeps a security warning, so its line names security findings, not only blockers, and links its proof.
