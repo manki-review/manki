@@ -697,7 +697,7 @@ export async function handleReviewCommentReply(
     // From here on the answer is the plain "Outcome. text" again, so nothing below reads a statement's status.
     const checked = checkReply(response.content, comment.body ?? '', {
       workspace, related, relatedNames, diff, description: prText?.body, repo: `${owner}/${repo}`, pr: prNumber,
-      fixScope: { files: fixFiles.filter(Boolean), hasFile: !!filePath, guarded: !!live && isGuarded(live), ...('unknown' in change && { unknown: change.unknown }), ...(live && 'unknown' in change && change.unknown === 'not_descendant' && { rebased: { reviewable: !!filePath && !findClosedPattern(filePath, closedSince ?? closedPaths) } }), ...(since && since !== root.comment.original_commit_id && { openOn: since }) },
+      fixScope: { files: fixFiles.filter(Boolean), reviewable: !!filePath && !findClosedPattern(filePath, closedSince ?? closedPaths), guarded: !!live && isGuarded(live), ...('unknown' in change && { unknown: change.unknown }), ...(live && 'unknown' in change && change.unknown === 'not_descendant' && { rebased: true as const }), ...(since && since !== root.comment.original_commit_id && { openOn: since }) },
       ...(sincePosted !== undefined && { changedSincePosted: parsePRDiff(sincePosted).files }),
     });
     const isSecurity = isSecurityThread(findingBody);

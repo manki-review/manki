@@ -16,7 +16,7 @@ import * as github from '@actions/github';
 import { parsePRDiff } from '../src/diff';
 import { postedFindings, touchesFinding } from '../src/fix-rate';
 import { fetchInterRoundDiff, fetchReviewThreadNodes } from '../src/github';
-import { findingFile, judgeAddressedThreadIds, threadMarkerSlug, UNSETTLED_ANSWER_MARKER } from '../src/recap';
+import { findingFile, judgeAddressedThreadIds, ledOutcome, threadMarkerSlug } from '../src/recap';
 import { FindingFingerprintEntry, migrateStoredSeverities, ParsedDiff, RoundContext } from '../src/types';
 import { aggregate } from './fix-rate-report';
 import { githubToken, HistoryLine as RecordLine, UndecodedLine } from './review-history';
@@ -116,7 +116,7 @@ const REPLY_LABELS: Record<string, [Label, LabelSource]> = {
  */
 export function labelFinding({ thread, lineChanged, judgeAddressed }: Evidence): [Label, LabelSource] {
   const replies = thread?.comments.slice(1) ?? [];
-  const outcome = replies.filter(c => c.bot).map(c => c.body.includes(UNSETTLED_ANSWER_MARKER) ? 'Unverified' : REPLY_OUTCOME.exec(c.body.trim())?.[1]).filter(Boolean).at(-1);
+  const outcome = replies.filter(c => c.bot).map(c => ledOutcome(c.body) ?? REPLY_OUTCOME.exec(c.body.trim())?.[1]).filter(Boolean).at(-1);
   if (outcome === 'Fixed' || outcome === 'Withdrawn') return REPLY_LABELS[outcome];
   const reply = replies.filter(c => !c.bot).at(-1)?.body.trim();
   if (reply !== undefined) {

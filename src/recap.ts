@@ -138,6 +138,11 @@ const FIX_SEEN_MARKER = '<!-- manki-fix-seen -->';
 /** The outcome each marker of an answer that opens with its state stands for. */
 const LED_ANSWERS = [[UNSETTLED_ANSWER_MARKER, 'Unverified'], [FIX_SEEN_MARKER, 'Fixed']] as const;
 
+/** Returns the outcome that Manki's answer `body` stands for when it opens with its state instead, by its marker in `LED_ANSWERS`. */
+export function ledOutcome(body: string): typeof LED_ANSWERS[number][1] | undefined {
+  return LED_ANSWERS.find(([marker]) => hasOwnMarker(body, marker, COMMENT_MARKER))?.[1];
+}
+
 /** Marks Manki's reply in an answered thread that the problem came back and the code there got worse. */
 const FOUND_AGAIN_MARKER = '<!-- manki-found-again -->';
 
@@ -186,14 +191,13 @@ function withoutStatementFold(answer: string): string {
 
 /**
  * Returns Manki's latest answer to a developer since `sinceLastRaise`, without its markers: an outcome reply, one that opens
- * with its state read as the outcome its marker in `LED_ANSWERS` stands for, or a found-again reply.
+ * with its state read as the outcome `ledOutcome` gives, or a found-again reply.
  */
 function latestAnswer(bot: BotIdentity, comments: ReadonlyArray<Pick<ThreadCommentNode, 'body' | 'author'>>): string | undefined {
-  const ledAs = (body: string) => LED_ANSWERS.find(([marker]) => hasOwnMarker(body, marker, COMMENT_MARKER))?.[1];
   const answer = sinceLastRaise(bot, comments).filter(c => isBotLogin(bot, c.author?.login) && !!c.body
-    && (REPLY_OUTCOME_RE.test(c.body) || !!ledAs(c.body) || hasOwnMarker(c.body, FOUND_AGAIN_MARKER, COMMENT_MARKER))).pop();
+    && (REPLY_OUTCOME_RE.test(c.body) || !!ledOutcome(c.body) || hasOwnMarker(c.body, FOUND_AGAIN_MARKER, COMMENT_MARKER))).pop();
   const text = answer && withoutStatementFold(answer.body.split('\n\n<!--')[0]).trim();
-  const outcome = answer && ledAs(answer.body);
+  const outcome = answer && ledOutcome(answer.body);
   return text !== undefined && outcome ? `${outcome}. ${text}` : text;
 }
 

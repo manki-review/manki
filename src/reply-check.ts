@@ -53,8 +53,8 @@ export function withoutOutcomeOpener(answer: string): string {
  * whose file a review reads hears of the next review.
  */
 function unsettledAnswer(scope: FixScope, thread: ThreadState): string {
-  const { rebased, guarded, hasFile } = scope;
-  const state = thread === 'open' && (rebased ? rebased.reviewable : hasFile) ? `Not settled yet: the next review ${rebased ? '' : 'after a push '}checks the fix.`
+  const { rebased, guarded, reviewable } = scope;
+  const state = thread === 'open' && reviewable ? `Not settled yet: the next review ${rebased ? '' : 'after a push '}checks the fix.`
     : thread === 'resolved' ? 'Not settled by this reply.'
       : guarded ? 'Not settled yet.' : `Not settled yet: ${maintainerShould('decide', thread)}.`;
   return `**${state}** ${unprovenFix(scope, thread)}`;
@@ -83,15 +83,12 @@ function maintainerShould(act: string, thread: 'open' | undefined): string {
 export interface FixScope {
   /** The finding's file and the files it cited, whose change `changedSincePosted` holds. */
   files: readonly string[];
-  /** Whether the finding is tied to a file. */
-  hasFile: boolean;
+  /** Whether a review reads the thread's file: it is tied to one, and `closed_paths` does not close that file. */
+  reviewable: boolean;
   /** Why the change there is not known. Unset when it is. */
   unknown?: UnknownChange;
-  /**
-   * Set on an open PR whose branch was rebased or force pushed since the finding was posted. `reviewable` says whether a
-   * review reads the thread's file: it is tied to one, and `closed_paths` does not close that file.
-   */
-  rebased?: { reviewable: boolean };
+  /** Set on an open PR whose branch was rebased or force pushed since the finding was posted. */
+  rebased?: true;
   /** The commit of the round that still found the thread open, when the change counts from there. */
   openOn?: string;
   /** Whether the thread is a blocking or security one. What clears it is said apart from this answer. */
@@ -100,15 +97,15 @@ export interface FixScope {
 
 /**
  * Returns the sentences that follow the state of an unproven "Fixed": where a reply counts a fix, or why no line could
- * count, and on an open thread that is not guarded what the next review reads.
+ * count, and on an open thread a review reads that is not guarded what the next review reads.
  */
-function unprovenFix({ files, hasFile, unknown, rebased, openOn, guarded }: FixScope, thread: ThreadState): string {
+function unprovenFix({ files, reviewable, unknown, rebased, openOn, guarded }: FixScope, thread: ThreadState): string {
   const since = openOn ? `since the review of ${inline(openOn.slice(0, 7))} still found this open` : 'since this was posted';
   const where = files.length === 0 ? 'This finding is not tied to a file, so a reply cannot show a fix.'
     : rebased ? REBASED_ANSWER
       : unknown ? UNKNOWN_CHANGES[unknown]
         : `I could not point to a line this PR changed in ${files.map(inline).join(', ')} ${since}. A reply counts a fix only there.`;
-  return thread === 'open' && hasFile && !guarded && !rebased && files.length > 0 ? `${where} The next review after a push checks the whole push, also other files.` : where;
+  return thread === 'open' && reviewable && !guarded && !rebased ? `${where} The next review after a push checks the whole push, also other files.` : where;
 }
 
 /** What the reply's cited lines and searches are checked against. */

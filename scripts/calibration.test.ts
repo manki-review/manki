@@ -1,7 +1,7 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-import { judgeAddressedThreadIds, UNSETTLED_ANSWER_MARKER } from '../src/recap';
+import { FIX_SEEN_MARKER, judgeAddressedThreadIds, UNSETTLED_ANSWER_MARKER } from '../src/recap';
 import { FindingFingerprintEntry, RoundContext } from '../src/types';
 import { Evidence, findThread, HistoryLine, labelFinding, LabelledFinding, renderReport, roundsByPullRequest, selectSet, Thread } from './calibration';
 
@@ -53,6 +53,7 @@ describe('labelFinding', () => {
     ['Manki agreeing', { ...none, thread: thread('a', [true, 'Agreed. Deferring is fine.']) }, ['unclear', 'reply-agreed']],
     ['Manki unable to verify', { ...none, thread: thread('a', [true, 'Unverified. A maintainer should confirm.']) }, ['unclear', 'reply-unverified']],
     ['Manki unable to verify after a rebase, without an outcome word', { ...none, thread: thread('a', [true, `Still open before, guarded now.\n\n<!-- manki -->\n${UNSETTLED_ANSWER_MARKER}`]) }, ['unclear', 'reply-unverified']],
+    ['Manki seeing a fix on a thread it leaves open, without an outcome word', { ...none, thread: thread('a', [true, `**Fix seen, the thread stays open until a review or a maintainer confirms it.**\n\n<!-- manki -->\n${FIX_SEEN_MARKER}`]) }, ['real', 'reply-fixed']],
     ['nothing at all', { ...none, thread: thread('a') }, ['unclear', 'untouched']],
   ])('labels a finding from %s', (_case, evidence, expected) => {
     expect(labelFinding(evidence)).toEqual(expected);

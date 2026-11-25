@@ -17,7 +17,7 @@ import { replyOutcome } from '../src/interaction';
 import { compareVersions } from '../src/lockfile';
 import { summarizeCalls } from '../src/providers';
 import type { LLMCall } from '../src/providers';
-import { findingPlace, threadMarkerSlug, threadSeverity } from '../src/recap';
+import { findingPlace, ledOutcome, threadMarkerSlug, threadSeverity } from '../src/recap';
 import { readFileParts } from '../src/review';
 import { extractApprovalRecords } from '../src/review-record';
 import { isSecondReadName, isSweepName, outcomeOf, PRE_EXISTING_TAG, SEVERITY_ORDER } from '../src/types';
@@ -286,7 +286,8 @@ function blockerOutcomes(comments: ThreadComment[]): ReviewStats['blockerOutcome
   const outcomes = { fixed: 0, withdrawn: 0, other: 0 };
   const byBot = comments.filter(c => c.user?.type === 'Bot' && c.body);
   for (const root of byBot.filter(c => !c.in_reply_to_id && threadSeverity(c.body!) === 'blocker')) {
-    const last = byBot.filter(c => c.in_reply_to_id === root.id).map(c => replyOutcome(c.body!.trim())).filter(o => o !== undefined).at(-1);
+    // An answer that opens with its state settles as the outcome its marker stands for, which an "Unverified" does not.
+    const last = byBot.filter(c => c.in_reply_to_id === root.id).map(c => replyOutcome(ledOutcome(c.body!) ?? c.body!.trim())).filter(o => o !== undefined).at(-1);
     if (last === 'Fixed') outcomes.fixed++;
     else if (last === 'Withdrawn') outcomes.withdrawn++;
     else outcomes.other++;

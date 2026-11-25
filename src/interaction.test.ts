@@ -1377,8 +1377,10 @@ describe('handleReviewCommentReply', () => {
   // shows no outcome word: nothing settles, and every reader takes it as an "Unverified.".
   const NOT_TIED = 'This finding is not tied to a file, so a reply cannot show a fix.';
   const BLOCKS = `\n\nThis is a blocking finding, so the thread stays open until ${REVIEW_OR_CLEARED}`;
-  it.each<[string, FindingKind, { resolved?: boolean; sender?: string; nowhere?: boolean; evidence?: boolean; list?: boolean; closed?: boolean; unknown?: 'not_descendant' | 'unreadable' }, keyof typeof NOT_SETTLED, string, string]>([
+  it.each<[string, FindingKind, { resolved?: boolean; sender?: string; nowhere?: boolean; evidence?: boolean; list?: boolean; closed?: boolean; closedFile?: boolean; unknown?: 'not_descendant' | 'unreadable' }, keyof typeof NOT_SETTLED, string, string]>([
     ['an open warning thread', 'warning', {}, 'push', `${noLine('`src/file.ts`')} ${WHOLE_PUSH}`, `\n\n${HOLDS}`],
+    // No review reads a file `closed_paths` closes, so the thread is left to a maintainer.
+    ['an open warning thread on a closed file', 'warning', { closedFile: true }, 'maintainer', noLine('`src/file.ts`'), `\n\n${HOLDS}`],
     ['an open blocker thread', 'blocker', {}, 'push', noLine('`src/file.ts`'), BLOCKS],
     ['an open blocker thread a maintainer replied in', 'blocker', { sender: 'someone' }, 'push', noLine('`src/file.ts`'), BLOCKS],
     ['an open security thread', 'security', {}, 'push', noLine('`src/file.ts`'), `\n\nThis is a security finding, so the thread stays open until ${REVIEW_OR_CLEARED}`],
@@ -1392,7 +1394,7 @@ describe('handleReviewCommentReply', () => {
     ['a warning tied to no file, after a rebase', 'warning', { unknown: 'not_descendant', nowhere: true }, 'maintainer', NOT_TIED, `\n\n${HOLDS}`],
     ['a closed PR whose comparison fails', 'warning', { closed: true, unknown: 'unreadable' }, 'decides', UNREAD, ''],
     ['a closed PR', 'warning', { closed: true }, 'decides', noLine('`src/file.ts`'), ''],
-  ])('says where a reply counts a fix when the cited line is in another file, and settles nothing: %s', async (_name, kind, { resolved = false, sender = 'pr-author', nowhere = false, evidence = false, list = false, closed = false, unknown }, threadState, reason, notes) => {
+  ])('says where a reply counts a fix when the cited line is in another file, and settles nothing: %s', async (_name, kind, { resolved = false, sender = 'pr-author', nowhere = false, evidence = false, list = false, closed = false, closedFile = false, unknown }, threadState, reason, notes) => {
     const text = `**${NOT_SETTLED[threadState]}** ${reason}\n\nThe guard now runs first.${notes}`;
     setContext({
       comment: { id: 1, body: `${CSV} Fixed in abc1234.`, user: { type: 'User' }, in_reply_to_id: 99, author_association: 'OWNER' },
@@ -1416,7 +1418,7 @@ describe('handleReviewCommentReply', () => {
     jest.mocked(state.resolveReviewThread).mockClear();
     jest.mocked(state.reopenThread).mockClear();
 
-    await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, undefined, CONFIG);
+    await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, undefined, closedFile ? { ...CONFIG, closed_paths: ['src/file.ts'] } : CONFIG);
 
     const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.at(-1)![0].body as string;
     expect(body.split('\n\n<!-- manki -->')[0]).toBe(text);
