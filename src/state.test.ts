@@ -153,7 +153,7 @@ function makeGraphqlFetchThreadNode(overrides: {
   databaseId?: number;
   resolvedBy?: string;
   url?: string;
-  replies?: Array<{ body: string; author: { login: string; __typename?: string }; createdAt?: string }>;
+  replies?: Array<{ body: string; author: { login: string; __typename?: string }; createdAt?: string; databaseId?: number }>;
   path?: string;
   /** `null` for a file-level thread. */
   line?: number | null;
@@ -234,6 +234,11 @@ describe('fetchBotReviewThreads', () => {
     expect(threads[0]).toEqual({ id: 't1', rootCommentId: 501, isResolved: false, isBlocking: true, mayCarryBlocker: true, findingTitle: 'null check', place: { file: 'src/a.ts', line: 10, markerSlug: 'null-check', commit: testSha('1') } });
     expect(threads[1]).toEqual({ id: 't3', isResolved: false, isBlocking: false, isWarning: true, findingTitle: '`parse` drops a field', place: { file: 'src/parse.ts', line: 0, findingLine: 40, markerSlug: '-parse--drops-a-field' } });
     expect(threads[2]).toEqual({ id: 't2', isResolved: true, resolvedByLogin: 'reviewer', writerResolverLogin: 'reviewer', isBlocking: false, findingTitle: 'rename var', place: { file: 'src/a.ts', line: 10, markerSlug: 'rename-var' }, fixedOn: ['ab'.repeat(20)], roundReplies: [{ commit: 'ab'.repeat(20), at: '2026-11-06T14:34:11Z' }], answered: true });
+    // Only a person's reply with an id counts, so a run queued for it can be found.
+    const [withReplies] = await fetchBotReviewThreads(threadsOctokit(jest.fn().mockResolvedValueOnce(makeGraphqlFetchResponse([makeGraphqlFetchThreadNode({
+      id: 't6', replies: [{ body: 'Done.', author: { login: 'alice' }, databaseId: 61, createdAt: '2026-11-06T14:30:00Z' }, { body: 'Fixed in abababa.', author: { login: 'manki-review' }, databaseId: 62 }, { body: 'No id.', author: { login: 'alice' }, createdAt: '2026-11-06T14:30:00Z' }, { body: 'No time.', author: { login: 'alice' }, databaseId: 63 }],
+    })]))), TEST_BOT, 'owner', 'repo', 1);
+    expect(withReplies.personReplies).toEqual([{ id: 61, login: 'alice', body: 'Done.', at: '2026-11-06T14:30:00Z' }]);
   });
 
   it('reads every page of review threads', async () => {
@@ -2355,7 +2360,7 @@ describe('checkAndAutoApprove', () => {
       const notice = () => jest.fn().mockResolvedValue({ data: { id: 1 } });
       expect(await asked(staleHeadOctokit(notice(), [formatReviewRecord(notConverging)])))
         .toMatch(/^Manki has not reviewed `bead000`\. The last Manki round found a blocker that came back after a fix\. Automatic review is paused\./);
-      jest.mocked(authModule.fetchPrState).mockResolvedValueOnce({ settings: { paused: true }, runModes: new Set(), queuedModes: new Set() });
+      jest.mocked(authModule.fetchPrState).mockResolvedValueOnce({ settings: { paused: true }, runModes: new Set(), queuedModes: new Set(), queuedReplies: new Set() });
       expect(await asked(staleHeadOctokit(notice(), [])))
         .toBe(`Manki has not reviewed \`bead000\`. Automatic review is paused in the settings block. Tick the review box there, or comment \`/manki review\`, to review it. Untick **Pause automatic reviews** to lift the pause.${AGAIN_BOX}`);
       expect(await asked(staleHeadOctokit(notice(), [])))

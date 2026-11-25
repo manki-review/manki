@@ -1748,11 +1748,22 @@ describe('handleReviewCommentReply', () => {
   });
 
   type Confirmed = {
-    answer?: string; proof?: string[]; kind?: FindingKind; thread?: Partial<state.ReviewThread>; comment?: Record<string, unknown>; closed?: boolean;
+    answer?: string; proof?: string[]; needsAnswer?: unknown; statement?: Record<string, unknown>; kind?: FindingKind; thread?: Partial<state.ReviewThread>; comment?: Record<string, unknown>; closed?: boolean;
     round?: { commitSha?: string; timestamp?: string; status?: ThreadEvaluation['status'] }; after?: 'incomplete' | 'unread' | 'other round';
   };
   const HELD_WARNING = { kind: 'warning', thread: { isBlocking: false, isWarning: true } } as const;
-  it.each<[string, Confirmed, boolean]>([
+  it.each<[string, Confirmed, boolean | 'silent']>([
+    // A reply that only says the fix is in gets no second answer, unless a check found something against it.
+    ['a reply that needs no answer', { needsAnswer: false }, 'silent'],
+    ['a reply that needs no answer, in a security thread', { needsAnswer: false, kind: 'security', thread: { isBlocking: false, isSecurity: true } }, 'silent'],
+    ['a reply that needs no answer, with a line found against it', { needsAnswer: false, statement: { status: 'contradicted', places: ['src/file.ts:10'] } }, true],
+    ['a reply that needs an answer', { needsAnswer: true }, true],
+    ['a reply without a readable need', { needsAnswer: 'no' }, true],
+    ['a reply that needs no answer, with a question mark', { needsAnswer: false, comment: { body: 'Fixed in 7e3f21d. Is the old path still needed?' } }, false],
+    ['a reply that needs no answer, in a thread with an earlier answer', { needsAnswer: false, thread: { answered: true } }, false],
+    ['a reply that needs no answer, in a warning thread that still holds', { needsAnswer: false, ...HELD_WARNING }, false],
+    ['a "Kept." that needs no answer', { needsAnswer: false, answer: 'Kept. `src/file.ts:12` still logs it.' }, false],
+    ['a "Withdrawn." that needs no answer', { needsAnswer: false, answer: 'Withdrawn. The caller already checks for null.' }, false],
     ['a blocker thread', {}, true],
     ['a security thread', { kind: 'security', thread: { isBlocking: false, isSecurity: true } }, true],
     ['a warning thread whose hold is lifted', { ...HELD_WARNING, thread: { ...HELD_WARNING.thread, holdLifted: 'fixed' } }, true],
@@ -1799,7 +1810,8 @@ describe('handleReviewCommentReply', () => {
     const client = createMockClient();
     const quote = (c.comment?.body ?? said) as string;
     jest.mocked(client.sendMessage).mockResolvedValue({ content: structured(c.answer ?? 'Fixed. The guard now runs first.', {
-      proof: c.proof ?? (c.answer ? [] : ['src/file.ts:999', 'the new guard']), statements: [{ quote, status: 'not_checkable', why: 'outside_code' }],
+      proof: c.proof ?? (c.answer ? [] : ['src/file.ts:999', 'the new guard']), statements: [{ quote, status: 'not_checkable', why: 'outside_code', ...c.statement }],
+      ...(c.needsAnswer !== undefined && { needs_answer: c.needsAnswer }),
     }) });
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{
       id: 'PRRT_this', rootCommentId: 99, isResolved: true, resolvedByLogin: 'manki-review[bot]', addressed: true, isBlocking: true, findingTitle: 'This', fixedOn: [head], ...c.thread,
@@ -1813,7 +1825,12 @@ describe('handleReviewCommentReply', () => {
 
     expect(client.sendMessage).toHaveBeenCalledTimes(1);
     // The thread already confirms the fix on this head, so a proven "Fixed." posts no second one.
-    if (c.proof) {
+    if (points === 'silent') {
+      expect(jest.mocked(ghUtils.reactToReviewComment).mock.lastCall).toEqual([octokit, 'test-owner', 'test-repo', 1, '+1']);
+      expect(state.resolveReviewThread).not.toHaveBeenCalled();
+      expect(state.reopenThread).not.toHaveBeenCalled();
+    }
+    if (c.proof || points === 'silent') {
       expect(octokit.rest.pulls.createReplyForReviewComment).not.toHaveBeenCalled();
       return;
     }
@@ -1836,7 +1853,7 @@ describe('handleReviewCommentReply', () => {
     expect(settlingDecision(body)).toBeUndefined();
     expect(settledReplyId(body)).toBeUndefined();
     expect(settlingPlaces(body)).toBeUndefined();
-    expect(body).toContain(`- Not checked, the review model says code cannot show it: "${quote}"`);
+    expect(body).toContain(c.statement ? `- Line cited against it exists at \`src/file.ts:10\`: "${quote}"` : `- Not checked, the review model says code cannot show it: "${quote}"`);
     expect(kept.modelAnswer).toEqual({ outcome: 'Fixed', proof: [], cited: ['src/file.ts:999', 'the new guard'] });
   });
 
@@ -1873,6 +1890,53 @@ describe('handleReviewCommentReply', () => {
     const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls[0][0].body as string;
     expect(body.startsWith(`${outcome}.`)).toBe(true);
     expect(body.includes('\n\nThis answer reads your reply and replaces the verdict of the review of `aaaaaaa` above.')).toBe(replaces);
+  });
+
+  const PARTLY = 'The review of `aaaaaaa`, which finished after this reply, finds this only partly fixed. Still open: One path left.';
+  it.each<[string, { answer?: string; kind?: FindingKind; status?: ThreadEvaluation['status']; spoke?: string; repliedAt?: string; sender?: string }, string | undefined]>([
+    ['a kept finding the round said nothing about', {}, `${PARTLY} What remains is a suggestion.`],
+    ['a blocker thread the round lowered', { kind: 'blocker' }, `${PARTLY} What remains is a suggestion, so this thread no longer blocks.`],
+    ['a "Fixed." on a blocker thread, where the round has the last word', { kind: 'blocker', answer: 'Fixed. The guard now runs first.' }, `${PARTLY} What remains is a suggestion, so this thread no longer blocks.`],
+    ['a reader whose withdrawal resolves nothing', { answer: 'Withdrawn. The caller already checks for null.', sender: 'reader' }, `${PARTLY} What remains is a suggestion.`],
+    ['a round that spoke before the reply', { spoke: '14:30:00' }, `${PARTLY} What remains is a suggestion.`],
+    ['a round that spoke in the thread after the reply', { spoke: '14:34:11' }, undefined],
+    ['a withdrawal that settles the thread', { answer: 'Withdrawn. The caller already checks for null.' }, undefined],
+    ['a round that found the thread open', { status: 'not_addressed' }, undefined],
+    ['a reply written after the round', { repliedAt: '14:36:00' }, undefined],
+  ])('carries what a round left open into the one answer: %s', async (_case, c, carries) => {
+    const head = 'a'.repeat(40);
+    setContext({
+      comment: { id: 1, body: 'Fixed in 7e3f21d.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'MEMBER', created_at: `2026-11-06T${c.repliedAt ?? '14:32:05'}Z` },
+      pull_request: { number: 1, head: { sha: head }, user: { login: 'pr-author' } },
+      sender: { login: c.sender ?? 'someone' },
+    });
+    const octokit = createMockOctokit();
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { original_commit_id: POSTED_ON, user: MANKI_USER, body: findingComment(c.kind ?? 'warning'), path: 'src/file.ts', line: 10 } });
+    const status = c.status ?? 'partly_addressed';
+    const round = makeRoundContext(2, {
+      meta: { prNumber: 1, commitSha: head, round: 2, timestamp: '2026-11-06T14:34:11Z', mankiVersion: '7.8.0' },
+      judge: { summary: '', threadEvaluations: [{ threadId: 'PRRT_this', status, reason: 'the second caller still skips it.', ...(status === 'partly_addressed' && { remaining: 'One path left.', grade: 'note' }) }] },
+    } as Parameters<typeof makeRoundContext>[1]);
+    octokit.paginate = jest.fn().mockResolvedValue([{ id: 7, body: `Reviewed.\n\n${formatReviewRecord(round)}`, user: { login: 'manki-review[bot]' } }]);
+    const client = createMockClient();
+    jest.mocked(client.sendMessage).mockResolvedValue({ content: structured(c.answer ?? 'Kept. `src/file.ts:12` still logs it.') });
+    jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{
+      id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: c.kind === 'blocker', findingTitle: 'This',
+      ...(c.spoke && { roundReplies: [{ commit: head, at: `2026-11-06T${c.spoke}Z` }] }),
+    }]);
+    jest.mocked(state.authorResolvedNote).mockResolvedValue(undefined);
+    jest.mocked(state.warningHoldNote).mockResolvedValue(undefined);
+
+    await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, undefined, CONFIG);
+
+    const posted = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.map(([r]: [{ body: string }]) => r.body);
+    expect(posted).toHaveLength(1);
+    const paragraphs = posted[0].split('\n\n');
+    expect(paragraphs.filter((p: string) => p.startsWith('The review of '))).toEqual(carries ? [carries] : []);
+    // The model decides with the round's judgment in view, fenced as untrusted, only when that round came after the reply.
+    const prompt = jest.mocked(client.sendMessage).mock.calls[0][1];
+    expect(prompt.includes('## The Latest Review of This Thread')).toBe(!c.repliedAt);
+    if (!c.repliedAt) expect(prompt).toContain(`\`\`\`\nthe second caller still skips it.${status === 'partly_addressed' ? '\nStill open: One path left.' : ''}\n\`\`\``);
   });
 
   it('includes scoped PR diff context in the Claude prompt', async () => {

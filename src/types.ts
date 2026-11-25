@@ -2173,6 +2173,12 @@ export interface ThreadEvaluation {
   ownFix?: true;
 }
 
+/** Returns what a partial fix leaves open in a thread graded `carried` before it. `remaining` is already safe to post. */
+export function partlyFixedNote(remaining: string, grade: FindingSeverity, carried: FindingSeverity): string {
+  const regraded = grade === carried ? '' : ` What remains is a ${SEVERITY_NAME[grade]}${carried === 'blocker' ? ', so this thread no longer blocks' : ''}.`;
+  return `Still open: ${remaining}${regraded}`;
+}
+
 /**
  * Whether an open thread blocks: by the grade the round records last gave it, or else by its own severity. A recorded
  * blocker always blocks, and a lower recorded grade never lowers a guarded thread: a security thread or the thread of a
@@ -2688,6 +2694,8 @@ export interface PrState {
   runModes: ReadonlySet<RunMode>;
   /** The modes of the work still queued for the PR. */
   queuedModes: ReadonlySet<RunMode>;
+  /** The ids of the review comments whose own run is still queued for the PR. Empty when the token service names none. */
+  queuedReplies: ReadonlySet<number>;
 }
 
 /** What a run tells the PR coordinator once it has posted, as `/state/report` takes it. */

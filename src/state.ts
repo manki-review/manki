@@ -9,7 +9,7 @@ import { ISSUE_BOX_LABEL, withMessageBoxes } from './issue-box';
 import { MessageBox, SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
-import { clearRecordLogin, latestAnswer, dismissRecordLogins, dismissRecordMarker, FixClaim, fixClaimOf, fetchPriorRoundContexts, fetchRecapState, guardedKind, isDisprovedThread, isOverrideCandidate, judgeAddressedThreadIds, parseContextBlocks, RAISED_MARKER, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, RecordedGrade, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingPlace } from './recap';
+import { clearRecordLogin, latestAnswer, personReplies, dismissRecordLogins, dismissRecordMarker, FixClaim, fixClaimOf, fetchPriorRoundContexts, fetchRecapState, guardedKind, isDisprovedThread, isOverrideCandidate, judgeAddressedThreadIds, parseContextBlocks, RAISED_MARKER, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, RecordedGrade, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingPlace } from './recap';
 import { FIXED_MARKER_OPENER, fixedMarker, formatApprovalRecord, hasOwnMarker, hasReviewRecord, ROUND_REPLY_OPENER, settlingDecision } from './review-record';
 import { findPriorThreadId } from './finding-fingerprint';
 import { ApprovalRecord, AuthorClearRole, FindingSeverity, gradedAbove, PRE_EXISTING_TAG, ReviewConfig, RoundContext, SecurityOverride, threadBlocks, threadWarns } from './types';
@@ -103,6 +103,8 @@ interface ReviewThread {
   fixedOn?: string[];
   /** When the review of each head commit replied that this thread is not fixed, from `roundReplyMarker`. */
   roundReplies?: Array<{ commit: string; at: string }>;
+  /** The replies in this thread that neither Manki nor another bot wrote, oldest first. */
+  personReplies?: Array<{ id: number; login: string; body: string; at: string }>;
   /** Whether Manki answered a developer in this thread since the finding was last raised, by `latestAnswer`. Also set at the comment limit, which may hide an answer. */
   answered?: true;
 }
@@ -261,6 +263,7 @@ async function fetchBotReviewThreads(
         const commit = markedSha(c, ROUND_REPLY_OPENER);
         return commit && c.createdAt ? [{ commit, at: c.createdAt }] : [];
       });
+      const replies = personReplies(bot, thread.comments.nodes).flatMap(c => (c.databaseId != null && c.author && c.createdAt ? [{ id: c.databaseId, login: c.author.login, body: c.body, at: c.createdAt }] : []));
       return {
         id: thread.id,
         ...(rootCommentId != null && { rootCommentId }),
@@ -282,6 +285,7 @@ async function fetchBotReviewThreads(
         ...(threadUrl && { threadUrl }),
         ...(fixedOn.length > 0 && { fixedOn }),
         ...(roundReplies.length > 0 && { roundReplies }),
+        ...(replies.length > 0 && { personReplies: replies }),
         ...((!complete || latestAnswer(bot, thread.comments.nodes) !== undefined) && { answered: true as const }),
       };
     });

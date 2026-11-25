@@ -172,6 +172,8 @@ export interface CheckedReply {
   outcome: AnswerOutcome;
   /** The outcome the model gave before the checks. Unset when its answer could not be read. */
   modelOutcome?: AnswerOutcome;
+  /** Whether the developer's reply needs an answer of its own, by the model. Only an explicit no from a readable answer is false. */
+  needsAnswer: boolean;
   /** The entries of the model's proof as it gave them, at most `MAX_CITED_ENTRIES`, each redacted and cut. */
   cited: string[];
   /** The answer without its outcome. Empty when the model's answer could not be read. */
@@ -327,7 +329,7 @@ function checkStatement(entry: Record<string, unknown>, quote: string, sources: 
  * pull request, for `checkFixedElsewhere` to confirm. No statement's status changes the outcome.
  */
 export function checkReply(content: string, developerReply: string, sources: ReplySources): CheckedReply {
-  const unreadable: CheckedReply = { text: thread => `Unverified. ${leftToMaintainer(UNREADABLE_ANSWER, thread)}`, outcome: 'Unverified', cited: [], answer: '', proof: [], statements: [], unchecked: 0, dropped: 0 };
+  const unreadable: CheckedReply = { text: thread => `Unverified. ${leftToMaintainer(UNREADABLE_ANSWER, thread)}`, outcome: 'Unverified', needsAnswer: true, cited: [], answer: '', proof: [], statements: [], unchecked: 0, dropped: 0 };
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(extractJSON(content, 'object')) as Record<string, unknown>;
@@ -365,6 +367,7 @@ export function checkReply(content: string, developerReply: string, sources: Rep
     ...(unsettled && { unsettled: true as const }),
     outcome: settled,
     modelOutcome: outcome,
+    needsAnswer: parsed.needs_answer !== false,
     cited: rawEntries(parsed.proof),
     answer,
     proof: own,

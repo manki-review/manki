@@ -283,7 +283,7 @@ describe('checkReply', () => {
     const { text, ...rest } = checkReply(content, REPLY, sources);
     expect(text(undefined)).toBe('Unverified. I could not check this reply, so a maintainer should decide.');
     expect(rest).toEqual({
-      outcome: 'Unverified', cited: [], answer: '', proof: [], statements: [], unchecked: 0, dropped: 0,
+      outcome: 'Unverified', needsAnswer: true, cited: [], answer: '', proof: [], statements: [], unchecked: 0, dropped: 0,
     });
     expect(checkReply(content, REPLY, sources).text('resolved')).toBe('Unverified. I could not check this reply.');
   });
