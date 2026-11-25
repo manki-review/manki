@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [7.8.0] - 2026-11-25
 
-Manki 7.8 is about fewer warnings and blockers that do not matter. Warnings with a rare trigger are left out of the review, a finding only one of two finders reported needs the other finder's backing, and a refuter confirms a finding only when normal use reaches it and someone can see the result. Pre-existing findings are posted only when they are security findings. Thread replies are read on the newest pushed commit and answered once. The new filter is on by default and one setting changes it. Nothing breaks on the upgrade.
+Manki 7.8 is about fewer warnings and blockers that do not matter. Warnings with a rare trigger are left out of the review, a finding only one of two finders reported needs the other finder's backing, and a refuter confirms a finding only when normal use reaches it and someone can see the result. Pre-existing findings are posted only when they are security findings or the PR fixes the same failure elsewhere. Thread replies are read on the newest pushed commit and answered once. The new filter is on by default and one setting changes it. Nothing breaks on the upgrade.
 
 ### Upgrading
 
@@ -25,7 +25,7 @@ Manki 7.8 is about fewer warnings and blockers that do not matter. Warnings with
 - A refuter confirms how an external tool, package manager, runtime or remote service behaves only from a line that states it, not from what it knows ([#2006](https://github.com/manki-review/manki/pull/2006)).
 - When the judge's own reasoning argues for a lower grade than the table cell it picked, the finding is held at a warning and a check has to confirm the damage before it blocks ([#2002](https://github.com/manki-review/manki/pull/2002)).
 - A warning without a realistic trigger is kept in the round record on every row of the severity table, not only on the `degraded` row. One that is serious if true stays posted until a check disproves its trigger ([#2001](https://github.com/manki-review/manki/pull/2001)).
-- A finding the PR did not cause is posted only when it is a security finding. Every other one is in the round record only ([#2025](https://github.com/manki-review/manki/pull/2025)).
+- A finding the PR did not cause is posted only when it is a security finding. Every other one is in the round record only, unless the PR fixes the same failure elsewhere. Then it is posted as a note ([#2025](https://github.com/manki-review/manki/pull/2025)).
 - A note about a test is ranked by the gap it names, and one that claims a gap an existing test already covers is kept in the round record ([#2003](https://github.com/manki-review/manki/pull/2003)).
 
 ### Review loop and verdicts
