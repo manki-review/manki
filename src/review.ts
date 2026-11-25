@@ -1865,7 +1865,7 @@ export async function runReview(
   // Warning leads need the judge's tools to be settled, so without them they stay only listed.
   const settleLeads = !!(workspace && clients.judge.repoTools);
   const lastRound = [...(priorRounds ?? [])].sort((a, b) => a.meta.round - b.meta.round).at(-1);
-  const { current, carried } = withEarlierLeads(allFindings, lastRound?.leads, round, diffWithLockfiles, changedSinceLastRound);
+  const { current, carried } = withEarlierLeads(allFindings, lastRound, round, diffWithLockfiles, changedSinceLastRound);
   if (carried.length > 0) core.info(`Carrying over ${carried.length} open lead(s) the last round left unsettled`);
   const { findings: checkedFindings, openLeads: listedLeads } = splitOpenLeads([...current, ...carried], settleLeads);
   const openLeads = [...listedLeads];
@@ -3281,14 +3281,14 @@ const MAX_LEAD_ROUNDS = 3;
  * Carries over the leads the previous round left unsettled and only listed, while their file is still in the PR, the
  * author has not changed it since, and they came up at most `MAX_LEAD_ROUNDS` rounds ago. A finding of this round on
  * the same file with a matching title takes the place of its earlier lead, keeping the round the lead first came up in.
- * Returns this round's findings, and the earlier leads no finding took the place of.
+ * A carried lead keeps the checks of the round it comes from, for the review body only. Returns this round's findings, and the earlier leads no finding took the place of.
  */
 function withEarlierLeads(
-  findings: Finding[], earlier: RoundLead[] = [], round: number, diff: ParsedDiff, changedSinceLastRound?: string[],
+  findings: Finding[], last: Pick<RoundContext, 'leads' | 'meta'> | undefined, round: number, diff: ParsedDiff, changedSinceLastRound?: string[],
 ): { current: Finding[]; carried: Finding[] } {
   const inPr = new Set(diff.files.map(f => f.path));
   // Without the change since the last round, no file is known to be unchanged, so nothing carries over.
-  const candidates = earlier.filter(l => !l.posted && (l.outcome === 'unsettled' || l.outcome === 'not_checked')
+  const candidates = (last?.leads ?? []).filter(l => !l.posted && (l.outcome === 'unsettled' || l.outcome === 'not_checked')
     && round - l.since <= MAX_LEAD_ROUNDS && inPr.has(l.file) && changedSinceLastRound !== undefined && !changedSinceLastRound.includes(l.file));
   const open = candidates.filter((l, i) => candidates.findIndex(other => sameLead(other, l)) === i);
   const current = findings.map(f => {
@@ -3297,6 +3297,7 @@ function withEarlierLeads(
   });
   const carried = open.filter(l => !findings.some(f => sameLead(l, f))).map((l): Finding => ({
     severity: l.severity, title: l.title, file: l.file, line: l.line, description: l.description, reviewers: l.reviewers, lead: l.lead, leadSince: l.since,
+    ...((l.refutation || l.pairRefutation) && { earlierChecks: { round: last!.meta.round, refutation: l.refutation, pairRefutation: l.pairRefutation } }),
   }));
   return { current, carried };
 }

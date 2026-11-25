@@ -6381,6 +6381,11 @@ describe('postReview non-blocking findings', () => {
       { refutation: check('confirmed', 'It fails.'), pairRefutation: check('disproved', 'It holds.') },
       { refutation: check('unsettled', ' ') },
       { refutation: check('unsettled', `${'x'.repeat(290)}. More than fits here.`), leadSince: 1 },
+      // A carried lead no check of this round settled shows the reason of the round it comes from. This round's check comes first.
+      { earlierChecks: { round: 2, refutation: check('unsettled', 'No caller sets the flag. Another sentence.') }, leadSince: 1 },
+      { earlierChecks: { round: 2, pairRefutation: check('confirmed', 'It fails.'), refutation: check('disproved', 'It holds.') } },
+      { refutation: check('unsettled', 'The lock is taken twice.'), earlierChecks: { round: 2, refutation: check('unsettled', 'No caller sets the flag.') } },
+      { earlierChecks: { round: 2 } },
     ]).map((extra, i) => nonBlocking('warning', `Lead ${i}`, i + 1, extra));
     expect(await bodyOf({ openLeads })).toContain([
       `- **Lead 0** · ${link(1)}`,
@@ -6395,6 +6400,15 @@ describe('postReview non-blocking findings', () => {
       '  A check of the code could not settle it.',
       `- **Lead 5** · ${link(6)}`,
       `  ${'x'.repeat(290)}. Open since round 1.`,
+      `- **Lead 6** · ${link(7)}`,
+      '  No check in this round settled it. In round 2: No caller sets the flag. Open since round 1.',
+      `- **Lead 7** · ${link(8)}`,
+      '  No check in this round settled it. In round 2: Two checks of the code disagreed about it.',
+      `- **Lead 8** · ${link(9)}`,
+      '  The lock is taken twice.',
+      `- **Lead 9** · ${link(10)}`,
+      '  No check in this round settled it.',
+      '',
     ].join('\n'));
 
     // Each kind lists its first ten. A reason ends at its second sentence, or its first when two pass 300 characters.

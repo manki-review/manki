@@ -441,6 +441,8 @@ export interface Finding {
   lead?: OpenLead;
   /** The round an open lead first came up in, when an earlier round left it unsettled. */
   leadSince?: number;
+  /** The checks of the round a carried lead comes from, shown when no check of this round settled it. No stage reads them. */
+  earlierChecks?: { round: number; refutation?: Refutation; pairRefutation?: Refutation };
   /** The severity table cell the grade is worked out from. The judge states it, and no tool check moves its column. */
   cell?: GradeCell;
   /** The cell the judge stated, on a blocker `applyRefutation` put back at its finders' grade. Only for the record: no prompt shows it. */

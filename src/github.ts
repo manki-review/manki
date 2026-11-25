@@ -2368,11 +2368,15 @@ function formatLeftOutEntry({ title, file, line, reason, note }: LeftOutEntry, l
 
 /**
  * Returns why no check settled the lead `f`: the reason of the first check that ended unsettled, or of the premise such a
- * check left open once it confirmed the defect. A check without one gave no answer the lead could rest on.
+ * check left open once it confirmed the defect. A check without one gave no answer the lead could rest on. Without a
+ * check in this round, a carried lead shows the reason of the round it comes from.
  */
-function unfinishedReason({ refutation, pairRefutation }: Finding): string {
+function unfinishedReason({ refutation, pairRefutation, earlierChecks }: Pick<Finding, 'refutation' | 'pairRefutation' | 'earlierChecks'>): string {
   const checks = [refutation, pairRefutation].filter((r): r is Refutation => !!r);
-  if (checks.length === 0) return 'No check in this round settled it.';
+  if (checks.length === 0) {
+    const none = 'No check in this round settled it.';
+    return earlierChecks && (earlierChecks.refutation || earlierChecks.pairRefutation) ? `${none} In round ${earlierChecks.round}: ${unfinishedReason(earlierChecks)}` : none;
+  }
   const unsettled = checks.find(check => outcomeOf(check) === 'unsettled');
   const premise = unsettled?.defect === 'confirmed' ? unsettled.premises?.find(p => p.outcome === 'unsettled') : undefined;
   const reason = premise?.reason.trim() || unsettled?.reason.trim();

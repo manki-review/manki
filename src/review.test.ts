@@ -4952,7 +4952,7 @@ describe('runReview', () => {
       expect(mockedRunJudgeAgent.mock.calls[0][2].findings).toEqual([expect.objectContaining({ file: 'src/a.ts', lead, leadSince: 1 })]);
       // The progress comment names the carried lead and the listed one, so the finder's lead and the count graded add up.
       expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({ phase: 'judging', rawFindingCount: 1, judgeInputCount: 1, carriedLeadCount: 1, openLeadCount: 1, toolAlertCount: 0 }));
-      expect(result.openLeads?.map(f => [f.file, f.line, f.leadSince])).toEqual([['src/d.ts', 7, 1], ['src/a.ts', 1, 1]]);
+      expect(result.openLeads?.map(f => [f.file, f.line, f.leadSince, f.earlierChecks])).toEqual([['src/d.ts', 7, 1, undefined], ['src/a.ts', 1, 1, undefined]]);
       expect(result.leads?.map(l => [l.file, l.outcome, l.since])).toEqual([['src/d.ts', 'not_checked', 1], ['src/a.ts', 'unsettled', 1]]);
 
       jest.mocked(clients.reviewer.sendMessage).mockResolvedValue({ content: '[]' });
@@ -4964,7 +4964,8 @@ describe('runReview', () => {
       const unchecked = buildPriorRound(2, []);
       unchecked.leads = [earlier('The token may not read the other repository', 'src/a.ts', 'warning', 'unsettled', { refutation: refuted('unsettled') })];
       const listed = await runReview(leadClients([], false), { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', priorRounds: [buildPriorRound(1, []), unchecked], interRoundDiff: 'diff --git a/src/b.ts b/src/b.ts\n--- a/src/b.ts\n+++ b/src/b.ts\n@@ -1 +1 @@\n-a\n+b\n' });
-      expect(listed.openLeads?.map(f => [f.file, f.leadSince, f.refutation])).toEqual([['src/a.ts', 1, undefined]]);
+      // It keeps that check apart, for the review body only, with the round it comes from.
+      expect(listed.openLeads?.map(f => [f.file, f.leadSince, f.refutation, f.earlierChecks])).toEqual([['src/a.ts', 1, undefined, { round: 2, refutation: refuted('unsettled'), pairRefutation: undefined }]]);
     });
   });
 
