@@ -236,7 +236,7 @@ describe('reviewLocal', () => {
         { id: 'P1', severity: 'blocker' as const, title: 'Wrong value', file: 'src/b.ts', line: 20, description: 'Should be 0.', suggestedFix: 'const v20 = 0;', security: true, thread: 'open' as const },
         { id: 'P2', severity: 'warning' as const, title: 'Unused constant', file: 'src/a.ts', line: 1, disproved: true, thread: 'resolved' as const },
         { id: 'P4', severity: 'blocker' as const, title: 'Missing check', file: 'src/a.ts', line: 2, thread: 'fixed' as const },
-        { id: 'P3', severity: 'note' as const, title: 'Name the constant', file: 'src/a.ts', line: 1, gradeIfConfirmed: 'warning' as const },
+        { id: 'P3', severity: 'note' as const, title: 'Name the constant', file: 'src/a.ts', line: 1, gradeIfConfirmed: 'warning' as const, importance: { overall: 3, trigger: 2, introduced: 9, matters: 4 } },
         { id: 'P5', severity: 'warning' as const, title: 'Stale read', file: 'src/a.ts', line: 3, gradeIfConfirmed: 'blocker' as const, cell: { row: 'wrong' as const, column: 'rare' as const }, doubts: [REACH_DOUBT] },
         { id: 'P6', severity: 'warning' as const, title: 'Tenth value is wrong', file: 'src/b.ts', line: 10 },
         { id: 'P7', severity: 'warning' as const, title: 'Guide is vague', file: 'guides/conventions.md', line: 1 },
@@ -260,9 +260,9 @@ describe('reviewLocal', () => {
     const [record] = options.priorRounds!;
     expect(record.meta).toMatchObject({ round: 1, commitSha: reviewed });
     expect(record.judge.threadEvaluations).toEqual([{ threadId: 'P4', status: 'addressed', reason: 'Fixed by an earlier push.' }]);
-    expect(record.findings.entries.map(e => [e.title, e.threadId, e.severity, e.tags, e.gradeIfConfirmed])).toEqual([
+    expect(record.findings.entries.map(e => [e.title, e.threadId, e.severity, e.tags, e.gradeIfConfirmed, ...(e.importance ? [e.importance.overall] : [])])).toEqual([
       ['Wrong value', 'P1', 'blocker', ['security'], undefined], ['Unused constant', 'P2', 'warning', ['disproved-blocker'], undefined], ['Missing check', 'P4', 'blocker', undefined, undefined],
-      ['Name the constant', undefined, 'note', undefined, 'warning'], ['Stale read', undefined, 'warning', undefined, 'blocker'],
+      ['Name the constant', undefined, 'note', undefined, 'warning', 3], ['Stale read', undefined, 'warning', undefined, 'blocker'],
       ['Tenth value is wrong', undefined, 'warning', undefined, undefined], ['Guide is vague', undefined, 'warning', undefined, undefined],
       ['Null is returned', undefined, 'warning', undefined, undefined], ['End runs late', undefined, 'warning', undefined, undefined],
       ['Fifth value is wrong', undefined, 'warning', undefined, undefined], ['No file', undefined, 'warning', undefined, undefined],

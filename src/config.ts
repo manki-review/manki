@@ -91,8 +91,9 @@ const MAX_JUDGE_TOOL_STEPS = 100;
 export const MODEL_KEYS: ReadonlySet<string> = new Set(['planner', 'judge', 'second_refuter', 'dedup', 'fallback']);
 /** How many notes a review lists when `review.notes` is not set. */
 export const DEFAULT_NOTES = 3;
+export const DEFAULT_MIN_WARNING_SCORE = 4;
 
-export const REVIEW_KEYS: ReadonlySet<string> = new Set(['groups', 'classes', 'routing', 'critical_paths', 'outside_input', 'examples', 'sweep', 'notes', 'rules', 'scope_blocks']);
+export const REVIEW_KEYS: ReadonlySet<string> = new Set(['groups', 'classes', 'routing', 'critical_paths', 'outside_input', 'examples', 'sweep', 'notes', 'rules', 'min_warning_score', 'scope_blocks']);
 export const GROUP_REVIEWER_KEYS: ReadonlySet<string> = new Set(['model', 'effort', 'focus']);
 /** The keys of a reader of the `trivial` group. The quick check has one fixed prompt, so it takes no `focus`. */
 const QUICK_CHECK_KEYS: ReadonlySet<string> = new Set(['model', 'effort']);
@@ -466,6 +467,9 @@ function validateReviewBlock(review: unknown, errors: string[], warnings: string
   if ('sweep' in review && !SWEEP_MODES.some(mode => mode === review.sweep)) errors.push('`review.sweep` must be `off`, `blockers`, `warnings` or `notes`');
   if ('notes' in review && !(Number.isInteger(review.notes) && (review.notes as number) >= 0)) errors.push('`review.notes` must be a non-negative integer');
   if ('rules' in review && !RULES_MODES.some(mode => mode === review.rules)) errors.push('`review.rules` must be `auto`, `warn` or `block`');
+  if ('min_warning_score' in review && !(Number.isInteger(review.min_warning_score) && (review.min_warning_score as number) >= 1 && (review.min_warning_score as number) <= 10)) {
+    errors.push('`review.min_warning_score` must be a whole number from 1 to 10');
+  }
   if ('scope_blocks' in review && typeof review.scope_blocks !== 'boolean') errors.push('`review.scope_blocks` must be `true` or `false`');
   if ('examples' in review) {
     const examples = review.examples;

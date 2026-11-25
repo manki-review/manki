@@ -801,14 +801,15 @@ describe('tagFindingOrigins', () => {
     expect(rebaseFindings[0].origin).toBe('reviewed');
   });
 
-  it('hides a note on reviewed code, but not one the PR fixes elsewhere, since that fix can be newer than the review, nor one the other finder\'s vote lowered', () => {
+  it('hides a note on reviewed code, but not one the PR fixes elsewhere, since that fix can be newer than the review, nor one the other finder\'s vote or the score lowered', () => {
     const current = parsePRDiff(change('src/a.ts', 10, ['x']));
     const fixed = { fixedElsewhere: 'src/a.ts:11' };
     const voted = { gradePath: [{ from: 'warning' as const, to: 'note' as const, by: 'other_finder' as const }] };
-    const result = { findings: [finding('src/a.ts', 30), { ...finding('src/a.ts', 31), ...fixed }, { ...finding('src/a.ts', 32), ...fixed, raisedIn: 1 }, { ...finding('src/a.ts', 33), ...voted }] } as ReviewResult;
+    const scored = { gradePath: [{ from: 'warning' as const, to: 'note' as const, by: 'importance' as const }] };
+    const result = { findings: [finding('src/a.ts', 30), { ...finding('src/a.ts', 31), ...fixed }, { ...finding('src/a.ts', 32), ...fixed, raisedIn: 1 }, { ...finding('src/a.ts', 33), ...voted }, { ...finding('src/a.ts', 34), ...scored }] } as ReviewResult;
     tagFindingOrigins(result.findings, current, current, undefined, citedPlaces);
     hideSeenNotes(result, current);
-    expect([result.findings.map(f => f.line), result.unposted?.map(f => [f.line, f.unpostedReason])]).toEqual([[31, 33], [[30, 'reviewed_code'], [32, 'listed_earlier']]]);
+    expect([result.findings.map(f => f.line), result.unposted?.map(f => [f.line, f.unpostedReason])]).toEqual([[31, 33, 34], [[30, 'reviewed_code'], [32, 'listed_earlier']]]);
     expect(result.findings[1].origin).toBe('reviewed');
   });
 });
