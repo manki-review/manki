@@ -246,6 +246,7 @@ jest.mock('./github', () => ({
   hasBotReviewOnCommit: jest.fn().mockResolvedValue(false),
   findBotReviewOnCommit: jest.fn().mockResolvedValue(undefined),
   fetchApprovalHold: jest.fn().mockResolvedValue(undefined),
+  alsoHeldLine: jest.requireActual('./github').alsoHeldLine,
   REVIEW_STATE_VERDICTS: jest.requireActual('./github').REVIEW_STATE_VERDICTS,
   fetchStandingVerdict: jest.fn().mockResolvedValue(undefined),
   markOwnProgressCommentCancelled: jest.fn().mockResolvedValue(false),
@@ -7962,6 +7963,7 @@ describe('runFullReview orchestration', () => {
 
     it('holds the previous APPROVE when the PR conflicts with its base, without running a round', async () => {
       seedPush('APPROVE', REVIEWED_DIFF);
+      jest.mocked(ghUtils.fetchApprovalHold).mockResolvedValueOnce({ reason: 'conflict', baseRef: 'main' });
       jest.mocked(stateModule.holdApproval).mockResolvedValueOnce({ reason: 'conflict', line: 'conflicts', posted: true });
 
       await callRunFullReview();
@@ -7970,6 +7972,30 @@ describe('runFullReview orchestration', () => {
       // The last argument is the config's `auto_approve`, which the notice for a draft depends on.
       expect(jest.mocked(stateModule.holdApproval)).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42, 'abc123', undefined, false);
       expect(mockCreateReview).not.toHaveBeenCalled();
+    });
+
+    const warning = { id: 'T1', isResolved: false, isBlocking: false, isWarning: true, findingTitle: 'Retry never stops' };
+    const blocking = { id: 'T2', isResolved: false, isBlocking: true, findingTitle: 'Lost update' };
+    const standing = 'No change to this PR since the reviewed commit `old9999`. The previous verdict stands.';
+    it.each([
+      ['names the warnings before a conflict, with no notice of the conflict', { reason: 'conflict' as const, baseRef: 'main' }, () => [warning], 'warnings', `${standing}\n\nThe PR also conflicts with \`main\`, so rebase it.`],
+      ['names the warnings before a draft', { reason: 'draft' as const }, () => [warning], 'warnings', `${standing}\n\nThe PR is also a draft, so mark it ready for review before you tick the review box.`],
+      ['names the conflict alone beside a blocking thread', { reason: 'conflict' as const, baseRef: 'main' }, () => [warning, blocking], 'conflict', standing],
+      ['names the conflict alone when the threads cannot be read', { reason: 'conflict' as const, baseRef: 'main' }, () => { throw new Error('rate limited'); }, 'conflict', standing],
+    ])('keeps the previous APPROVE held without a round and %s', async (_label, prHold, threads, held, summary) => {
+      seedPush('APPROVE', REVIEWED_DIFF);
+      jest.mocked(ghUtils.fetchApprovalHold).mockResolvedValueOnce(prHold);
+      jest.mocked(stateModule.fetchHeldWarnings).mockImplementationOnce(async () => threads());
+      if (held !== 'warnings') jest.mocked(stateModule.holdApproval).mockResolvedValueOnce({ reason: prHold.reason, line: 'held', posted: true });
+
+      await callRunFullReview();
+
+      expectNoRound();
+      expect(mockCreateReview).not.toHaveBeenCalled();
+      expect(jest.mocked(stateModule.holdApproval).mock.calls.length).toBe(held === 'warnings' ? 0 : 1);
+      const titles = { warnings: 'Approval held: warnings wait for a fix or an accepted answer', conflict: 'Approval held: the PR conflicts with its base' };
+      expect(mockChecksCreate.mock.calls).toEqual([[expect.objectContaining({ conclusion: 'neutral', output: { title: titles[held as keyof typeof titles], summary } })]]);
+      expect(jest.mocked(authModule.reportPrState).mock.calls).toEqual([['test-owner', 'test-repo', 42, { approval: { commit: 'abc123', held: true } }]]);
     });
 
     it.each([
@@ -8003,7 +8029,10 @@ describe('runFullReview orchestration', () => {
       ['a request for changes', 'REQUEST_CHANGES', false, 'failure', 'Changes requested'],
     ] as const)('reports %s that stands as the PR check and to the coordinator', async (_label, verdict, held, conclusion, title) => {
       seedPush(verdict, REBASED_DIFF);
-      if (held) jest.mocked(stateModule.holdApproval).mockResolvedValueOnce({ reason: 'conflict', line: 'conflicts', posted: true });
+      if (held) {
+        jest.mocked(ghUtils.fetchApprovalHold).mockResolvedValueOnce({ reason: 'conflict', baseRef: 'main' });
+        jest.mocked(stateModule.holdApproval).mockResolvedValueOnce({ reason: 'conflict', line: 'conflicts', posted: true });
+      }
 
       await callRunFullReview();
 
