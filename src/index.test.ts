@@ -2630,10 +2630,13 @@ describe('runFullReview orchestration', () => {
       ['warnings', 'Approval held: warnings wait for a fix or an accepted answer'],
       ['unread warnings', 'Approval held: warnings wait for a fix or an accepted answer'],
       ['config with warnings', 'Approval held: a config file did not load'],
+      ['draft with warnings', 'Approval held: warnings wait for a fix or an accepted answer'],
+      ['conflict with warnings', 'Approval held: warnings wait for a fix or an accepted answer'],
       ['refused', 'Approval held: GitHub refused the approval'],
     ] as const)('completes the check as neutral when the approval is held for a %s, and reports it held', async (held, title) => {
-      const approvalHeld = held === 'unread warnings' ? 'warnings' : held === 'config with warnings' ? 'config' : held;
-      jest.mocked(ghUtils.postReview).mockResolvedValueOnce({ id: 123, approvalHeld, warningsHeld: held.includes('warnings') });
+      const approvalHeld = held === 'unread warnings' ? 'warnings' : held.replace(' with warnings', '') as Exclude<ghUtils.ApprovalHeld, false>;
+      const alsoHeld = held.includes('with warnings') && approvalHeld !== 'config' ? `The PR is also held by a ${approvalHeld}.` : undefined;
+      jest.mocked(ghUtils.postReview).mockResolvedValueOnce({ id: 123, approvalHeld, warningsHeld: held.includes('warnings'), ...(alsoHeld && { alsoHeld }) });
       const open = { id: 'T1', isResolved: false, isBlocking: false, isWarning: true as const, findingTitle: 'Retry never stops' };
       if (held === 'warnings') jest.mocked(stateModule.fetchHeldWarnings).mockResolvedValueOnce([open, { ...open, id: 'T2' }]);
       // A failed read of the warning threads still posts the review, which holds the approval.
@@ -2647,8 +2650,10 @@ describe('runFullReview orchestration', () => {
       expect(options).toEqual(expect.objectContaining({ openWarnings: held === 'warnings' ? [open, { ...open, id: 'T2' }] : held === 'unread warnings' ? 'unread' : [] }));
 
       expect(completedCheck()).toMatchObject({ conclusion: 'neutral', output: { title } });
-      // Warnings that hold behind another hold are named in the summary, since the title names only the first.
-      expect((completedCheck() as { output: { summary: string } }).output.summary.endsWith('\n\nWarnings also hold the approval. The review names each one and what clears it.')).toBe(held === 'config with warnings');
+      // The title names the warnings before a draft or a conflict, which the summary names as the review does. Behind another hold, the summary names them.
+      const { summary } = (completedCheck() as { output: { summary: string } }).output;
+      expect(summary.endsWith('\n\nWarnings also hold the approval. The review names each one and what clears it.')).toBe(held === 'config with warnings');
+      if (alsoHeld) expect(summary.endsWith(`\n\n${alsoHeld}`)).toBe(true);
       // An approval of the same commit stays for every hold but warnings, which a round run again on the commit can find.
       const keepCommit = held.includes('warnings') ? undefined : 'abc123';
       expect(jest.mocked(ghUtils.dismissPreviousReviews)).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42, 123, 'APPROVED', keepCommit);

@@ -2181,10 +2181,7 @@ describe('postReview body lead', () => {
     mockGet.mockResolvedValueOnce({ data: { draft: true, mergeable: true, mergeable_state: 'clean', base: { ref: 'main' } } });
     const drafted = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: [earlier('Old retry')] });
     expect([drafted.approvalHeld, drafted.warningsHeld]).toEqual(['draft', true]);
-    const draftBody = (mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n\n');
-    expect(draftBody[0]).toMatch(/^\*\*Approval held:\*\* this PR is a draft\./);
-    expect(draftBody[1]).toBe('\u26A0\uFE0F **1 warning to address.** Fix it, reply in its thread with a reason Manki accepts, or tick `Create an issue for this` to track it for later.');
-    expect(draftBody[2]).toBe(listed('Old retry'));
+    expect(lastBody().split('\n\n')[1]).toBe(listed('Old retry'));
     // With files no model read, the verdict line names the warnings and the person who must approve.
     const skipped = { excluded: [{ path: 'dist/index.js', matchedPattern: 'dist/**' }], binary: [] };
     const unreadFiles = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: [earlier('Old retry')], skipped });
@@ -2240,13 +2237,6 @@ describe('postReview body lead', () => {
     expect(lastBody().split('\n\n')[1]).toBe('<!-- manki-issue-box -->\n- [ ] Check approval <!-- manki-box:check -->');
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: 'unread', autoApprove: false });
     expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on the warning threads.** Manki could not read them, so it does not approve yet. Tick the review box in the settings block. `auto_approve` is off, so Manki approves only at the end of a review round, when nothing holds the approval.');
-    // A config hold comes first with a line of its own, and the verdict line still says the warnings hold.
-    const config = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: [earlier('Old retry'), earlier('Old cache')], configHold: 'base' });
-    expect([config.approvalHeld, config.warningsHeld]).toEqual(['config', true]);
-    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n\n').slice(0, 2)).toEqual([
-      '**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.',
-      '\u26A0\uFE0F **2 warnings to address.** Fix each one, reply in its thread with a reason Manki accepts, or tick `Create an issue for this` to track it for later.',
-    ]);
     // A pre-existing warning never holds, nor does one that goes into its answered thread, and a suggestion never does.
     const answeredIn = { threadId: 'T1', answer: 'Agreed. Leave it.', grade: { severity: 'warning' as const } };
     const { event: approved, approvalHeld } = await postedBody({ ...ready, findings: [warning('Old bug', 3, { tags: ['follow-up', 'pre-existing'] }), warning('Answered', 4, { answeredIn }), ...ready.findings] });
@@ -2284,6 +2274,67 @@ describe('postReview body lead', () => {
     // A blocker still requests changes.
     const blocked = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', findings: [blocker, warning('Retry never stops', 3)] }, diff, undefined, undefined, { openWarnings: [earlier('Old retry')] });
     expect([mockCreateReview.mock.calls.at(-1)![0].event, blocked.approvalHeld]).toEqual(['REQUEST_CHANGES', false]);
+  });
+
+  const WARNED = '⚠️ **1 warning to address.** Fix it, reply in its thread with a reason Manki accepts, or tick `Create an issue for this` to track it for later.';
+  const TICK = ' Once every warning is handled, tick the review box in the settings block. `auto_approve` is off, so Manki approves only at the end of a review round, when nothing holds the approval.';
+  const ALSO_DRAFT = ' The PR is also a draft, so mark it ready for review too. If no approval follows, comment `/manki check`.';
+  const ALSO_DRAFT_OFF = ' The PR is also a draft, so mark it ready for review before you tick the review box.';
+  const ALSO_CONFLICT = ' The PR also conflicts with `main`, so rebase it.';
+  const ONLY_DRAFT = '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. If the latest commit has no review yet, Manki reviews it first when automatic review runs on this PR. If nothing happens, as for a PR from a fork or while automatic review is off or paused, comment `/manki check`, and Manki approves or says what holds the approval.';
+  const ONLY_DRAFT_OFF = '**Approval held:** this PR is a draft. Mark it ready for review, then tick the review box in the settings block. `auto_approve` is off, so Manki approves only at the end of a review round, when nothing holds the approval.';
+  const ONLY_CONFLICT = '**Approval held:** this PR conflicts with `main`. Rebase it, and Manki reviews the result. If the push starts no review, as while automatic review is off or paused, comment `/manki review`.';
+  const ONLY_CONFIG = '**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.';
+  const CONFIG_BELOW = 'The config file on the base branch could not be read or does not load, so Manki reviewed with the defaults and does not approve.';
+  const HEAD_CONFIG_BELOW = 'This PR\'s copy of the config file does not load or could not be read, so Manki does not approve. Fix it and push, and Manki reviews the new commit. If the push starts no review, as while automatic review is off or paused, comment `/manki review`.';
+  const REFUSED_BY_SETTING = '**Approval held:** GitHub refused the approval because the repository does not allow GitHub Actions to approve pull requests, so this review is a comment. Enable "Allow GitHub Actions to create and approve pull requests" in the repository settings, or approve the PR by hand.';
+  const CHECK_BOX = '<!-- manki-issue-box -->\n- [ ] Check approval <!-- manki-box:check -->';
+  const AGAIN_BOX = '<!-- manki-issue-box -->\n- [ ] Review again <!-- manki-box:again -->';
+  const skippedFile = { excluded: [{ path: 'dist/index.js', matchedPattern: 'dist/**' }], binary: [] };
+  type HoldCase = { state?: 'draft' | 'conflict'; configHold?: 'base' | 'head'; skipped?: typeof skippedFile; warned?: true; blocked?: true; refused?: true; autoApprove?: false };
+  it.each<[string, HoldCase, ApprovalHeld, string[], string?]>([
+    ['warnings alone', { warned: true }, 'warnings', [`${WARNED} Manki approves once every warning is handled.`]],
+    ['warnings alone, `auto_approve` off', { warned: true, autoApprove: false }, 'warnings', [WARNED + TICK, AGAIN_BOX]],
+    ['a draft', { state: 'draft' }, 'draft', [ONLY_DRAFT, '✅ **Approved.**', CHECK_BOX]],
+    ['a draft, `auto_approve` off', { state: 'draft', autoApprove: false }, 'draft', [ONLY_DRAFT_OFF, '✅ **Approved.**', AGAIN_BOX]],
+    ['a draft with warnings', { state: 'draft', warned: true }, 'draft', [WARNED + ALSO_DRAFT], ALSO_DRAFT],
+    ['a draft with warnings, `auto_approve` off', { state: 'draft', warned: true, autoApprove: false }, 'draft', [WARNED + TICK + ALSO_DRAFT_OFF, AGAIN_BOX], ALSO_DRAFT_OFF],
+    ['a conflict', { state: 'conflict' }, 'conflict', [ONLY_CONFLICT, '✅ **Approved.**']],
+    ['a conflict, `auto_approve` off', { state: 'conflict', autoApprove: false }, 'conflict', [ONLY_CONFLICT, '✅ **Approved.**']],
+    ['a conflict with warnings', { state: 'conflict', warned: true }, 'conflict', [WARNED + ALSO_CONFLICT], ALSO_CONFLICT],
+    ['a conflict with warnings, `auto_approve` off', { state: 'conflict', warned: true, autoApprove: false }, 'conflict', [WARNED + TICK + ALSO_CONFLICT, AGAIN_BOX], ALSO_CONFLICT],
+    ['a config', { configHold: 'base' }, 'config', [ONLY_CONFIG, '✅ **Approved.**']],
+    ['a config, `auto_approve` off', { configHold: 'base', autoApprove: false }, 'config', [ONLY_CONFIG, '✅ **Approved.**']],
+    ['a config with warnings', { configHold: 'base', warned: true }, 'config', [WARNED, CONFIG_BELOW]],
+    ['a config with warnings, `auto_approve` off', { configHold: 'base', warned: true, autoApprove: false }, 'config', [WARNED + TICK, CONFIG_BELOW, AGAIN_BOX]],
+    ['the PR\'s own config with warnings', { configHold: 'head', warned: true }, 'config', [WARNED, HEAD_CONFIG_BELOW]],
+    ['a config and a draft with warnings', { configHold: 'base', state: 'draft', warned: true }, 'config', [WARNED + ALSO_DRAFT, CONFIG_BELOW]],
+    ['unread files and a conflict with warnings', { skipped: skippedFile, state: 'conflict', warned: true }, 'unread', [`${WARNED}${ALSO_CONFLICT} A person must also approve, since no model read 1 of the changed files.`]],
+    ['a config with a blocker and a warning', { configHold: 'base', warned: true, blocked: true }, false, ['🔴 **Changes requested:** 1 blocker, plus 1 warning in threads.', '**What blocks:** All clear.', CONFIG_BELOW]],
+    ['a refusal by GitHub', { refused: true }, 'refused', [REFUSED_BY_SETTING, '✅ **Approved.**']],
+    ['a refusal by GitHub, `auto_approve` off', { refused: true, autoApprove: false }, 'refused', [REFUSED_BY_SETTING, '✅ **Approved.**']],
+    // A round that requests changes never reads whether the PR is a draft.
+    ['a draft with a blocker', { state: 'draft', blocked: true }, false, ['🔴 **Changes requested:** 1 blocker.', '**What blocks:** All clear.']],
+  ])('names the warnings first and every other hold after them: %s', async (_label, { state, configHold, skipped, warned, blocked, refused, autoApprove = true }, approvalHeld, head, ...[alsoHeld]) => {
+    const warning: Finding = { severity: 'warning', title: 'Retry never stops', file: 'src/a.ts', line: 3, description: 'd', reviewers: [], tags: ['follow-up'] };
+    const findings = [...(blocked ? [blocker] : []), ...(warned ? [warning] : [])];
+    const result: ReviewResult = { ...ready, findings, ...(blocked && { verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', verdictReport: undefined }) };
+    if (!blocked) mockGet.mockResolvedValueOnce({ data: { draft: state === 'draft', mergeable: state !== 'conflict', mergeable_state: 'clean', base: { ref: 'main' } } });
+    mockCreateReview.mockClear();
+    if (refused) {
+      mockCreateReview.mockRejectedValueOnce(Object.assign(new Error('GitHub Actions is not permitted to approve pull requests.'), { status: 422 }));
+      mockGet.mockResolvedValueOnce({ data: { head: { sha: 'abcdef1234' } } });
+    }
+    const posted = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', result, diff, makeContext({}), 1000, { configHold, skipped, autoApprove });
+    const { body } = mockCreateReview.mock.calls.at(-1)![0] as { body: string };
+    expect(body.split('\n\n').slice(0, head.length)).toEqual(head);
+    // Nothing else of a hold stands in the head, which the first of these parts ends.
+    expect(body.split('\n\n')[head.length]).toMatch(/^(\*\*What this does:\*\*|---|<details>|<!-- manki-stats)/);
+    expect(body.match(/Approval held/g) ?? []).toHaveLength(head[0].startsWith('**Approval held:**') ? 1 : 0);
+    // The decision and its record stay as they are, whatever the review names first.
+    expect([posted.approvalHeld, posted.warningsHeld]).toEqual([approvalHeld, !!warned && !blocked]);
+    expect((JSON.parse(extractReviewRecords(body).records[0]) as RoundContext).approval).toEqual(blocked ? undefined : { held: approvalHeld, ...(warned && { warningsHeld: true }) });
+    expect(posted.alsoHeld).toBe(alsoHeld?.trim());
   });
 
   it('holds the approval of a draft as a COMMENT when the PR cannot be read, and approves another PR then', async () => {
@@ -2343,11 +2394,12 @@ describe('postReview body lead', () => {
       ...ready, verdict: 'REQUEST_CHANGES' as const, outcome: 'ADDRESS_FIRST' as const, verdictReason: 'prior_unaddressed' as const,
       summary: 'Nothing blocks merge.', verdictTrace: { survivingBlockers: [], unresolvedPriors: [open] },
     };
-    // A config hold also stops a later auto-approve, so a round that requests changes names it first.
+    // A config hold also stops a later auto-approve, so a round that requests changes names it below its lead.
     const changes = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', withheld, diff, undefined, undefined, { configHold: 'head' });
     const named = mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string };
     expect([named.event, changes.approvalHeld]).toEqual(['REQUEST_CHANGES', false]);
-    expect(named.body.startsWith('**Approval held:** this PR\'s copy of the config file does not load or could not be read. Fix it and push, and Manki reviews the new commit. If the push starts no review, as while automatic review is off or paused, comment `/manki review`.\n\n')).toBe(true);
+    expect(named.body).not.toContain('Approval held');
+    expect(named.body.indexOf('This PR\'s copy of the config file')).toBeGreaterThan(named.body.indexOf('**Changes requested:**'));
     expect(named.body).toContain('<!-- manki-held-for-person -->');
 
     const records = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', withheld, diff, undefined, undefined, { unreadRecords: [url] });
