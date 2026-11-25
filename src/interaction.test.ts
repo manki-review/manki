@@ -89,6 +89,8 @@ jest.mock('./github', () => ({
   fetchPRDiff: jest.fn().mockResolvedValue('diff --git a/src/file.ts b/src/file.ts\n--- a/src/file.ts\n+++ b/src/file.ts\n@@ -9,2 +9,3 @@\n context\n+  log(opts.retries, sessionToken);\n context'),
   // Line 10 of `src/file.ts` changed since each thread was posted, so a "Fixed." citing it holds.
   readChangesSince: jest.fn().mockResolvedValue({ diff: 'diff --git a/src/file.ts b/src/file.ts\n--- a/src/file.ts\n+++ b/src/file.ts\n@@ -9,2 +9,3 @@\n context\n+  log(opts.retries, sessionToken);\n context' }),
+  // Returns a PR without a state as it is.
+  awaitPushedHead: jest.fn(jest.requireActual('./github').awaitPushedHead),
   authorClearRole: jest.fn().mockResolvedValue(undefined),
   hasWriteAccess: jest.fn(),
 }));
@@ -1991,6 +1993,53 @@ describe('handleReviewCommentReply', () => {
     expect(jest.mocked(client.sendMessage).mock.calls.map(call => call[2])).toEqual([{ timeoutMs: 300_000, repoTools: { root: '/work/head', steps: 15, checking: true } }]);
     expect(jest.mocked(plain.sendMessage).mock.calls[0][2]).toEqual({ timeoutMs: 300_000 });
     expect(loadWorkspace).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { name: 'a head that moved before the read', heads: ['b', 'b'], read: ['b'], posted: 'Fixed. First look.' },
+    { name: 'a head that moves before the post', heads: ['a', 'b', 'b', 'b'], read: ['a', 'b'], posted: 'Fixed. Second look.' },
+    { name: 'a head that moves before every post', heads: ['a', 'b', 'b', 'c'], read: ['a', 'b'], posted: 'I did not check this reply, since the pull request got new commits each time I read it.' },
+    { name: 'a second read that fails', heads: ['a', 'b', 'b'], read: ['a', 'b'], posted: 'Manki could not answer', fails: true },
+    { name: 'a push the PR does not show at the start', heads: ['a+b'], read: [], posted: 'I did not check this reply. The branch is at `bbbbbbb`, and GitHub still shows this pull request at `aaaaaaa`. Reply again once the pull request shows the push.' },
+    { name: 'a push the PR does not show before the post', heads: ['a', 'a+b'], read: ['a'], posted: 'I did not check this reply. The branch is at `bbbbbbb`' },
+  ])('reads a reply on the newest commit of the branch: $name', async ({ heads, read, posted, fails }) => {
+    const sha = (letter: string): string => letter.repeat(40);
+    setContext({ comment: { id: 1, body: 'Fixed in bbbbbbb.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'MEMBER' }, pull_request: { number: 1, head: { sha: sha('a') } } });
+    const octokit = createMockOctokit();
+    const client = { ...createMockClient(), repoTools: true } as LLMClient;
+    jest.mocked(client.sendMessage)
+      .mockResolvedValueOnce({ content: structured('Fixed. First look.') } as never)
+      .mockImplementationOnce(async () => {
+        if (fails) throw new Error('timed out');
+        return { content: structured('Fixed. Second look.') } as never;
+      });
+    const seen: (string | undefined)[] = [];
+    const loadWorkspace = jest.fn(async () => {
+      seen.push(github.context.payload.pull_request?.head.sha);
+      return undefined;
+    });
+    const thread = { id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: false, findingTitle: 'This' };
+    jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([thread]);
+    jest.mocked(state.resolveReviewThread).mockClear();
+    jest.mocked(ghUtils.awaitPushedHead).mockClear();
+    for (const next of heads) {
+      const [head, unseen] = next.split('+');
+      jest.mocked(ghUtils.awaitPushedHead).mockResolvedValueOnce({
+        pull: { number: 1, state: 'open', head: { sha: sha(head), ref: 'fix', repo: null } }, ...(unseen && { unseen: sha(unseen) }),
+      });
+    }
+
+    const answered = handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, loadWorkspace);
+    await (fails ? expect(answered).rejects.toThrow('timed out') : answered);
+
+    expect(ghUtils.awaitPushedHead).toHaveBeenCalledTimes(heads.length);
+    expect(seen).toEqual(read.map(sha));
+    expect(client.sendMessage).toHaveBeenCalledTimes(read.length);
+    const replies = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls;
+    expect(replies).toHaveLength(1);
+    expect(replies[0][0].body).toContain(posted);
+    expect(state.resolveReviewThread).toHaveBeenCalledTimes(posted.startsWith('Fixed.') ? 1 : 0);
+    jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([]);
   });
 
   const FIX_CONFIRMED = 'Confirmed: #7, merged into `main`, replaced the cited line. `src/file.ts:10` checks the token first. This PR\'s own code still has the defect, so this thread stays as it is. Update this branch with `main`, and the next review checks the fix here.';
