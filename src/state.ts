@@ -4,7 +4,7 @@ import * as github from '@actions/github';
 import { assertWritesAllowed } from './abort';
 import { changeThreadThroughService, fetchPrState, reportPrState } from './auth';
 import { newestCheckPassed, outcomeReport, reportCheck } from './check-run';
-import { AFTER_PUSH_LINE, ApprovalHeld, approvalHoldBox, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, autoApproveHeadMarker, failedAutoApproveId, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchBlobShas, fetchInterRoundDiff, fetchPRComments, givesVerdict, HELD_FOR_PERSON_MARKER, inline, sanitizeMarkdown, standingOnCommit, fetchReviewThreadNodes, fetchStandingVerdict, MANKI_VERSION, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatReadyReport, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, authorClearRole, deleteAutoApproveProgressComment, reviewedCommit, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
+import { AFTER_PUSH_LINE, alsoHeldLine, ApprovalHeld, approvalHoldBox, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, autoApproveHeadMarker, failedAutoApproveId, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchBlobShas, fetchInterRoundDiff, fetchPRComments, givesVerdict, HELD_FOR_PERSON_MARKER, inline, sanitizeMarkdown, standingOnCommit, fetchReviewThreadNodes, fetchStandingVerdict, MANKI_VERSION, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatReadyReport, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, authorClearRole, deleteAutoApproveProgressComment, reviewedCommit, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
 import { ISSUE_BOX_LABEL, withMessageBoxes } from './issue-box';
 import { MessageBox, SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
@@ -1080,8 +1080,8 @@ async function approveOrSayWhy(
   /** Why no automatic review will start on the head, read once. */
   const halt = () => haltRead ??= config ? autoReviewHalt(octokit, bot, owner, repo, prNumber, config) : Promise.resolve(undefined);
   /**
-   * Lists every reason that holds the approval, for a person who asks: the threads that block, the warning threads, a
-   * review held for a person, then a draft or a conflict. Each check below returns at the first reason it finds, and
+   * Lists every reason that holds the approval, for a person who asks: the threads that block, the warning threads with
+   * a draft or a conflict beside them, a review held for a person, then a draft or a conflict without warnings. Each check below returns at the first reason it finds, and
    * the reply to it still names them all.
    */
   const explain = async (role: AuthorClearRole | undefined): Promise<string> => {
@@ -1099,8 +1099,9 @@ async function approveOrSayWhy(
     return [
       lead && withMessageBoxes(lead, [!!instead && 'again']),
       warnings.length > 0 && warningThreadsLine(warnings, bot, clearRole),
+      warnings.length > 0 && hold && alsoHeldLine(hold, config?.auto_approve),
       covered && heldForPerson(standing, pr.head.sha) && HELD_FOR_PERSON_LINE,
-      hold && withMessageBoxes(approvalHoldLine(hold, config?.auto_approve), [!(instead && holdBox === 'again') && holdBox]),
+      warnings.length === 0 && hold && withMessageBoxes(approvalHoldLine(hold, config?.auto_approve), [!(instead && holdBox === 'again') && holdBox]),
     ].filter((line): line is string => !!line).join('\n\n');
   };
   const prAuthorRole = await overrideRole(octokit, owner, repo, threads, prAuthorLogin, clearRole);
@@ -1108,8 +1109,9 @@ async function approveOrSayWhy(
   const uncleared = (named?: ReadonlySet<string>) => unclearedThreads(threads, bot, prAuthorLogin, prAuthorRole, named);
   if (pr.draft) {
     core.info('Skipping auto-approve — the PR is a draft');
-    // A blocking thread holds a draft too, and a block names no hold.
-    return withheld(why, uncleared().length > 0 ? false : 'draft');
+    // A blocking thread holds a draft too, and a block names no hold. Warnings are named before the draft, as in the review.
+    const warned = async () => (await heldWarnings(octokit, owner, repo, threads, bot, prAuthorLogin, prAuthorRole, clearRole)).length > 0;
+    return withheld(why, uncleared().length > 0 ? false : await warned() ? 'warnings' : 'draft');
   }
 
   const overrides = threads.flatMap(t => {

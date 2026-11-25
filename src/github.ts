@@ -318,6 +318,9 @@ export type ConfigHold = 'base' | 'default_branch' | 'head';
 export type ApprovalHold = { reason: 'draft' } | { reason: 'conflict'; baseRef: string } | { reason: 'config'; file: ConfigHold } | { reason: 'unread'; skipped: SkippedFiles }
   | { reason: 'warnings'; count?: number; guarded?: number; unthreaded?: number; earlier?: HeldWarningEntry[] };
 
+/** A hold GitHub shows on the PR itself. */
+type PrHold = Extract<ApprovalHold, { reason: 'draft' | 'conflict' }>;
+
 /** An earlier warning thread that holds the approval, as the review body lists it. */
 type HeldWarningEntry = Pick<VerdictTraceEntry, 'file' | 'title' | 'line' | 'threadUrl'>;
 
@@ -327,7 +330,7 @@ type HeldWarningEntry = Pick<VerdictTraceEntry, 'file' | 'title' | 'line' | 'thr
  * `draftWhenUnread` decides whether it counts as a draft. With `strict` it throws instead when the PR can't be read or
  * GitHub still has not computed the conflict, so the caller never takes an unknown state for no hold.
  */
-export async function fetchApprovalHold(octokit: Octokit, owner: string, repo: string, prNumber: number, draftWhenUnread = false, strict = false): Promise<ApprovalHold | undefined> {
+export async function fetchApprovalHold(octokit: Octokit, owner: string, repo: string, prNumber: number, draftWhenUnread = false, strict = false): Promise<PrHold | undefined> {
   for (let attempt = 1; attempt <= MERGEABLE_ATTEMPTS; attempt++) {
     if (attempt > 1) await new Promise(resolve => setTimeout(resolve, MERGEABLE_RETRY_MS));
     try {
@@ -378,6 +381,23 @@ export function approvalHoldBox(hold: ApprovalHold, autoApprove = true): Message
   return holdLine(hold, autoApprove).box;
 }
 
+/** Returns the sentence for a draft or a conflict that follows the warnings, which hold the approval too. */
+export function alsoHeldLine(hold: PrHold, autoApprove = true): string {
+  if (hold.reason === 'conflict') return `The PR also conflicts with ${inline(hold.baseRef)}, so rebase it.`;
+  // On a draft nothing is posted once the warnings clear, so the sentence names the step that remains then.
+  return autoApprove
+    ? 'The PR is also a draft, so mark it ready for review too. If no approval follows, comment `/manki check`.'
+    : 'The PR is also a draft, so mark it ready for review before you tick the review box.';
+}
+
+/** Returns the line for a config file that did not load. `below` words it for below a verdict line that names something else first. */
+function configHoldLine(file: ConfigHold, below = false): string {
+  const line = file === 'head'
+    ? `this PR's copy of the config file does not load or could not be read${below ? ', so Manki does not approve' : ''}. Fix it and push, and Manki reviews the new commit. ${AFTER_PUSH_LINE}`
+    : `the config file on the ${file === 'base' ? 'base branch' : 'default branch, which this review reads because the base branch has none,'} could not be read or does not load, so Manki reviewed with the defaults${below ? ' and does not approve' : ''}.`;
+  return below ? `${line.charAt(0).toUpperCase()}${line.slice(1)}` : `**Approval held:** ${line}`;
+}
+
 /** Returns the line of `approvalHoldLine` with the box that stands for its next step, when the step has one. */
 function holdLine(hold: ApprovalHold, autoApprove: boolean): { line: string; box?: MessageBox } {
   if (hold.reason === 'draft') {
@@ -386,13 +406,7 @@ function holdLine(hold: ApprovalHold, autoApprove: boolean): { line: string; box
     // nothing follows, the check command names the reason.
     return { line: '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. If the latest commit has no review yet, Manki reviews it first when automatic review runs on this PR. If nothing happens, as for a PR from a fork or while automatic review is off or paused, comment `/manki check`, and Manki approves or says what holds the approval.', box: 'check' };
   }
-  if (hold.reason === 'config') {
-    return {
-      line: hold.file !== 'head'
-        ? `**Approval held:** the config file on the ${hold.file === 'base' ? 'base branch' : 'default branch, which this review reads because the base branch has none,'} could not be read or does not load, so Manki reviewed with the defaults.`
-        : `**Approval held:** this PR's copy of the config file does not load or could not be read. Fix it and push, and Manki reviews the new commit. ${AFTER_PUSH_LINE}`,
-    };
-  }
+  if (hold.reason === 'config') return { line: configHoldLine(hold.file) };
   if (hold.reason === 'unread') return { line: `**Approval held:** no model read some of the files this PR changes, so a person needs to approve it.\n\n${formatSkippedFiles(hold.skipped)}` };
   if (hold.reason === 'warnings') {
     if (hold.count === undefined) {
@@ -2445,7 +2459,7 @@ export async function postReview(
     /** Called once GitHub created the review, before the file-level comments, which can still fail. */
     onPosted?: () => void;
   } = {},
-): Promise<{ id: number; approvalHeld: ApprovalHeld; warningsHeld: boolean }> {
+): Promise<{ id: number; approvalHeld: ApprovalHeld; warningsHeld: boolean; alsoHeld?: string }> {
   const event = mapVerdictToEvent(result.verdict);
 
   const validComments: Array<{path: string; line: number; side: 'RIGHT'; body: string}> = [];
@@ -2631,8 +2645,7 @@ export async function postReview(
   const earlierWarnings = openWarnings === 'unread' ? [] : openWarnings.map(t => ({ file: t.place?.file ?? '', line: t.place ? currentFindingLine(t.place) || (t.place.findingLine ?? 0) : 0, title: t.findingTitle, threadUrl: t.threadUrl }));
   const warningHold: ApprovalHold | undefined = warnings === undefined ? { reason: 'warnings' }
     : warnings > 0 ? { reason: 'warnings', count: warnings, ...(guarded > 0 && { guarded }), ...(holdingUnthreaded > 0 && { unthreaded: holdingUnthreaded }), ...(earlierWarnings.length > 0 && { earlier: earlierWarnings }) } : undefined;
-  // A draft or a conflict comes before the warnings, which the verdict line still names, so neither hides the other.
-  // It is read beside a config or unread hold too, which comes first but gets a line of its own.
+  // A draft or a conflict is read beside every other hold, so neither hides the other.
   const prHold = event === 'APPROVE' ? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) : undefined;
   const hold = event === 'APPROVE' ? standingHold ?? prHold ?? warningHold : undefined;
   const approvalHeld: ApprovalHeld = hold?.reason ?? false;
@@ -2646,9 +2659,12 @@ export async function postReview(
   const keptReport = keepForApproval && verdictReport && formatReadyReport(verdictReport) ? { whatThisDoes: verdictReport.whatThisDoes, whatToTest: verdictReport.whatToTest } : undefined;
   // A config hold outlasts this round, since it also stops a later auto-approve, so a round that requests changes names it too.
   const lineHold = hold ?? (standingHold?.reason === 'config' ? standingHold : undefined);
+  // With warnings to address or a request for changes, the verdict line comes first and no other hold stands above it.
+  const verdictFirst = warningsHeld || event === 'REQUEST_CHANGES';
+  const configBelow = verdictFirst && standingHold?.reason === 'config' && configHoldLine(standingHold.file, true);
   // An approval held for unread files or for warnings says so in its verdict line, so only the other holds get a line of their own.
-  const ownLines = [lineHold && lineHold.reason !== 'unread' && lineHold.reason !== 'warnings' && lineHold, standingHold && prHold]
-    .filter((h): h is ApprovalHold => !!h);
+  const ownLines: ApprovalHold[] = verdictFirst ? [] : [lineHold && lineHold.reason !== 'unread' && lineHold.reason !== 'warnings' && lineHold, standingHold && prHold]
+    .flatMap(h => h ? [h] : []);
   const heldLines = ownLines.map(h => approvalHoldLine(h, autoApprove)).join('\n\n');
 
   const limitWarning = formatLimitWarning(latestLimits(result.llmCalls ?? []));
@@ -2675,9 +2691,9 @@ export async function postReview(
     const threads = threadFindings.filter(f => !(withoutLineThreads && inline.has(f)));
     // Without their threads, the body lists them, so the verdict line still counts them.
     const listed = [...bodyFindings, ...listedNotes, ...unthreadedWarnings, ...(withoutLineThreads ? inline : [])];
-    const lead = formatLead(result, blockerCounts, { threads, restatedWarnings, listed, carried, hold, warningHold, autoApprove }, limitWarning, unreadRecords);
+    const lead = formatLead(result, blockerCounts, { threads, restatedWarnings, listed, carried, hold, prHold, warningHold, autoApprove }, limitWarning, unreadRecords);
     const line = approvalRefusal ? APPROVAL_REFUSED_LINES[approvalRefusal] : heldLines;
-    let head = line ? `${line}\n\n${lead}` : lead;
+    let head = [line, lead, configBelow].filter(Boolean).join('\n\n');
     if (context?.meta.trigger?.catchUp) head += `\n\n${CATCH_UP_LINE}`;
     const kept = context && reusedLine(context);
     if (kept) head += `\n\n${kept}`;
@@ -2831,7 +2847,9 @@ export async function postReview(
     }
   }
   // Warnings can hold behind another hold that comes first, and still take back an approval of this commit.
-  return { id: review.id, approvalHeld: approvalRefused ? 'refused' : approvalHeld, warningsHeld };
+  // The sentence the verdict line adds for a draft or a conflict, so the check can name the holds as the review does.
+  const alsoHeld = warningsHeld && prHold && hold === prHold ? alsoHeldLine(prHold, autoApprove) : undefined;
+  return { id: review.id, approvalHeld: approvalRefused ? 'refused' : approvalHeld, warningsHeld, ...(alsoHeld && { alsoHeld }) };
 }
 
 /** Whether `error` is GitHub's refusal when the repo setting stops the workflow token from approving. */
@@ -3116,13 +3134,12 @@ function isAutoApproval(body: string): boolean {
 
 /** The first line of the review body for each outcome. Its emoji is the only one in the review. */
 const VERDICT_LINES: Record<RoundOutcome, (result: ReviewResult, blockers: BlockerCounts, posted: PostedFindings) => string> = {
-  READY: (_result, _blockers, { threads, listed, carried, hold, warningHold, autoApprove }) => {
+  READY: (_result, _blockers, { threads, listed, carried, hold, prHold, warningHold, autoApprove }) => {
     const unread = hold?.reason === 'unread' && hold.skipped.excluded.length + hold.skipped.binary.length;
-    // Another hold has a line of its own or is named here, and the warnings still hold once it lifts.
-    // Handling the warnings brings the approval only when they are all that holds. Another hold's line says what it needs.
+    // Handling the warnings brings the approval only when they are all that holds.
     const approves = hold?.reason === 'warnings' && hold.count !== undefined && autoApprove ? ' Manki approves once every warning is handled.' : '';
     if (warningHold && hold) {
-      const line = `⚠️ ${approvalHoldLine(warningHold, autoApprove)}${approves}${unread ? ` A person must also approve, since no model read ${unread} of the changed files.` : ''}`;
+      const line = `⚠️ ${approvalHoldLine(warningHold, autoApprove)}${approves}${prHold ? ` ${alsoHeldLine(prHold, autoApprove)}` : ''}${unread ? ` A person must also approve, since no model read ${unread} of the changed files.` : ''}`;
       // This review shows the warnings it posts, so only those held by an earlier thread are listed here.
       const earlier = warningHold.reason === 'warnings' && warningHold.earlier;
       return earlier ? `${line}\n\n${formatStillOpen(earlier)}` : line;
@@ -3178,6 +3195,8 @@ interface PostedFindings {
   /** The warnings carried from earlier rounds, which an approval counts with the findings it lists. */
   carried: FindingFingerprintEntry[];
   hold?: ApprovalHold;
+  /** The draft or the conflict that holds the approval, also when another hold comes first. */
+  prHold?: PrHold;
   /** The warnings that hold the approval, also when another hold comes first. */
   warningHold?: ApprovalHold;
   autoApprove: boolean;
