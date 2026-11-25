@@ -2646,8 +2646,8 @@ export type RunMode = 'again' | 'deeper' | 'draft';
 
 /** What the PR coordinator says about a PR. */
 export interface PrState {
-  /** The PR's sticky settings. */
-  settings: { paused: boolean };
+  /** The PR's sticky settings. `auto` says whether every push to the draft is reviewed, and is left out where that box does nothing. */
+  settings: { paused: boolean; auto?: boolean };
   /** The commit of the PR's last finished review. */
   lastReviewed?: string;
   /** The modes of this run. */

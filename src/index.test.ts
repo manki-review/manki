@@ -2958,6 +2958,28 @@ describe('runFullReview orchestration', () => {
       expect(authModule.reportPrState).not.toHaveBeenCalled();
     });
 
+    it('shows Review every push with its tick on a draft whose state offers it, through the whole run, and on no ready PR', async () => {
+      const settings: PrState = { ...settingsState(), settings: { paused: false, auto: true }, lastReviewed: 'ddd2222' };
+      const ticked = new Set(['auto'] as const);
+
+      await runWith({ draft: true, settings });
+
+      expect(jest.mocked(ghUtils.updateProgressDashboard).mock.calls[0][5]).toEqual(
+        view('review running', { lastReviewed: 'ddd2222', boxes: new Set(['pause', 'again', 'deeper', 'draft', 'auto', 'cancel']), ticked }),
+      );
+      expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[6]).toEqual(
+        view('up to date', { lastReviewed: 'abc123', boxes: new Set(['pause', 'again', 'deeper', 'draft', 'auto']), ticked }),
+      );
+
+      // A box the coordinator offers but nobody ticked is shown unticked, and a ready PR shows none.
+      jest.mocked(ghUtils.updateProgressComment).mockClear();
+      await runWith({ draft: true, settings: { ...settings, settings: { paused: false, auto: false } } });
+      expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[6]).toMatchObject({ boxes: new Set(['pause', 'again', 'deeper', 'draft', 'auto']), ticked: new Set() });
+      jest.mocked(ghUtils.updateProgressComment).mockClear();
+      await runWith({ settings });
+      expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[6]).toMatchObject({ boxes: new Set(['pause', 'again', 'deeper']) });
+    });
+
     it('marks the progress comment failed with the reason when the base config cannot say which paths it closes', async () => {
       jest.mocked(ghUtils.readConfigFile).mockImplementation(async (_o, _ow, _r, ref) => {
         if (ref === 'main') throw new Error('socket hang up');

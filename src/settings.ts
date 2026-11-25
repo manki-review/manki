@@ -1,7 +1,7 @@
 /** Ends the settings block of Manki's newest progress comment. The Worker reads the boxes above it. */
 export const SETTINGS_MARKER = '<!-- manki-settings -->';
 
-export type SettingsBox = 'pause' | 'again' | 'deeper' | 'cancel' | 'draft';
+export type SettingsBox = 'pause' | 'again' | 'deeper' | 'cancel' | 'draft' | 'auto';
 
 /** A box a message carries for the next step it names, which also has a command. */
 export type MessageBox = 'again' | 'check' | 'forget' | 'dismiss';
@@ -13,12 +13,13 @@ const BOX_LABELS: Record<SettingsBox | MessageBox, string> = {
   deeper: 'Deeper review',
   cancel: 'Cancel this review',
   draft: 'Review this draft',
+  auto: 'Review every push',
   check: 'Check approval',
   forget: 'Forget this learning',
   dismiss: 'Dismiss this finding',
 };
 
-const SETTINGS_BOXES: readonly SettingsBox[] = ['pause', 'again', 'deeper', 'cancel', 'draft'];
+const SETTINGS_BOXES: readonly SettingsBox[] = ['pause', 'again', 'deeper', 'cancel', 'draft', 'auto'];
 
 /** Returns the label of `box`. */
 export function boxLabel(box: SettingsBox | MessageBox): string {

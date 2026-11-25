@@ -20,11 +20,12 @@ describe('settings block', () => {
       SETTINGS_MARKER,
     ].join('\n'));
     // Before any review the `again` box reads Review now, with the same marker.
-    expect(renderSettingsBlock({ head: 'def5678', status: 'up to date', boxes: new Set(['again', 'draft']), ticked: new Set() })).toBe([
+    expect(renderSettingsBlock({ head: 'def5678', status: 'up to date', boxes: new Set(['auto', 'again', 'draft']), ticked: new Set(['auto']) })).toBe([
       '---',
       'Not reviewed yet · head `def5678` · up to date',
       '- [ ] Review now <!-- manki-box:again -->',
       '- [ ] Review this draft <!-- manki-box:draft -->',
+      '- [x] Review every push <!-- manki-box:auto -->',
       SETTINGS_MARKER,
     ].join('\n'));
   });

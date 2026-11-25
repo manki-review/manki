@@ -142,12 +142,12 @@ describe('fetchPrState', () => {
     mockFetch(async () => Response.json({
       active: [{ run_id: 7, modes: ['again', 'bogus', 'full'] }, { run_id: 8, modes: ['deeper'] }],
       queue: [{ modes: ['force', 'again'] }, { modes: 'draft' }, null],
-      settings: { paused: true },
+      settings: { paused: true, auto: false },
       last_reviewed: { commit: 'a'.repeat(40), run_id: 6, at: '2026-11-07T00:00:00.000Z' },
     }));
 
     expect(await fetchPrState(OWNER, REPO, 12, 7)).toEqual({
-      settings: { paused: true }, lastReviewed: 'a'.repeat(40), runModes: new Set(['again']), queuedModes: new Set(['again']),
+      settings: { paused: true, auto: false }, lastReviewed: 'a'.repeat(40), runModes: new Set(['again']), queuedModes: new Set(['again']),
     });
     const [url, init] = (global.fetch as jest.Mock).mock.calls[0];
     expect(url).toBe('https://manki-api.dustinface.me/state');
@@ -155,9 +155,9 @@ describe('fetchPrState', () => {
     expect(JSON.parse(init.body)).toEqual({ owner: OWNER, repo: REPO, pr: 12 });
   });
 
-  it('reads the state next to a custom token URL, and counts settings that are not a boolean pause as not paused and a commit that is no hash as none', async () => {
+  it('reads the state next to a custom token URL, and counts settings that are no boolean as not set and a commit that is no hash as none', async () => {
     mockGetInput.mockImplementation((name: string) => (name === 'manki_token_url' ? 'https://custom.example.com/api/token' : ''));
-    mockFetch(async () => Response.json({ active: [], queue: [], settings: { paused: 'yes' }, last_reviewed: { commit: 'abc` <b>' } }));
+    mockFetch(async () => Response.json({ active: [], queue: [], settings: { paused: 'yes', auto: 'yes' }, last_reviewed: { commit: 'abc` <b>' } }));
 
     expect(await fetchPrState(OWNER, REPO, 12, 7)).toEqual({ settings: { paused: false }, runModes: new Set(), queuedModes: new Set() });
     expect((global.fetch as jest.Mock).mock.calls[0][0]).toBe('https://custom.example.com/api/state');

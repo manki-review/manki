@@ -48,8 +48,9 @@ exclude_paths:
 # skip_branches: ["dependabot/**"]
 
 # Draft PRs (default: skip). `skip` reviews a draft only on request, such as
-# `/manki review`. `review` reviews drafts automatically. Either way a draft
-# review never approves and does not count toward `max_auto_rounds`.
+# `/manki review`, or after each push once Review every push is ticked on it.
+# `review` reviews drafts automatically. Either way a draft review never
+# approves and does not count toward `max_auto_rounds`.
 # drafts: skip
 
 # Review size limits, in reviewable lines after `exclude_paths`, read from the
@@ -146,7 +147,7 @@ memory:
 | `skip_labels` | list of strings | none | PRs with any of these labels get no automatic review. Compared case-insensitively, and read from the base branch. See [Skipping PRs](how-reviews-work.md#skipping-prs). |
 | `skip_authors` | list of strings | none | PRs by any of these authors, such as `dependabot[bot]`, get no automatic review. Compared case-insensitively, and read from the base branch. |
 | `skip_branches` | list of globs | none | PRs whose head branch in the repo itself matches, such as `dependabot/**`, get no automatic review. Never matches a fork's branch. Read from the base branch. |
-| `drafts` | `skip` or `review` | `skip` | `skip` reviews a draft only on request, `review` reviews it automatically. A draft review never approves and does not count toward `max_auto_rounds`. |
+| `drafts` | `skip` or `review` | `skip` | `skip` reviews a draft only on request, or after each push once Review every push is ticked on it. `review` reviews it automatically. A draft review never approves and does not count toward `max_auto_rounds`. |
 | `auto_review_max_lines` | positive integer | `8000` | Reviewable lines, after `exclude_paths`, above which a PR gets no automatic review, only a request to split it, with the review box in its settings block. Read from the base branch. |
 | `max_diff_lines` | positive integer | `15000` | Reviewable lines above which Manki never reviews a PR, even when forced. Read from the base branch. |
 | `models` | map | see below | The model of each stage. The finders are not here: `review.groups` says who reviews. A model id picks its provider: `claude-*` is Anthropic, `gpt-*` and the o-series are OpenAI, `gemini-*` is Gemini. `provider/model` names one explicitly. |
