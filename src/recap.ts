@@ -165,12 +165,22 @@ interface RecordedGrade { grade: FindingSeverity; peak: FindingSeverity; history
 // The outcome a Manki reply to a developer starts with. "Confirmed:" answers a fix in another PR and settles nothing.
 const REPLY_OUTCOME_RE = /^\**(?:(?:Fixed|Withdrawn|Agreed|Kept|Unverified)\.|Confirmed:)/;
 
+const STATEMENTS_HEADING = '**Statements of this reply, and what I checked of each:**';
+// No text of a model or a person holds a tag, so neither can open this or the fold below it.
+const AGAINST_HEADING = '<b>What I cited against this reply:</b>';
+const STATEMENT_FOLD_RE = new RegExp(`(?:${escapeRegExp(AGAINST_HEADING)}\\n[\\s\\S]*?\\n\\n)?<details>\\n<summary>[^\\n]*</summary>\\n\\n(${escapeRegExp(STATEMENTS_HEADING)}\\n[\\s\\S]*?)\\n\\n</details>`);
+
+/** Returns `answer`, the text of one of Manki's answers, with its list of checked statements open and each statement in it once. */
+function withoutStatementFold(answer: string): string {
+  return answer.replace(STATEMENT_FOLD_RE, (_, list: string) => list);
+}
+
 /** Returns Manki's latest answer to a developer since `sinceLastRaise`, without its markers: an outcome reply, an unsettled one read as "Unverified.", or a found-again reply. */
 function latestAnswer(bot: BotIdentity, comments: ReadonlyArray<Pick<ThreadCommentNode, 'body' | 'author'>>): string | undefined {
   const unsettled = (body: string) => hasOwnMarker(body, UNSETTLED_ANSWER_MARKER, COMMENT_MARKER);
   const answer = sinceLastRaise(bot, comments).filter(c => isBotLogin(bot, c.author?.login) && !!c.body
     && (REPLY_OUTCOME_RE.test(c.body) || unsettled(c.body) || hasOwnMarker(c.body, FOUND_AGAIN_MARKER, COMMENT_MARKER))).pop();
-  const text = answer?.body.split('\n\n<!--')[0].trim();
+  const text = answer && withoutStatementFold(answer.body.split('\n\n<!--')[0]).trim();
   return text !== undefined && unsettled(answer!.body) ? `Unverified. ${text}` : text;
 }
 
@@ -902,7 +912,7 @@ function settlement(bot: BotIdentity, comments: ThreadCommentNode[], repo: strin
     return ownMarker(body, SECURITY_OVERRIDE_OPENER, COMMENT_MARKER) !== undefined ? ['override'] : [];
   };
   const [latest, body] = sinceLastReopen(bot, comments).filter(own).map(c => c.body ?? '').flatMap(b => kind(b).map(k => [k, b] as const)).at(-1) ?? [];
-  const named = latest === 'answer' && settlingDecision(body!)?.outcome === 'Agreed' ? namedPullRequests(body!.split('\n\n<!--')[0], repo).filter(n => n !== prNumber) : [];
+  const named = latest === 'answer' && settlingDecision(body!)?.outcome === 'Agreed' ? namedPullRequests(withoutStatementFold(body!.split('\n\n<!--')[0]), repo).filter(n => n !== prNumber) : [];
   return {
     fixAnswered: comments.slice(1).some(c => own(c) && fix(c.body ?? '')), ...(latest && latest !== 'fix' && { latestWaiver: latest }),
     ...(latest === 'answer' && { answerPlaces: settlingPlaces(body!) }),
@@ -1725,4 +1735,4 @@ function dropWaivedRestatements(
   return { unique, duplicates };
 }
 
-export { BOT_PREFIX_PATTERN, latestAnswer, personReplies, RAISED_MARKER, UNSETTLED_ANSWER_MARKER, guardedKind, isDisprovedThread, clearRecordLogin, clearRecordMarker, dismissRecordLogins, dismissRecordMarker, dropWaivedRestatements, withoutCode, blockersToRecheck, currentFindingLine, DuplicateMatch, FixClaim, fixClaimMarker, fixClaimOf, namedPullRequests, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, pushTouchesThread, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };
+export { AGAINST_HEADING, BOT_PREFIX_PATTERN, STATEMENTS_HEADING, latestAnswer, withoutStatementFold, personReplies, RAISED_MARKER, UNSETTLED_ANSWER_MARKER, guardedKind, isDisprovedThread, clearRecordLogin, clearRecordMarker, dismissRecordLogins, dismissRecordMarker, dropWaivedRestatements, withoutCode, blockersToRecheck, currentFindingLine, DuplicateMatch, FixClaim, fixClaimMarker, fixClaimOf, namedPullRequests, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, pushTouchesThread, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };

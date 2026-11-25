@@ -7,7 +7,7 @@ import { inline, MAX_COMPARE_FILES, sanitizeMarkdown, UnknownChange } from './gi
 import { extractJSON } from './json';
 import { findLines } from './mcp-server';
 import { sanitizeLogOutput } from './providers';
-import { namedPullRequests } from './recap';
+import { AGAINST_HEADING, namedPullRequests, STATEMENTS_HEADING } from './recap';
 import { isDiffLocation, locationFile, locationLines, shownLines } from './refute';
 import { fetchedRelatedRepos } from './related-repos';
 import { parseProof } from './review';
@@ -423,18 +423,20 @@ function descriptionLine(shown: DescriptionCheck, status: CheckedStatement['stat
     : `The PR description holds ${inline(shown.holds)}, cited ${status === 'confirmed' ? 'for' : 'against'} it`;
 }
 
-/** Returns the list of checked statements as Manki posts it below the answer, or `undefined` when the reply listed none. */
+function statementLine(s: CheckedStatement): string {
+  const what = s.description ? descriptionLine(s.description, s.status)
+    : s.search ? searchLine(s.search)
+    : s.status === 'not_checkable' ? `Not checked, ${UNCHECKED_REASONS[s.why ?? 'outside_code'](s.detail ?? '')}`
+      : `${s.places.length === 1 ? 'Line' : 'Lines'} cited ${s.status === 'confirmed' ? 'for' : 'against'} it ${s.places.length === 1 ? 'exists' : 'exist'} at ${s.places.map(inline).join(', ')}`;
+  return `- ${what}: ${shownQuote(s.quote)}`;
+}
+
+/** Returns the list of checked statements, or `undefined` when the reply listed none. */
 export function statementList({ statements, unchecked }: CheckedReply): string | undefined {
   if (statements.length === 0) return undefined;
-  const lines = statements.map(s => {
-    const what = s.description ? descriptionLine(s.description, s.status)
-      : s.search ? searchLine(s.search)
-      : s.status === 'not_checkable' ? `Not checked, ${UNCHECKED_REASONS[s.why ?? 'outside_code'](s.detail ?? '')}`
-        : `${s.places.length === 1 ? 'Line' : 'Lines'} cited ${s.status === 'confirmed' ? 'for' : 'against'} it ${s.places.length === 1 ? 'exists' : 'exist'} at ${s.places.map(inline).join(', ')}`;
-    return `- ${what}: ${shownQuote(s.quote)}`;
-  });
+  const lines = statements.map(statementLine);
   const more = unchecked > 0 ? [`- ${unchecked} more ${unchecked === 1 ? 'statement' : 'statements'} not checked: a reply gets at most ${MAX_REPLY_STATEMENTS}.`] : [];
-  return ['**Statements of this reply, and what I checked of each:**', ...lines, ...more].join('\n');
+  return [STATEMENTS_HEADING, ...lines, ...more].join('\n');
 }
 
 /**
@@ -450,6 +452,34 @@ export function statementSummary({ statements, unchecked }: CheckedReply, blocks
       : 'Each line says what I checked, not that the statement is right.';
   if (!blocks) return checks;
   return `${checks} ${open ? 'A maintainer has to judge the unchecked ones, and what the statements mean for this finding.' : 'What they mean for this finding is for a maintainer to decide.'}`;
+}
+
+/** Says how many statements were checked, how many of those have something cited against them, and how many were not checked. */
+function foldSummary({ statements, unchecked }: CheckedReply): string {
+  const count = (status: CheckedStatement['status']): number => statements.filter(s => s.status === status).length;
+  const against = count('contradicted');
+  const open = count('not_checkable') + unchecked;
+  const checked = count('confirmed') + against;
+  const named = (n: number): string => `${n} ${n === 1 ? 'statement' : 'statements'}`;
+  if (checked === 0) return `${named(open)} not checked`;
+  return [`${named(checked)} checked`, ...(against ? [`evidence cited against ${against}`] : []), ...(open ? [`${open} not checked`] : [])].join(', ');
+}
+
+/**
+ * Returns the `statementList` in a closed fold as Manki posts it below the answer, each part a paragraph of its own, or
+ * nothing when the reply listed none. A statement Manki cited something against also shows above the fold. The `statementSummary` is in the fold too,
+ * unless it leaves something to a maintainer, as with `blocks`. `withoutStatementFold` reads it back.
+ */
+export function statementFold(checked: CheckedReply, blocks: boolean): string[] {
+  const list = statementList(checked);
+  if (!list) return [];
+  const against = checked.statements.filter(s => s.status === 'contradicted').map(statementLine);
+  const summary = statementSummary(checked, blocks);
+  return [
+    ...(against.length > 0 ? [[AGAINST_HEADING, ...against].join('\n')] : []),
+    `<details>\n<summary>${foldSummary(checked)}</summary>\n\n${blocks ? list : `${list}\n\n${summary}`}\n\n</details>`,
+    ...(blocks ? [summary] : []),
+  ];
 }
 
 /** Returns what the reply record keeps of the checked statements: no words of the developer, no search term and no text of the PR description. */

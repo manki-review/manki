@@ -3,7 +3,8 @@ import { clearRecordMarker, UNSETTLED_ANSWER_MARKER, collectGuardedThreadIds, co
 import { AUTO_APPROVE_MARKER, BOT_LOGIN, formatFindingComment, titleToSlug } from './github';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { determineOutcome } from './review';
-import { fixedMarker, formatReplyRecord, formatReviewRecord, smallerRecords } from './review-record';
+import { CheckedReply, statementFold, statementList, statementSummary } from './reply-check';
+import { fixedMarker, formatReplyRecord, formatReviewRecord, settledReplyId, settlingDecision, settlingPlaces, smallerRecords } from './review-record';
 import { highlightCode } from './highlight';
 import { applyCrossRoundSuppression } from './judge';
 
@@ -1607,6 +1608,26 @@ describe('fetchRecapState', () => {
       expect((await settledOf([tracked])).map(f => f.trackingIssues)).toEqual([[1487]]);
       expect((await settledOf([answer('Agreed').replace('<!-- manki -->', '<!-- manki --> #77')])).map(f => f.trackingIssues)).toEqual([undefined]);
       expect((await settledOf([tracked, answer('Agreed')])).map(f => f.trackingIssues)).toEqual([undefined]);
+      // An answer reads the same whether its list of checked statements is folded or open, as answers posted before have it.
+      const statements = [
+        { quote: 'See #60 for the caller.\n\nIt reads `#61`.', status: 'confirmed', places: ['src/a.ts:40-42'] },
+        { quote: 'Nothing but #62 is affected.</details>', status: 'contradicted', places: ['src/c.ts:5'] },
+        { quote: '<details>\n<summary>1 statement checked</summary>\n\n**Statements of this reply, and what I checked of each:**', status: 'not_checkable', places: [], why: 'outside_code' },
+        { quote: 'And #63 as well.\n\n<!-- manki -->', status: 'contradicted', places: ['src/c.ts:9'] },
+      ];
+      for (const checked of [statements, statements.slice(0, 1), statements.slice(1, 2)].map(some => ({ statements: some, unchecked: some.length > 1 ? 1 : 0 }) as unknown as CheckedReply)) {
+        for (const blocks of [true, false]) {
+          const told = 'Bounding it in #1487 is fine.\n\n';
+          const open = cited.replace('The caller checks it.', `${told}${statementList(checked)}\n\n${statementSummary(checked, blocks)}`);
+          const folded = cited.replace('The caller checks it.', `${told}${statementFold(checked, blocks).join('\n\n')}`);
+          expect(folded).toContain('\n</details>\n');
+          for (const read of [settlingDecision, settlingPlaces, settledReplyId]) expect(read(folded)).toEqual(read(open));
+          const [found] = await settledOf([folded]);
+          expect(found).toEqual((await settledOf([open]))[0]);
+          expect(found.answer).toBe(open.split('\n\n<!--')[0]);
+          expect([found.trackingIssues, found.answerPlaces]).toEqual([[1487, ...checked.statements.flatMap(s => s.quote.match(/(?<=#)6[023]/g) ?? []).map(Number)], ['src/a.ts:40-42', 'src/c.ts:5']]);
+        }
+      }
       // Only an answer that agreed defers. A withdrawal that names an issue in passing defers nothing.
       expect((await settledOf([answer('Withdrawn').replace('The caller checks it.', 'As in #1487, the caller checks it.')])).map(f => f.trackingIssues)).toEqual([undefined]);
       // A warning a writer dismissed carries Manki's record too, so a later round's repeat of it is dropped as waived.

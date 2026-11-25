@@ -11,11 +11,11 @@ import { fencePrText, truncateDiff } from './review';
 import { closeRawDiff, diffSections, findClosedPattern, parsePRDiff, reviewableDiff } from './diff';
 import { eventPrClosed } from './dispatch';
 import { codeTokensFromDiff, highlightCode } from './highlight';
-import { clearRecordMarker, fetchPriorRoundContexts, recordedThreadGrades, threadSeverity, RecapState, fixClaimMarker, guardedKind, isDisprovedThread, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, UNSETTLED_ANSWER_MARKER, currentFindingLine, findingPlace, withoutCode, BOT_PREFIX_PATTERN } from './recap';
+import { clearRecordMarker, fetchPriorRoundContexts, recordedThreadGrades, threadSeverity, RecapState, fixClaimMarker, guardedKind, isDisprovedThread, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, UNSETTLED_ANSWER_MARKER, currentFindingLine, findingPlace, withoutCode, BOT_PREFIX_PATTERN, withoutStatementFold } from './recap';
 import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, recordDismissal, authorResolvedNote, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, rolePhrase, unclearedThreads, warningHoldNote } from './state';
 import { AuthorClearRole, FindingSeverity, partlyFixedNote, ParsedDiff, PrContext, RelatedRepoTools, ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation, RoundContext } from './types';
 import { relatedRepoOutcomes, relatedRepoTools, repoTools } from './related-repos';
-import { CheckedReply, MAX_REPLY_STATEMENTS, MAX_TERM_CHARS, MIN_TERM_CHARS, ThreadState, checkFixedElsewhere, checkReply, fixedElsewhereText, leftToMaintainer, statementList, statementRecords, statementSummary, withoutOutcomeOpener } from './reply-check';
+import { CheckedReply, MAX_REPLY_STATEMENTS, MAX_TERM_CHARS, MIN_TERM_CHARS, ThreadState, checkFixedElsewhere, checkReply, fixedElsewhereText, leftToMaintainer, statementFold, statementRecords, withoutOutcomeOpener } from './reply-check';
 import { formatReplyRecord } from './review-record';
 import { buildRoundUsage, withReads } from './round-context';
 import { MessageBox } from './settings';
@@ -662,7 +662,7 @@ export async function handleReviewCommentReply(
       comment.body,
       filePath,
       currentFindingLine(place),
-      root.id !== inReplyTo && isOwnComment(bot, parentComment) ? parentComment.body : undefined,
+      root.id !== inReplyTo && isOwnComment(bot, parentComment) ? withoutStatementFold(parentComment.body) : undefined,
       prText,
     );
 
@@ -762,7 +762,6 @@ export async function handleReviewCommentReply(
     const posts = !repeats || (mayClear && isGuarded(repeats)) || (mayResolve && !closed && !!await warningHoldNote(octokit, bot, owner, repo, repeats, config?.author_clear_role));
     // A guarded thread the PR author resolved keeps blocking, also once Manki has reopened it and has no reopen note left to give.
     const held = !!live && (!!reopenNote || await resolveIsHeld(octokit, bot, owner, repo, live, prAuthorLogin, config?.author_clear_role));
-    const list = statementList(checked);
     // The model saw the fix and cited no line that counts, but a round that finished since confirmed it. The thread stays as it is.
     const unprovenFix = checked.modelOutcome === 'Fixed' && checked.outcome === 'Unverified';
     const confirmed = unprovenFix && live && rounds
@@ -777,7 +776,7 @@ export async function handleReviewCommentReply(
       await octokit.rest.pulls.createReplyForReviewComment({
         owner, repo, pull_number: prNumber, comment_id: comment.id,
         body: withMarkers(
-          [roundPointer(confirmed.commit, confirmed.evaluation), ...(list ? [list, statementSummary(checked, false)] : [])].join('\n\n'),
+          [roundPointer(confirmed.commit, confirmed.evaluation), ...statementFold(checked, false)].join('\n\n'),
           BOT_MARKER, response.record({ outcome: 'Fixed', thread: 'confirmed_by_round' }, replyChecks(checked), comment.id),
         ),
       });
@@ -830,9 +829,9 @@ export async function handleReviewCommentReply(
       // The checks never read as a verdict on the finding. A blocking thread that no other note covers says that it stays
       // open, and names a review as a way out only when a review can clear it.
       // An unproven "Fixed." says who clears the thread without a list too.
-      const saysClear = blocks && !staysOpen && !noted && (!!list || (unprovenFix && !live.isResolved));
+      const saysClear = blocks && !staysOpen && !noted && (checked.statements.length > 0 || (unprovenFix && !live.isResolved));
       const checks = [
-        ...(list ? [list, statementSummary(checked, blocks || !live)] : []),
+        ...statementFold(checked, blocks || !live),
         ...(saysClear ? [staysOpenNote(guard, !!filePath, config?.author_clear_role, live.isResolved)] : []),
       ];
       // A round that left this to the answer has said nothing in the thread yet.
