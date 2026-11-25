@@ -42,7 +42,7 @@ import { relatedReposCacheDir } from './related-repos';
 import * as core from '@actions/core';
 import * as napi from '@ast-grep/napi';
 import { formatFindingComment, holdsApproval, LinkedIssue, titleToSlug } from './github';
-import { CELL_GRADES, cellGrade, DISPROVED_TAG, EarlierAttempt, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, OriginAnswer, OriginVerdict, Refutation, RefutationOutcome, RelatedItem, RelatedWork, ReviewResult, RoundContext, RoundFix, RoundLead, RoundNotStarted, RoundScope, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG, SweepMode, triggerDoubt, VERDICT_READER_NAME } from './types';
+import { canLeaveOut, CELL_GRADES, cellGrade, DISPROVED_TAG, EarlierAttempt, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, OriginAnswer, OriginVerdict, PRE_EXISTING_TAG, Refutation, RefutationOutcome, RelatedItem, RelatedWork, ReviewResult, RoundContext, RoundFix, RoundLead, RoundNotStarted, RoundScope, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SCOPE_READER_NAME, SECURITY_TAG, SweepMode, triggerDoubt, VERDICT_READER_NAME } from './types';
 import { citedLine, stringifyFindingFingerprint } from './finding-fingerprint';
 import { AnswerStore } from './stored-answers';
 import { baseProofFixture, baseProofWorkspace, expectLinearTime, fingerprintEntriesFromLegacy, git, GIT_TEST_TIMEOUT_MS, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS, withConsequence } from './test-utils';
@@ -4620,6 +4620,182 @@ describe('runReview', () => {
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
+  });
+
+  describe('importance', () => {
+    const isRating = (system: string) => system.startsWith('You rate findings');
+    const scoreOf = (overall: number) => ({ trigger: { score: overall, reason: 't' }, introduced: { score: 9, reason: 'i' }, matters: { score: 5, reason: 'm' }, overall: { score: overall, reason: 'Few callers get there.' } });
+    let workspace: string;
+    beforeEach(() => {
+      workspace = mkdtempSync(join(tmpdir(), 'manki-importance-'));
+      mkdirSync(join(workspace, 'src'));
+      writeFileSync(join(workspace, 'src', 'a.ts'), Array.from({ length: 120 }, (_, i) => `const line${i + 1} = ${i + 1};`).join('\n'));
+    });
+    afterEach(() => rmSync(workspace, { recursive: true, force: true }));
+    const warning = (title: string, line: number, overrides: Partial<Finding> = {}) => makeFinding({
+      severity: 'warning', title, line, description: `${title} goes wrong.`, reviewers: ['Finder Alpha'], evidence: { checks: [], proof: [`src/a.ts:${line}`] }, cell: { row: 'degraded', column: 'normal' }, trigger: 'A user clicks.', ...overrides,
+    });
+    /** The ratings call's reply that gives each finding it shows the score `scores` holds for its title. */
+    const reply = (message: string, scores: Record<string, number | undefined>) => JSON.stringify({ ratings: [...message.matchAll(/^## Finding (\d+): (.*)$/gm)].flatMap(([, id, title]) => {
+      const overall = scores[title] ?? 8;
+      return title in scores && scores[title] === undefined ? [] : [{ id: Number(id), ...scoreOf(overall) }];
+    }) });
+    /** Runs a round whose judge returns `findings`. `answer` replies to the rating call, and `asked` holds its messages. */
+    const run = async (findings: Finding[], answer: (message: string) => string | Error, options: Partial<Parameters<typeof runReview>[1]> = {}, judged = (): void => undefined) => {
+      const asked: Array<{ system: string; message: string }> = [];
+      const clients = makeClients(JSON.stringify([{ severity: 'warning', title: 'Seed', file: 'src/a.ts', line: 1, description: 'Seed.', evidence: ['src/a.ts:1 shows it'], proof: ['src/a.ts:1'] }]));
+      jest.mocked(clients.judge.sendMessage).mockImplementation(async (system: string, message: string) => {
+        if (!isRating(system)) return { content: READY_VERDICT };
+        asked.push({ system, message });
+        const content = answer(message);
+        if (content instanceof Error) throw content;
+        return { content };
+      });
+      mockedRunJudgeAgent.mockImplementationOnce(async () => {
+        judged();
+        return { summary: 'ok', findings: structuredClone(findings) };
+      });
+      const result = await runReview(clients, { config: makeConfig(), diff: diffChanging('src/a.ts'), rawDiff: 'raw diff', repoContext: '', workspace, ...options });
+      return { result, asked, grades: Object.fromEntries(result.findings.map(f => [f.title, f.severity])) };
+    };
+    const config = (score: number) => makeConfig({ review: { min_warning_score: score } });
+
+    it('rates every posted warning that may be lowered in one call, and posts one below the cut-off as a note', async () => {
+      const rule = { file: 'AGENTS.md', quote: 'Every export is logged.', verdict: 'confirmed' as const };
+      const findings = [
+        warning('Minor', 10), warning('Exactly four', 20), warning('Major', 30),
+        // None of these is rated, whatever the model would say.
+        warning('Blocker', 40, { severity: 'blocker', cell: { row: 'severe', column: 'normal' } }),
+        warning('Security', 41, { tags: ['security'] }),
+        warning('Disproved blocker', 42, { tags: [DISPROVED_TAG] }),
+        warning('Refuted blocker', 43, { gradePath: [{ from: 'blocker', to: 'warning', by: 'refutation' }] }),
+        warning('Tool alert', 44, { toolSource: 'eslint' }),
+        warning('Rule', 45, { rule }),
+        warning('Judged a blocker', 46, { gradePath: [{ from: 'warning', to: 'blocker', by: 'judge' }, { from: 'blocker', to: 'warning', by: 'unproven' }] }),
+        warning('Blocker if confirmed', 47, { gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'normal' } }),
+        warning('Open lead', 48, { leadSince: 1 }),
+        warning('In a thread', 49, { threadId: 'T1' }),
+        warning('Unsettled lead', 51, { lead: { checked: 'the caller', left: 'the callee' } }),
+        warning('Pre-existing', 52, { tags: [PRE_EXISTING_TAG] }),
+        warning('Scope', 53, { reviewers: [SCOPE_READER_NAME] }),
+        warning('Answered', 54, { answeredIn: { threadId: 'T2', answer: 'Agreed.', grade: { severity: 'warning' } } }),
+        warning('Raises a thread', 55, { raises: 'T3' }),
+        warning('Note', 50, { severity: 'note' }),
+      ];
+      const openThreads = [{ threadId: 'T1', title: 'In a thread', file: 'src/a.ts', line: 49, severity: 'warning' as const }];
+      const scores = { Minor: 3, 'Exactly four': 4, Major: 9 };
+      const { result, asked, grades } = await run(findings, message => reply(message, scores), { config: makeConfig({ review: { rules: 'warn' } }), openThreads, priorRounds: [] });
+
+      expect(asked).toHaveLength(1);
+      const { system, message } = asked[0];
+      expect([...message.matchAll(/^## Finding \d+: (.*)$/gm)].map(m => m[1]).sort()).toEqual(['Exactly four', 'Major', 'Minor']);
+      // The call shows the claim, its code and the change, and nothing that says who found it or how it was graded.
+      expect(message).toContain('10: const line10 = 10;');
+      for (const hidden of ['warning', 'blocker', 'Finder Alpha', 'degraded']) expect(`${system}\n${message}`.toLowerCase()).not.toContain(hidden.toLowerCase());
+      expect(grades).toMatchObject({ Minor: 'note', 'Exactly four': 'warning', Major: 'warning', Security: 'warning', 'Disproved blocker': 'warning', 'Refuted blocker': 'warning', 'Tool alert': 'warning', Rule: 'warning', 'Judged a blocker': 'warning', 'Blocker if confirmed': 'warning', 'Open lead': 'warning', 'In a thread': 'warning', 'Unsettled lead': 'warning', 'Pre-existing': 'warning', Scope: 'warning', Answered: 'warning', 'Raises a thread': 'warning', Blocker: 'blocker' });
+      const minor = result.findings.find(f => f.title === 'Minor')!;
+      expect(minor).toMatchObject({
+        importance: { overall: 3, trigger: 3, introduced: 9, matters: 5, reason: 'Few callers get there.' },
+        gradePath: [{ from: 'warning', to: 'note', by: 'importance', reason: 'Importance 3 of 10, below this repository\'s cut-off of 4' }],
+      });
+      expect([minor.checkStatus, minor.tags ?? []]).toEqual([undefined, []]);
+      expect(canLeaveOut(minor)).toBe(false);
+      expect(result.findings.find(f => f.title === 'Major')).toMatchObject({ importance: { overall: 9 }, checkStatus: 'proven' });
+      expect(result.findings.filter(f => f.importance)).toHaveLength(3);
+      // The judge's log and the round record hold the grade and the score.
+      expect(result.allJudgedFindings?.find(f => f.title === 'Minor')).toMatchObject({ severity: 'note', importance: { overall: 3 } });
+      expect(postedRecord(result).findings.entries.find(e => e.title === 'Minor')).toMatchObject({ severity: 'note', importance: { overall: 3 } });
+      expect(result.llmCalls?.filter(c => c.stage === 'rating')).toHaveLength(1);
+
+      // A round whose warnings are all exempt makes no call, and neither does one with the score off or without a checkout.
+      expect((await run([warning('Security', 41, { tags: ['security'] })], () => 'no')).asked).toEqual([]);
+      for (const options of [{ config: config(1) }, { workspace: undefined }]) {
+        const off = await run([warning('Minor', 10)], message => reply(message, { Minor: 1 }), options);
+        expect([off.asked, off.grades]).toEqual([[], { Minor: 'warning' }]);
+      }
+      expect((await run([warning('Minor', 10)], message => reply(message, { Minor: 9 }), { config: config(10) })).grades).toEqual({ Minor: 'note' });
+    });
+
+    it('keeps an earlier round\'s score and grade on a push, and leaves a restated blocker alone', async () => {
+      const first = await run([warning('Minor', 10), warning('Major', 30)], message => reply(message, { Minor: 3, Major: 8 }));
+      expect(first.grades).toEqual({ Minor: 'note', Major: 'warning' });
+      const record = postedRecord(first.result);
+      const key = stringifyFindingFingerprint(record.findings.entries.find(e => e.title === 'Minor')!.fingerprint);
+      const followUp = { priorRounds: [record], openThreads: [], previousFindings: [], interRoundDiff: '' };
+
+      // The same title at a moved line, and a reworded one the judge links, take the stored score. A new finding gets its own.
+      for (const again of [warning('Minor', 13), warning('Reworded', 60, { sameAs: key })]) {
+        const second = await run([again, warning('Major', 30), warning('New', 90)], message => reply(message, { [again.title]: 10, Major: 1, New: 2 }), followUp);
+        expect(second.asked.map(a => [...a.message.matchAll(/^## Finding \d+: (.*)$/gm)].map(m => m[1]))).toEqual([['New']]);
+        expect(second.grades).toEqual({ [again.title]: 'note', Major: 'warning', New: 'note' });
+        const restated = second.result.findings.find(f => f.title === again.title)!;
+        // It joins the note the first round listed, so no second copy is posted.
+        expect(restated).toMatchObject({ importance: { overall: 3 }, raisedIn: 1, sameAs: key });
+        expect(second.result.findings.find(f => f.title === 'Major')).toMatchObject({ importance: { overall: 8 } });
+        // The record of the second round keeps the score for a third.
+        const third = await run([warning('Minor', 10, { sameAs: key })], () => 'no', { ...followUp, priorRounds: [record, postedRecord(second.result)] });
+        expect([third.asked, Object.values(third.grades)]).toEqual([[], ['note']]);
+      }
+      // A worse problem the judge grades a blocker is never lowered, and a warning that later restates it is not either.
+      const worse = await run([warning('Minor', 10, { severity: 'blocker', sameAs: key, cell: { row: 'severe', column: 'normal' } })], () => 'no', followUp);
+      expect([worse.asked, worse.grades]).toEqual([[], { Minor: 'blocker' }]);
+      const raised = postedRecord(worse.result);
+      Object.assign(raised.findings.entries[0], { threadId: 'T9' });
+      const after = await run([warning('Minor', 10, { sameAs: key })], () => 'no', { ...followUp, priorRounds: [record, raised], previousFindings: [{ threadId: 'T9', title: 'Minor', file: 'src/a.ts', line: 10, severity: 'blocker', status: 'resolved' }] });
+      expect([after.asked, after.grades]).toEqual([[], { Minor: 'warning' }]);
+
+      // So is a score kept at a warning, with its thread settled, and a warning an earlier body lists without a score.
+      const [unscored, settled] = [structuredClone(record), structuredClone(record)];
+      for (const e of unscored.findings.entries) delete e.importance;
+      for (const e of settled.findings.entries) e.threadId = 'T8';
+      // A raised cut-off lowers no warning an earlier round posted.
+      const resolved = { ...followUp, config: config(10), previousFindings: [{ threadId: 'T8', title: 'Old', file: 'src/a.ts', line: 1, severity: 'warning' as const, status: 'resolved' as const }] };
+      for (const [prior, options] of [[unscored, followUp], [settled, resolved]] as const) {
+        const again = await run([warning('Major', 30)], message => reply(message, { Major: 1 }), { ...options, priorRounds: [prior] });
+        expect([again.asked, again.grades]).toEqual([[], { Major: 'warning' }]);
+      }
+
+      // A lower cut-off brings the stored score back as a warning, which then is no restatement of the note.
+      expect((await run([warning('Minor', 10)], message => reply(message, {}), { ...followUp, config: config(2) })).grades).toEqual({ Minor: 'warning' });
+      // Without the threads, a new-looking warning can restate an open one, so none is rated.
+      const unread = await run([warning('New', 90)], () => 'no', { ...followUp, openThreads: null });
+      expect([unread.asked, unread.grades]).toEqual([[], { New: 'warning' }]);
+    });
+
+    it('keeps the grade of every warning a failed, unusable or late rating leaves without a score', async () => {
+      const findings = [warning('Minor', 10), warning('Major', 30)];
+      const scores = { Minor: 2, Major: 3 };
+      // An answer without an entry is asked for once more, and the second one counts as far as it goes.
+      const partial = await run(findings, message => reply(message, { ...scores, Major: undefined }));
+      expect(partial.asked).toHaveLength(2);
+      expect(partial.grades).toEqual({ Minor: 'note', Major: 'warning' });
+      let calls = 0;
+      const retried = await run(findings, message => calls++ === 0 ? 'not json' : reply(message, scores));
+      expect([calls, retried.grades]).toEqual([2, { Minor: 'note', Major: 'note' }]);
+      const bad = (message: string, change: (entry: Record<string, unknown>) => unknown) => JSON.stringify({ ratings: (JSON.parse(reply(message, scores)) as { ratings: Array<Record<string, unknown>> }).ratings.flatMap(change as never) });
+      for (const answer of [
+        () => 'not json',
+        () => '{}',
+        () => new Error('timeout'),
+        (message: string) => bad(message, entry => ({ ...entry, overall: { score: 0, reason: '' } })),
+        (message: string) => bad(message, entry => ({ ...entry, overall: { score: 2.5, reason: '' } })),
+        (message: string) => bad(message, entry => ({ ...entry, matters: undefined })),
+        (message: string) => bad(message, entry => [entry, entry]),
+      ]) {
+        const { result, grades } = await run(findings, answer);
+        expect(grades).toEqual({ Minor: 'warning', Major: 'warning' });
+        expect([result.reviewComplete, result.findings.some(f => f.importance)]).toEqual([true, false]);
+      }
+      const start = Date.now();
+      const clock = jest.spyOn(Date, 'now').mockImplementation(() => start);
+      try {
+        const late = await run(findings, message => reply(message, scores), { deadline: start + 20 * 60_000 }, () => clock.mockImplementation(() => start + 20 * 60_000 - 180_000));
+        expect([late.asked, late.grades, late.result.reviewComplete]).toEqual([[], { Minor: 'warning', Major: 'warning' }, true]);
+        expect(late.result.notStarted).toContainEqual(expect.objectContaining({ stage: 'rating', reason: 'the round has 3m 0s left, less than the 4m 0s a rating call starts with' }));
+      } finally {
+        clock.mockRestore();
+      }
+    });
   });
 
   describe('open leads', () => {

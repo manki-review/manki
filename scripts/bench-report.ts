@@ -19,7 +19,7 @@ import { readdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
 import { printableError } from '../src/cli';
-import { BenchCase, BenchReport, CASE_DIRS, CaseSet, formatBenchSummary, formatBlockerRoutes, formatComparison, formatGate, formatRemoved, formatUnmatched, formatVotes, formatWarningSources, GateResult, gateReports, loadCases, mergeReports, readReport, readReportFile } from '../src/bench';
+import { BenchCase, BenchReport, CASE_DIRS, CaseSet, formatBenchSummary, formatBlockerRoutes, formatComparison, formatGate, formatImportance, formatRemoved, formatUnmatched, formatVotes, formatWarningSources, GateResult, gateReports, loadCases, mergeReports, readReport, readReportFile } from '../src/bench';
 
 const SET_CHOICES: Record<string, CaseSet[]> = { holdout: ['holdout'], tuning: ['tuning'], both: ['tuning', 'holdout'] };
 
@@ -66,7 +66,7 @@ export function formatReportSummary(report: BenchReport): string {
     '',
     formatComparison(report.variants),
     '',
-    ...[formatBlockerRoutes(report.variants), formatWarningSources(report.variants), formatVotes(report.variants)].filter(Boolean).flatMap(table => [table, '']),
+    ...[formatBlockerRoutes(report.variants), formatWarningSources(report.variants), formatVotes(report.variants), formatImportance(report.variants)].filter(Boolean).flatMap(table => [table, '']),
     ...[formatUnmatched(report.variants)].filter(Boolean),
     '<details><summary>Every case and run</summary>',
     '',

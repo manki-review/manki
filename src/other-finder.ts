@@ -36,7 +36,7 @@ Respond with ONLY a JSON object:
 {"harm": "One sentence", "situation": "One sentence", "line": "path:line" | "none", "quote": "The line's code"}`;
 
 /** Returns the lines `finding` cites in its own repository, each with its code at the head, as far as `workspace` holds them. */
-function citedCode(finding: Finding, workspace: string): string[] {
+export function citedCode(finding: Finding, workspace: string): string[] {
   const locations = [...new Set([`${finding.file}:${finding.line}`, ...(finding.evidence?.proof ?? [])])];
   let shown = 0;
   return locations.flatMap(location => {

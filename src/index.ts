@@ -2123,6 +2123,7 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
       kept: judgeKept && keptKeys.has(findingKey(f)),
       ...(listed.has(f) && { listed: true as const }),
       ...(judgeKept && unpostedReason && { unpostedReason }),
+      ...(f.importance && { importance: f.importance }),
       originalSeverity,
     };
   });
