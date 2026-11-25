@@ -5,7 +5,7 @@ import { join } from 'path';
 
 import { parsePRDiff } from './diff';
 import * as mcpServer from './mcp-server';
-import { checkFixedElsewhere, checkReply, ElsewhereSources, fixedElsewhereText, ReplySources, statementFold, statementList, statementRecords, statementSummary, ThreadState } from './reply-check';
+import { checkFixedElsewhere, checkReply, ElsewhereSources, FixScope, fixedElsewhereText, ReplySources, statementFold, statementList, statementRecords, statementSummary, ThreadState } from './reply-check';
 import { ParsedDiff, RelatedRepoTools } from './types';
 import { registerSecret } from './utils';
 
@@ -257,20 +257,31 @@ describe('checkReply', () => {
     }
   });
 
-  it.each<[string, ThreadState, boolean, boolean, string]>([
-    ['an open thread a review reads', 'open', true, false, '**Not settled yet: the next review checks the fix.**'],
-    ['an open guarded thread a review reads', 'open', true, true, '**Not settled yet: the next review checks the fix.**'],
-    ['an open thread no review reads', 'open', false, false, '**Not settled yet: a maintainer should decide and resolve this thread.**'],
-    ['an open guarded thread no review reads', 'open', false, true, '**Not settled yet.**'],
-    ['a resolved thread that holds nothing', 'resolved', true, false, '**Not settled by this reply.**'],
-    ['a resolved guarded thread that holds nothing', 'resolved', true, true, '**Not settled by this reply.**'],
-    ['a thread that still holds or was not read', undefined, true, false, '**Not settled yet: a maintainer should decide.**'],
-    ['a guarded thread that still holds or was not read', undefined, true, true, '**Not settled yet.**'],
-  ])('leads an unproven fix after a rebase with what happens next: %s', (_name, thread, reviewable, guarded, state) => {
+  const REBASED = 'This branch was rebased or force pushed since the finding was posted, so a reply can\'t settle it.';
+  const NO_LINE = 'I could not point to a line this PR changed in `src/ledger.rs` since this was posted. A reply counts a fix only there.';
+  const rebasedOn = (reviewable: boolean) => ({ unknown: 'not_descendant' as const, rebased: { reviewable } });
+  it.each<[string, ThreadState, Partial<FixScope>, string]>([
+    ['an open thread a review reads, after a rebase', 'open', rebasedOn(true), `**Not settled yet: the next review checks the fix.** ${REBASED}`],
+    ['an open guarded thread a review reads, after a rebase', 'open', { ...rebasedOn(true), guarded: true }, `**Not settled yet: the next review checks the fix.** ${REBASED}`],
+    ['an open thread no review reads, after a rebase', 'open', rebasedOn(false), `**Not settled yet: a maintainer should decide and resolve this thread.** ${REBASED}`],
+    ['an open guarded thread no review reads, after a rebase', 'open', { ...rebasedOn(false), guarded: true }, `**Not settled yet.** ${REBASED}`],
+    ['a resolved thread that holds nothing, after a rebase', 'resolved', rebasedOn(true), `**Not settled by this reply.** ${REBASED}`],
+    ['a resolved guarded thread that holds nothing, after a rebase', 'resolved', { ...rebasedOn(true), guarded: true }, `**Not settled by this reply.** ${REBASED}`],
+    ['a thread that still holds or was not read, after a rebase', undefined, rebasedOn(true), `**Not settled yet: a maintainer should decide.** ${REBASED}`],
+    ['a guarded thread that still holds or was not read, after a rebase', undefined, { ...rebasedOn(true), guarded: true }, `**Not settled yet.** ${REBASED}`],
+    // Without a rebase, the next review after a push reads an open thread tied to a file, and only one that is not guarded hears that it reads the whole push.
+    ['an open thread', 'open', {}, `**Not settled yet: the next review after a push checks the fix.** ${NO_LINE} The next review after a push checks the whole push, also other files.`],
+    ['an open guarded thread', 'open', { guarded: true }, `**Not settled yet: the next review after a push checks the fix.** ${NO_LINE}`],
+    ['a resolved thread that holds nothing', 'resolved', {}, `**Not settled by this reply.** ${NO_LINE}`],
+    ['a thread that still holds or was not read', undefined, {}, `**Not settled yet: a maintainer should decide.** ${NO_LINE}`],
+    ['a guarded thread that still holds or was not read', undefined, { guarded: true }, `**Not settled yet.** ${NO_LINE}`],
+    ['an open thread whose change could not be read', 'open', { unknown: 'unreadable' }, '**Not settled yet: the next review after a push checks the fix.** I could not read what this PR changed since the finding was posted. The next review after a push checks the whole push, also other files.'],
+    ['an open thread tied to no file', 'open', { files: [], hasFile: false }, '**Not settled yet: a maintainer should decide and resolve this thread.** This finding is not tied to a file, so a reply cannot show a fix.'],
+  ])('leads an unproven fix with what happens next and why no line counts it: %s', (_name, thread, scope, lead) => {
     const checked = checkReply(JSON.stringify({ outcome: 'Fixed', answer: 'The guard runs first.' }), REPLY, {
-      ...sources, fixScope: { files: ['src/ledger.rs'], hasFile: true, guarded, unknown: 'not_descendant', rebased: { reviewable } },
+      ...sources, fixScope: { files: ['src/ledger.rs'], hasFile: true, guarded: false, ...scope },
     });
-    expect(checked.unsettled?.(thread)).toBe(`${state} This branch was rebased or force pushed since the finding was posted, so a reply can't settle it.`);
+    expect(checked.unsettled?.(thread)).toBe(lead);
     expect(checked.text(thread)).toBe('The guard runs first.');
   });
 
