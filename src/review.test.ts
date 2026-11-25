@@ -4684,7 +4684,7 @@ describe('runReview', () => {
         warning('Note', 50, { severity: 'note' }),
       ];
       const openThreads = [{ threadId: 'T1', title: 'In a thread', file: 'src/a.ts', line: 49, severity: 'warning' as const }];
-      const scores = { Minor: 4, 'At the cut-off': 5, Major: 9, 'Rare but harmful': [1, 7] as [number, number] };
+      const scores = { Minor: 3, 'At the cut-off': 4, Major: 9, 'Rare but harmful': [1, 7] as [number, number] };
       const { result, asked, grades } = await run(findings, message => reply(message, scores), { config: makeConfig({ review: { rules: 'warn' } }), openThreads, priorRounds: [] });
 
       expect(asked).toHaveLength(1);
@@ -4694,13 +4694,13 @@ describe('runReview', () => {
       expect(message).toContain('10: const line10 = 10;');
       for (const hidden of ['warning', 'blocker', 'Finder Alpha', 'degraded']) expect(`${system}\n${message}`.toLowerCase()).not.toContain(hidden.toLowerCase());
       expect(grades).toMatchObject({ Minor: 'left out', 'At the cut-off': 'warning', Major: 'warning', 'Rare but harmful': 'warning', Security: 'warning', 'Disproved blocker': 'warning', 'Refuted blocker': 'warning', 'Tool alert': 'warning', Rule: 'warning', 'Judged a blocker': 'warning', 'Blocker if confirmed': 'warning', 'Open lead': 'warning', 'In a thread': 'warning', 'Unsettled lead': 'warning', 'Pre-existing': 'warning', Scope: 'warning', Answered: 'warning', 'Raises a thread': 'warning', Blocker: 'blocker' });
-      const stored = { importance: { overall: 1, trigger: 4, introduced: 9, matters: 6, reason: 'Few callers get there.', cutOff: 5 }, severity: 'warning', unpostedReason: 'rare_trigger' };
+      const stored = { importance: { overall: 1, trigger: 3, introduced: 9, matters: 6, reason: 'Few callers get there.', cutOff: 4 }, severity: 'warning', unpostedReason: 'rare_trigger' };
       expect(result.unposted?.find(f => f.title === 'Minor')).toMatchObject(stored);
       expect(result.findings.some(f => f.title === 'Minor')).toBe(false);
       expect(result.findings.find(f => f.title === 'Major')).toMatchObject({ importance: { trigger: 9 }, checkStatus: 'proven' });
       expect(result.findings.filter(f => f.importance)).toHaveLength(3);
       // The judge's log and the round record hold the score.
-      expect(result.allJudgedFindings?.find(f => f.title === 'Minor')).toMatchObject({ severity: 'warning', importance: { trigger: 4 } });
+      expect(result.allJudgedFindings?.find(f => f.title === 'Minor')).toMatchObject({ severity: 'warning', importance: { trigger: 3 } });
       expect(postedRecord(result).findings.unposted).toEqual([expect.objectContaining({ title: 'Minor', posted: 'record', ...stored })]);
       expect(result.llmCalls?.filter(c => c.stage === 'rating')).toHaveLength(1);
 
@@ -4736,7 +4736,7 @@ describe('runReview', () => {
       const second = await run([warning('Minor', 13), warning('Major', 30), warning('New', 90)], message => reply(message, { Minor: 10, Major: 1, New: 2 }), followUp);
       expect(second.asked.map(a => [...a.message.matchAll(/^## Finding \d+: (.*)$/gm)].map(m => m[1]))).toEqual([['New']]);
       expect(second.grades).toEqual({ Minor: 'left out', Major: 'warning', New: 'left out' });
-      expect(second.result.unposted?.find(f => f.title === 'Minor')?.importance).toMatchObject({ trigger: 3, cutOff: 5 });
+      expect(second.result.unposted?.find(f => f.title === 'Minor')?.importance).toMatchObject({ trigger: 3, cutOff: 4 });
       // The record of the second round keeps the score for a third, also without the first.
       const secondRecord = postedRecord(second.result);
       for (const priorRounds of [[record, secondRecord], [secondRecord]]) {
@@ -4755,7 +4755,7 @@ describe('runReview', () => {
       expect([rerated.asked.length, rerated.grades]).toEqual([1, { Minor: 'warning' }]);
       // A lower cut-off posts the warning with the stored score.
       const lower = await run([warning('Minor', 10)], () => 'no', { ...followUp, config: config(2) });
-      expect([lower.asked, lower.grades, lower.result.findings[0].importance]).toEqual([[], { Minor: 'warning' }, expect.not.objectContaining({ cutOff: 5 })]);
+      expect([lower.asked, lower.grades, lower.result.findings[0].importance]).toEqual([[], { Minor: 'warning' }, expect.not.objectContaining({ cutOff: 4 })]);
 
       // A worse problem the judge grades a blocker is posted, and a warning that later restates it is too.
       const worse = await run([warning('Minor', 10, { severity: 'blocker', cell: { row: 'severe', column: 'normal' } })], () => 'no', followUp);
