@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [7.8.1] - 2026-11-26
 
-Manki 7.8.1 makes reviews and answers easier to read: what a reader has to know comes first, long lists are folded, and a possible problem left open says why. A check can also read a crate's source in more Rust repositories.
+Manki 7.8.1 makes reviews and answers easier to read: what a reader has to know comes first, long lists are folded, a proposed split says what each PR would contain, and a possible problem left open says why. A check can also read a crate's source in more Rust repositories.
 
 ### Review loop and verdicts
 
@@ -23,6 +23,7 @@ Manki 7.8.1 makes reviews and answers easier to read: what a reader has to know 
 - A note that a problem may be older than the PR links only its first line at the base. The other lines are in the "How this was checked" fold, or on a line of their own in a reply. The finding's description is no longer cut short by the note's links, and a cut description ends at a whole word ([#2078](https://github.com/manki-review/manki/pull/2078)).
 - A warning the other finder's vote lowered from a blocker says why in its fold. Its thread also says that only a fix or a maintainer clears it ([#2081](https://github.com/manki-review/manki/pull/2081)).
 - Each possible problem under "Not finished checking" says why no check settled it, such as a dependency whose source Manki could not read ([#2087](https://github.com/manki-review/manki/pull/2087)).
+- A proposed split lists each PR with one or two sentences on what it would contain, its files grouped by folder, and the other proposed PRs it needs merged first. The split thread no longer uses the labels of a code defect, and neither scope thread says it is not tied to a line ([#2097](https://github.com/manki-review/manki/pull/2097)).
 - A path such as `DashCoreNode::launch` or a call such as `client.fetchNode()` is shown as one piece of code ([#2087](https://github.com/manki-review/manki/pull/2087)).
 
 ### Reliability
