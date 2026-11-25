@@ -7536,13 +7536,21 @@ describe('awaitPushedHead', () => {
     expect(await wait(pull(OLD))).toEqual({ result: { pull: pull(OLD, { state: 'closed' }) }, waited: 10_000 });
   });
 
-  it('takes the PR as current without its branch or when a lookup fails', async () => {
+  it('never takes a PR it saw behind its branch as current after a failed lookup', async () => {
+    get.mockRejectedValueOnce(new Error('API down')).mockResolvedValue({ data: pull(NEW) });
+    expect(await wait(pull(OLD))).toEqual({ result: { pull: pull(NEW) }, waited: 20_000 });
+    get.mockReset().mockRejectedValue(new Error('API down'));
+    expect(await wait(pull(OLD))).toEqual({ result: { pull: pull(OLD), unseen: NEW }, waited: 180_000 });
+    getRef.mockReset().mockResolvedValueOnce({ data: { object: { sha: NEW } } }).mockRejectedValue(new Error('API down'));
+    get.mockReset().mockResolvedValueOnce({ data: pull(OLD) }).mockResolvedValue({ data: pull(NEW) });
+    expect(await wait(pull(OLD))).toEqual({ result: { pull: pull(NEW) }, waited: 20_000 });
+  });
+
+  it('takes the PR as current without its branch or when the branch cannot be read', async () => {
     for (const closed of [pull(OLD, { state: 'closed' }), pull(OLD, { head: { sha: OLD, ref: 'fix', repo: null } })]) {
       expect((await wait(closed)).result).toEqual({ pull: closed });
     }
     expect(getRef).not.toHaveBeenCalled();
-    get.mockRejectedValue(new Error('API down'));
-    expect((await wait(pull(OLD))).result).toEqual({ pull: pull(OLD) });
     getRef.mockRejectedValue(new Error('Not Found'));
     expect((await wait(pull(OLD))).result).toEqual({ pull: pull(OLD) });
   });
