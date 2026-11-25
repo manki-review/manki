@@ -623,12 +623,12 @@ describe('fetchRecapState', () => {
     expect(state.previousFindings[1].title).toBe('LLM dedup only compares against resolved findings');
   });
 
-  it.each<[string, string[]]>([
+  it.each<[string, string[], string?]>([
     ['without an earlier answer', []],
     ['after a "Withdrawn."', ['Withdrawn. `id` is checked first.\n\n<!-- manki -->']],
     ['after a "Kept."', ['Kept. `id` can be null here.\n\n<!-- manki -->']],
-  ])('reads an unsettled answer as an "Unverified." one, %s', async (_name, earlier) => {
-    const text = 'The guard runs first. This reply does not settle the thread.\n\nThis warning holds the approval.';
+    ['posted before the state came first', [], 'The guard runs first. This reply does not settle the thread.\n\nThis warning holds the approval.'],
+  ])('reads an unsettled answer as an "Unverified." one, %s', async (_name, earlier, text = '**Not settled yet: the next review checks the fix.** A reply can\'t settle it.\n\nFixed by the guard.\n\nThis warning holds the approval.') => {
     const comment = (login: string, body: string) => ({ body, author: { login } });
     const prior = async (answer: string, last = 'manki-review[bot]') => (await fetchRecapState(mockOctokit([makeThread({ id: 't1', comments: { nodes: [
       makeThread().comments.nodes[0], ...earlier.flatMap(body => [comment('author', 'Why?'), comment('manki-review[bot]', body)]), comment('author', 'Fixed in abc1234.'), comment(last, answer),

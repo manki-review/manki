@@ -37,21 +37,23 @@ const UNKNOWN_CHANGES: Record<UnknownChange, string> = {
   unreadable: 'I could not read what this PR changed since the finding was posted.',
 };
 
-/** Ends an answer whose fix no line can show, since the branch was rebased. */
-const REBASED_ANSWER = 'This branch was rebased or force pushed since the finding was posted, so this reply does not settle the thread.';
+/** Why no line can show a fix after a rebase. It follows the bold state that leads the answer. */
+const REBASED_ANSWER = 'This branch was rebased or force pushed since the finding was posted, so a reply can\'t settle it.';
 
 /**
- * Returns an unsettled answer with a lead-in when it opens with an outcome word, such as "Fixed by the guard", which the
+ * Returns the model's text of an unsettled answer with a lead-in when it opens with an outcome word, such as "Fixed by the guard", which the
  * readers of a reply would take as its outcome. `answer` must be the sanitized text, since sanitizing can uncover the word.
  */
 export function withoutOutcomeOpener(answer: string): string {
   return /^(?:fixed|agreed|withdrawn|kept|unverified|confirmed)\b/i.test(answer.replace(/^[^A-Za-z0-9]+/, '')) ? `My reading: ${answer}` : answer;
 }
 
-/** Returns the sentences that end an answer after a rebase. Only an open thread whose file a review reads hears of the next one. */
+/** Returns the line that leads an answer after a rebase. Only an open thread whose file a review reads hears of the next one. */
 function rebasedAnswer({ rebased, guarded }: FixScope, thread: ThreadState): string {
-  if (thread === 'open' && rebased?.reviewable) return `${REBASED_ANSWER} The next review checks the fix.`;
-  return thread === 'resolved' || guarded ? REBASED_ANSWER : `${REBASED_ANSWER} A${maintainerShould('decide', thread).slice(1)}.`;
+  const state = thread === 'open' && rebased?.reviewable ? 'Not settled yet: the next review checks the fix.'
+    : thread === 'resolved' ? 'Not settled by this reply.'
+      : guarded ? 'Not settled yet.' : `Not settled yet: ${maintainerShould('decide', thread)}.`;
+  return `**${state}** ${REBASED_ANSWER}`;
 }
 
 /** How many raw proof entries of the model the reply record keeps, and how much of each. */
@@ -166,8 +168,11 @@ export interface CheckedReply {
    * text, which `withoutOutcomeOpener` has to check once it is sanitized.
    */
   text: (thread: ThreadState) => string;
-  /** Set for an unproven fix on a rebased branch, whose `text` names no outcome. The readers of the reply take it as "Unverified." */
-  unsettled?: true;
+  /**
+   * Set for an unproven fix on a rebased branch, whose `text` names no outcome. Returns the line that goes above it. The
+   * readers of the reply take it as "Unverified."
+   */
+  unsettled?: (thread: ThreadState) => string;
   /** The outcome `text` opens with. */
   outcome: AnswerOutcome;
   /** The outcome the model gave before the checks. Unset when its answer could not be read. */
@@ -363,8 +368,8 @@ export function checkReply(content: string, developerReply: string, sources: Rep
       : outcome === 'Unverified' && thread !== 'resolved' ? ` A${maintainerShould('confirm this', thread).slice(1)}.` : '';
   const unsettled = unproven && outcome === 'Fixed' && sources.fixScope?.rebased && sources.fixScope.files.length > 0 ? sources.fixScope : undefined;
   return {
-    text: thread => unsettled ? `${answer} ${rebasedAnswer(unsettled, thread)}` : `${settled}. ${answer}${note(thread)}`,
-    ...(unsettled && { unsettled: true as const }),
+    text: thread => unsettled ? answer : `${settled}. ${answer}${note(thread)}`,
+    ...(unsettled && { unsettled: (thread: ThreadState) => rebasedAnswer(unsettled, thread) }),
     outcome: settled,
     modelOutcome: outcome,
     needsAnswer: parsed.needs_answer !== false,
