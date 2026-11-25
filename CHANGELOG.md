@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.8.1] - 2026-11-26
+
+Manki 7.8.1 makes reviews and answers easier to read: what a reader has to know comes first, long lists are folded, and a possible problem left open says why. A check can also read a crate's source in more Rust repositories.
+
+### Review loop and verdicts
+
+- While warnings hold the approval, the review opens with them. A draft or a conflict is one sentence after them, and the `Manki` check and `/manki check` name the warnings first too. A config file that did not load is named below the verdict line ([#2086](https://github.com/manki-review/manki/pull/2086)).
+- After a rebase or force push, an answer to a reply that says a finding is fixed starts with a bold line: the reply does not settle the thread, and what happens next, such as that the next review checks the fix ([#2093](https://github.com/manki-review/manki/pull/2093)).
+- The judge's summary is left out when a blocker held because only one finder reported it ends as a warning, so the review no longer reads as blocking on a round where nothing blocks ([#2082](https://github.com/manki-review/manki/pull/2082)).
+
+### Review format
+
+- In Manki's answer to a thread reply, the list of statements it checked is in a closed fold whose summary gives the counts. A statement with something cited against it stays visible above the fold ([#2080](https://github.com/manki-review/manki/pull/2080)).
+- A note that a problem may be older than the PR links only its first line at the base. The other lines are in the "How this was checked" fold, or on a line of their own in a reply. The finding's description is no longer cut short by the note's links, and a cut description ends at a whole word ([#2078](https://github.com/manki-review/manki/pull/2078)).
+- A warning the other finder's vote lowered from a blocker says why in its fold. Its thread also says that only a fix or a maintainer clears it ([#2081](https://github.com/manki-review/manki/pull/2081)).
+- Each possible problem under "Not finished checking" says why no check settled it, such as a dependency whose source Manki could not read ([#2087](https://github.com/manki-review/manki/pull/2087)).
+- A path such as `DashCoreNode::launch` or a call such as `client.fetchNode()` is shown as one piece of code ([#2087](https://github.com/manki-review/manki/pull/2087)).
+
+### Reliability
+
+- Without a lockfile, a check reads a crate's published source when every package of the checkout states a `rust-version` and the newest version its requirement allows needs no newer Rust than any of them. Before, any `rust-version` together with a resolver that honours it made Manki refuse the crate ([#2089](https://github.com/manki-review/manki/pull/2089)).
+
 ## [7.8.0] - 2026-11-25
 
 Manki 7.8 is about fewer warnings and blockers that do not matter. Warnings with a rare trigger are left out of the review, a finding only one of two finders reported needs the other finder's backing, and a refuter confirms a finding only when normal use reaches it and someone can see the result. Pre-existing findings are posted only when they are security findings or the PR fixes the same failure elsewhere. Thread replies are read on the newest pushed commit and answered once. The new filter is on by default and one setting changes it. Nothing breaks on the upgrade.
