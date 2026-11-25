@@ -16,8 +16,8 @@ import { formatFinderError, NAMED_AGAIN_REASON, UNCONFIRMED_FIX_ENDING, WORKAROU
 import { buildLLMClient } from './review-clients';
 import { AnswerStore, holdsEveryCall, ReplayLevel, StoredAnswers } from './stored-answers';
 import {
-  CELL_GRADES, CheckStatus, Doubt, Finding, finderGrade, FinderReplay, FinderError, FindingFingerprintEntry, FindingSeverity, GradeCell, GradeChange, GradeStep, gradedAbove, isGradeCell, isSecondReadName, isSecurityFinding, isSweepName, leftOutUnproven,
-  migrateLegacySeverity, migrateStoredSeverities, PRE_EXISTING_TAG, Refutation, RoundContext, RoundRawFinding, RoundRelatedRepo, SCOPE_READER_NAME, SEVERITY_ORDER, SideCheckKind, ThreadEvaluation, UNPOSTED_REASONS, UnpostedReason,
+  CELL_GRADES, CheckStatus, Doubt, Finding, finderGrade, Importance, IMPORTANCE_SCORES, isImportance, FinderReplay, FinderError, FindingFingerprintEntry, FindingSeverity, GradeCell, GradeChange, GradeStep, gradedAbove, isGradeCell, isSecondReadName, isSecurityFinding, isSweepName, leftOutUnproven,
+  migrateLegacySeverity, migrateStoredSeverities, PRE_EXISTING_TAG, Refutation, RoundContext, RoundRawFinding, RoundRelatedRepo, SCOPE_READER_NAME, scoresOf, SEVERITY_ORDER, SideCheckKind, ThreadEvaluation, UNPOSTED_REASONS, UnpostedReason,
   UnprovenReason, VERDICT_READER_NAME, VerdictReason,
 } from './types';
 import { runGit } from './workspace';
@@ -163,6 +163,8 @@ function parsePriorRound(raw: unknown, file: string): EarlierRound {
     if (doubts !== undefined && !(Array.isArray(doubts) && doubts.every(validDoubt))) {
       throw caseError(where, '`doubts` must be a list of mappings with a `premise`, a `decides` of defect or grade, and `consequence: true` only beside `decides: grade`');
     }
+    const { importance } = f;
+    if (importance !== undefined && !isImportance(importance)) throw caseError(where, `\`importance\` must have a whole number from 1 to 10 as ${IMPORTANCE_SCORES.join(', ')}`);
     const [description, howToFix, suggestedFix] = PRIOR_FIELDS.map((field) => {
       if (f[field] !== undefined && typeof f[field] !== 'string') throw caseError(where, `\`${field}\` must be a string`);
       return f[field] as string | undefined;
@@ -172,6 +174,7 @@ function parsePriorRound(raw: unknown, file: string): EarlierRound {
       ...(f.grade_if_confirmed !== undefined && { gradeIfConfirmed: f.grade_if_confirmed as KeySeverity }),
       ...(cell && { cell: { row: cell.row, column: cell.column } }),
       ...(doubts && { doubts: doubts.map((d): Doubt => ({ premise: d.premise as string, decides: d.decides as Doubt['decides'], ...(d.consequence === true && { consequence: true }) })) }),
+      ...(importance && { importance: scoresOf(importance) }),
       ...(description && { description }), ...(howToFix && { howToFix }), ...(suggestedFix && { suggestedFix }), ...(f.security === true && { security: true }),
       ...(f.disproved === true && { disproved: true }),
       ...(f.posted === 'thread' && { thread: f.state as EarlierFinding['thread'] }),
@@ -476,6 +479,8 @@ interface GradeRoute {
    * whether the quote of its line held (`held`), named a line that does not hold it (`missed`) or named no line (`none`).
    */
   vote?: { grade: FindingSeverity; answer: 'backs' | 'declines'; quote: 'held' | 'missed' | 'none' };
+  /** The scores of a rated warning the review posted. */
+  importance?: Importance;
 }
 
 // The steps that only come after the vote, so the first of them starts from the grade the vote saw.
@@ -529,6 +534,7 @@ const RAW_EXITS: Record<RawExit, string> = {
   memory_suppression: UNPOSTED_REASONS.memory_suppression,
   static_signal_match: UNPOSTED_REASONS.static_signal_match,
   no_trigger: UNPOSTED_REASONS.no_trigger,
+  rare_trigger: UNPOSTED_REASONS.rare_trigger,
   reviewed_code: UNPOSTED_REASONS.reviewed_code,
   listed_earlier: UNPOSTED_REASONS.listed_earlier,
   note_cap: UNPOSTED_REASONS.note_cap,
@@ -619,6 +625,8 @@ interface RunScore {
   finderErrors?: Array<FinderError & { finder: string }>;
   /** Each finding with the text the matcher read. A report from a ref that kept no finding text holds no `description`, and one from a ref that stored no route holds no `route`. `foldedInto` is the id of the earlier open thread the round folded the finding into, by `foldedThread`. */
   findings: Array<Omit<MatchedFinding, 'description'> & Partial<Pick<MatchedFinding, 'description'>> & { route?: GradeRoute; foldedInto?: string }>;
+  /** Each warning the review left out for its trigger, with its scores. It counts as not posted. */
+  leftOut?: Array<RecordedPlace & { importance: Importance }>;
   matches: ItemMatch[];
   /** Must-catch items matched, over all must-catch items. `null` for a clean case and an incomplete run. */
   mustCatchRecall: number | null;
@@ -1022,14 +1030,16 @@ function gradeRoute(f: Finding): GradeRoute {
       answer: f.otherFinderVote.declined ? 'declines' as const : 'backs' as const,
       quote: !f.otherFinderVote.declined ? 'held' as const : f.otherFinderVote.line ? 'missed' as const : 'none' as const,
     } }),
+    ...(f.importance && { importance: scoresOf(f.importance) }),
   };
 }
 
 /** What a run records about its review whether or not the findings could be matched. `earlier` is the round a follow-up case follows. */
-function reviewFacts(review: LocalReview, earlier?: EarlierRound): Pick<RunScore, 'outcome' | 'verdictReason' | 'finderErrors' | 'findings' | 'finders' | 'secondReads' | 'relatedRepos' | 'costUsd' | 'inputTokens' | 'outputTokens' | 'durationMs'> {
+function reviewFacts(review: LocalReview, earlier?: EarlierRound): Pick<RunScore, 'outcome' | 'verdictReason' | 'finderErrors' | 'findings' | 'leftOut' | 'finders' | 'secondReads' | 'relatedRepos' | 'costUsd' | 'inputTokens' | 'outputTokens' | 'durationMs'> {
   const usage = review.context.usage ?? {};
   const secondReads = finderSteps(review, true);
   const { outcome, verdictReason, agentErrors } = review.result;
+  const leftOut = (review.result.unposted ?? []).flatMap(({ title, file, line, importance, unpostedReason }) => (unpostedReason === 'rare_trigger' && importance ? [{ title, file, line, importance: scoresOf(importance) }] : []));
   const finderErrors = [...agentErrors ?? []].flatMap(([finder, causes]) => causes.map(cause => ({ finder, ...cause })));
   return {
     outcome,
@@ -1040,6 +1050,7 @@ function reviewFacts(review: LocalReview, earlier?: EarlierRound): Pick<RunScore
       const foldedInto = foldedThread(earlier, f);
       return { severity, title, file, line, description, ...(howToFix && { howToFix }), ...(suggestedFix && { suggestedFix }), route: gradeRoute(f), ...(foldedInto && { foldedInto }) };
     }),
+    ...(leftOut.length > 0 && { leftOut }),
     finders: finderSteps(review),
     ...(secondReads.length > 0 && { secondReads }),
     ...(review.context.relatedRepos && { relatedRepos: review.context.relatedRepos.map(({ repo, ref, status, commit, asOf }) => ({ repo, ...(ref && { ref }), status, ...(commit && { commit }), ...(asOf && { asOf }) })) }),
@@ -1884,6 +1895,22 @@ export function formatWarningSources(variants: VariantReport[]): string {
 }
 
 /**
+ * Returns one line per variant and set with the rated warnings in the complete runs: how many were rated, how many of
+ * them the review left out, and how many must-catch items were lost with those. It holds counts only, so it covers
+ * hold-out cases. Returns an empty string when no run recorded a rating.
+ */
+export function formatImportance(variants: VariantReport[]): string {
+  return variants.flatMap(v => setSummaries(v).flatMap(({ label, set }) => {
+    const runs = v.cases.filter(c => c.set === set).flatMap(c => c.runs.filter(run => run.complete));
+    const leftOut = runs.reduce((sum, run) => sum + (run.leftOut?.length ?? 0), 0);
+    const rated = leftOut + runs.reduce((sum, run) => sum + run.findings.filter(f => f.route?.importance).length, 0);
+    if (rated === 0) return [];
+    const lost = runs.reduce((sum, run) => sum + (run.raw?.caught.filter(c => !c.posted && c.exits?.[0] === 'rare_trigger').length ?? 0), 0);
+    return [`Importance, ${label ? `${v.name} ${label}` : v.name}: ${rated} warnings rated, ${leftOut} left out, ${lost} must-catch ${lost === 1 ? 'item' : 'items'} lost with them.`];
+  })).join('\n');
+}
+
+/**
  * Returns one line per variant and set with the other finder's votes in the complete runs: how many backed and declined a
  * blocker and a warning, how many of those findings match a key item, and how many declines named a line whose quote
  * did not hold. It holds counts only, so it covers hold-out cases. Returns an empty string when no run recorded a vote.
@@ -1953,7 +1980,7 @@ export function formatBenchSummary(report: BenchReport): string {
     lines.push('');
   }
   lines.push(formatComparison(report.variants));
-  for (const table of [formatBlockerRoutes(report.variants), formatWarningSources(report.variants), formatVotes(report.variants)]) if (table) lines.push('', table);
+  for (const table of [formatBlockerRoutes(report.variants), formatWarningSources(report.variants), formatVotes(report.variants), formatImportance(report.variants)]) if (table) lines.push('', table);
   return `${lines.join('\n')}\n`;
 }
 

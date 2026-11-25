@@ -4395,6 +4395,7 @@ describe('updateProgressComment', () => {
       { title: 'Null dereference', severity: 'blocker', reasoning: 'Valid bug', kept: true },
       { title: 'Style nitpick', severity: 'ignore', reasoning: 'Intentional pattern', kept: false },
       { title: 'Rename', severity: 'note', reasoning: 'Clearer', kept: false, unpostedReason: 'reviewed_code' },
+      { title: 'Rare race', severity: 'warning', reasoning: 'True but rare', kept: false, unpostedReason: 'rare_trigger', importance: { overall: 3, trigger: 2, introduced: 9, matters: 4, reason: 'Few get there.', cutOff: 5 } },
       { title: 'Slow path', severity: 'warning', reasoning: 'May be slow', kept: false, unpostedReason: 'unsettled_check' },
     ],
     timing: {
@@ -4515,6 +4516,7 @@ describe('updateProgressComment', () => {
     expect(body).toContain('- Kept: "Null dereference" (blocker): "Valid bug"');
     expect(body).toContain('- Dropped: "Style nitpick" (ignore): "Intentional pattern"');
     expect(body).toContain('- Not listed, on code an earlier round reviewed: "Rename" (suggestion): "Clearer"');
+    expect(body).toContain('- Not listed, its trigger is rated below `review.min_warning_trigger`: "Rare race" (warning): "True but rare", trigger 2 and harm 4 of 10: "Few get there."\n');
     expect(body).toContain('- Not listed, a check of the code could not confirm it: "Slow path" (warning): "May be slow"');
   });
 
@@ -6199,6 +6201,7 @@ describe('postReview non-blocking findings', () => {
     const link = (line: number, file = 'src/a.ts'): string => `[\`${file}:${line}\`](https://github.com/owner/repo/blob/abc1234/${file}#L${line})`;
     const unproven = [nonBlocking('warning', 'Unsettled', 15, { unpostedReason: 'unsettled_check' }), nonBlocking('warning', 'Unchecked', 16, { unpostedReason: 'not_checked' }), nonBlocking('warning', 'Uncited', 17, { unpostedReason: 'no_proof' })];
     const capped = nonBlocking('note', 'Left out', 11, { unpostedReason: 'note_cap' });
+    const rare = nonBlocking('warning', 'Rare race', 20, { unpostedReason: 'rare_trigger', importance: { overall: 3, trigger: 2, introduced: 9, matters: 4, reason: 'Few get there.', cutOff: 5 } });
     // A pre-existing finding left out of the review is in the round record only, so the fold lists none of them.
     const unpostedPreExisting = [nonBlocking('warning', 'Old loop', 18), nonBlocking('note', 'Old name', 19)];
     const leads = [nonBlocking('warning', 'Token may not read it', 3, { leadSince: 2 }), nonBlocking('note', 'Cache <b>may</b> go stale', 4)];
@@ -6206,7 +6209,7 @@ describe('postReview non-blocking findings', () => {
     const log = '<sub>The progress comment has the full log under "Judge decisions", in its "Review metadata" fold.</sub>';
 
     // Every kind has its heading and count, and the summary gives the total and the split.
-    const all = await bodyOf({ unposted: [...unproven, capped], unpostedPreExisting, openLeads: leads }, [overflow]);
+    const all = await bodyOf({ unposted: [...unproven, capped, rare], unpostedPreExisting, openLeads: leads }, [overflow]);
     expect(all).toContain([
       'Summary',
       '',
@@ -6217,7 +6220,7 @@ describe('postReview non-blocking findings', () => {
       '---',
       '',
       '<details>',
-      '<summary>Checked and left out: 6 findings (1 disproved, 3 unproven, 2 not finished)</summary>',
+      '<summary>Checked and left out: 7 findings (1 disproved, 3 unproven, 1 rare, 2 not finished)</summary>',
       '',
       '#### Disproved by a check of the code · 1 finding',
       '',
@@ -6232,6 +6235,11 @@ describe('postReview non-blocking findings', () => {
       '  Nothing proves it, and no check of the code ran on it.',
       `- **Uncited** · ${link(17)}`,
       '  It cites no lines that prove it.',
+      '',
+      '#### Rare trigger, so not listed · 1 warning',
+      '',
+      `- **Rare race** · ${link(20)}`,
+      '  Trigger 2 of 10, below the cut-off of 5.',
       '',
       '#### Not finished checking · 2 possible problems',
       '',
@@ -6250,7 +6258,8 @@ describe('postReview non-blocking findings', () => {
     // One kind needs no split, and a kind with no entries has no heading.
     const one = await bodyOf({}, [overflow]);
     expect(one).toContain(`<summary>Checked and left out: 1 finding</summary>\n\n#### Disproved by a check of the code · 1 finding\n\n- **Overflow** · ${link(2, 'src/m.ts')}\n  Checked at src/api.ts:3. Both inputs are bounded.\n\n${log}\n\n</details>`);
-    expect(one).not.toMatch(/Not proven|Not finished/);
+    expect(one).not.toMatch(/Not proven|Rare trigger|Not finished/);
+    expect(await bodyOf({ unposted: [rare] })).toContain(`  Trigger 2 of 10, below the cut-off of 5.\n\n${log}\n\n</details>`);
     expect(await bodyOf({ unposted: unproven.slice(0, 1), openLeads: leads.slice(0, 1) })).toContain('<summary>Checked and left out: 2 findings (1 unproven, 1 not finished)</summary>');
     // The judge never saw a lead that was only listed, so a fold of leads names no log.
     const leadsOnly = await bodyOf({ openLeads: leads });

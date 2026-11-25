@@ -143,7 +143,7 @@ describe('config', () => {
 
     it('loads groups, classes and routing as written and leaves the built-ins when unset', () => {
       expect(loadConfigFromContent('').review).toBeUndefined();
-      const config = loadConfigFromContent(`${deep}  classes:\n    security:\n      match: { paths_any: ["src/billing/**"] }\n    hot_path:\n      rank: 85\n      match: { paths_any: ["src/net/**"], triage: { subtle: true } }\n  routing:\n    security: deep\n    hot_path: deep\n    internal: solo\n  critical_paths: ["src/consensus/**", "@security_paths"]\n  outside_input: Messages from network peers.\n  examples:\n    blocker:\n      - A panic on a peer message.\n    not_blocker:\n      - A slow RPC call.\n  sweep: notes\n  notes: 0\n  rules: block\n  scope_blocks: true\n`);
+      const config = loadConfigFromContent(`${deep}  classes:\n    security:\n      match: { paths_any: ["src/billing/**"] }\n    hot_path:\n      rank: 85\n      match: { paths_any: ["src/net/**"], triage: { subtle: true } }\n  routing:\n    security: deep\n    hot_path: deep\n    internal: solo\n  critical_paths: ["src/consensus/**", "@security_paths"]\n  outside_input: Messages from network peers.\n  examples:\n    blocker:\n      - A panic on a peer message.\n    not_blocker:\n      - A slow RPC call.\n  sweep: notes\n  notes: 0\n  rules: block\n  min_warning_trigger: 6\n  scope_blocks: true\n`);
       expect(config.review).toEqual({
         groups: { trivial: ['claude-sonnet-5-5'], solo: ['claude-sonnet-5-5'], full: ['claude-sonnet-5-5', 'claude-opus-5-5'], deep: [{ model: 'claude-opus-5-5', effort: 'high' }, 'gpt-5.5'] },
         classes: {
@@ -157,6 +157,7 @@ describe('config', () => {
         sweep: 'notes',
         notes: 0,
         rules: 'block',
+        min_warning_trigger: 6,
         scope_blocks: true,
       });
       expect(core.warning).not.toHaveBeenCalled();
@@ -197,6 +198,7 @@ describe('config', () => {
       ['notes that are no number', 'review:\n  notes: "3"\n', '`review.notes` must be a non-negative integer'],
       ['an unknown rules mode', 'review:\n  rules: error\n', '`review.rules` must be `auto`, `warn` or `block`'],
       ['a rules mode that is no string', 'review:\n  rules: true\n', '`review.rules` must be `auto`, `warn` or `block`'],
+      ...['0', '11', '4.5', '"4"', 'true'].map(value => [`a min_warning_trigger of ${value}`, `review:\n  min_warning_trigger: ${value}\n`, '`review.min_warning_trigger` must be a whole number from 1 to 10. The default is 5, 1 turns the filter off, and a higher number filters more']),
       ['a scope_blocks that is no boolean', 'review:\n  scope_blocks: "yes"\n', '`review.scope_blocks` must be `true` or `false`'],
       ['examples as a plain list', 'review:\n  examples: [A panic.]\n', '`review.examples` must set `blocker`, `not_blocker` or both'],
       ['empty examples', 'review:\n  examples: {}\n', '`review.examples` must set `blocker`, `not_blocker` or both'],

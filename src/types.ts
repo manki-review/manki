@@ -457,6 +457,8 @@ export interface Finding {
   originCheck?: OriginCheck;
   /** The vote of a finder that did not report the finding, which `otherFinderVotes` asks on a `soleFinder` blocker or warning. */
   otherFinderVote?: OtherFinderVote;
+  /** How important the finding is, set on a warning that `rateWarnings` rated in this round or an earlier one. */
+  importance?: Importance;
   /** The line of an origin answer's `fixedElsewhere`, on a pre-existing finding posted as a note because the PR fixes the same failure there. */
   fixedElsewhere?: string;
   /** The id of the memory suppression that hid the finding. */
@@ -1151,6 +1153,34 @@ export interface OtherFinderVote {
   model?: string;
 }
 
+export const IMPORTANCE_SCORES = ['trigger', 'introduced', 'matters', 'overall'] as const;
+
+/** The scores of a warning, each a whole number from 1 to 10. `trigger` and `matters` decide whether the review leaves it out. */
+export interface Importance {
+  overall: number;
+  /** How easily it is triggered. */
+  trigger: number;
+  /** How clearly the PR introduces it. */
+  introduced: number;
+  /** How much it matters when it happens. */
+  matters: number;
+  /** Why `trigger`, in one sentence of the model. */
+  reason?: string;
+  /** The `review.min_warning_trigger` its trigger is below. Set on a warning left out with `rare_trigger`. */
+  cutOff?: number;
+}
+
+/** Whether `value` holds the scores of an `Importance`. */
+export function isImportance(value: unknown): value is Importance {
+  const scores = value as Record<string, unknown> | null | undefined;
+  return IMPORTANCE_SCORES.every(name => Number.isInteger(scores?.[name]) && (scores![name] as number) >= 1 && (scores![name] as number) <= 10);
+}
+
+/** Returns the scores of `importance` without its reason. */
+export function scoresOf({ trigger, introduced, matters, overall }: Importance): Importance {
+  return { trigger, introduced, matters, overall };
+}
+
 export interface OriginCheck {
   /** Whether the PR added or changed the flagged line, so the line has no place at the base. */
   lineChanged: boolean;
@@ -1361,7 +1391,7 @@ export function overruledDisproof(finding: Pick<Finding, 'severity' | 'rule' | '
 /** `earlier` restates a finding an earlier round listed in its review body, whatever code it sits on. */
 export type FindingOrigin = 'new' | 'reviewed' | 'earlier';
 
-/** Why a review leaves out a finding the judge kept, with the words that say it to a reader. The first four are set on a note, `listed_earlier` also on a finding that restates an earlier blocker the round lists again, `no_trigger` on a warning with no realistic trigger, and the last three on a warning nothing proves. */
+/** Why a review leaves out a finding the judge kept, with the words that say it to a reader. The first four are set on a note, `listed_earlier` also on a finding that restates an earlier blocker the round lists again, `no_trigger` on a warning with no realistic trigger, `rare_trigger` on a warning whose trigger is below `review.min_warning_trigger`, and the last three on a warning nothing proves. */
 export const UNPOSTED_REASONS = {
   reviewed_code: 'on code an earlier round reviewed',
   listed_earlier: 'listed by an earlier round',
@@ -1371,6 +1401,7 @@ export const UNPOSTED_REASONS = {
   memory_suppression: 'hidden by a memory suppression',
   static_signal_match: 'a CI tool reports the same line',
   no_trigger: 'it names no trigger that happens in realistic use',
+  rare_trigger: 'its trigger is rated below `review.min_warning_trigger`',
   unsettled_check: 'a check of the code could not confirm it',
   not_checked: 'nothing proves it, and no check of the code ran on it',
   no_proof: 'it cites no lines that prove it',
@@ -1814,6 +1845,8 @@ export interface ReviewRoutingConfig {
   notes?: number;
   /** Whether a broken required rule of the instruction files is graded by its damage alone (`auto`), at least a warning (`warn`) or blocks (`block`). */
   rules?: RulesMode;
+  /** The lowest trigger score from 1 to 10 a warning is posted with. 1 rates none and leaves none out. */
+  min_warning_trigger?: number;
   /** Whether the scope reader's doubt or split is posted as a warning that holds the approval, instead of only listed in the review body. */
   scope_blocks?: boolean;
 }
@@ -2336,6 +2369,7 @@ export interface JudgeDecision {
   listed?: true;
   /** Why the review leaves out a finding the judge kept. */
   unpostedReason?: UnpostedReason;
+  importance?: Importance;
 }
 
 export interface ReviewMetadata {
@@ -3149,7 +3183,7 @@ export interface RoundFindings {
   severityCounts: Record<string, number>;
   entries: FindingFingerprintEntry[];
   /**
-   * The findings Manki recorded without posting them: pre-existing ones, and notes with an `unpostedReason`. Nothing that
+   * The findings Manki recorded without posting them: pre-existing ones, and those with an `unpostedReason`. Nothing that
    * reads posted findings sees them.
    */
   unposted?: FindingFingerprintEntry[];
@@ -3227,6 +3261,8 @@ export interface FindingFingerprintEntry {
   originCheck?: OriginCheck;
   /** Mirrors `Finding.otherFinderVote`. */
   otherFinderVote?: OtherFinderVote;
+  /** Mirrors `Finding.importance`. */
+  importance?: Importance;
   /** Mirrors `Finding.gradeIfConfirmed`. */
   gradeIfConfirmed?: FindingSeverity;
   /** Mirrors `Finding.judgeIfConfirmed`. */
@@ -3389,7 +3425,7 @@ export interface ReplyDecision {
 export interface RoundUsage extends RoundUsageStage {
   /** Wall-clock time of the review run, from its start to the review it posts. `durationMs` is the time spent in model calls. */
   wallClockMs?: number;
-  perStage?: Partial<Record<'planner' | 'reviewer' | 'compare' | 'claims' | 'claim_terms' | 'claim_check' | 'fixes' | 'fix_check' | 'related_check' | 'pattern_check' | 'sweep' | 'judge' | 'vote' | 'dedup' | 'verdict' | 'scope' | 'related' | 'translate', RoundUsageStage>>;
+  perStage?: Partial<Record<'planner' | 'reviewer' | 'compare' | 'claims' | 'claim_terms' | 'claim_check' | 'fixes' | 'fix_check' | 'related_check' | 'pattern_check' | 'sweep' | 'judge' | 'vote' | 'rating' | 'dedup' | 'verdict' | 'scope' | 'related' | 'translate', RoundUsageStage>>;
   perModel?: Record<string, RoundUsageStage>;
   llmCalls?: LLMCall[];
   /** The newest reading of each subscription usage window the round's calls reported. */
