@@ -1,5 +1,5 @@
-import { AuthorReplyClass, Finding, FindingFingerprintEntry, ReplyDecision, RoundContext, SECURITY_TAG, ThreadEvaluation, threadBlocks } from './types';
-import { clearRecordMarker, UNSETTLED_ANSWER_MARKER, collectGuardedThreadIds, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, currentFindingLine, deduplicateFindings, dismissRecordMarker, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, parseFindingFromComment, RAISED_MARKER, threadSeverity } from './recap';
+import { AuthorReplyClass, Finding, FindingFingerprintEntry, ReplyDecision, RoundContext, SCOPE_DOUBT_TITLE, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, SECURITY_TAG, ThreadEvaluation, threadBlocks } from './types';
+import { clearRecordMarker, UNSETTLED_ANSWER_MARKER, collectGuardedThreadIds, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, currentFindingLine, deduplicateFindings, dismissRecordMarker, fingerprintFinding, findingPlace, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, parseFindingFromComment, RAISED_MARKER, threadSeverity } from './recap';
 import { AUTO_APPROVE_MARKER, BOT_LOGIN, formatFindingComment, titleToSlug } from './github';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { determineOutcome } from './review';
@@ -2874,6 +2874,12 @@ describe('parseFindingFromComment', () => {
     const sentence = 'This is not tied to a file or line. Comments are only possible on changed files, so the thread is posted here.';
     const quoted = formatFindingComment({ severity: 'note', title: 'Extract helper', file: 'src/a.ts', line: 2, description: sentence, reviewers: [] }, TEST_LINKS);
     expect(parseFindingFromComment(quoted).description).toBe(sentence);
+    // The scope reader's threads tied to no file open with their description, so no line is skipped there.
+    for (const [title, description] of [[SCOPE_DOUBT_TITLE, 'Nothing calls `parseDate`.'], [SCOPE_SPLIT_TITLE, 'Suggestion about the PR as a whole.']]) {
+      const scopeThread = formatFindingComment({ severity: 'warning', title, file: '', line: 0, description, reviewers: [SCOPE_READER_NAME] }, TEST_LINKS, 'detached');
+      expect(parseFindingFromComment(scopeThread).description).toBe(description);
+      expect(findingPlace(scopeThread, 'src/a.ts', 1)).toEqual({ file: '', line: 0 });
+    }
   });
 
   it('extracts description up to the <details> stop marker', () => {

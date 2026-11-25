@@ -195,6 +195,13 @@ export const SCOPE_READER_NAME = 'Scope reader';
 export const SCOPE_DOUBT_TITLE = 'This change may not be useful as it stands';
 /** The title of the warning `review.scope_blocks` posts for a split. Fixed, so a repeat folds into its thread. */
 export const SCOPE_SPLIT_TITLE = 'This PR mixes topics that belong in separate PRs';
+/**
+ * Whether a thread is the scope reader's: tied to no file and raised by it. The reader judges the whole PR, so its thread
+ * needs no line on where it is posted.
+ */
+export function isScopeThread(file: string | undefined, reviewers: readonly string[] | undefined): boolean {
+  return !file && !!reviewers?.includes(SCOPE_READER_NAME);
+}
 /** Whether `finding` is the split the scope reader proposes. */
 export function isScopeSplit(finding: Pick<Finding, 'title' | 'reviewers'>): boolean {
   return finding.reviewers.includes(SCOPE_READER_NAME) && finding.title === SCOPE_SPLIT_TITLE;
@@ -938,6 +945,10 @@ export interface RoundFixes {
 export interface ScopeTopic {
   name: string;
   files: string[];
+  /** For a proposed PR of a split: one or two sentences on what it would contain. Model text, shown only. */
+  contents?: string;
+  /** For a proposed PR of a split: the numbers of the other proposed PRs it needs merged first, counted from 1. */
+  needs?: number[];
 }
 
 /** How the scope reader judged the PR as a whole on a round. */

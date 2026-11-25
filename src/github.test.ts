@@ -6687,7 +6687,7 @@ describe('postReview non-blocking findings', () => {
     const scope = {
       doubt: 'Nothing calls the new `parseDate`, and `utils/dates.ts` already exports one.', proof: ['src/a.ts:3', 'src/a.ts:7-9'],
       topics: [{ name: 'Date parsing', files: ['src/a.ts'] }, { name: 'Flag rename', files: ['src/b.ts'] }],
-      split: [{ name: 'Date parsing', files: ['src/a.ts', 'src/b.ts:1-3'] }, { name: 'Flag [rename]', files: ['src/b.ts:20-24', 'src/c`d.ts'] }],
+      split: [{ name: 'Date parsing', contents: 'Adds `parseDate` for ISO dates.', files: ['src/a.ts', 'src/b.ts:1-3'] }, { name: 'Flag [rename]', needs: [1], files: ['src/b.ts:20-24', 'src/c`d.ts'] }],
     };
 
     await postReview(octokit, 'owner', 'repo', 1, 'sha', { ...buildResult([]), scope }, diff);
@@ -6698,10 +6698,15 @@ describe('postReview non-blocking findings', () => {
       '',
       '**Is this change useful?** Nothing calls the new `parseDate`, and `utils/dates.ts` already exports one. See `src/a.ts` lines [3](https://github.com/owner/repo/blob/sha/src/a.ts#L3) and [7-9](https://github.com/owner/repo/blob/sha/src/a.ts#L7-L9).',
       '',
-      '**Split into 2 PRs?** The change covers topics that each make sense on their own:',
+      '**Split into 2 PRs?** The parts make sense on their own and are easier to review and revert separately.',
       '',
-      '1. Date parsing: `src/a.ts`, `src/b.ts:1-3`',
-      "2. Flag [rename]: `src/b.ts:20-24`, `src/c'd.ts`",
+      '**PR 1: Date parsing**',
+      'Adds `parseDate` for ISO dates.',
+      '`src/`: `a.ts`, `b.ts:1-3`',
+      '',
+      '**PR 2: Flag [rename]**',
+      "`src/`: `b.ts:20-24`, `c'd.ts`",
+      'Needs PR 1 first.',
     ].join('\n'));
 
     // A PR that is useful and covers one topic shows no section, and neither does a round that posted the answer as warnings.
@@ -6714,21 +6719,35 @@ describe('postReview non-blocking findings', () => {
     expect(held.event).toBe('COMMENT');
     expect(createReviewComment).not.toHaveBeenCalled();
     const threads = held.comments as Array<{ path: string; line: number; body: string }>;
-    expect(threads).toEqual([0, 1].map(() => expect.objectContaining({
-      path: 'src/a.ts', line: 1, body: expect.stringContaining('This is not tied to a file or line. Comments are only possible on changed files, so the thread is posted here.'),
-    })));
-    expect(threads[0].body).toContain('**This change may not be useful as it stands**');
+    // A judgment of the whole PR needs no line on where its thread is posted.
+    expect(threads).toEqual([0, 1].map(() => expect.objectContaining({ path: 'src/a.ts', line: 1 })));
+    for (const { body } of threads) expect(body).not.toContain('not tied to a file or line');
+    expect(threads[0].body).toContain('**This change may not be useful as it stands**\n\n**What goes wrong:** Nothing calls');
     expect(threads[0].body).toContain('**Checked in the code**\nhttps://github.com/owner/repo/blob/sha/src/a.ts#L2-L9');
-    expect(threads[1].body).toContain('**This PR mixes topics that belong in separate PRs**');
-    // The split shows its whole list with no fold, and neither warning claims a check it never needed.
-    expect(threads[1].body).toContain("separate PRs. This is a judgment of the PR as a whole, not a defect in its code.\n\n1. Date parsing: `src/a.ts`, `src/b.ts:1-3`\n2. Flag [rename]: `src/b.ts:20-24`, `src/c'd.ts`");
-    expect(threads[1].body).not.toContain('<details>');
+    // The split shows whole with no fold and none of a code defect's labels, and neither warning claims a check it never needed.
+    expect(threads[1].body).toContain([
+      '**This PR mixes topics that belong in separate PRs**',
+      '',
+      'Suggestion about the PR as a whole, not a defect in its code. The parts make sense on their own and are easier to review and revert separately.',
+      '',
+      '**PR 1: Date parsing**',
+      'Adds `parseDate` for ISO dates.',
+      '`src/`: `a.ts`, `b.ts:1-3`',
+      '',
+      '**PR 2: Flag [rename]**',
+      "`src/`: `b.ts:20-24`, `c'd.ts`",
+      'Needs PR 1 first.',
+      '',
+      'Split it as proposed, or reply with why the parts belong together.',
+      '',
+    ].join('\n'));
+    expect(threads[1].body).not.toMatch(/<details>|What goes wrong|\*\*Fix:\*\*/);
     for (const { body } of threads) expect(body).not.toMatch(/Manki could not confirm|not checked against the code/i);
     // A long list is shown whole too.
     const files = (part: string) => [1, 2, 3, 4].map(n => `src/components/${part}/subsystem_${n}/implementation.ts`);
     const [longSplit] = scopeWarnings({ split: [{ name: 'Date parsing', files: files('dates') }, { name: 'Flag rename', files: files('flags') }] });
     const longBody = formatFindingComment(longSplit, TEST_LINKS, 'detached');
-    expect(longBody).toContain(`1. Date parsing: ${files('dates').map(f => `\`${f}\``).join(', ')}\n2. Flag rename:`);
+    expect(longBody).toContain(`**PR 1: Date parsing**\n${files('dates').map(f => `\`${f.replace('implementation.ts', '')}\`: \`implementation.ts\``).join('\n')}\n\n**PR 2: Flag rename**`);
     expect(longBody).not.toContain('<details>');
   });
 

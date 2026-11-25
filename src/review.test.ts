@@ -3040,7 +3040,7 @@ describe('runReview', () => {
       ]);
       // A scope warning judges the PR as a whole and cites no code to check, so it gets no check status.
       expect(fromScope(blocking).map(f => f.checkStatus)).toEqual([undefined, undefined]);
-      expect(fromScope(blocking)[1].description).toContain('1. Date parsing: `src/x.ts`\n2. Flag rename: `src/y.ts`');
+      expect(fromScope(blocking)[1].description).toContain('**PR 1: Date parsing**\n`src/`: `x.ts`\n\n**PR 2: Flag rename**\n`src/`: `y.ts`');
 
       // A doubt the refuter does not confirm, or one no refuter can check, is dropped into the record. The split needs no refuter.
       const disproving = refutingClients('disproved');
