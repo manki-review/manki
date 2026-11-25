@@ -5,7 +5,7 @@ import { join } from 'path';
 
 import { parsePRDiff } from './diff';
 import * as mcpServer from './mcp-server';
-import { checkFixedElsewhere, checkReply, ElsewhereSources, fixedElsewhereText, ReplySources, statementFold, statementList, statementRecords, statementSummary } from './reply-check';
+import { checkFixedElsewhere, checkReply, ElsewhereSources, fixedElsewhereText, ReplySources, statementFold, statementList, statementRecords, statementSummary, ThreadState } from './reply-check';
 import { ParsedDiff, RelatedRepoTools } from './types';
 import { registerSecret } from './utils';
 
@@ -238,9 +238,8 @@ describe('checkReply', () => {
       ...sources, fixScope: { files: ['src/ledger.rs'], hasFile: true, guarded: false, unknown: 'not_descendant', rebased: { reviewable: true } },
     });
     const reworded = outcome === 'Fixed' && text.startsWith('Unverified.');
-    expect(rebased.unsettled).toBe(reworded || undefined);
-    if (reworded) expect(rebased.text(undefined)).toMatch(/^The exporter writes CSV\. This branch was rebased/);
-    else expect(rebased.text(undefined)).toBe(text);
+    expect(!!rebased.unsettled).toBe(reworded);
+    expect(rebased.text(undefined)).toBe(reworded ? 'The exporter writes CSV.' : text);
     // When what changed since the thread was posted could not be read, no line shows a fix.
     if (outcome === 'Fixed') {
       const unread = checkReply(JSON.stringify({ outcome, answer: 'The guard runs first.', proof: ['src/ledger.rs:3'] }), REPLY, { ...sources, changedSincePosted: undefined });
@@ -256,6 +255,23 @@ describe('checkReply', () => {
       expect(ranged('src/ledger.rs:1-8', DIFF)).toBe(`Unverified. The guard runs first. ${UNPROVEN}`);
       expect(ranged('src/ledger.rs:1-7', DIFF)).toBe('Fixed. The guard runs first.');
     }
+  });
+
+  it.each<[string, ThreadState, boolean, boolean, string]>([
+    ['an open thread a review reads', 'open', true, false, '**Not settled yet: the next review checks the fix.**'],
+    ['an open guarded thread a review reads', 'open', true, true, '**Not settled yet: the next review checks the fix.**'],
+    ['an open thread no review reads', 'open', false, false, '**Not settled yet: a maintainer should decide and resolve this thread.**'],
+    ['an open guarded thread no review reads', 'open', false, true, '**Not settled yet.**'],
+    ['a resolved thread that holds nothing', 'resolved', true, false, '**Not settled by this reply.**'],
+    ['a resolved guarded thread that holds nothing', 'resolved', true, true, '**Not settled by this reply.**'],
+    ['a thread that still holds or was not read', undefined, true, false, '**Not settled yet: a maintainer should decide.**'],
+    ['a guarded thread that still holds or was not read', undefined, true, true, '**Not settled yet.**'],
+  ])('leads an unproven fix after a rebase with what happens next: %s', (_name, thread, reviewable, guarded, state) => {
+    const checked = checkReply(JSON.stringify({ outcome: 'Fixed', answer: 'The guard runs first.' }), REPLY, {
+      ...sources, fixScope: { files: ['src/ledger.rs'], hasFile: true, guarded, unknown: 'not_descendant', rebased: { reviewable } },
+    });
+    expect(checked.unsettled?.(thread)).toBe(`${state} This branch was rebased or force pushed since the finding was posted, so a reply can't settle it.`);
+    expect(checked.text(thread)).toBe('The guard runs first.');
   });
 
   it('sets `fixedIn` only to a pull request of this repository that the developer\'s own words name', () => {

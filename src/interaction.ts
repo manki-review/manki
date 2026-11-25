@@ -735,7 +735,7 @@ export async function handleReviewCommentReply(
     // The model read PR content, so its text loses mentions, links, markers and fences before Manki adds its own.
     const replyIn = (state: ThreadState): string => {
       const shown = highlightCode(sanitizeMarkdown(checked.fixedIn === undefined ? checked.text(state) : fixedElsewhereText(checked, elsewhere, state)).trim(), codeTokens);
-      return checked.unsettled ? withoutOutcomeOpener(shown) : requireNewProof(shown, findingBody, filePath, relatedNames, state);
+      return checked.unsettled ? `${checked.unsettled(state)}\n\n${withoutOutcomeOpener(shown)}` : requireNewProof(shown, findingBody, filePath, relatedNames, state);
     };
     // How the thread ends up changes only what an answer that settles nothing asks for, so any state gives the outcome.
     const reply = replyIn(undefined);
