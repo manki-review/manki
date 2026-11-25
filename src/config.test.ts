@@ -198,7 +198,7 @@ describe('config', () => {
       ['notes that are no number', 'review:\n  notes: "3"\n', '`review.notes` must be a non-negative integer'],
       ['an unknown rules mode', 'review:\n  rules: error\n', '`review.rules` must be `auto`, `warn` or `block`'],
       ['a rules mode that is no string', 'review:\n  rules: true\n', '`review.rules` must be `auto`, `warn` or `block`'],
-      ...['0', '11', '4.5', '"4"', 'true'].map(value => [`a min_warning_trigger of ${value}`, `review:\n  min_warning_trigger: ${value}\n`, '`review.min_warning_trigger` must be a whole number from 1 to 10']),
+      ...['0', '11', '4.5', '"4"', 'true'].map(value => [`a min_warning_trigger of ${value}`, `review:\n  min_warning_trigger: ${value}\n`, '`review.min_warning_trigger` must be a whole number from 1 to 10. The default is 5, 1 turns the filter off, and a higher number filters more']),
       ['a scope_blocks that is no boolean', 'review:\n  scope_blocks: "yes"\n', '`review.scope_blocks` must be `true` or `false`'],
       ['examples as a plain list', 'review:\n  examples: [A panic.]\n', '`review.examples` must set `blocker`, `not_blocker` or both'],
       ['empty examples', 'review:\n  examples: {}\n', '`review.examples` must set `blocker`, `not_blocker` or both'],

@@ -468,7 +468,7 @@ function validateReviewBlock(review: unknown, errors: string[], warnings: string
   if ('notes' in review && !(Number.isInteger(review.notes) && (review.notes as number) >= 0)) errors.push('`review.notes` must be a non-negative integer');
   if ('rules' in review && !RULES_MODES.some(mode => mode === review.rules)) errors.push('`review.rules` must be `auto`, `warn` or `block`');
   if ('min_warning_trigger' in review && !(Number.isInteger(review.min_warning_trigger) && (review.min_warning_trigger as number) >= 1 && (review.min_warning_trigger as number) <= 10)) {
-    errors.push('`review.min_warning_trigger` must be a whole number from 1 to 10');
+    errors.push(`\`review.min_warning_trigger\` must be a whole number from 1 to 10. The default is ${DEFAULT_MIN_WARNING_TRIGGER}, 1 turns the filter off, and a higher number filters more`);
   }
   if ('scope_blocks' in review && typeof review.scope_blocks !== 'boolean') errors.push('`review.scope_blocks` must be `true` or `false`');
   if ('examples' in review) {
