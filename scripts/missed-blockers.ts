@@ -19,7 +19,7 @@ import { stringify as stringifyYaml } from 'yaml';
 import { fetchReviewThreadNodes } from '../src/github';
 import { replyOutcome } from '../src/interaction';
 import type { EarlierFinding } from '../src/local-review';
-import { FOUND_AGAIN_MARKER, isDisprovedThread, isSecurityThread, parseFindingData, parseFindingFromComment, recordedThreadGrades, titlesOverlap } from '../src/recap';
+import { FOUND_AGAIN_MARKER, isDisprovedThread, isSecurityThread, ledOutcome, parseFindingData, parseFindingFromComment, recordedThreadGrades, titlesOverlap } from '../src/recap';
 import { hasOwnMarker } from '../src/review-record';
 import { fixedMarker } from '../src/state';
 import { FindingFingerprintEntry, FindingSeverity, isGradeCell, isImportance, PRE_EXISTING_TAG, RoundContext, scoresOf } from '../src/types';
@@ -146,7 +146,7 @@ export function collectFollowUps(
       // A partial fix can have changed the thread's grade since the round that posted it.
       const recorded = state && grades.get(state.id)?.grade;
       const severity = recorded && DRAFT_SEVERITIES.has(recorded) ? recorded : entry.severity as FindingSeverity;
-      const open = !!thread && !replyOutcome(last.trim()) && !fixedEarlier;
+      const open = !!thread && !replyOutcome(ledOutcome(last) ?? last.trim()) && !fixedEarlier;
       const fixed = !open && (fixedEarlier || !!thread?.replies.some(c => before(c, timestamp) && fixedByRound.some(marker => hasOwnMarker(c.body!, marker, COMMENT_MARKER))));
       const meta = thread ? parseFindingFromComment(thread.root.body!) : {};
       followUp.findings.push({
