@@ -3998,6 +3998,15 @@ function refutationParts(finding: Finding, links: CodeLinks, known: readonly str
   ];
 }
 
+/** Returns the part that says why the other finder's vote made a warning of the blocker `finding`, and what clears that warning. */
+function votePart(finding: Finding): FoldPart[] {
+  if (!holdsApproval(finding) || !finding.gradePath?.some(step => step.by === 'other_finder' && step.from === 'blocker')) return [];
+  const label = 'Asked the other finder';
+  const answer = finding.otherFinderVote?.line ? 'could not point to the code where this does harm' : 'named no harm in realistic use';
+  const text = `A finder that had not reported this ${answer}, so it does not block. A reply by the PR author does not clear it. Only a fix or a maintainer does.`;
+  return [{ label, text, open: `**${label}:** ${text}` }];
+}
+
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 /**
@@ -4049,8 +4058,8 @@ function evidenceFiles(finding: Finding, links: CodeLinks): string[] {
 
 /**
  * Returns how `finding` was checked: the rule it breaks, the check on its own line, a code preview with a sentence for up to
- * `MAX_CHECK_PREVIEWS` other places and the rest as links, then each refuter's outcome and the base lines its
- * `baseNote` leaves out. A finding that cites nothing
+ * `MAX_CHECK_PREVIEWS` other places and the rest as links, then each refuter's outcome, the other finder's vote that
+ * lowered it and the base lines its `baseNote` leaves out. A finding that cites nothing
  * says so, unless a tool reported it or it is an earlier round's finding.
  */
 function checksSection(finding: Finding, links: CodeLinks, ownLine: string): FindingChecks {
@@ -4073,9 +4082,10 @@ function checksSection(finding: Finding, links: CodeLinks, ownLine: string): Fin
   const relatedLines = [...repoLines, ...packageLines];
   const status = finding.checkStatus && { status: CHECK_STATUSES[finding.checkStatus] };
   const rule = rulePart(finding);
+  const vote = votePart(finding);
   const otherBase = otherBaseLinesPart(finding, links);
   if (checks.length === 0 && refutations.length === 0 && !rule && relatedLines.length === 0) {
-    return { ...(finding.toolSource || finding.reviewers.length === 0 || finding.reviewers.includes(SCOPE_READER_NAME) ? { parts: otherBase, reads: [], outcomes: [] } : { ...NOT_CHECKED, parts: [...NOT_CHECKED.parts, ...otherBase] }), ...status };
+    return { ...(finding.toolSource || finding.reviewers.length === 0 || finding.reviewers.includes(SCOPE_READER_NAME) ? { parts: otherBase, reads: [], outcomes: [] } : { ...NOT_CHECKED, parts: [...NOT_CHECKED.parts, ...vote, ...otherBase] }), ...status };
   }
   const isOwn = (c: Check): boolean => !!c.at && c.at.file === finding.file && c.at.start <= finding.line && finding.line <= c.at.end;
   const ownChecks = checks.filter(isOwn);
@@ -4114,7 +4124,7 @@ function checksSection(finding: Finding, links: CodeLinks, ownLine: string): Fin
   const other = checks.length - read;
   const places = read + relatedLines.length;
   return {
-    parts: [...(rule ? [rule] : []), ...checked, ...refutations, ...otherBase],
+    parts: [...(rule ? [rule] : []), ...checked, ...refutations, ...vote, ...otherBase],
     reads: [places && `${places} ${places === 1 ? 'place' : 'places'} read`, other && plural(other, 'other check')].filter(r => typeof r === 'string'),
     outcomes: [
       rule && 'breaks a repository rule', finding.refutation && REFUTATION_SUMMARY[outcomeOf(finding.refutation)], finding.pairRefutation && `second check: ${REFUTATION_SUMMARY[outcomeOf(finding.pairRefutation)]}`,
