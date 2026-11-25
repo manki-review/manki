@@ -290,7 +290,7 @@ jest.mock('./state', () => ({
   retireStaleNotices: jest.requireActual('./state').retireStaleNotices,
   unresolveReviewThread: jest.requireActual('./state').unresolveReviewThread,
   findUnchangedVerdict: jest.requireActual('./state').findUnchangedVerdict,
-  fetchBotReviewThreads: jest.requireActual('./state').fetchBotReviewThreads,
+  fetchBotReviewThreads: jest.fn(jest.requireActual('./state').fetchBotReviewThreads),
   fixedMarker: jest.requireActual('./state').fixedMarker,
   withdrawBlockedApproval: jest.fn().mockResolvedValue(undefined),
 }));
@@ -376,8 +376,8 @@ function setContext(overrides: Record<string, unknown>): void {
 }
 
 /** The coordinator state of a PR. */
-function settingsState(paused = false, runModes: RunMode[] = [], queuedModes: RunMode[] = []): PrState {
-  return { settings: { paused }, runModes: new Set(runModes), queuedModes: new Set(queuedModes) };
+function settingsState(paused = false, runModes: RunMode[] = [], queuedModes: RunMode[] = [], queuedReplies: number[] = []): PrState {
+  return { settings: { paused }, runModes: new Set(runModes), queuedModes: new Set(queuedModes), queuedReplies: new Set(queuedReplies) };
 }
 
 describe('run', () => {
@@ -7050,6 +7050,29 @@ describe('runFullReview orchestration', () => {
     expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)![7]!.judge.threadEvaluations?.map(e => [e.threadId, e.grade])).toEqual([
       ['PRRT_abc', 'warning'], ['PRRT_def', 'warning'], ['PRRT_ghi', 'note'], ['PRRT_jkl', 'blocker'], ['PRRT_mno', undefined],
     ]);
+
+    // A thread whose reply still waits for its own answer hears there what remains. A command and someone without write
+    // access get no such answer, a reply that is not queued had its answer, and a thread that is open again hears it at once.
+    const waiting = (id: string, reply: number, body = 'Fixed in abc.') => ({ id, isResolved: false, isBlocking: false, findingTitle: 'x', personReplies: [{ id: reply, login: 'alice', body }] });
+    const threadsRead = jest.mocked(stateModule.fetchBotReviewThreads);
+    const readThreads = threadsRead.getMockImplementation()!;
+    threadsRead.mockResolvedValue([waiting('PRRT_abc', 11), waiting('PRRT_ghi', 21, '/manki dismiss'), waiting('PRRT_jkl', 31)]);
+    jest.mocked(interaction.parseCommand).mockImplementation(body => ({ type: body.startsWith('/manki') ? 'dismiss' : 'generic', args: '' }));
+    const repliedTo = async (queued: PrState) => {
+      jest.mocked(authModule.fetchPrState).mockResolvedValue(queued);
+      return (await run('abc123')).map(r => (r as { threadId: string }).threadId);
+    };
+    const EVERY = ['PRRT_abc', 'PRRT_ghi', 'PRRT_jkl'];
+    expect(await repliedTo(settingsState(false, [], [], [11, 21, 31]))).toEqual(['PRRT_ghi', 'PRRT_jkl']);
+    jest.mocked(ghUtils.hasWriteAccess).mockResolvedValueOnce(false);
+    expect(await repliedTo(settingsState(false, [], [], [11]))).toEqual(EVERY);
+    expect(await repliedTo(settingsState(false, [], [], [12]))).toEqual(EVERY);
+    expect(await repliedTo(settingsState())).toEqual(EVERY);
+    threadsRead.mockRejectedValue(new Error('GraphQL timeout'));
+    expect(await repliedTo(settingsState(false, [], [], [11]))).toEqual(EVERY);
+    jest.mocked(authModule.fetchPrState).mockResolvedValue(null);
+    jest.mocked(interaction.parseCommand).mockReturnValue({ type: 'generic', args: '' });
+    threadsRead.mockImplementation(readThreads);
 
     // A reply that fails loses only the note: the review still posts.
     const posts = jest.mocked(ghUtils.postReview).mock.calls.length;

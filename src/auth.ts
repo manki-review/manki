@@ -254,6 +254,12 @@ function modesOf(items: unknown, keep: (item: Record<string, unknown>) => boolea
   return modes;
 }
 
+/** Returns the review comments whose own run `queue` still holds. */
+function queuedRepliesOf(queue: unknown): Set<number> {
+  const items: Array<Record<string, unknown> | null> = Array.isArray(queue) ? queue : [];
+  return new Set(items.flatMap(item => (item?.kind === 'thread' && Number.isSafeInteger(item.comment_id) ? [item.comment_id as number] : [])));
+}
+
 /**
  * Reads the coordinator's state of PR `prNumber` from the token service, with the modes of run `runId`. A failed read
  * is tried once more, as `postWithRetry` does. Throws `TokenServiceError` when the answer stays unknown, since the
@@ -278,6 +284,7 @@ export async function fetchPrState(owner: string, repo: string, prNumber: number
     ...(typeof reviewed === 'string' && /^[0-9a-f]+$/.test(reviewed) && { lastReviewed: reviewed }),
     runModes: modesOf(data?.active, item => item.run_id === runId),
     queuedModes: modesOf(data?.queue, () => true),
+    queuedReplies: queuedRepliesOf(data?.queue),
   };
 }
 

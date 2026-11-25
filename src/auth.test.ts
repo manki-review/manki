@@ -138,16 +138,19 @@ describe('fetchPrState', () => {
     jest.restoreAllMocks();
   });
 
-  it('reads the settings, the last reviewed commit, the modes of this run and the modes still queued', async () => {
+  it('reads the settings, the last reviewed commit, the modes of this run, and the modes and thread replies still queued', async () => {
     mockFetch(async () => Response.json({
       active: [{ run_id: 7, modes: ['again', 'bogus', 'full'] }, { run_id: 8, modes: ['deeper'] }],
-      queue: [{ modes: ['force', 'again'] }, { modes: 'draft' }, null],
+      queue: [
+        { modes: ['force', 'again'] }, { modes: 'draft' }, null,
+        { kind: 'thread', comment_id: 41, modes: [] }, { kind: 'thread', comment_id: null, modes: [] }, { kind: 'thread', comment_id: '42', modes: [] }, { kind: 'command', comment_id: 43, modes: [] },
+      ],
       settings: { paused: true, auto: false },
       last_reviewed: { commit: 'a'.repeat(40), run_id: 6, at: '2026-11-07T00:00:00.000Z' },
     }));
 
     expect(await fetchPrState(OWNER, REPO, 12, 7)).toEqual({
-      settings: { paused: true, auto: false }, lastReviewed: 'a'.repeat(40), runModes: new Set(['again']), queuedModes: new Set(['again']),
+      settings: { paused: true, auto: false }, lastReviewed: 'a'.repeat(40), runModes: new Set(['again']), queuedModes: new Set(['again']), queuedReplies: new Set([41]),
     });
     const [url, init] = (global.fetch as jest.Mock).mock.calls[0];
     expect(url).toBe('https://manki-api.dustinface.me/state');
@@ -159,7 +162,7 @@ describe('fetchPrState', () => {
     mockGetInput.mockImplementation((name: string) => (name === 'manki_token_url' ? 'https://custom.example.com/api/token' : ''));
     mockFetch(async () => Response.json({ active: [], queue: [], settings: { paused: 'yes', auto: 'yes' }, last_reviewed: { commit: 'abc` <b>' } }));
 
-    expect(await fetchPrState(OWNER, REPO, 12, 7)).toEqual({ settings: { paused: false }, runModes: new Set(), queuedModes: new Set() });
+    expect(await fetchPrState(OWNER, REPO, 12, 7)).toEqual({ settings: { paused: false }, runModes: new Set(), queuedModes: new Set(), queuedReplies: new Set() });
     expect((global.fetch as jest.Mock).mock.calls[0][0]).toBe('https://custom.example.com/api/state');
   });
 
@@ -220,7 +223,7 @@ describe('fetchPrState', () => {
     jest.mocked(core.warning).mockClear();
     global.fetch = jest.fn().mockImplementationOnce(firstReply).mockImplementationOnce(async () => stateReply()) as jest.Mock;
 
-    expect(await pastRetryWait(() => fetchPrState(OWNER, REPO, 12, 7), 12000)).toEqual({ settings: { paused: true }, runModes: new Set(), queuedModes: new Set() });
+    expect(await pastRetryWait(() => fetchPrState(OWNER, REPO, 12, 7), 12000)).toEqual({ settings: { paused: true }, runModes: new Set(), queuedModes: new Set(), queuedReplies: new Set() });
     expect(global.fetch).toHaveBeenCalledTimes(2);
     expect(core.info).toHaveBeenCalledWith(expect.stringContaining('failed on `state`'));
     expect(core.warning).not.toHaveBeenCalled();
