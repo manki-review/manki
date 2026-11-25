@@ -475,14 +475,20 @@ async function loadSettings(owner: string, repo: string, prNumber: number): Prom
   return await fetchPrState(owner, repo, prNumber, github.context.runId) ?? NO_SETTINGS;
 }
 
-/** The boxes that apply to a PR: Pause, Review again and Deeper review always, Review this draft on a draft, and `extra`. */
-function settingsBoxes(draft: boolean, extra: SettingsBox[] = []): Set<SettingsBox> {
-  return new Set<SettingsBox>(['pause', 'again', 'deeper', ...(draft ? ['draft' as const] : []), ...extra]);
+/**
+ * The boxes that apply to a PR: Pause, Review again and Deeper review always, Review this draft on a draft, Review every
+ * push on a draft whose state offers it (`offersAuto`), and `extra`.
+ */
+function settingsBoxes(draft: boolean, offersAuto: boolean, extra: SettingsBox[] = []): Set<SettingsBox> {
+  return new Set<SettingsBox>(['pause', 'again', 'deeper', ...(draft ? ['draft' as const] : []), ...(draft && offersAuto ? ['auto' as const] : []), ...extra]);
 }
 
-/** The boxes the coordinator state ticks: Pause while paused, and each box whose run is still queued. */
-function tickedBoxes(settings: PrState): Set<SettingsBox> {
-  return new Set<SettingsBox>([...(settings.settings.paused ? ['pause' as const] : []), ...settings.queuedModes]);
+/** Whether the coordinator offers the Review every push box on the PR. */
+const offersAuto = ({ settings }: PrState): boolean => settings.auto !== undefined;
+
+/** The boxes the coordinator state ticks: Pause while paused, Review every push while set, and each box whose run is still queued. */
+function tickedBoxes({ settings, queuedModes }: PrState): Set<SettingsBox> {
+  return new Set<SettingsBox>([...(settings.paused ? ['pause' as const] : []), ...(settings.auto ? ['auto' as const] : []), ...queuedModes]);
 }
 
 /**
@@ -502,7 +508,7 @@ async function showRunStatus(
   { head, draft, status, text, lastReviewed }: { head: string; draft: boolean; status: string; text: string; lastReviewed?: string },
 ): Promise<void> {
   await showSettings(octokit, bot, owner, repo, prNumber, {
-    ...(lastReviewed && { lastReviewed }), head, status, boxes: settingsBoxes(draft), ticked: tickedBoxes(settings),
+    ...(lastReviewed && { lastReviewed }), head, status, boxes: settingsBoxes(draft, offersAuto(settings)), ticked: tickedBoxes(settings),
   }, text);
 }
 
@@ -911,7 +917,7 @@ interface RunProgress {
    * What the settings block of the progress comment carries over all its edits, and the comment that had the block before.
    * Set once the progress comment is posted.
    */
-  settings?: { lastReviewed?: string; draft: boolean; ticked: ReadonlySet<SettingsBox>; previousId?: number };
+  settings?: { lastReviewed?: string; draft: boolean; offersAuto: boolean; ticked: ReadonlySet<SettingsBox>; previousId?: number };
 }
 
 /** The settings block of the run's progress comment with `status`, or `undefined` without one. `reviewed` marks the head reviewed. */
@@ -921,7 +927,7 @@ function progressSettings(
   const settings = progress.settings;
   if (!settings) return undefined;
   const lastReviewed = reviewed ? target.commitSha : settings.lastReviewed;
-  return { ...(lastReviewed && { lastReviewed }), head: target.commitSha, status, boxes: settingsBoxes(settings.draft, boxes), ticked: settings.ticked };
+  return { ...(lastReviewed && { lastReviewed }), head: target.commitSha, status, boxes: settingsBoxes(settings.draft, settings.offersAuto, boxes), ticked: settings.ticked };
 }
 
 const runningSettings = (target: RunTarget, progress: RunProgress): SettingsView | undefined =>
@@ -947,7 +953,7 @@ async function postRunProgress(
   const failed = latest && isFailedProgress(latest.body) && commitSha.startsWith(latest.settings.head) ? latest : undefined;
   progress.settings = {
     // The block keeps the commit it named when the coordinator holds none, as after its storage was cleared.
-    lastReviewed: settings.lastReviewed ?? latest?.settings.lastReviewed, draft, ticked: tickedBoxes(settings),
+    lastReviewed: settings.lastReviewed ?? latest?.settings.lastReviewed, draft, offersAuto: offersAuto(settings), ticked: tickedBoxes(settings),
     ...(latest && { previousId: latest.id }),
   };
   const commentId = await postProgressComment(octokit, owner, repo, prNumber, undefined, runningSettings(target, progress));
