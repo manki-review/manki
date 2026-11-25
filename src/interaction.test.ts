@@ -1999,7 +1999,8 @@ describe('handleReviewCommentReply', () => {
     { name: 'a head that moved before the read', heads: ['b', 'b'], read: ['b'], posted: 'Fixed. First look.' },
     { name: 'a head that moves before the post', heads: ['a', 'b', 'b', 'b'], read: ['a', 'b'], posted: 'Fixed. Second look.' },
     { name: 'a head that moves before every post', heads: ['a', 'b', 'b', 'c'], read: ['a', 'b'], posted: 'I did not check this reply, since the pull request got new commits each time I read it.' },
-    { name: 'a second read that fails', heads: ['a', 'b', 'b'], read: ['a', 'b'], posted: 'Manki could not answer', fails: true },
+    { name: 'a second read that fails', heads: ['a', 'b', 'b'], read: ['a', 'b'], posted: 'Manki could not answer', fails: 'model' },
+    { name: 'a second read that fails before it finds the thread', heads: ['a', 'b'], read: ['a'], posted: 'Manki could not answer', fails: 'lookup' },
     { name: 'a push the PR does not show at the start', heads: ['a+b'], read: [], posted: 'I did not check this reply. The branch is at `bbbbbbb`, and GitHub still shows this pull request at `aaaaaaa`. Reply again once the pull request shows the push.' },
     { name: 'a push the PR does not show before the post', heads: ['a', 'a+b'], read: ['a'], posted: 'I did not check this reply. The branch is at `bbbbbbb`' },
   ])('reads a reply on the newest commit of the branch: $name', async ({ heads, read, posted, fails }) => {
@@ -2010,7 +2011,7 @@ describe('handleReviewCommentReply', () => {
     jest.mocked(client.sendMessage)
       .mockResolvedValueOnce({ content: structured('Fixed. First look.') } as never)
       .mockImplementationOnce(async () => {
-        if (fails) throw new Error('timed out');
+        if (fails === 'model') throw new Error('timed out');
         return { content: structured('Fixed. Second look.') } as never;
       });
     const seen: (string | undefined)[] = [];
@@ -2029,6 +2030,10 @@ describe('handleReviewCommentReply', () => {
       });
     }
 
+    if (fails === 'lookup') {
+      const root = await octokit.rest.pulls.getReviewComment();
+      octokit.rest.pulls.getReviewComment.mockReset().mockResolvedValueOnce(root).mockRejectedValue(new Error('timed out'));
+    }
     const answered = handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, loadWorkspace);
     await (fails ? expect(answered).rejects.toThrow('timed out') : answered);
 
