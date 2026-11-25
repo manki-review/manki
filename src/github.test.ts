@@ -2,15 +2,16 @@ import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 import { gunzipSync } from 'zlib';
 
-import { readChangesSince, relatedCommits, ApprovalHeld, earlierPlaces, plainCitedFiles, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, autoApproveHeadMarker, reviewedCommit, updateProgressDashboard, startLiveEdits, LIVE_EDIT_MS, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchChangesSince, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, fetchApprovalHold, SupersededError, isFailedProgress, markFailedProgressSuperseded, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError, githubRepoFiles, openRepoFiles, UnreadFileError , awaitPushedHead, HeadedPull } from './github';
+import { formatFindingBlock, readChangesSince, relatedCommits, ApprovalHeld, earlierPlaces, plainCitedFiles, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, autoApproveHeadMarker, reviewedCommit, updateProgressDashboard, startLiveEdits, LIVE_EDIT_MS, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchChangesSince, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, fetchApprovalHold, SupersededError, isFailedProgress, markFailedProgressSuperseded, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError, githubRepoFiles, openRepoFiles, UnreadFileError , awaitPushedHead, HeadedPull } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
-import { DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases, RoundFix, Refutation, SideCheckState, OriginAnswer } from './types';
+import { DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases, RoundFix, Refutation, SideCheckState, OriginAnswer, OtherFinderVote } from './types';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { contentAnswer, makeFindingFingerprintEntry, namingCommit, paginateSinglePage, TEST_BOT, TEST_LINKS, testSha } from './test-utils';
 import { withMarkers } from './utils';
 import { listedFilesDiff, parsePRDiff } from './diff';
 import { extractReviewRecords, formatApprovalRecord, hasOwnMarker } from './review-record';
 import { withoutFences } from './issue-box';
+import { withVote } from './other-finder';
 import { scopeWarnings } from './scope';
 import { findingPlace, isSecurityThread, parseFindingData, parseFindingFromComment, threadMarkerSlug, threadSeverity, type PreviousFinding } from './recap';
 import { currentFindingLine, findPriorThreadId } from './finding-fingerprint';
@@ -804,6 +805,22 @@ describe('formatFindingComment', () => {
     expect(render({ ...loweredFinding, refutation: { ...loweredFinding.refutation!, model: undefined } })).toContain(`**Doubt found**\n${alone}`);
     // When only the second check answered, it says that the finding does not block.
     expect(render({ ...loweredFinding, refutation: undefined })).toContain('**Second check, on another model:** Manki found a reason this may not happen, so this does not block. Please check it yourself. Both paths close through one guard.');
+    // A blocker the other finder's vote lowered says why it does not block and what clears it, next to its refuter's
+    // outcome, as the only line of a fold and on a finding that cites nothing. A vote that backed it adds nothing, and
+    // neither does one on a warning that no longer holds.
+    const vote: OtherFinderVote = { finder: 'b', harm: 'none', situation: 'none', declined: true };
+    const clears = 'so it does not block. A reply by the PR author does not clear it. Only a fix or a maintainer does.';
+    const declined = `A finder that had not reported this named no harm in realistic use, ${clears}`;
+    const backedBlocker: Finding = { ...baseFinding, evidence: { checks: ['src/main.ts:42 reads `value`'], proof: [] }, refutation: { ...splitFinding.refutation!, defect: 'confirmed' } };
+    const votedDown = withVote(backedBlocker, vote);
+    expect(votedDown).toMatchObject({ severity: 'warning', tags: ['disproved-blocker'] });
+    expect(render(votedDown)).toContain(`**Double-checked**\nManki tried to disprove this by reading the code and could not. No caller checks \`value\` first. ${seen42}\n\n**Asked the other finder**\n${declined}\n\n</details>`);
+    expect(render(withVote({ ...baseFinding, evidence: undefined }, vote))).toContain(`Nothing was cited to back it.\n\n**Asked the other finder**\n${declined}\n`);
+    expect(render(withVote(backedBlocker, { ...vote, line: 'src/main.ts:9', quote: 'gone()' }))).toContain(`A finder that had not reported this could not point to the code where this does harm, ${clears}`);
+    // One listed in the review body may have no thread, so it says only why it does not block.
+    expect(formatFindingBlock(votedDown, links)).toContain(`**Asked the other finder**\nA finder that had not reported this named no harm in realistic use, so it does not block.\n\n</details>`);
+    expect(formatFindingComment(votedDown, links, 'detached')).toContain(declined);
+    for (const silent of [withVote(backedBlocker, { ...vote, declined: false }), { ...votedDown, tags: ['pre-existing'] }, loweredFinding]) expect(render(silent)).not.toContain('other finder');
     // One that breaks a confirmed rule reads the same on both checks, and neither says the rule keeps it.
     const loweredRule = render({ ...loweredFinding, rule: { file: 'AGENTS.md', quote: 'Every change needs a test.', verdict: 'confirmed' } });
     expect(loweredRule).toContain('so this does not block. Please check it yourself. A `sync.Once` guards the close.');

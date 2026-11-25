@@ -2049,7 +2049,7 @@ function formatFixDiff(finding: Finding, files: ReadonlyMap<string, readonly str
 function formatFindingBlock(finding: Finding, links: CodeLinks, offerIssue = false, noThread = false): string {
   const lines = [formatFindingHeader(finding, noThread), `**${sanitizeMarkdown(finding.title)}**`];
   if (finding.file) lines.push(linked(inlineCode(findingLocation(finding)), links.linkTo(finding.file, finding.line)));
-  const fold = formatFold(bodyFixPart(finding, links.files), '', checksSection(finding, links, 'flagged'));
+  const fold = formatFold(bodyFixPart(finding, links.files), '', checksSection(finding, links));
   const block = [...lines, ...formatFindingDescription(finding, links), ...(fold ? [fold] : [])].join('\n');
   return offerIssue ? `${block}\n\n${issueBoxFor(finding)}` : block;
 }
@@ -2106,7 +2106,7 @@ function formatFindingFold(finding: Finding, links: CodeLinks, offerIssue = fals
   const preview = !compact && !formatFixDiff(finding, files) && finding.file && finding.line > 0 && (last === undefined || finding.line <= last)
     ? [linkTo(finding.file, Math.max(1, finding.line - PREVIEW_CONTEXT), Math.min(last ?? finding.line, finding.line + PREVIEW_CONTEXT))].flatMap(url => url ?? [])
     : [];
-  const checks = compact ? undefined : checksSection(finding, links, 'flagged');
+  const checks = compact ? undefined : checksSection(finding, links);
   const fix = bodyFixPart(finding, files);
   const parts = [...(fix ? [labelledPart(fix)] : []), ...(checks?.status ? [`**How this was checked:** ${checks.status}`] : []), ...(checks?.parts ?? []).map(labelledPart)];
   const fold = `<details>\n${summary}\n\n${[...formatFindingDescription(finding, links), ...preview, ...parts].join('\n\n')}\n\n</details>`;
@@ -3998,6 +3998,15 @@ function refutationParts(finding: Finding, links: CodeLinks, known: readonly str
   ];
 }
 
+/** Returns the part that says why the other finder's vote made a warning of the blocker `finding` and, `inThread`, what clears that thread. */
+function votePart(finding: Finding, inThread: boolean): FoldPart[] {
+  if (!holdsApproval(finding) || !finding.gradePath?.some(step => step.by === 'other_finder' && step.from === 'blocker')) return [];
+  const label = 'Asked the other finder';
+  const answer = finding.otherFinderVote?.line ? 'could not point to the code where this does harm' : 'named no harm in realistic use';
+  const text = `A finder that had not reported this ${answer}, so it does not block.${inThread ? ' A reply by the PR author does not clear it. Only a fix or a maintainer does.' : ''}`;
+  return [{ label, text, open: `**${label}:** ${text}` }];
+}
+
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 /**
@@ -4049,11 +4058,13 @@ function evidenceFiles(finding: Finding, links: CodeLinks): string[] {
 
 /**
  * Returns how `finding` was checked: the rule it breaks, the check on its own line, a code preview with a sentence for up to
- * `MAX_CHECK_PREVIEWS` other places and the rest as links, then each refuter's outcome and the base lines its
- * `baseNote` leaves out. A finding that cites nothing
- * says so, unless a tool reported it or it is an earlier round's finding.
+ * `MAX_CHECK_PREVIEWS` other places and the rest as links, then each refuter's outcome, the other finder's vote that
+ * lowered it and the base lines its `baseNote` leaves out. A finding that cites nothing
+ * says so, unless a tool reported it or it is an earlier round's finding. `place` says where the finding's thread sits, and
+ * is unset for a finding listed in the review body.
  */
-function checksSection(finding: Finding, links: CodeLinks, ownLine: string): FindingChecks {
+function checksSection(finding: Finding, links: CodeLinks, place?: 'line' | 'file' | 'detached'): FindingChecks {
+  const ownLine = place === 'line' ? 'commented' : 'flagged';
   const { linkTo, files, related } = links;
   const known = knownFiles(finding, links);
   const checks = findingChecks(finding, known);
@@ -4073,9 +4084,10 @@ function checksSection(finding: Finding, links: CodeLinks, ownLine: string): Fin
   const relatedLines = [...repoLines, ...packageLines];
   const status = finding.checkStatus && { status: CHECK_STATUSES[finding.checkStatus] };
   const rule = rulePart(finding);
+  const vote = votePart(finding, place !== undefined);
   const otherBase = otherBaseLinesPart(finding, links);
   if (checks.length === 0 && refutations.length === 0 && !rule && relatedLines.length === 0) {
-    return { ...(finding.toolSource || finding.reviewers.length === 0 || finding.reviewers.includes(SCOPE_READER_NAME) ? { parts: otherBase, reads: [], outcomes: [] } : { ...NOT_CHECKED, parts: [...NOT_CHECKED.parts, ...otherBase] }), ...status };
+    return { ...(finding.toolSource || finding.reviewers.length === 0 || finding.reviewers.includes(SCOPE_READER_NAME) ? { parts: otherBase, reads: [], outcomes: [] } : { ...NOT_CHECKED, parts: [...NOT_CHECKED.parts, ...vote, ...otherBase] }), ...status };
   }
   const isOwn = (c: Check): boolean => !!c.at && c.at.file === finding.file && c.at.start <= finding.line && finding.line <= c.at.end;
   const ownChecks = checks.filter(isOwn);
@@ -4114,7 +4126,7 @@ function checksSection(finding: Finding, links: CodeLinks, ownLine: string): Fin
   const other = checks.length - read;
   const places = read + relatedLines.length;
   return {
-    parts: [...(rule ? [rule] : []), ...checked, ...refutations, ...otherBase],
+    parts: [...(rule ? [rule] : []), ...checked, ...refutations, ...vote, ...otherBase],
     reads: [places && `${places} ${places === 1 ? 'place' : 'places'} read`, other && plural(other, 'other check')].filter(r => typeof r === 'string'),
     outcomes: [
       rule && 'breaks a repository rule', finding.refutation && REFUTATION_SUMMARY[outcomeOf(finding.refutation)], finding.pairRefutation && `second check: ${REFUTATION_SUMMARY[outcomeOf(finding.pairRefutation)]}`,
@@ -4203,7 +4215,7 @@ function formatFindingComment(finding: Finding, links: CodeLinks, place: 'line' 
   const fixParts = finding.suggestedFix?.trim() ? splitFix(finding.suggestedFix, finding.file) : [];
   const suggestion = place === 'line' ? suggestionBlock(fixParts) : undefined;
   const fix = fixPart(finding, suggestion || fixParts.length === 0 ? undefined : renderFixParts(fixParts, finding.file));
-  const checks = checksSection(finding, links, place === 'line' ? 'commented' : 'flagged');
+  const checks = checksSection(finding, links, place);
   const label = labelDescription(finding, '');
   const open = `${suggestion ? `\n\n${suggestion}` : ''}\n\n${formatFold(fix, '', checks)}`;
   // The line note takes no room, so a thread shows the same description with it as without it.
