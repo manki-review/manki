@@ -2296,7 +2296,9 @@ export async function runReview(
   const guard = (f: Finding): Finding => withoutUnfitThreads(f, openThreadIndex, previousFindings, priorThreads, priorFindingsFlat);
   const minScore = config.review?.min_warning_score ?? DEFAULT_MIN_WARNING_SCORE;
   // Before any finding is linked to an earlier one, so a warning that restates a note the score lowered joins that note.
-  finalFindings = finalFindings.map(f => withEarlierImportance(f, priorFindingsFlat, minScore, config.review?.rules));
+  // Without the threads nothing is matched to an earlier round, so no score is kept or given.
+  const matchable = openThreads !== null || sortedPriorRounds.length === 0;
+  if (matchable) finalFindings = finalFindings.map(f => withEarlierImportance(f, priorFindingsFlat, minScore, config.review?.rules));
   finalFindings = finalFindings.map(guard);
   const fixedElsewhere = refutation
     ? await confirmPushedFixes(refutation.client, refutation.pair, fixesElsewhere(judgeThreadEvaluations, openThreadIndex, pushChangedFiles).filter(({ thread }) =>
@@ -2336,8 +2338,7 @@ export async function runReview(
   finalFindings = relisting.findings;
   const unposted = [...proven.unposted, ...relisting.restated];
   // After the steps that hide a warning, so only a posted one is rated, and before the outcome, which reads the grades.
-  // Without the threads, a warning that restates an open one looks new, so none is rated.
-  if (workspace && minScore > 1 && (openThreads !== null || sortedPriorRounds.length === 0)) {
+  if (workspace && minScore > 1 && matchable) {
     const rated = await rateWarnings(finalFindings.filter(f => getsRating(f, priorFindingsFlat, config.review?.rules)), {
       workspace, diff: diffWithLockfiles, client: lateFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'rating', undefined, false),
     });
