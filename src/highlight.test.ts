@@ -40,6 +40,24 @@ describe('highlightCode', () => {
     expect(highlightCode('It calls octokit.rest.pulls.get twice.', tokens)).toBe('It calls `octokit.rest.pulls.get` twice.');
   });
 
+  it('wraps a path or a call as one piece when a part of it is a token', () => {
+    for (const [text, wrapped] of [
+      ['It runs DashCoreNode::launch, then stops.', 'It runs `DashCoreNode::launch`, then stops.'],
+      ['It runs crate::node::DashCoreNode::launch() twice.', 'It runs `crate::node::DashCoreNode::launch()` twice.'],
+      ['See src/node.rs::launch for it.', 'See `src/node.rs::launch` for it.'],
+      ['It runs fetchNode() and client.fetchNode().', 'It runs `fetchNode()` and `client.fetchNode()`.'],
+      ['The DashCoreNode::launch-related code.', 'The `DashCoreNode::launch`-related code.'],
+    ]) expect(highlightCode(text, new Set(['DashCoreNode', 'src/node.rs', 'fetchNode']))).toBe(wrapped);
+    expect(highlightCode('<summary>DashCoreNode::launch fails</summary>', new Set(['DashCoreNode']))).toBe('<summary><code>DashCoreNode::launch</code> fails</summary>');
+    // An unknown path, a dotted name that is no call, and everything protected stay as they are.
+    for (const text of [
+      'It runs std::sync::launch() and other.call().', 'It ends.fetchNode starts.',
+      'Read `DashCoreNode::launch` and [DashCoreNode::launch](https://example.com/DashCoreNode::launch).', '```\nDashCoreNode::launch()\n```\n',
+    ]) expect(highlightCode(text, new Set(['DashCoreNode', 'fetchNode']))).toBe(text);
+    // Only empty parentheses belong to the call.
+    expect(highlightCode('It runs fetchNode(id).', new Set(['fetchNode']))).toBe('It runs `fetchNode`(id).');
+  });
+
   it('leaves plain words, partial matches and unknown identifiers alone', () => {
     const text = 'The data owner reviews createReviewLater and pulls.get in otherFile.ts.';
     expect(highlightCode(text, tokens)).toBe(text);

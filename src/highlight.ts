@@ -2,6 +2,8 @@ import { ParsedDiff } from './types';
 
 // An identifier starts at a word boundary, so the `x0ff_ff` in a number such as `0x0ff_ff` is not one.
 const TOKEN_RE = /(?<![\w$])[A-Za-z_$][\w$]*(?:[./][A-Za-z_$][\w$-]*)*/g;
+// In text, a path with `::` and the empty parentheses of a call belong to their identifier.
+const PATH_RE = /(?<![\w$])[A-Za-z_$][\w$]*(?:[./][A-Za-z_$][\w$-]*|::[A-Za-z_$][\w$]*)*(?:\(\))?/g;
 // Text that already renders as code or must not change: fences, inline code, HTML comments and tags, links and URLs.
 // A `<summary>` comes first, since GitHub renders its content as HTML only and it gets `<code>` instead of backticks.
 // As in Markdown, inline code closes only on a run of as many backticks, within its paragraph, and an escaped backtick
@@ -43,11 +45,22 @@ export function codeTokensFromDiff(diff: ParsedDiff): Set<string> {
   return tokens;
 }
 
-/** Wraps every whole token of `text` found in `tokens` in backticks, outside existing code, links and HTML. */
+/**
+ * Whether `path` is code to wrap: a token itself, or a `::` path or a dotted call with a token among its parts. A dotted
+ * name that is no call can be two sentences without a space, so it has to be a token itself.
+ */
+function isCodePath(path: string, tokens: ReadonlySet<string>): boolean {
+  const name = path.replace(/\(\)$/, '');
+  if (tokens.has(name)) return true;
+  if (!name.includes('::') && (name === path || name.includes('/'))) return false;
+  return [...name.split('::'), ...name.split(/::|\./)].some(part => tokens.has(part));
+}
+
+/** Wraps in backticks every whole token of `text` found in `tokens`, and every path `isCodePath` accepts, outside existing code, links and HTML. */
 export function highlightCode(text: string, tokens: ReadonlySet<string>): string {
   if (tokens.size === 0) return text;
-  const markdown = (plain: string): string => plain.replace(TOKEN_RE, token => (tokens.has(token) ? `\`${token}\`` : token));
-  const html = (plain: string): string => plain.replace(TOKEN_RE, token => (tokens.has(token) ? `<code>${token}</code>` : token));
+  const markdown = (plain: string): string => plain.replace(PATH_RE, path => (isCodePath(path, tokens) ? `\`${path}\`` : path));
+  const html = (plain: string): string => plain.replace(PATH_RE, path => (isCodePath(path, tokens) ? `<code>${path}</code>` : path));
   return wrapOutside(text, PROTECTED_RE, markdown, kept => (kept.startsWith('<summary>') ? wrapOutside(kept, SUMMARY_PROTECTED_RE, html, tag => tag) : kept));
 }
 
