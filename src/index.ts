@@ -86,6 +86,7 @@ import {
   hasBotReviewOnCommit,
   findBotReviewOnCommit,
   fetchApprovalHold,
+  alsoHeldLine,
   fetchMergeBase,
   REVIEW_STATE_VERDICTS,
   fetchPRComments,
@@ -1085,14 +1086,24 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
       assertWritesAllowed();
       try {
         const approved = standing.verdict === 'APPROVE';
-        const hold = approved && await holdApproval(octokit, bot, owner, repo, prNumber, commitSha, draft, config.auto_approve);
-        const held = hold && hold.reason;
+        const prHold = approved ? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) : undefined;
         // A warning thread can hold an approval given before warnings held one, or one given before the thread was reopened.
-        // So can a blocking thread a person reopened after the approval.
-        if (approved && !held && (await fetchHeldWarnings(octokit, bot, owner, repo, prNumber, prAuthorLogin, config.author_clear_role, undefined, true)).length > 0) {
+        // So can a blocking thread a person reopened after the approval. Beside a draft or a conflict the threads are only named.
+        let open: ReviewThread[] = [];
+        try {
+          if (approved) open = await fetchHeldWarnings(octokit, bot, owner, repo, prNumber, prAuthorLogin, config.author_clear_role, undefined, true);
+        } catch (error) {
+          if (!prHold) throw error;
+          core.warning(`Could not read the threads of ${shortSha}, so its ${prHold.reason} alone is named: ${error instanceof Error ? error.message : error}`);
+        }
+        if (approved && !prHold && open.length > 0) {
           core.info(`An open thread holds the approval of ${shortSha}, reviewing in full`);
           return false;
         }
+        // As in the review, warnings come before a draft or a conflict, which follows them in one sentence.
+        const warningsFirst = !!prHold && open.length > 0 && open.every(t => t.isWarning);
+        const hold = prHold && !warningsFirst && await holdApproval(octokit, bot, owner, repo, prNumber, commitSha, draft, config.auto_approve);
+        const held = warningsFirst ? 'warnings' as const : hold && hold.reason;
         const summary = `No change to this PR since the reviewed commit \`${shortSha}\`. The previous verdict stands.`;
         // A push can dismiss approvals, so the approval is posted again on the new head.
         if (approved && !held) {
@@ -1107,7 +1118,8 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
         await showRunStatus(octokit, bot, owner, repo, prNumber, settings, {
           head: commitSha, draft: !!draft, status: 'up to date', text: summary, lastReviewed: standing.commitSha,
         });
-        await reportCheck(octokit, owner, repo, commitSha, outcomeReport(STANDING_OUTCOMES[standing.verdict], summary, held));
+        const also = warningsFirst ? `\n\n${alsoHeldLine(prHold, config.auto_approve)}` : '';
+        await reportCheck(octokit, owner, repo, commitSha, outcomeReport(STANDING_OUTCOMES[standing.verdict], `${summary}${also}`, held));
         return true;
       } catch (error) {
         core.warning(`Could not post the previous approval again, reviewing in full: ${error instanceof Error ? error.message : error}`);
