@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { isMap, isScalar, parseDocument } from 'yaml';
 
-import { BenchCase, BenchReport, buildReport, candidateFindings, caseSet, formatBenchSummary, formatBlockerRoutes, formatGate, formatImportance, formatUnmatched, formatVotes, formatWarningSources, gateReports, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, MatcherSpend, mergeReports, parseBenchArgs, parseCase, readReport, rescoreReport, resolveVariants, runBench, runBenchCommand, scoreRun } from './bench';
+import { BenchCase, BenchReport, buildReport, candidateFindings, caseSet, formatBenchSummary, formatBlockerRoutes, formatGate, formatImportance, formatUnmatched, formatVotes, formatWarningSources, gateReports, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, MatcherSpend, mergeReports, parseBenchArgs, parseCase, readReport, rescoreReport, resolveVariants, runBench, storedWarnings, runBenchCommand, scoreRun } from './bench';
 import { loadConfigWithOverrides } from './local-review';
 import type { LocalReview, LocalReviewInput } from './local-review';
 import { printableError } from './cli';
@@ -1225,6 +1225,73 @@ describe('runBench and buildReport', () => {
     expect(mergeReports([report], [benchCase], {}).findingsFrom).toEqual(findingsFrom);
     expect(formatBenchSummary({ ...report, findingsFrom: { ...findingsFrom, live: ['refuter', 'scope reader'] } })).toContain('did not run. Stored answers stood in for the calls after the finders, except these live ones: refuter, scope reader.\n');
     expect(() => gateReports([stored], [report])).toThrow('The report started at 2026-11-21T00:00:00.000Z kept the finder output of an earlier run, so it decides no release');
+  }, 30_000);
+
+  it('rates the stored posted warnings by index, and keeps and prints no text of them or of an error', async () => {
+    const SECRET = 'HOLDOUT-TEXT';
+    mkdirSync(join(checkout, 'src'), { recursive: true });
+    writeFileSync(join(checkout, 'src/read.rs'), `let ${SECRET} = 1;\n`);
+    git('add', '.');
+    git('commit', '-q', '-m', 'code');
+    const held: BenchCase = { ...benchCase, id: 'held-1', set: 'holdout', head: git('rev-parse', 'HEAD'), title: SECRET, source: SECRET };
+    const warning = (title: string, over: Partial<Finding> = {}) => makeFinding({ severity: 'warning', title, file: 'src/read.rs', line: 1, description: `${SECRET} description`, reviewers: ['finder-a'], ...over });
+    const step = (from: FindingSeverity, to: FindingSeverity, by: GradeChange) => ({ gradePath: [{ from, to, by }] });
+    const findings = [
+      makeFinding({ severity: 'blocker', title: 'Blocks' }), warning(`Rated ${SECRET}`), warning('Security', { tags: ['security'] }), warning('Would block', { gradeIfConfirmed: 'blocker' }),
+      warning('Rule', step('note', 'warning', 'rule')), warning('Disproved', step('blocker', 'warning', 'refutation')), warning('Declined', step('blocker', 'warning', 'other_finder')),
+      warning('Older', step('blocker', 'warning', 'pre_existing')), warning('Tool', { reviewers: ['tool'], toolSource: 'tool' }), makeFinding({ severity: 'note', title: 'Note' }), warning('Lower', step('note', 'warning', 'judge')),
+    ];
+    const run = await scoreRun(held, makeReview('ADDRESS_FIRST', findings), async () => ({ verdict: 'NONE', findings: [], reason: SECRET }));
+    const stored = buildReport({ startedAt: '2026-11-20T00:00:00.000Z', runsPerCase: 1, matcherModel: 'model-a' }, [{ variant: { name: 'opus-sol', overrides: {} }, results: [{ benchCase: held, runs: [run] }] }]);
+    expect(storedWarnings(run).map(w => w.warning.title)).toEqual([`Rated ${SECRET}`, 'Lower']);
+    expect(storedWarnings({ findings: run.findings.map(f => ({ ...f, foldedInto: 'P1' })) })).toEqual([]);
+
+    const sendMessage = jest.fn<Promise<unknown>, [string, string]>();
+    const review = jest.fn();
+    const options = { runs: 1, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher: jest.fn(), review, findingsFrom: stored, variants: [{ name: 'opus-sol-rate', overrides: {} }], rater: { sendMessage } as unknown as LLMClient };
+    const score = (value: number) => ({ score: value, reason: SECRET });
+    const ratings = [1, 2].map(id => ({ id, trigger: score(id + 1), introduced: score(5), matters: score(6), overall: score(4) }));
+    sendMessage.mockImplementation(async () => {
+      process.stdout.write(SECRET);
+      return { content: JSON.stringify({ ratings }), model: 'claude-opus-5-5', usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 } };
+    });
+    const [out, err] = [jest.spyOn(process.stdout, 'write').mockImplementation(() => true), jest.spyOn(process.stderr, 'write').mockImplementation(() => true)];
+    try {
+      const rate = async (more: Partial<typeof options> = {}, cases = [held]) => {
+        const results = await runBench(cases, { ...options, ...more });
+        return { run: results[0].results[0].runs[0], report: buildReport({ startedAt: '2026-11-21T00:00:00.000Z', runsPerCase: 1, matcherModel: 'model-a' }, results) };
+      };
+      const rated = await rate();
+      expect(rated.run).toMatchObject({ outcome: 'RATED', complete: true, findings: [], ratings: { warnings: 9, asked: 2, calls: 1, failedCalls: 0 } });
+      expect(rated.run.ratings!.scores.map(s => s.finding).sort()).toEqual([10, 1].sort());
+      for (const s of rated.run.ratings!.scores) expect(Object.keys(s).sort()).toEqual(['finding', 'introduced', 'matters', 'overall', 'trigger']);
+      expect(rated.run.costUsd).toBeGreaterThan(0);
+      const message = sendMessage.mock.calls[0][1];
+      expect(message).toContain(`let ${SECRET} = 1;`);
+      expect(message).not.toContain('Would block');
+      expect(review).not.toHaveBeenCalled();
+      // An answer without usable scores is no complete run, and neither is an error, whose text is dropped.
+      sendMessage.mockResolvedValue({ content: `no ${SECRET}` });
+      const unusable = await rate();
+      expect(unusable.run).toMatchObject({ complete: false, error: 'Not every warning was rated.', ratings: { asked: 2, calls: 2, scores: [] } });
+      sendMessage.mockRejectedValue(new Error(`failed on ${SECRET}`));
+      const failed = await rate();
+      expect(failed.run).toMatchObject({ complete: false, ratings: { asked: 2, scores: [] } });
+      const broken = await rate({ rater: { warmupCLI: async () => { throw new Error(SECRET); } } as unknown as LLMClient });
+      expect(broken.run).toMatchObject({ outcome: 'FAILED', error: 'The rating failed.' });
+      const missing = await rate({}, [{ ...held, id: 'held-2' }]);
+      expect(missing.run.error).toBe('The report holds no complete run of this case.');
+      const changed = await rate({}, [{ ...held, body: 'Another body.' }]);
+      expect(changed.run.error).toBe('The case changed since the report.');
+      for (const { report } of [rated, unusable, failed, broken, missing, changed]) {
+        const all = [JSON.stringify(report), formatBenchSummary(report), JSON.stringify(mergeReports([report], [{ ...held, id: report.variants[0].cases[0].id }], {}))].join('\n');
+        expect(all).not.toContain(SECRET);
+      }
+      expect([...out.mock.calls, ...err.mock.calls].map(call => String(call[0])).join('')).not.toContain(SECRET);
+    } finally {
+      out.mockRestore();
+      err.mockRestore();
+    }
   }, 30_000);
 
   it('prints nothing of a hold-out case but its id and counts: no finding text, review log, matcher reply, source or failure reason', async () => {

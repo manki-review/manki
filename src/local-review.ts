@@ -5,15 +5,17 @@ import { pathToFileURL } from 'url';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 
 import { extractCurrentCodeWindow } from './code-window';
-import { CONFIG_PATH, loadConfig, validateConfig } from './config';
+import { CONFIG_PATH, loadConfig, resolveModel, validateConfig } from './config';
 import { addCodeContext, changeDigest, filterDiff, filterRawDiff, hideSeenNotes, ownChangeSince, parsePRDiff, reviewableDiff, tagFindingOrigins } from './diff';
 import { citedLine } from './finding-fingerprint';
 import { ApprovalHeld, brokenConfig, holdsApproval, buildRepoContext, cachedFileLines, capNotes, editedKeys, loadBaseConfig, openRepoFiles, plainCitedFiles, RepoFiles, roundApproval, skippedFiles, titleToSlug, UnreadFileError } from './github';
 import { isParsedLockfile, LockfileDiff, lockfilesLast, MAX_LOCKFILE_BYTES, readLockfileChanges, withLockfiles } from './lockfile';
-import type { ProviderInputs } from './providers';
+import { rateWarnings } from './importance';
+import { recordCalls } from './providers';
+import type { LLMCall, LLMClient, ProviderInputs } from './providers';
 import type { PreviousFinding } from './recap';
 import { carryBodyWarnings, citedPlaces, ReviewProgress, runReview } from './review';
-import { buildReviewClients, warmUpClients } from './review-clients';
+import { buildLLMClient, buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext } from './round-context';
 import { makeScratchDir } from './tool-install';
 import type { AnswerStore } from './stored-answers';
@@ -335,6 +337,24 @@ async function followUpInputs(
     return { ...entry, posted: 'body' as const, ...(cited && { citedLine: cited }), ...(unread && { unread: true as const }), ...((cited || unread) && description && { description }) };
   }));
   return { previousFindings, openThreads, priorRounds: [{ ...record, findings: { ...record.findings, entries } }], priorChange, interRoundDiff };
+}
+
+/** Rates `findings` of the change from `base` to `head` in one call on the judge's model, as a round rates its warnings. No other step of a review runs. */
+export async function rateLocal({ repoRoot, base, head, config, configOverrides, providerInputs }: LocalReviewInput, findings: readonly Finding[], client?: LLMClient): Promise<{ scores: Map<Finding, Importance>; calls: LLMCall[] }> {
+  const mergeBase = (await runGit(repoRoot, ['merge-base', base, head])).trim();
+  const loaded = config ?? (await loadLocalConfig(repoRoot, mergeBase, head, CONFIG_PATH, configOverrides)).config;
+  const { fullDiff, diff, closedPaths } = reviewableDiff(await runGit(repoRoot, [...DIFF_ARGS, mergeBase, head]), loaded.exclude_paths, loaded.closed_paths);
+  const lockfiles = await readLocalLockfiles(repoRoot, head, fullDiff, 'head');
+  const calls: LLMCall[] = [];
+  const judge = client ?? buildLLMClient(resolveModel(loaded, 'judge'), providerInputs);
+  await judge.warmupCLI?.();
+  const workspace = await fetchWorkspace(pathToFileURL(repoRoot).href, head, undefined, [], { sha: mergeBase, excludePaths: loaded.exclude_paths });
+  try {
+    await closePaths(workspace, closedPaths ?? []);
+    return { scores: await rateWarnings(findings, { workspace, diff: withLockfiles(diff, lockfiles), client: recordCalls(judge, { stage: 'rating' }, calls) }), calls };
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
 }
 
 /**

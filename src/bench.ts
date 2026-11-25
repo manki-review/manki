@@ -7,8 +7,9 @@ import { runCliCommand } from './cli';
 import { isComparison, isPatternCheck, isRelatedCheck } from './compare';
 import { MANKI_VERSION } from './github';
 import { extractJSON } from './json';
-import { ConfigOverrides, EarlierFinding, EarlierRound, loadConfigWithOverrides, LocalReview, LocalReviewInput, overlayConfig, reviewLocal } from './local-review';
+import { ConfigOverrides, EarlierFinding, EarlierRound, loadConfigWithOverrides, LocalReview, LocalReviewInput, overlayConfig, rateLocal, reviewLocal } from './local-review';
 import { isFixCheck } from './fixes';
+import { mayBeLeftOut } from './importance';
 import { isClaimCheck } from './pr-claims';
 import { cutLegacyCommands, estimateCostUsd, hasAnyProviderCredentials, parseModelSpec, readProviderInputsFromEnv } from './providers';
 import type { LLMClient, ProviderInputs } from './providers';
@@ -16,8 +17,8 @@ import { formatFinderError, NAMED_AGAIN_REASON, UNCONFIRMED_FIX_ENDING, WORKAROU
 import { buildLLMClient } from './review-clients';
 import { AnswerStore, holdsEveryCall, ReplayLevel, StoredAnswers } from './stored-answers';
 import {
-  CELL_GRADES, CheckStatus, Doubt, Finding, finderGrade, Importance, IMPORTANCE_SCORES, isImportance, FinderReplay, FinderError, FindingFingerprintEntry, FindingSeverity, GradeCell, GradeChange, GradeStep, gradedAbove, isGradeCell, isSecondReadName, isSecurityFinding, isSweepName, leftOutUnproven,
-  migrateLegacySeverity, migrateStoredSeverities, PRE_EXISTING_TAG, Refutation, RoundContext, RoundRawFinding, RoundRelatedRepo, SCOPE_READER_NAME, scoresOf, SEVERITY_ORDER, SideCheckKind, ThreadEvaluation, UNPOSTED_REASONS, UnpostedReason,
+  CELL_GRADES, CheckStatus, DISPROVED_TAG, Doubt, Finding, finderGrade, Importance, IMPORTANCE_SCORES, isImportance, FinderReplay, FinderError, FindingFingerprintEntry, FindingSeverity, GradeCell, GradeChange, GradeStep, gradedAbove, isGradeCell, isSecondReadName, isSecurityFinding, isDisprovedBlocker, isSweepName, leftOutUnproven,
+  migrateLegacySeverity, migrateStoredSeverities, PRE_EXISTING_TAG, SECURITY_TAG, Refutation, RoundContext, RoundRawFinding, RoundRelatedRepo, SCOPE_READER_NAME, scoresOf, SEVERITY_ORDER, SideCheckKind, ThreadEvaluation, UNPOSTED_REASONS, UnpostedReason,
   UnprovenReason, VERDICT_READER_NAME, VerdictReason,
 } from './types';
 import { runGit } from './workspace';
@@ -41,6 +42,8 @@ export const CASE_DIRS: Record<CaseSet, string> = { tuning: 'bench/cases', holdo
 const DEFAULT_MATCHER_MODEL = 'claude-sonnet-5-5';
 /** The outcome of a run that got no review because the config of its case does not load. */
 const CONFIG_INVALID = 'CONFIG_INVALID';
+/** A variant whose name ends in this rates the stored posted warnings of `findingsFrom` and reviews nothing. */
+const RATE_SUFFIX = '-rate';
 const MAX_MATCHER_DESCRIPTION = 2000;
 const MATCHER_TIMEOUT_MS = 300_000;
 /** The model calls a replay of the stored answers makes, by the last stage whose answers it keeps. */
@@ -655,6 +658,8 @@ interface RunScore {
    */
   unscored?: { followUp?: Pick<FollowUpScore, 'resolved' | 'threads' | 'foldsStored'> };
   finders: FinderSteps[];
+  /** The scores of the stored posted warnings, by their index in the stored run's `findings`. Holds no text of a finding. */
+  ratings?: StoredRatings;
   /** The tool use of each second read, apart from the finders'. Set only on a run with second reads. */
   secondReads?: FinderSteps[];
   /** What the review could read of each related repo: the commit it checked out, and the time it read the repo as of. A report from a ref that records neither has none. */
@@ -955,6 +960,66 @@ function storedReplays(variant: VariantReport, benchCase: BenchCase, level: Repl
   });
   if (level && replays.some(r => !holdsEveryCall(r.answers, level))) return `The report to replay holds a complete run of this case without its ${level === 'refuter' ? 'refuter, sweep, ' : ''}judge, dedup and name translation answers.`;
   return replays.length > 0 ? replays : 'The report to replay holds no complete run of this case with its finder output.';
+}
+
+interface StoredRatings {
+  /** The warnings the stored run posted, and of them those asked about. */
+  warnings: number;
+  asked: number;
+  calls: number;
+  failedCalls: number;
+  scores: Array<Importance & { finding: number }>;
+}
+
+/** Returns the posted finding of a stored run with what its route tells of the fields `mayBeLeftOut` reads. */
+function storedFinding({ severity, title, file, line, description = '', route }: RunScore['findings'][number]): Finding {
+  const path = route?.gradePath ?? [];
+  const tags = [
+    ...(route?.security ? [SECURITY_TAG] : []),
+    ...(path.some(step => step.by === 'pre_existing') ? [PRE_EXISTING_TAG] : []),
+    ...(isDisprovedBlocker({ gradePath: path }) || path.some(step => step.by === 'other_finder' && step.from === 'blocker') ? [DISPROVED_TAG] : []),
+  ];
+  return {
+    severity, title, file, line, description, tags, reviewers: route?.raisedBy?.includes('scope') ? [SCOPE_READER_NAME] : [],
+    ...(route?.raisedBy?.includes('tool') && { toolSource: 'tool' }),
+    ...(route?.cell && { cell: route.cell }), ...(route?.gradeIfConfirmed && { gradeIfConfirmed: route.gradeIfConfirmed }), ...(path.length > 0 && { gradePath: path }),
+  } as Finding;
+}
+
+/** Returns the warnings of a stored run the score could leave out, with their index. A folded one has a place in an earlier thread, and a `rule` step means the rule gave the grade, so both stay posted. */
+export function storedWarnings(run: Pick<RunScore, 'findings'>): Array<{ finding: number; warning: Finding }> {
+  return run.findings.flatMap((f, finding) => {
+    const warning = storedFinding(f);
+    return mayBeLeftOut(warning) && !warning.gradePath?.some(step => step.by === 'rule') && !f.foldedInto ? [{ finding, warning }] : [];
+  });
+}
+
+/** Rates the stored warnings of a case. The run holds scores and counts only, and an error is never kept, since a provider's can quote the prompt. */
+async function ratedRun(benchCase: BenchCase, variant: VariantReport, overrides: ConfigOverrides, { checkouts, providerInputs, rater }: BenchOptions): Promise<RunScore> {
+  const started = Date.now();
+  const failed = (reason: string): RunScore => failedRun(new Error(reason));
+  try {
+    const stored = variant.cases.find(c => c.id === benchCase.id);
+    const run = stored?.runs.find(r => r.complete);
+    if (!stored || !run) return failed('The report holds no complete run of this case.');
+    if (stored.reviewedDigest && stored.reviewedDigest !== reviewedDigest(benchCase)) return failed('The case changed since the report.');
+    if (run.findings.some(f => f.description === undefined || !f.route)) return failed('The report holds no text or route of a finding.');
+    const warnings = storedWarnings(run);
+    const { scores, calls } = warnings.length === 0 ? { scores: new Map<Finding, Importance>(), calls: [] } : await rateLocal({
+      repoRoot: checkouts.get(benchCase.repo)!, base: benchCase.base, head: benchCase.head, providerInputs,
+      ...(benchCase.config ? { config: await loadConfigWithOverrides(checkouts.get(benchCase.repo)!, benchCase.base, overrides, benchCase.config) } : Object.keys(overrides).length > 0 && { configOverrides: overrides }),
+    }, warnings.map(w => w.warning), rater);
+    const rated = warnings.flatMap(({ finding, warning }) => scores.has(warning) ? [{ finding, ...scoresOf(scores.get(warning)!) }] : []);
+    const sum = (value: (call: (typeof calls)[number]) => number | null) => calls.reduce((total, call) => total + (value(call) ?? 0), 0);
+    return {
+      ...failedRun(''), outcome: 'RATED', complete: rated.length === warnings.length,
+      error: rated.length === warnings.length ? undefined : 'Not every warning was rated.',
+      costUsd: sum(c => c.costUsd), inputTokens: sum(c => c.inputTokens), outputTokens: sum(c => c.outputTokens), durationMs: Date.now() - started,
+      ratings: { warnings: run.findings.filter(f => f.severity === 'warning').length, asked: warnings.length, calls: calls.length, failedCalls: calls.filter(c => c.failed).length, scores: rated },
+    };
+  } catch {
+    return failed('The rating failed.');
+  }
 }
 
 /** Returns the variant of `report` whose finder output variant `name` replays: the one of the same name, or else its only variant. */
@@ -1993,6 +2058,8 @@ interface BenchOptions {
   providerInputs: ProviderInputs;
   matcher: Matcher;
   review?: (input: LocalReviewInput) => Promise<LocalReview>;
+  /** Rates the stored warnings in place of the judge's model. */
+  rater?: LLMClient;
   signal?: AbortSignal;
   /** Called after each case with every variant's results so far, so they can be saved before the next case. */
   onCase?: (variants: VariantResults[]) => void;
@@ -2088,6 +2155,14 @@ export async function runBench(cases: BenchCase[], options: BenchOptions): Promi
   for (const variant of variants) {
     const results: CaseResults = [];
     for (const benchCase of cases) {
+      if (variant.name.endsWith(RATE_SUFFIX)) {
+        if (!findingsFrom) throw new Error(`Variant ${variant.name} needs --findings-from`);
+        const run = await quietly(benchCase, () => ratedRun(benchCase, replayedVariant(findingsFrom, variant.name)!, variant.overrides, options));
+        // The case is reported without its key and source, so the report holds ids and scores only.
+        results.push({ benchCase: { ...benchCase, source: '', mustCatch: [], niceToHave: [], mustResolve: [], mustKeepOpen: [], mustNotRepeat: [] }, runs: [run] });
+        options.onCase?.([...done, { variant, results }]);
+        continue;
+      }
       const runs: RunScore[] = [];
       const configError = invalid.get(benchCase.id);
       const review = (input: LocalReviewInput) => quietly(benchCase, () => (options.review ?? reviewLocal)(input));
