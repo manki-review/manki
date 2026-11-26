@@ -1318,7 +1318,7 @@ export async function runReview(
   const earlierOf = <R>(answers: Map<string, EarlierAnswer<R>> | undefined): EarlierAnswers<R> | undefined => answers && { answers, confirm: confirmKept };
   // Asked beside the finders on the judge's client. Only the round's end reads the answer, so nothing waits for it before then.
   const scopePromise = runScopeReader(withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'scope'), {
-    diff, rawDiff, prContext, linkedIssues, workspace, trivial: quickCheckOnly(team), changeDigest: options.changeDigest, priorRounds, items: uses.items,
+    diff, rawDiff, prContext, linkedIssues, workspace, trivial: quickCheckOnly(team), changeDigest: options.changeDigest, priorRounds, items: uses.items, removedTests: uses.removedTests,
   });
   // Asked alongside the finders on the first reader's model, at its effort. An unanswered question leaves the round complete, since the finders read the whole change.
   const comparisonEffort = team.finders[0].effort;

@@ -221,9 +221,11 @@ describe('runScopeReader', () => {
       ...file('spec/app_spec.rb', '@@ -1,0 +1,25 @@', changed(25, '+', 'it { expect(x).to eq 1 } # ')),
       ...file('lib/app.rb', '@@ -1,0 +1,20 @@', changed(20, '+', 'def test_value = 1 # ')),
       ...file('lib/small.rb', '@@ -1,0 +1,19 @@', changed(19, '+', 'X = 1 # ')),
-      // A removal that an added test takes the place of is code. One that unchanged lines of a test enclose is test code.
+      // A removal is judged by the base: one that an added test takes the place of is code, and one inside a test there is test code.
       ...file('src/swap.rs', '@@ -1,20 +1,20 @@', [...changed(20, '-', 'pub fn helper_'), ...changed(20, '+', '#[test] fn replaced_')]),
       '@@ -40,22 +40,22 @@', ' fn checks() {', ...changed(20, '-', '    assert_eq!(a, '), ...changed(20, '+', '    assert_eq!(b, '), ' }',
+      // Deleting a whole test function leaves no test at the head, and is test code all the same.
+      ...file('src/drop.rs', '@@ -1,24 +1,1 @@', [' pub fn keep() {}', ...changed(22, '-', '#[test] fn gone_'), '-']),
       // A file renamed without a change has no hunk. It counts as a PR's worth of change, or as test code in a test folder.
       'diff --git a/src/old.rs b/src/moved.rs', 'similarity index 100%', 'rename from src/old.rs', 'rename to src/moved.rs',
       'diff --git a/tests/old.rs b/tests/moved.rs', 'similarity index 100%', 'rename from tests/old.rs', 'rename to tests/moved.rs',
@@ -237,9 +239,11 @@ describe('runScopeReader', () => {
       { file: 'src/swap.rs', name: 'replaced', line: 1, start: 1, end: 20, test: true as const },
       { file: 'src/swap.rs', name: 'checks', line: 40, start: 40, end: 61, test: true as const },
     ];
-    const read = (split: object[], tree = items) => runScopeReader(client({ useful: true, topics: [], split }), { diff, rawDiff: raw, trivial: false, items: tree });
+    // The test items of the base around removed lines, by their base lines.
+    const removedTests = [{ file: 'src/lib.rs', start: 7, end: 17 }, { file: 'src/swap.rs', start: 40, end: 61 }, { file: 'src/drop.rs', start: 2, end: 23 }];
+    const read = (split: object[], tree = items, baseTests = removedTests) => runScopeReader(client({ useful: true, topics: [], split }), { diff, rawDiff: raw, trivial: false, items: tree, removedTests: baseTests });
     const code = { name: 'App', files: ['lib/app.rb'] };
-    const rest = ['src/lib.rs:1-5', 'src/lib.rs:39-58', 'src/lib.rs:7-34', 'src/net.test.ts', 'spec/app_spec.rb', 'lib/small.rb', 'src/swap.rs:1-20', 'src/swap.rs:40-61', 'src/moved.rs', 'tests/moved.rs'];
+    const rest = ['src/lib.rs:1-5', 'src/lib.rs:39-58', 'src/lib.rs:7-34', 'src/net.test.ts', 'spec/app_spec.rb', 'lib/small.rb', 'src/swap.rs:1-20', 'src/swap.rs:40-61', 'src/drop.rs', 'src/moved.rs', 'tests/moved.rs'];
     const without = (part: string) => ({ name: 'Rest', files: rest.filter(f => f !== part) });
     const small = [code, without('lib/small.rb'), { name: 'Small', files: ['lib/small.rb'] }];
     const answers = await Promise.all([
@@ -252,6 +256,7 @@ describe('runScopeReader', () => {
       read([code, without('tests/moved.rs'), { name: 'Test move', files: ['tests/moved.rs'] }]),
       read([code, without('src/swap.rs:1-20'), { name: 'Swap', files: ['src/swap.rs:1-20'] }]),
       read([code, without('src/moved.rs'), { name: 'Move', files: ['src/moved.rs'] }]),
+      read([code, without('src/drop.rs'), { name: 'Drop', files: ['src/drop.rs'] }]),
     ]);
     expect(answers.map(a => a.dropped)).toEqual([
       [{ part: 'split', reason: 'proposed PR 3 changes 19 line(s), fewer than 20' }],
@@ -263,6 +268,7 @@ describe('runScopeReader', () => {
       [{ part: 'split', reason: 'proposed PR 3 changes only test code' }],
       undefined,
       undefined,
+      [{ part: 'split', reason: 'proposed PR 3 changes only test code' }],
     ]);
     expect(answers[8].split![2].shown).toEqual([{ path: 'src/moved.rs' }]);
     // A PR of exactly 20 changed lines stands alone, and so does one that mixes test code with other code.
@@ -271,6 +277,8 @@ describe('runScopeReader', () => {
     // Without a syntax tree only the path counts, so the module of tests in a source file reads as code.
     const sumTests = [code, without('src/lib.rs:7-34'), { name: 'Sum tests', files: ['src/lib.rs:7-34'] }];
     expect((await read(sumTests, [])).split?.map(({ shown: _shown, ...part }) => part)).toEqual(sumTests);
+    const drop = [code, without('src/drop.rs'), { name: 'Drop', files: ['src/drop.rs'] }];
+    expect((await read(drop, items, [])).split?.map(({ shown: _shown, ...part }) => part)).toEqual(drop);
 
     // A split an earlier round kept under an older check is checked again when the round carries the answer.
     const { purpose, issues } = answers[0];

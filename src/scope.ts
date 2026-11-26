@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 
-import { addedLines, countChangedLines, hunkHas, removedLines } from './diff';
+import { addedLines, countChangedLines, hunkHas, removedOldLines } from './diff';
 import { LinkedIssue, splitDescription, titleToSlug } from './github';
 import { extractJSON } from './json';
 import { LLMClient, SendMessageOptions } from './providers';
@@ -8,7 +8,7 @@ import { codeDigest, isDiffLocation, restsOnSameCode, shownLines } from './refut
 import { PreviousFinding } from './recap';
 import { repoTools } from './related-repos';
 import { buildReviewerUserMessage, parseLocation, parseProof } from './review';
-import { ChangedItem, firstAtOrAfter, TEST_PATH, touchedLines } from './symbol-uses';
+import { ChangedItem, firstAtOrAfter, TEST_PATH, touchedLines, UsesOutsideDiff } from './symbol-uses';
 import { agreedOutcome, confirmsAll, DiffFile, DiffHunk, Finding, ParsedDiff, PrContext, Refutation, RoundContext, RoundScope, SCOPE_DOUBT_TITLE, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, ScopeTopic, SplitFile } from './types';
 import { digestOf, jsonOnlyReply, safeTruncate, sendWithParseRetry } from './utils';
 import { UNTRUSTED_CONTENT_RULE, WRITING_RULES } from './writing-rules';
@@ -118,14 +118,38 @@ function namedPart(entry: string, diff: ParsedDiff): NamedPart | undefined {
 }
 
 /**
+ * Returns whether line `line` of a file lies in one of `ranges`. The ranges of each file are merged and sorted once, so
+ * each line is found by a binary search.
+ */
+function testLookup(ranges: ReadonlyArray<Pick<ChangedItem, 'file' | 'start' | 'end'>>): (path: string, line: number) => boolean {
+  const byFile = new Map<string, { starts: number[]; ends: number[] }>();
+  for (const range of [...ranges].sort((a, b) => a.start - b.start)) {
+    const merged = byFile.get(range.file) ?? { starts: [], ends: [] };
+    const last = merged.ends.length - 1;
+    if (last >= 0 && range.start <= merged.ends[last]) {
+      merged.ends[last] = Math.max(merged.ends[last], range.end);
+    } else {
+      merged.starts.push(range.start);
+      merged.ends.push(range.end);
+    }
+    byFile.set(range.file, merged);
+  }
+  return (path, line) => {
+    const merged = byFile.get(path);
+    const at = merged ? firstAtOrAfter(merged.starts, line + 1) - 1 : -1;
+    return at >= 0 && line <= merged!.ends[at];
+  };
+}
+
+/**
  * Returns why `split` cannot be posted, or `undefined` when it can: at least two PRs, each hunk of the diff in exactly
  * one of them, each PR worth one of its own, and each after the PRs it needs. A whole file takes all its hunks, and a
  * line range each hunk it overlaps. A file without hunks is taken only whole. One the diff has no lines of, such as a
  * rename without changes, need not be named and counts as `MIN_SPLIT_PART_LINES` lines. A PR that changes only test
  * code, or fewer than `MIN_SPLIT_PART_LINES` lines, would not stand alone. A hunk is test code in a file `TEST_PATH` matches, or when
- * each line it adds and each removal lies in one of the test `items`.
+ * each line it adds lies in one of the test `items` and each non-blank line it removes in one of `removedTests` at the base.
  */
-function splitProblem(split: ScopeTopic[], diff: ParsedDiff, items: readonly ChangedItem[]): string | undefined {
+function splitProblem(split: ScopeTopic[], diff: ParsedDiff, items: readonly ChangedItem[], removedTests: NonNullable<ScopeOptions['removedTests']>): string | undefined {
   if (split.length < 2) return 'a split needs at least two PRs';
   if (split.some(part => part.files.length === 0)) return 'a proposed PR has no files';
   const named = split.map(part => part.files.map(f => namedPart(f, diff)));
@@ -140,35 +164,16 @@ function splitProblem(split: ScopeTopic[], diff: ParsedDiff, items: readonly Cha
   if ([...owners, ...bare.map(path => parts.filter(part => part.some(n => n.path === path)).length)].some(n => n > 1)) return 'a changed hunk is in more than one proposed PR';
   const missing = owners.filter(n => n === 0).length;
   if (missing > 0) return `${missing} changed hunk(s) are in no proposed PR`;
-  // The test items of each file as sorted ranges that do not overlap, so each touched line is found by a binary search.
-  const tests = new Map<string, { starts: number[]; ends: number[] }>();
-  for (const item of items.filter(i => i.test).sort((a, b) => a.start - b.start)) {
-    const ranges = tests.get(item.file) ?? { starts: [], ends: [] };
-    const last = ranges.ends.length - 1;
-    if (last >= 0 && item.start <= ranges.ends[last]) {
-      ranges.ends[last] = Math.max(ranges.ends[last], item.end);
-    } else {
-      ranges.starts.push(item.start);
-      ranges.ends.push(item.end);
-    }
-    tests.set(item.file, ranges);
-  }
-  const testAt = (path: string, line: number) => {
-    const ranges = tests.get(path);
-    const at = ranges ? firstAtOrAfter(ranges.starts, line + 1) - 1 : -1;
-    return at >= 0 && line <= ranges!.ends[at] ? { start: ranges!.starts[at], end: ranges!.ends[at] } : undefined;
-  };
-  const added = new Map(diff.files.map(file => [file.path, addedLines(file)]));
-  // A removal sits before the head line `line`. It was inside a test item at the base only when unchanged lines of that
-  // item enclose it, since an added test can take the place of removed code.
-  const removedInTest = (path: string, line: number) => {
-    const range = testAt(path, line);
-    return !!range && range.start < line && !added.get(path)!.has(range.start) && !added.get(path)!.has(range.end);
-  };
+  const inTest = testLookup(items.filter(i => i.test));
+  // A removal is test code when it was part of a test item at the base, since an added test can take the place of removed code.
+  const removedInTest = testLookup(removedTests);
   const isTest = (file: DiffFile, hunk: DiffHunk) => {
     const one = { ...file, hunks: [hunk] };
+    const added = [...addedLines(one).keys()];
+    // A removed blank line, such as the one after a deleted test, belongs to neither side.
+    const removed = [...removedOldLines(one)].filter(([, text]) => text.trim() !== '').map(([line]) => line);
     return TEST_PATH.test(file.path)
-      || ([...addedLines(one).keys()].every(line => testAt(file.path, line)) && removedLines(one).every(([line]) => removedInTest(file.path, line)));
+      || (added.length + removed.length > 0 && added.every(line => inTest(file.path, line)) && removed.every(line => removedInTest(file.path, line)));
   };
   for (const [i, part] of parts.entries()) {
     const taken = diff.files.flatMap(file => file.hunks.filter(hunk => part.some(n => takes(n, file, hunk))).map(hunk => ({ file, hunk })));
@@ -190,12 +195,12 @@ function splitProblem(split: ScopeTopic[], diff: ParsedDiff, items: readonly Cha
  * What fails is recorded in `dropped`, and never shows or holds the approval. Topics name only files of the diff,
  * whole or by a line range.
  */
-function checkScope(answer: ScopeAnswer, diff: ParsedDiff, workspace: string | undefined, items: readonly ChangedItem[]): RoundScope {
+function checkScope(answer: ScopeAnswer, diff: ParsedDiff, workspace: string | undefined, items: readonly ChangedItem[], removedTests: NonNullable<ScopeOptions['removedTests']>): RoundScope {
   const dropped: NonNullable<RoundScope['dropped']> = [];
   const proof = !answer.doubt ? [] : workspace ? shownLines(answer.proof, workspace).proof : parseProof(answer.proof, undefined).filter(at => isDiffLocation(at, diff));
   if (answer.doubt && proof.length === 0) dropped.push({ part: 'doubt', reason: 'no cited line exists' });
   const topics = answer.topics.map(t => ({ ...t, files: t.files.filter(f => namedPart(f, diff)) })).filter(t => t.files.length > 0).slice(0, MAX_TOPICS);
-  const problem = answer.split.length > 0 ? splitProblem(answer.split, diff, items) : undefined;
+  const problem = answer.split.length > 0 ? splitProblem(answer.split, diff, items, removedTests) : undefined;
   if (problem) dropped.push({ part: 'split', reason: problem });
   const split = answer.split.length > 0 && !problem ? answer.split : [];
   const cited = workspace && proof.length > 0 ? citedDigest(proof, workspace) : undefined;
@@ -264,6 +269,8 @@ export interface ScopeOptions {
   priorRounds?: readonly RoundContext[];
   /** The functions and types the diff touches, from `listUsesOutsideDiff`, which name what each proposed PR of a split holds. */
   items?: readonly ChangedItem[];
+  /** The test items of the base around removed lines, from `listUsesOutsideDiff`, which tell a removal of test code. */
+  removedTests?: UsesOutsideDiff['removedTests'];
 }
 
 /**
@@ -298,7 +305,7 @@ function shownFiles(part: ScopeTopic, diff: ParsedDiff, items: readonly ChangedI
  * hunk positions a split by line ranges names are those of the last round with an answer, whose answer it carries then, with its split checked again by `splitProblem`. The answer is checked by `checkScope`. A call that fails, or a reply that cannot be used, is recorded as `failed`.
  * It never throws.
  */
-export async function runScopeReader(client: LLMClient, { diff, rawDiff, prContext, linkedIssues, workspace, trivial, changeDigest, priorRounds = [], items = [] }: ScopeOptions): Promise<RoundScope> {
+export async function runScopeReader(client: LLMClient, { diff, rawDiff, prContext, linkedIssues, workspace, trivial, changeDigest, priorRounds = [], items = [], removedTests = [] }: ScopeOptions): Promise<RoundScope> {
   if (trivial) return { skipped: 'trivial' };
   const purpose = purposeOf(prContext);
   const issues = digestOf((linkedIssues ?? []).map(i => [i.number, i.title, i.body]));
@@ -310,7 +317,7 @@ export async function runScopeReader(client: LLMClient, { diff, rawDiff, prConte
     core.info(`Scope reader: the diff, the PR text, the linked issues and the cited lines did not change since round ${since}, so it is not asked again`);
     const { dropped = [], split, ...answer } = carriedAnswer(carried);
     // A split an older check kept is checked again, since the check needs no call.
-    const problem = split && splitProblem(split, diff, items);
+    const problem = split && splitProblem(split, diff, items, removedTests);
     const left = [...dropped, ...(problem ? [{ part: 'split' as const, reason: problem }] : [])];
     return { ...answer, ...(split && !problem && { split }), ...(left.length > 0 && { dropped: left }), skipped: 'unchanged', since };
   }
@@ -326,7 +333,7 @@ export async function runScopeReader(client: LLMClient, { diff, rawDiff, prConte
       },
       error => core.warning(`Scope reader reply could not be used (${error}), asking once more`),
     );
-    const checked = checkScope(answer, diff, tools ? workspace : undefined, items);
+    const checked = checkScope(answer, diff, tools ? workspace : undefined, items, removedTests);
     const ranged = checked.split?.some(part => part.files.some(f => namedPart(f, diff)?.lines));
     const split = checked.split?.map(part => ({ ...part, shown: shownFiles(part, diff, items) }));
     const scope = { ...checked, ...(split && { split }), purpose, issues, ...(ranged && { hunks: hunkPositions(diff) }) };

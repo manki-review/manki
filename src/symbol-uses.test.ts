@@ -591,6 +591,10 @@ describe('listUsesOutsideDiff', () => {
     } finally {
       texts.mockRestore();
     }
+    // The test items of the base around removed lines are listed by their base lines, a deleted test function included.
+    const dropBase = 'pub fn keep() {}\n\n#[test]\nfn gone() {\n    assert!(true);\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn stays() {\n        assert!(true);\n    }\n}\n';
+    const { removedTests } = await usesFor({ 'src/drop.rs': dropBase }, { 'src/drop.rs': 'pub fn keep() {}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn stays() {\n    }\n}\n' });
+    expect(removedTests).toEqual([{ file: 'src/drop.rs', start: 3, end: 6 }, { file: 'src/drop.rs', start: 10, end: 13 }, { file: 'src/drop.rs', start: 8, end: 14 }]);
     const condition = (file: string, start: number, end: number, code: string) => ({ kind: 'condition', file, start, end, code });
     expect(units?.map(({ id: _id, ...unit }) => unit)).toEqual([
       condition('.github/workflows/ci.yml', 6, 6, "+      - if: github.event_name == 'push'"),
