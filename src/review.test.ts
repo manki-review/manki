@@ -8736,6 +8736,8 @@ describe('runReview', () => {
       ['Off by one', [sonnetName]], ['Unchecked null', [sonnetName]], ['Off by one', [opusName]], ['Lost error', ['Second read 1']], ['A slow loop', ['Second read 2']],
     ]);
     expect(result.llmCalls?.filter(c => c.stage === 'reviewer').map(c => c.agent)).toEqual([sonnetName, opusName, 'Second read 1', 'Second read 2']);
+    // For the one-finder rules each read counts as the finder whose call it repeated.
+    expect(mockedRunJudgeAgent.mock.calls[0][2].countsAs).toEqual(new Map([['Second read 1', [opusName]], ['Second read 2', [sonnetName]]]));
     // The progress comment counts each read as a side check that starts and ends with its findings.
     const readEvents = (mock: jest.Mock) => mock.mock.calls.map(([event]: [ReviewProgress]) => event.sideCheck).filter(check => check?.kind === 'second_read');
     expect(readEvents(progress)).toEqual([{ kind: 'second_read', total: 1 }, { kind: 'second_read', ended: 1 }, { kind: 'second_read', total: 1 }, { kind: 'second_read', ended: 1 }]);

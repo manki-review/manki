@@ -216,6 +216,13 @@ export const secondReadName = (n: number): string => `Second read ${n}`;
 export const isSecondReadName = (reviewer: string): boolean => /^Second read \d+$/.test(reviewer);
 /** Whether only second reads reported `finding`, so no finder graded it. */
 export const bySecondReadsOnly = (finding: Pick<Finding, 'reviewers'>): boolean => finding.reviewers.length > 0 && finding.reviewers.every(isSecondReadName);
+/**
+ * Returns who counts as a reporter of `finding` for the one-finder rules. A second read or a sweep counts as the names
+ * `countsAs` gives it: the finder whose call the read repeated, or the reporters of the finding the sweep started from.
+ * One missing there, or on a lead carried from an earlier round, whose names are that round's, counts as nobody.
+ */
+export const countedReporters = (finding: Pick<Finding, 'reviewers' | 'leadSince'>, countsAs: ReadonlyMap<string, readonly string[]>): string[] =>
+  finding.reviewers.flatMap(r => (!isSecondReadName(r) && !isSweepName(r) ? [r] : finding.leadSince === undefined ? [...(countsAs.get(r) ?? [])] : []));
 /** Marks a security defect, which blocks at every round and never becomes a follow-up. */
 export const SECURITY_TAG = 'security' as const;
 

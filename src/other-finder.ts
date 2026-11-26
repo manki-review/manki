@@ -7,7 +7,7 @@ import { sanitizeForPromptEmbed } from './memory';
 import { fenceText } from './github';
 import { LLMClient, NotStartedError } from './providers';
 import { changeSection, citedChanges, locationFile, locationLines, MAX_PARALLEL_REFUTATIONS } from './refute';
-import { cellGrade, DISPROVED_TAG, Finding, FindingSeverity, gradedByRule, gradeStep, isDisprovedBlocker, isGradeCell, isSecurityFinding, OtherFinderVote, ParsedDiff, pendingGrade, RulesMode } from './types';
+import { cellGrade, countedReporters, DISPROVED_TAG, Finding, FindingSeverity, gradedByRule, gradeStep, isDisprovedBlocker, isGradeCell, isSecurityFinding, OtherFinderVote, ParsedDiff, pendingGrade, RulesMode } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 
 // A safety net for a call without tools, which normally answers in well under a minute.
@@ -113,18 +113,20 @@ export interface VoteOptions {
   /** Whether `finding` restates a finding of an earlier round, which keeps its own path. */
   restates: (finding: Finding) => boolean;
   rules?: RulesMode;
+  /** The reporters each second read and sweep of the round counts as (`countedReporters`). */
+  countsAs?: ReadonlyMap<string, readonly string[]>;
 }
 
 /**
  * Returns the vote of another finder on each finding of `findings` that `getsVote`, in the same order, and undefined for
  * every other finding. One call asks the model of the first finder that did not report the finding for the harm, the
- * realistic situation and the line where the harm happens. The answer declines the finding when it names no line, or
+ * realistic situation and the line where the harm happens. A finder a second read or a sweep counts as reported it. The answer declines the finding when it names no line, or
  * one whose quoted code the head does not hold near it. A call that fails, never starts or answers twice in a form that
  * does not parse gives no vote, and so does an answer whose file cannot be read.
  */
-export async function otherFinderVotes(findings: readonly Finding[], { workspace, diff, finders, restates, rules }: VoteOptions): Promise<Array<OtherFinderVote | undefined>> {
+export async function otherFinderVotes(findings: readonly Finding[], { workspace, diff, finders, restates, rules, countsAs = new Map() }: VoteOptions): Promise<Array<OtherFinderVote | undefined>> {
   return mapWithConcurrency([...findings], MAX_PARALLEL_REFUTATIONS, async finding => {
-    const other = getsVote(finding, restates, rules) ? finders.find(f => !finding.reviewers.includes(f.name)) : undefined;
+    const other = getsVote(finding, restates, rules) ? finders.find(f => !countedReporters(finding, countsAs).includes(f.name)) : undefined;
     if (!other) return undefined;
     try {
       const raw = await sendWithParseRetry(

@@ -29,7 +29,7 @@ import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim, relatedCitations } from './static-signals';
 import type { AnswerStore } from './stored-answers';
 import { resolveModel } from './config';
-import { bySecondReadsOnly, isSecondReadName, isSweepName, canLeaveOut, CELL_GRADES, CheckProgress, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, RefutationOutcome, restsOnDrop, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, fixThreadFiles, GradedCounts, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isGuardedFinding, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, REVERT_CAUGHT, RelatedRepoTools, restsOnUnstated, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, wouldBlockIfTrue, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, triggerDoubt, isTriggerDoubt, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, ruleGrade, RulesMode, RuleVerdict } from './types';
+import { bySecondReadsOnly, canLeaveOut, countedReporters, CELL_GRADES, CheckProgress, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, RefutationOutcome, restsOnDrop, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, fixThreadFiles, GradedCounts, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isGuardedFinding, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, REVERT_CAUGHT, RelatedRepoTools, restsOnUnstated, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, wouldBlockIfTrue, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, triggerDoubt, isTriggerDoubt, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, ruleGrade, RulesMode, RuleVerdict } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -261,6 +261,8 @@ export interface JudgeInput {
    * and a finding one of them alone reported is a \`soleFinder\` finding.
    */
   finderNames?: readonly string[];
+  /** The reporters each second read and sweep of the round counts as (\`countedReporters\`). */
+  countsAs?: ReadonlyMap<string, readonly string[]>;
   isFollowUp?: boolean;
   openThreads?: OpenThread[];
   priorRounds?: RoundContext[];
@@ -1792,7 +1794,7 @@ export async function runJudgeAgent(
   const hiddenClaims = new Map(input.findings.flatMap((f, i) => (f.preExisting && !findings[i].preExisting ? [[findingKey(f), f.preExisting] as const] : [])));
   // A revert of a line the PR does not change undoes nothing of this change, so such a `revertGap` counts as none.
   const judged = judgeResult.findings.map(({ revertGap, ...j }) => (revertGap === REVERT_CAUGHT || (revertGap && citesChangedLine(revertGap, diff.files)) ? { ...j, revertGap } : j));
-  const mapped = mapJudgedToFindings(findings, judged, linkablePriorFindings(priorRounds, openThreads ?? input.evaluatedThreads?.openThreads, input.settledThreadIds), staysPreExisting, !!refutation, input.finderNames)
+  const mapped = mapJudgedToFindings(findings, judged, linkablePriorFindings(priorRounds, openThreads ?? input.evaluatedThreads?.openThreads, input.settledThreadIds), staysPreExisting, !!refutation, input.finderNames, input.countsAs)
     .map(f => (hiddenClaims.has(findingKey(f)) ? { ...f, preExisting: hiddenClaims.get(findingKey(f)) } : f))
     // The duplicates are folded and the rule has graded by here, so the drop sees the grade the finding ends with.
     .map(f => doubtUnprovenRule(applyOwnProposal(gradeConfirmedRule(f, config.review?.rules), provenanceMap), config.review?.rules))
@@ -1901,7 +1903,8 @@ function matchesInPrSuppression(finding: Finding, suppression: InPrSuppression):
  * duplicates, and then the copies `deduplicateFindings` merges by title and place. A `sameAs` or `variantOf` that names no entry of
  * `priorFindings` is ignored. Throws when a finding has no entry, so no grade is posted that the judge did not state.
  * A drop gets a `dropCheck` only with `dropsChecked`, set when a refuter checks the round, so no record shows a check that cannot run.
- * A finding is `soleFinder` when two or more of `finderNames` ran and one of them alone reported it.
+ * A finding is `soleFinder` when two or more of `finderNames` ran and its copies have one reporter, one of them, by
+ * `countedReporters` with `countsAs`.
  */
 export function mapJudgedToFindings(
   original: Finding[],
@@ -1910,22 +1913,23 @@ export function mapJudgedToFindings(
   staysPreExisting?: (copy: Finding) => boolean,
   dropsChecked = false,
   finderNames: readonly string[] = [],
+  countsAs: ReadonlyMap<string, readonly string[]> = new Map(),
 ): Finding[] {
   const aligned = alignJudgedToFindings(original, judged);
   const roots = duplicateRoots(aligned);
   // The copies both folds merge are graded as one finding, which is filed as a blocker only when every copy was.
   const groups = copyGroups(roots.map(root => original[root - 1]));
+  const group = (i: number): Finding[] => original.filter((_, j) => groups[j] === groups[i]);
   // A second read's copy is graded by no finder, so it counts only where no finder's copy is.
   const copies = (i: number): Finding[] => {
-    const all = original.filter((_, j) => groups[j] === groups[i]);
-    const byFinders = all.filter(f => !bySecondReadsOnly(f));
-    return byFinders.length > 0 ? byFinders : all;
+    const byFinders = group(i).filter(f => !bySecondReadsOnly(f));
+    return byFinders.length > 0 ? byFinders : group(i);
   };
   const filedBlocker = (i: number): boolean => copies(i).every(f => finderGrade(f, 'lowest') === 'blocker');
-  // A second read saw every finder's findings and a sweep starts from a kept one, so neither reports a finding on its own.
-  // Any other check that reports the same finding counts as a second reporter.
+  // A second read saw every finder's findings and a sweep starts from a kept one, so neither agrees with the finder it
+  // repeats. Any other check that reports the same finding counts as a second reporter.
   const soleFinder = (i: number): boolean => {
-    const reporters = new Set(copies(i).flatMap(f => f.reviewers).filter(r => !isSecondReadName(r) && !isSweepName(r)));
+    const reporters = new Set(group(i).flatMap(f => countedReporters(f, countsAs)));
     return finderNames.length >= 2 && reporters.size === 1 && finderNames.some(name => reporters.has(name));
   };
   // A drop is checked when any finder filed a copy as a blocker, whichever copy the merge keeps.

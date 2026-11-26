@@ -1,4 +1,5 @@
-import { withVote } from './other-finder';
+import { otherFinderVotes, withVote } from './other-finder';
+import { LLMClient } from './providers';
 import { DISPROVED_TAG, Finding, isGuardedFinding, OtherFinderVote } from './types';
 
 const finding = (more: Partial<Finding>): Finding => ({
@@ -41,5 +42,16 @@ describe('withVote', () => {
     expect(withVote(finding({ rule }), declined, 'warn')).toEqual(finding({ rule }));
     expect(withVote(finding({ severity: 'blocker', rule }), declined, 'block').severity).toBe('blocker');
     expect(withVote(finding({ rule }), declined, 'auto').severity).toBe('note');
+  });
+});
+
+describe('otherFinderVotes', () => {
+  it('asks a finder other than the one a second read or a sweep counts as', async () => {
+    const client = (): LLMClient => ({ sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify({ harm: '', situation: '', line: 'none' }) }) }) as unknown as LLMClient;
+    const finders = [{ name: 'Finder A', client: client() }, { name: 'Finder B', client: client() }];
+    const countsAs = new Map([['Second read 1', ['Finder A']], ['Sweep 1', ['Finder A']]]);
+    const findings = [finding({ reviewers: ['Second read 1'] }), finding({ reviewers: ['Sweep 1'] }), finding({ reviewers: ['Finder B'] })];
+    const votes = await otherFinderVotes(findings, { workspace: '/work/pr-head', finders, restates: () => false, countsAs });
+    expect(votes.map(v => v?.finder)).toEqual(['Finder B', 'Finder B', 'Finder A']);
   });
 });

@@ -151,12 +151,12 @@ export interface SweepOptions {
  * kind of mistake, each on the client `clientFor` returns for its reviewer name. The security findings go first, then
  * the blockers, the warnings and the notes. Within a grade, those a check confirmed come before those the cited lines
  * prove, and the notes keep the judge's order. Returns their findings, which carry that name, without any on the
- * source's own line, and a record of every sweep, the ones past the cap as `cut`. A call that fails is recorded as
- * `failed`. A call the round did not start or stopped has no record. It never throws.
+ * source's own line, a record of every sweep, the ones past the cap as `cut`, and the source of each sweep asked by its
+ * name. A call that fails is recorded as `failed`. A call the round did not start or stopped has no record. It never throws.
  */
 export async function runSweeps(
   clientFor: (reviewer: string) => LLMClient, sources: readonly Finding[], { rawDiff, effort, workspace, related, progress, answers: kept }: SweepOptions,
-): Promise<{ findings: Finding[]; sweeps: RoundSweep[] }> {
+): Promise<{ findings: Finding[]; sweeps: RoundSweep[]; sourceOf: ReadonlyMap<string, Finding> }> {
   const ordered = byPriority(sources);
   // A name never carries text a model wrote from the PR, so each sweep is numbered and its record names the source's location.
   const names = ordered.map((_, i) => sweepName(i + 1));
@@ -203,5 +203,6 @@ export async function runSweeps(
   return {
     findings: answers.flatMap(a => a.findings),
     sweeps: [...answers.flatMap(a => a.record ? [a.record] : []), ...ordered.slice(MAX_SWEEPS).map((f, i) => ({ reviewer: names[MAX_SWEEPS + i], ...from(f), status: 'cut' as const }))],
+    sourceOf: new Map(asked.map(({ reviewer, source }) => [reviewer, source])),
   };
 }
