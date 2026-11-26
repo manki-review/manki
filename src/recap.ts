@@ -897,6 +897,8 @@ interface ThreadFacts extends OverrideCandidate {
   writerResolverLogin?: string;
   /** Who Manki's latest record says it resolved the thread for, by `clearRecordLogin`, when that person has write access and every comment of the thread was read. */
   writerClearLogin?: string;
+  /** Resolved, with Manki's reply that its finding continues in another thread. */
+  raised?: true;
 }
 
 /** How Manki's own comments in a thread settled it, which `decidedWithoutFix` of `PreviousFinding` is made of. */
@@ -985,7 +987,7 @@ async function resolveBacking(
 }
 
 /** Why a resolved thread no longer blocks. */
-type Settled = 'addressed' | 'override' | 'resolver' | 'record';
+type Settled = 'addressed' | 'override' | 'resolver' | 'record' | 'raised';
 
 /**
  * Returns why the resolved thread `t` is settled, or `undefined` while it still blocks. The review round and the approval
@@ -993,6 +995,8 @@ type Settled = 'addressed' | 'override' | 'resolver' | 'record';
  * `resolver`: `writerResolverLogin` is someone other than the PR author. Manki's own resolve settles the thread only with backing:
  * `addressed` when the latest round that evaluated the thread says so, `record` when `writerClearLogin` is someone
  * other than the PR author. A reply after that record changes nothing, since only Manki's own record names who cleared the thread.
+ * `raised`: Manki resolved it with its reply that the finding continues in another thread. Manki raises no thread that
+ * its first comment guards, so only a recorded or unknown grade can guard a raised one.
  */
 function settledBy(t: ThreadFacts, bot: BotIdentity, prAuthorLogin: string | undefined, prAuthorRole: AuthorClearRole | undefined): Settled | undefined {
   if (!t.isResolved) return undefined;
@@ -1000,18 +1004,19 @@ function settledBy(t: ThreadFacts, bot: BotIdentity, prAuthorLogin: string | und
   if (byManki && t.addressed) return 'addressed';
   if (securityOverrideOf(t, prAuthorLogin, prAuthorRole)) return 'override';
   if (mayClearSecurityThread(t.writerResolverLogin, bot, prAuthorLogin)) return 'resolver';
-  return byManki && mayClearSecurityThread(t.writerClearLogin, bot, prAuthorLogin) ? 'record' : undefined;
+  if (byManki && mayClearSecurityThread(t.writerClearLogin, bot, prAuthorLogin)) return 'record';
+  return byManki && t.raised && !isGuarded({ isSecurity: t.isSecurity, disprovedBlocker: t.disprovedBlocker, severity: t.severity }) ? 'raised' : undefined;
 }
 
 /**
  * Returns the thread's status for the next round. A resolved thread the PR author cannot clear stays `open` or `replied`
- * until `settled` says why it is settled. Manki's resolve that its record backs counts as `auto-resolved`. So does
+ * until `settled` says why it is settled. Manki's resolve that its record or a raise backs counts as `auto-resolved`. So does
  * any other thread without a human resolver, unless `settled` is `addressed`.
  */
 function threadStatus(t: ReviewThread, settled: Settled | undefined): PreviousFinding['status'] {
   const unresolved = t.hasHumanReply ? 'replied' : 'open';
   if (!t.isResolved) return unresolved;
-  if (authorCannotClear(t)) return !settled ? unresolved : settled === 'record' ? 'auto-resolved' : 'resolved';
+  if (authorCannotClear(t)) return !settled ? unresolved : settled === 'record' || settled === 'raised' ? 'auto-resolved' : 'resolved';
   return t.resolvedByHuman || settled === 'addressed' ? 'resolved' : 'auto-resolved';
 }
 
