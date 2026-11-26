@@ -6676,6 +6676,28 @@ describe('runReview', () => {
     const answeredBy = { answeredIn: { threadId: 'T8', answer: 'Agreed.', grade: { severity: 'note' as const } } };
     const keptPosted = (severity: Finding['severity']) => [{}, linkedTo, answeredBy].map(link => restatesEarlier(earlierOnes, finding(severity, 'Retry never ends', 'src/x.ts', 10, link)));
     expect([keptPosted('warning'), keptPosted('note')]).toEqual([[false, false, false], [true, true, true]]);
+    // A finding the body left out for lack of room was never shown, so nothing restates it. A blocker among them is listed again, so it stays.
+    const cut = buildPriorRound(1, [
+      makePriorWarningFinding({ severity: 'note', title: 'Cache is unbounded', threadId: undefined, fingerprint: { file: 'src/x.ts', lineStart: 50, lineEnd: 50, slug: 'cache-is-unbounded' } }),
+      makePriorWarningFinding({ severity: 'warning', title: 'Retry never ends', threadId: undefined, fingerprint: { file: 'src/x.ts', lineStart: 10, lineEnd: 10, slug: 'retry-never-ends' } }),
+      makePriorWarningFinding({ severity: 'blocker', title: 'Lock is dropped', threadId: undefined, fingerprint: { file: 'src/x.ts', lineStart: 70, lineEnd: 70, slug: 'lock-is-dropped' } }),
+    ]);
+    cut.findings.entries = cut.findings.entries.map(e => ({ ...e, posted: 'record' }));
+    expect(earlierFindings([cut], [], undefined).map(e => e.finding.title)).toEqual(['Lock is dropped']);
+    expect(restatesEarlier(earlierFindings([cut], [], undefined), finding('warning', 'Retry never ends', 'src/x.ts', 10))).toBe(false);
+    // A warning left out that way still has its `citedLine`, so the next round carries it into its body. A restatement
+    // that only the dedup model links folds into it there, so the warning shows once.
+    const carriedCut = { ...cut, findings: { ...cut.findings, entries: cut.findings.entries.map(e => e.severity === 'warning' ? { ...e, citedLine: { hash: 'abcdefabcdef', count: 1 } } : e) } };
+    expect(earlierFindings([carriedCut], [], undefined).map(e => e.finding.title)).toEqual(['Retry never ends', 'Lock is dropped']);
+    mockedRunJudgeAgent.mockResolvedValue({ summary: 'One warning.', findings: [finding('warning', 'Backoff loop has no exit', 'src/x.ts', 12, { evidence: { checks: [], proof: ['src/x.ts:12'] } })] });
+    const linkingDedup = { sendMessage: jest.fn(async (_system: string, user: string) => ({ content: JSON.stringify([...user.matchAll(/^(\d+)\.$/gm)].map(([, pair]) => ({ pair: Number(pair), sameDefect: true }))) })) } as unknown as LLMClient;
+    const foldedCut = await runReview({ ...makeClients(JSON.stringify([{ severity: 'warning', title: 'Backoff loop has no exit', file: 'src/x.ts', line: 12, description: 'd' }])), dedup: linkingDedup }, {
+      config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true,
+      openThreads: [], previousFindings: [], priorRounds: [carriedCut], headSha: 'sha3',
+    });
+    expect(foldedCut.findings.filter(f => f.title === 'Backoff loop has no exit').map(f => [f.raisedIn, f.sameAs])).toEqual([[1, 'src/x.ts:10:10:retry-never-ends']]);
+    await carryBodyWarnings(foldedCut, [carriedCut], { read: async () => null });
+    expect([foldedCut.carried, foldedCut.carriedEnded]).toEqual([undefined, [{ key: 'src/x.ts:10:10:retry-never-ends', reason: 'restated' }]]);
 
     // A warning a later round restated under a thread of its own is carried by that thread from then on, whichever entry
     // the judge links to, so the third round posts no second thread for it.
