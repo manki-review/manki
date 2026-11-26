@@ -363,7 +363,7 @@ async function deleteThreadReply(octokit: Octokit, commentId: string): Promise<v
 function reopenReply(thread: { isSecurity?: boolean; disprovedBlocker?: boolean; reopen?: PreviousFinding['reopen'] }, file: string): string {
   const kind = guardedKind(thread);
   if (thread.reopen === 'unbacked') {
-    const why = `Reopened. Manki resolved this ${kind} earlier, but has no record of a confirmed fix or of a maintainer who cleared it, so it still blocks.`;
+    const why = `Reopened. Manki resolved this ${kind} earlier, but has no record of a confirmed fix or of a maintainer who cleared it, so it still ${thread.disprovedBlocker ? 'holds the approval' : 'blocks'}.`;
     return file
       ? `${why} Push a fix and the next Manki review will check it again, or a reviewer with write access can resolve it. ${AFTER_PUSH_LINE}`
       : `${why} It is not tied to a file, so no review can confirm a fix for it. A reviewer with write access can resolve it.`;

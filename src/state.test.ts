@@ -605,6 +605,10 @@ describe('reopenUnsettledThreads', () => {
       'Reopened. Manki resolved this blocking finding earlier, but has no record of a confirmed fix or of a maintainer who cleared it, so it still blocks. '
       + `It is not tied to a file, so no review can confirm a fix for it. A reviewer with write access can resolve it.\n\n${BOT_MARKER}\n${REOPENED_MARKER}\n${UNBACKED_REOPEN_MARKER}`,
     ]);
+    // A finding a check lowered from a blocker only holds the approval, so its reply says that instead of blocking.
+    graphql.mockClear();
+    await reopen(graphql, [{ ...previous('T_unbacked_disproved', 'unbacked'), isSecurity: false, severity: 'warning', disprovedBlocker: true }]);
+    expect(graphql.mock.calls[1][1].body).toMatch(/^Reopened\. Manki resolved this finding a check lowered from a blocker earlier, but has no record of a confirmed fix or of a maintainer who cleared it, so it still holds the approval\. Push a fix/);
   });
 
   // The reply's marker stops every later reopen, so a thread that stayed resolved must not get it.
