@@ -503,13 +503,13 @@ export class PrClosedError extends Error {
 }
 
 /**
- * Throws `PrClosedError` when the PR is closed or merged, and `SupersededError` when its head is no longer `commitSha`.
- * A check belongs to the commit, so a closed PR's verdict would show on another PR with the same head. A failed lookup
- * lets the review go on.
+ * Throws `PrClosedError` when the PR is closed or merged unless `closedAtStart`, and `SupersededError` when its head is no
+ * longer `commitSha`. A check belongs to the commit, so a closed PR's verdict would show on another PR with the same head.
+ * A run started on a closed PR, as Review anyway does, goes on. A failed lookup lets the review go on.
  */
-export async function assertHeadUnchanged(octokit: Octokit, owner: string, repo: string, prNumber: number, commitSha: string): Promise<void> {
+export async function assertHeadUnchanged(octokit: Octokit, owner: string, repo: string, prNumber: number, commitSha: string, closedAtStart = false): Promise<void> {
   const head = await fetchPullHead(octokit, owner, repo, prNumber);
-  if (head?.closed) throw new PrClosedError(prNumber);
+  if (head?.closed && !closedAtStart) throw new PrClosedError(prNumber);
   if (head?.sha && head.sha !== commitSha) throw new SupersededError(commitSha, head.sha);
 }
 
@@ -2490,8 +2490,10 @@ export async function postReview(
   diff?: ParsedDiff,
   context?: RoundContext,
   reviewTimeMs?: number,
-  { existingThreads = [], placements = earlierPlaces(result.findings, existingThreads, diff), draft = false, autoApprove = true, configHold, noVerdict = false, skipped, memorySkip, restart, onPosted, unreadRecords, disproved = [], openWarnings = [], rules, closedPaths = [] }: {
+  { existingThreads = [], placements = earlierPlaces(result.findings, existingThreads, diff), draft = false, autoApprove = true, configHold, noVerdict = false, skipped, memorySkip, restart, onPosted, unreadRecords, disproved = [], openWarnings = [], rules, closedPaths = [], closedAtStart = false }: {
     existingThreads?: PreviousFinding[]; draft?: boolean; configHold?: ConfigHold; noVerdict?: boolean;
+    /** Whether the PR was merged or closed when the run started, as `assertHeadUnchanged` takes it. */
+    closedAtStart?: boolean;
     /** The `earlierPlaces` of the round's findings, which decide each finding an earlier thread takes. */
     placements?: ReadonlyMap<Finding, EarlierPlace | undefined>;
     /** The `closed_paths` setting. A file it closes is neither read nor linked, so the review quotes no code of it. */
@@ -2858,6 +2860,7 @@ export async function postReview(
   const review = await submitReview(
     octokit, owner, repo, prNumber, commitSha, postedVerdict, fitted(), (room, dropped) => recordFor(new Set(), false, room, dropped), validComments.map(highlight), reviewedCommitFooter,
     approvalRefusal => fitted(true, approvalRefusal), (approvalRefusal, room, dropped) => recordFor(inline, !!approvalRefusal, room, dropped), headlined.map(highlight),
+    closedAtStart,
   );
   const approvalRefused = postedVerdict === 'APPROVE' && !!review.refused;
   onPosted?.();
@@ -2948,6 +2951,7 @@ async function submitReview(
   recordWithoutLineComments: (approvalRefusal: EventRefusal | undefined, room: number, dropped: ReadonlySet<Finding>) => string,
   /** The line comments the body names by their headline when the review posts without them. The caller posts a blocker as a file-level thread instead. */
   unthreaded: typeof validComments,
+  closedAtStart: boolean,
 ): Promise<{ id: number; fit: BodyFit; lineComments: boolean; refused?: EventRefusal }> {
   const event = mapVerdictToEvent(verdict);
   /** The review text of the body of `fit` with `suffix` after it and the trailer that goes with it, and the fit of that body. */
@@ -3009,7 +3013,7 @@ async function submitReview(
       throw error;
     }
 
-    await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
+    await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha, closedAtStart);
     const refused: EventRefusal = isApprovalSettingRefusal(error) ? 'setting' : 'other';
     const hint = refused === 'setting'
       ? ' Ensure "Allow GitHub Actions to create and approve pull requests" is enabled in repo settings.'
