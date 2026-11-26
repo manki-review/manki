@@ -360,10 +360,10 @@ async function deleteThreadReply(octokit: Octokit, commentId: string): Promise<v
  * Returns the reply that says why a thread is reopened, for its `reopen` reason. A review never clears a thread tied to no
  * `file`, so its reply names no fix.
  */
-function reopenReply(thread: { isSecurity?: boolean; disprovedBlocker?: boolean; reopen?: PreviousFinding['reopen'] }, file: string): string {
+function reopenReply(thread: Parameters<typeof threadBlocks>[0] & { reopen?: PreviousFinding['reopen'] }, file: string): string {
   const kind = guardedKind(thread);
   if (thread.reopen === 'unbacked') {
-    const why = `Reopened. Manki resolved this ${kind} earlier, but has no record of a confirmed fix or of a maintainer who cleared it, so it still ${thread.disprovedBlocker ? 'holds the approval' : 'blocks'}.`;
+    const why = `Reopened. Manki resolved this ${kind} earlier, but has no record of a confirmed fix or of a maintainer who cleared it, so it still ${threadBlocks(thread) ? 'blocks' : 'holds the approval'}.`;
     return file
       ? `${why} Push a fix and the next Manki review will check it again, or a reviewer with write access can resolve it. ${AFTER_PUSH_LINE}`
       : `${why} It is not tied to a file, so no review can confirm a fix for it. A reviewer with write access can resolve it.`;

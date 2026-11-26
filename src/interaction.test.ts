@@ -16,7 +16,7 @@ import * as ghUtils from './github';
 import * as state from './state';
 import { RunCancelledError, stopWritesOn } from './abort';
 import * as auth from './auth';
-import { clearRecordMarker, latestAnswer, REOPENED_MARKER, SEEN_MARKERS, UNSETTLED_ANSWER_MARKER, withoutStatementFold } from './recap';
+import { clearRecordMarker, latestAnswer, REOPENED_MARKER, SEEN_MARKERS, UNBACKED_REOPEN_MARKER, UNSETTLED_ANSWER_MARKER, withoutStatementFold } from './recap';
 import { makeRoundContext, TEST_BOT, TEST_LINKS } from './test-utils';
 import { scopeWarnings } from './scope';
 
@@ -1068,6 +1068,7 @@ describe('handleReviewCommentReply', () => {
     ['Kept. `src/file.ts:12` still skips `clearTimeout` on the success path.', 'NONE', 'pr-author', 'pr-author', 'blocker', undefined, true, false, true, 'pr-author'],
     // A guarded thread Manki resolved is looked up too, since Manki reopens it when no record backs that resolve.
     ['Withdrawn. The caller already checks for null.', 'OWNER', 'someone', 'pr-author', 'blocker', 'INVALID', true, false, true, 'manki-review[bot]'],
+    ['Agreed. Deferring it to the follow-up is fine.', 'NONE', 'pr-author', 'pr-author', 'blocker', undefined, true, true, true, 'manki-review[bot]'],
     // A warning thread the PR author resolved needs no clearing, and neither does a thread someone else resolved.
     ['Withdrawn. The caller already checks for null.', 'OWNER', 'someone', 'pr-author', 'warning', undefined, true, false, true, 'pr-author'],
     // An answer to someone Manki resolves no thread for records that, also on a resolved thread, so it lifts no warning's hold.
@@ -1095,7 +1096,9 @@ describe('handleReviewCommentReply', () => {
         isBlocking: kind !== 'warning', isSecurity: kind === 'security', findingTitle: 'This',
       },
     ]);
-    jest.mocked(state.reopenNoteOf).mockResolvedValue(authorResolved ? { note: 'Reopened. The PR author cannot resolve it.', markers: [REOPENED_MARKER] } : undefined);
+    // The reply posts the markers the note gives, so an unbacked reopen keeps the marker that lets the next author resolve reopen it.
+    const markers = resolver ? [REOPENED_MARKER, UNBACKED_REOPEN_MARKER] : [REOPENED_MARKER];
+    jest.mocked(state.reopenNoteOf).mockResolvedValue(authorResolved ? { note: 'Reopened. The PR author cannot resolve it.', markers } : undefined);
     jest.mocked(state.resolveReviewThread).mockClear();
     jest.mocked(state.reopenThread).mockClear().mockResolvedValue(reopens);
 
@@ -1139,7 +1142,7 @@ describe('handleReviewCommentReply', () => {
     const resolvedBy = resolver ?? (authorResolved ? prAuthor : undefined);
     const lookedUp = resolved && kind !== 'warning' && (resolvedBy === prAuthor || resolvedBy === 'manki-review[bot]');
     expect(jest.mocked(state.reopenNoteOf).mock.calls).toEqual(lookedUp ? [[octokit, TEST_BOT, 'test-owner', 'test-repo', 1, prAuthor, CONFIG, 'PRRT_this']] : []);
-    expect(body.endsWith(`\n${REOPENED_MARKER}`)).toBe(noted);
+    expect(body.endsWith(`\n${markers.join('\n')}`)).toBe(noted);
     // Every reader takes an answer led by its state as its outcome, by its marker.
     expect(Object.values(SEEN_MARKERS).filter(marker => body.includes(marker))).toEqual(seen && lead ? [SEEN_MARKERS[outcome!]] : []);
     expect(jest.mocked(state.reopenThread).mock.calls).toEqual(authorResolved || (resolved && reason) ? [[octokit, 'PRRT_this']] : []);
