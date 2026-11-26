@@ -10,7 +10,7 @@ import { capUnconfirmedRaise, checkStatus, confirmPushedFixes, disprovedTrigger,
 import { repoToolsPrompt } from './providers/cli-utils';
 import { withConsequence } from './test-utils';
 import { parseFindings } from './review';
-import { agreedOutcome, disproof, Finding, OpenThread, outcomeOf, ParsedDiff, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, RulesMode, staysWarningIfConfirmed, triggerDoubt, wouldBlockIfTrue } from './types';
+import { agreedOutcome, asAnswered, disproof, Finding, OpenThread, outcomeOf, ParsedDiff, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, RulesMode, staysWarningIfConfirmed, triggerDoubt, wouldBlockIfTrue } from './types';
 import { RELATED_REPO_TRUST_RULE, VERIFY_CLAIMS_RULE } from './writing-rules';
 
 jest.mock('@actions/core');
@@ -971,6 +971,7 @@ describe('refuteBlockers', () => {
       cell: { row: 'severe', column: 'normal' }, gradeIfConfirmed: 'blocker', doubts: [drop], judgeNotes: 'ignore. The handler bounds both inputs.', ...overrides,
     });
     const unbounded = { outcome: 'disproved', reason: 'A queue consumer passes `a` unbounded.', proof: ['src/api.ts:4'] };
+    const queue = 'The message queue delivers a payload without checking its size.';
     const client = fakeClient({
       'Premise disproved': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'], premises: [unbounded] },
       // The premise alone brings it back, so a check names no trigger or result for it.
@@ -983,6 +984,10 @@ describe('refuteBlockers', () => {
       // A disproof that cites no line of the finding's file or of the diff settles nothing.
       'Disproof on an unrelated file': { outcome: 'unsettled', reason: 'Could not tell.', premises: [{ ...unbounded, proof: ['README.md:1'] }] },
       'Dropped without a premise': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] },
+      // A disproof that rests on how a program outside the code behaves counts only with a cited line that states it.
+      'Premise disproved on a stated behavior': { outcome: 'unsettled', reason: 'Could not tell.', premises: [{ ...unbounded, outside: { behavior: queue, stated_in: ['README.md:1'] } }] },
+      'Premise disproved on an unstated behavior': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'], premises: [{ ...unbounded, outside: { behavior: queue, stated_in: [] } }] },
+      'Premise confirmed on an unstated behavior': { outcome: 'unsettled', reason: 'Could not tell.', premises: [{ outcome: 'confirmed', reason: 'Every caller bounds them.', proof: ['src/api.ts:9'], outside: { behavior: queue } }] },
     });
     const findings = [
       finding('Premise disproved', dropped()),
@@ -994,6 +999,9 @@ describe('refuteBlockers', () => {
       finding('Disproof on an unrelated file', dropped()),
       // A drop the judge rests on no premise, such as one the diff itself shows, is never checked.
       finding('Dropped without a premise', dropped({ cell: undefined, gradeIfConfirmed: undefined, doubts: undefined })),
+      finding('Premise disproved on a stated behavior', dropped()),
+      finding('Premise disproved on an unstated behavior', dropped()),
+      finding('Premise confirmed on an unstated behavior', dropped()),
     ];
 
     const result = await refuteBlockers(client, findings, { workspace, diff });
@@ -1007,7 +1015,24 @@ describe('refuteBlockers', () => {
       ['Defect disproved beside a disproved premise', 'ignore', 'disproved', ['disproved']],
       ['Disproof on an unrelated file', 'ignore', 'unsettled', ['unsettled']],
       ['Dropped without a premise', 'ignore', undefined, undefined],
+      ['Premise disproved on a stated behavior', 'blocker', 'confirmed', ['disproved']],
+      // A disproof on an unstated behavior is stored unsettled, so the blocker stays dropped beside a confirmed defect.
+      ['Premise disproved on an unstated behavior', 'ignore', 'unsettled', ['unsettled']],
+      // A confirmed `drop` premise counts against the finding, so it keeps its outcome and records no behavior.
+      ['Premise confirmed on an unstated behavior', 'ignore', 'disproved', ['confirmed']],
     ]);
+    const [stated, unstated, confirmedDrop] = result.slice(-3);
+    expect(stated.refutation?.premises?.[0]).toMatchObject({ outside: { behavior: queue, stated: true }, proof: ['src/api.ts:4', 'README.md:1'] });
+    expect(unstated.refutation?.premises?.[0]).toMatchObject({ outside: { behavior: queue, stated: false }, proof: ['src/api.ts:4'] });
+    expect(confirmedDrop.refutation?.premises?.[0]).not.toHaveProperty('outside');
+    // Read as the refuter answered it, such a premise is still no disproof, so nothing counts it toward the finding.
+    expect([asAnswered(unstated.refutation!).premises?.[0].outcome, asAnswered(unstated.refutation!).outcome, agreedOutcome([unstated.refutation!])]).toEqual(['unsettled', 'unsettled', 'unsettled']);
+    // A second check that disproves the defect then disproves the finding, since the first backs it with nothing.
+    const defectDisproved = { outcome: 'disproved', reason: 'Bounded.', proof: ['src/math.ts:1'], premises: [{ outcome: 'unsettled', reason: 'Too many callers.' }] };
+    const title = 'Premise disproved on an unstated behavior';
+    const onlyPremise = fakeClient({ [title]: { outcome: 'unsettled', reason: 'Could not tell.', premises: [{ ...unbounded, outside: { behavior: queue } }] } });
+    const [paired] = await refuteBlockers(onlyPremise, [finding(title, dropped())], { workspace, diff, pair: fakeClient({ [title]: defectDisproved }) });
+    expect([paired.severity, agreedOutcome([paired.refutation!, paired.pairRefutation!]), disproof(paired)]).toEqual(['ignore', 'unsettled', paired.pairRefutation]);
     expect(client.calls.map(([title]) => title)).not.toContain('Dropped without a premise');
     // A finding the check brings back is graded as if the judge had not dropped it: the premise is gone, the step is
     // recorded, and the lines of the path that disproved the premise prove it.
@@ -1565,7 +1590,8 @@ describe('refuteBlockers', () => {
     expect(system).toContain('"premises": [{"outcome": "disproved" | "confirmed" | "unsettled" | "outside_code"');
     // A confirmation about how a program outside the readable code behaves names that behaviour and the lines that state it.
     expect(system).toContain('- Reading code cannot show how a program outside the code you can read behaves when it runs this code or reads its files: an external tool or command line program, a package manager, a runtime or platform, or a remote service. The rules of the language itself are no such behaviour. Never confirm such behaviour from what you know of the program.');
-    expect(system).toContain('Leave `stated_in` empty when no line you read states it. The confirmation then counts as unsettled, so it never raises the finding\'s grade.');
+    expect(system).toContain('When a confirmation, of the defect or of a premise, or the disproof of the premise a drop rests on, rests on it, add `outside`');
+    expect(system).toContain('Leave `stated_in` empty when no line you read states it. The answer then counts as unsettled, so it never raises the finding\'s grade.');
     expect(system.match(/"outside": \{"behavior": "The outside behaviour the confirmation rests on, in one sentence", "stated_in": \["file:line"\]\}/g)).toHaveLength(2);
     expect(system).not.toContain('an intent the code states');
     expect([result.severity, result.refutation?.outcome, result.refutation?.rule]).toEqual(['ignore', 'disproved', rule]);

@@ -1299,8 +1299,11 @@ export function outcomeOf(check: Pick<Refutation, 'outcome' | 'defect'>): Refuta
   return check.defect === 'disproved' ? 'disproved' : check.outcome;
 }
 
-/** Whether the refuter confirmed `answer` resting on outside behavior no cited line states, so it is stored `unsettled`. */
-export const restsOnUnstated = (answer: { outside?: OutsideBehavior }): boolean => answer.outside?.stated === false;
+/**
+ * Whether the refuter confirmed `answer` resting on outside behavior no cited line states, so it is stored `unsettled`.
+ * A `drop` premise stored so was disproved, which backs the finding, so it stays unsettled wherever it is read.
+ */
+export const restsOnUnstated = (answer: { outside?: OutsideBehavior; decides?: Doubt['decides'] }): boolean => answer.outside?.stated === false && answer.decides !== 'drop';
 
 /**
  * Returns `check` as the refuter answered it, with each confirmation that `restsOnUnstated` confirmed again. A step that
