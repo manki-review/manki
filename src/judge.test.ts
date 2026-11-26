@@ -1050,6 +1050,13 @@ describe('buildJudgeUserMessage', () => {
     const unstated = { ...capped, refutation: { ...capped.refutation, premises: [unstatedPremise, capped.refutation.premises[1]] } } satisfies FindingFingerprintEntry;
     const againstDisproof = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, [makeRoundContext(1, { findings: { count: 1, severityCounts: {}, entries: [unstated] } })]);
     expect(againstDisproof).toContain('"premise": "The route never sets tenant",\n            "decides": "defect",\n            "check": "unsettled"');
+    // A disproof of a `drop` premise stored so stands for nothing, so the other refuter's disproof shows alone.
+    const unstatedDrop = {
+      ...capped, doubts: [{ ...capped.doubts[0], decides: 'drop' }, capped.doubts[1]],
+      refutation: { ...capped.refutation, premises: [{ ...unstatedPremise, decides: 'drop' as const }, capped.refutation.premises[1]] },
+    } satisfies FindingFingerprintEntry;
+    const dropDisproved = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, [makeRoundContext(1, { findings: { count: 1, severityCounts: {}, entries: [unstatedDrop] } })]);
+    expect(dropDisproved).toContain('"premise": "The route never sets tenant",\n            "decides": "drop",\n            "check": "disproved"');
     // The list of link targets shows the cell too, so Grade Stability can keep it for a finding outside the recent rounds.
     // It shows the conditional grade with it, so a cell a doubt holds down is not restated as if nothing were open.
     expect(doubted.split('\n').filter(l => /^- \*\*P\d/.test(l))).toEqual([
