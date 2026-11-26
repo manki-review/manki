@@ -2179,12 +2179,15 @@ class ParsedFile {
 
   /** Whether a node around `node` is a module of tests. Each node is checked once, however many of the nodes asked about share it. */
   private inTests(node: SgNode): boolean {
+    return this.tree.ancestors(node).some(around => this.isTestModule(around));
+  }
+
+  private isTestModule(node: SgNode): boolean {
     const test = this.rules.testModule;
-    return !!test && this.tree.ancestors(node).some(around => {
-      const id = this.tree.idOf(around);
-      if (!this.testModules.has(id)) this.testModules.set(id, test(around));
-      return this.testModules.get(id)!;
-    });
+    if (!test) return false;
+    const id = this.tree.idOf(node);
+    if (!this.testModules.has(id)) this.testModules.set(id, test(node));
+    return this.testModules.get(id)!;
   }
 
   /**
@@ -2205,15 +2208,18 @@ class ParsedFile {
     return this.marked.get(id)!;
   }
 
-  /** Returns `testBlocks`: the outermost test node around each test declaration that is no declaration itself. */
+  /**
+   * Returns `testBlocks`: the outermost test node around each test declaration that is no declaration itself, each read
+   * once however many tests it holds. One without a name, such as a Rust `#[cfg(test)] impl`, is named `tests`.
+   */
   private findTestBlocks(): Array<Omit<ChangedItem, 'file' | 'test'>> {
     const modules = new Map<number, Omit<ChangedItem, 'file' | 'test'>>();
     for (const decl of this.declarations) {
       if (!decl.test && !this.inTests(decl.node)) continue;
-      const top = [decl.node, ...this.tree.ancestors(decl.node)].filter(n => this.hasTestAttribute(n) || !!this.rules.testModule?.(n)).at(-1);
-      if (!top || this.rules.declarations[String(top.kind())]) continue;
+      const top = [decl.node, ...this.tree.ancestors(decl.node)].filter(n => this.hasTestAttribute(n) || this.isTestModule(n)).at(-1);
+      if (!top || this.rules.declarations[String(top.kind())] || modules.has(top.range().start.index)) continue;
       const name = top.field('name');
-      modules.set(top.range().start.index, { name: name?.text() ?? String(top.kind()), line: lineOf(name ?? top), start: this.leadingStart(top).line, end: top.range().end.line + 1 });
+      modules.set(top.range().start.index, { name: name?.text() ?? 'tests', line: lineOf(name ?? top), start: this.leadingStart(top).line, end: top.range().end.line + 1 });
     }
     return [...modules.values()];
   }
