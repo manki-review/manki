@@ -6684,6 +6684,10 @@ describe('runReview', () => {
     expect(thirdRound.findings.map(f => [f.title, f.threadId, f.raisedIn])).toEqual([['Cache has no limit', 'T2', undefined], ['Cache keeps every entry', 'T2', undefined]]);
     // Once that thread is closed, the warning is listed on its own again, as an earlier review body listed it.
     expect(earlierFindings([bodyRound, restatedRound], [], undefined).map(e => [e.threadId, [...e.keys], e.raisedIn])).toEqual([[undefined, [listedKey], 1]]);
+    // A blocker thread that restates the warning carries it the same way.
+    const raisedRound = { ...restatedRound, findings: { ...restatedRound.findings, entries: [{ ...restatedRound.findings.entries[0], severity: 'blocker' as const }] } };
+    expect(earlierFindings([bodyRound, raisedRound], [{ ...restatedThread, severity: 'blocker' }], undefined).map(e => [e.threadId, [...e.keys]]))
+      .toEqual([['T2', ['src/x.ts:52:52:cache-grows-without-bound', listedKey]]]);
 
     // A security finding never rides a thread that is not a security thread, since only the first comment makes a thread
     // guarded. It is posted on its own, while a security thread takes it.

@@ -3932,16 +3932,16 @@ interface EarlierFinding {
 /**
  * Returns the earlier findings a finding of this round can restate: each of `openThreads` the round leaves open, each
  * finding an earlier round recorded under one of them, and each finding an earlier round listed only in its review body.
- * A warning or note restated under an open thread is carried by that thread from then on: the thread also answers to
- * the key of the body entry it restates, by its `sameAs`, and that entry is no longer listed on its own. Body-only
- * blockers keep their own rules, in `attachPriorThreadIds` and `relistThreadlessBlockers`.
+ * A body-only warning or note restated under an open thread, at any grade, is carried by that thread from then on: the
+ * thread also answers to the key of that body entry, by the restating entry's `sameAs`, and the body entry is no longer
+ * listed on its own. Body-only blockers keep their own rules, in `attachPriorThreadIds` and `relistThreadlessBlockers`.
  */
 export function earlierFindings(priorRounds: RoundContext[], openThreads: OpenThread[], threadEvaluations: ThreadEvaluation[] | undefined): EarlierFinding[] {
   const addressed = new Set((threadEvaluations ?? []).filter(e => e.status === 'addressed').map(e => e.threadId));
   const open = new Set(openThreads.filter(t => !addressed.has(t.threadId)).map(t => t.threadId));
   const entries = priorRounds.flatMap(r => (r.findings.entries ?? []).map(entry => ({ entry, key: stringifyFindingFingerprint(entry.fingerprint), round: entry.raisedIn ?? r.meta.round })));
   const bodyOnly = new Set(entries.filter(e => !e.entry.threadId && e.entry.severity !== 'blocker').map(e => e.key));
-  const restatedIn = (threadId: string) => entries.filter(e => e.entry.threadId === threadId && e.entry.severity !== 'blocker' && !!e.entry.sameAs && bodyOnly.has(e.entry.sameAs)).map(e => e.entry.sameAs!);
+  const restatedIn = (threadId: string) => entries.filter(e => e.entry.threadId === threadId && !!e.entry.sameAs && bodyOnly.has(e.entry.sameAs)).map(e => e.entry.sameAs!);
   const threads = openThreads.filter(t => open.has(t.threadId)).map(t => ({
     finding: { title: t.title, file: t.file, line: t.line, description: t.description },
     keys: new Set([...entries.filter(e => e.entry.threadId === t.threadId).map(e => e.key), ...restatedIn(t.threadId)]),
