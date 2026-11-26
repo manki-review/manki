@@ -1298,6 +1298,11 @@ describe('buildReviewerUserMessage', () => {
     const withNotice = buildReviewerUserMessage('diff content', '', { fileContents, leftOutFiles });
     expect(withNotice).toContain(`${notice}\n\n## Changed Files\n\nThe full content of the other changed files is provided below.`);
     expect(buildReviewerUserMessage('diff content', '', { leftOutFiles })).toContain(`${notice}\n\n## Pull Request Diff`);
+
+    // Code windows are introduced as the code around the hunks, which a finder's tools read beyond.
+    const windows = 'The code around each changed hunk of the modified files is provided below, each line after its line number in the PR head and a blank line between windows. An added file is whole in the diff. Read more of a file with your tools when the change needs it. Use it';
+    expect(buildReviewerUserMessage('diff content', '', { fileContents, codeWindows: true })).toContain(`## Changed Files\n\n${windows}`);
+    expect(buildReviewerUserMessage('diff content', '', { fileContents, leftOutFiles, codeWindows: true })).toContain(windows.replace('of the modified', 'of the other modified'));
   });
 
   it('uses file extension as language hint in code fences', () => {
@@ -9107,6 +9112,32 @@ describe('runReview', () => {
     expect(mockedRunJudgeAgent).toHaveBeenCalledTimes(1);
     const judgeInput = mockedRunJudgeAgent.mock.calls[0][2];
     expect(judgeInput.provenanceMap).toEqual(provenance);
+
+    // A finder with repository tools reads the code around each hunk from the PR head in place of the whole files, while the verdict reader keeps them.
+    const root = mkdtempSync(join(tmpdir(), 'manki-head-'));
+    mkdirSync(join(root, 'src'));
+    writeFileSync(join(root, 'src/foo.ts'), Array.from({ length: 60 }, (_, i) => `const v${i + 1} = ${i + 1};`).join('\n'));
+    reviewerSendMessage.mockClear();
+    jest.mocked(clients.judge.sendMessage).mockClear();
+    Object.assign(clients.reviewer, { repoTools: true });
+    try {
+      const changed = makeDiff({ files: [{ path: 'src/foo.ts', changeType: 'modified', hunks: [{ oldStart: 40, oldLines: 1, newStart: 40, newLines: 1, content: '-x\n+y' }] }], totalAdditions: 1, totalDeletions: 1 });
+      await runReview(clients, { config, diff: changed, rawDiff: 'raw diff', repoContext: '', fileContents, leftOutFiles, workspace: root });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+    const finderMessages = reviewerSendMessage.mock.calls.map(call => call[1] as string).filter(message => message.includes('## Changed Files'));
+    expect(finderMessages.length).toBeGreaterThan(0);
+    for (const message of finderMessages) {
+      expect(message).toContain('### File: src/foo.ts');
+      expect(message).toContain('20: const v20 = 20;\n');
+      expect(message).toContain('60: const v60 = 60;');
+      expect(message).not.toContain('const v19 = 19;');
+      expect(message).not.toContain('const a = 1;');
+      expect(message).not.toContain('src/foo.test.ts');
+    }
+    const wholeFiles = jest.mocked(clients.judge.sendMessage).mock.calls.find(call => (call[1] as string).includes('## Pull Request Diff'));
+    expect(wholeFiles?.[1]).toContain('const a = 1;\nconst b = 2;');
   });
 
   it('sends reviewers the whole diff on a follow-up round, with the files changed since the last round listed first', async () => {

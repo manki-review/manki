@@ -1,3 +1,8 @@
+import { countChangedLines } from './diff';
+import type { LeftOutFile } from './github';
+import { readFileInRoot } from './mcp-server';
+import { ParsedDiff } from './types';
+
 const OPEN_THREAD_CODE_WINDOW = 25;
 
 /**
@@ -98,4 +103,54 @@ export function locatePostedFile(posted: string, line: number, files: Iterable<r
     if (at !== undefined && !postedCodeChanged(posted, line, content, at)) held.push({ file, line: at });
   }
   return held.length === 1 ? held[0] : undefined;
+}
+
+/** The lines a finder's code window shows on each side of a changed hunk. */
+const FINDER_WINDOW_LINES = 20;
+/** The most characters of code windows a finder gets in all. */
+const MAX_WINDOW_CHARS = 150_000;
+
+/** The code windows of the changed files, by path, and the changed files that get none for their size. */
+export interface CodeWindows {
+  contents: Map<string, string>;
+  leftOut: LeftOutFile[];
+}
+
+/**
+ * Returns the code around each changed hunk of the files of `diff` that the PR modifies or renames, read from the head
+ * checkout `workspace`: `FINDER_WINDOW_LINES` on each side, each line after its number, with overlapping windows merged.
+ * An added file is in the diff whole, so it gets no window. When the windows exceed `MAX_WINDOW_CHARS`, the files the
+ * diff changes the largest share of come first. A file too large for `readFileInRoot`, or whose windows no longer fit,
+ * is listed in `leftOut`. The map keeps the order of `diff`.
+ */
+export function changedCodeWindows(diff: ParsedDiff, workspace: string): CodeWindows {
+  const leftOut: LeftOutFile[] = [];
+  const windows = diff.files.filter(f => f.changeType !== 'added' && f.changeType !== 'deleted' && f.hunks.length > 0).flatMap(file => {
+    const read = readFileInRoot(workspace, file.path);
+    if (read === 'too large') leftOut.push({ path: file.path, reason: 'file_limit' });
+    if (!read || read === 'too large' || read.lines.length === 0) return [];
+    const { lines } = read;
+    const ranges: Array<[number, number]> = [];
+    for (const hunk of file.hunks) {
+      const start = Math.max(1, hunk.newStart - FINDER_WINDOW_LINES);
+      const end = Math.min(lines.length, Math.max(hunk.newStart, hunk.newStart + hunk.newLines - 1) + FINDER_WINDOW_LINES);
+      const last = ranges.at(-1);
+      if (last && start <= last[1] + 1) last[1] = Math.max(last[1], end);
+      else if (start <= end) ranges.push([start, end]);
+    }
+    const text = ranges.map(([start, end]) => lines.slice(start - 1, end).map((line, i) => `${start + i}: ${line}`).join('\n')).join('\n\n');
+    const { additions, deletions } = countChangedLines(file);
+    return [{ path: file.path, text, share: (additions + deletions) / lines.length }];
+  });
+  const kept = new Set<string>();
+  let total = 0;
+  for (const { path, text } of [...windows].sort((a, b) => b.share - a.share || a.path.localeCompare(b.path))) {
+    if (total + text.length > MAX_WINDOW_CHARS) {
+      leftOut.push({ path, reason: 'budget' });
+      continue;
+    }
+    kept.add(path);
+    total += text.length;
+  }
+  return { contents: new Map(windows.filter(w => kept.has(w.path)).map(w => [w.path, w.text])), leftOut };
 }

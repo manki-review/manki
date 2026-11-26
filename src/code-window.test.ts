@@ -1,5 +1,10 @@
-import { extractCurrentCodeWindow, locatePostedFile, locatePostedLine } from './code-window';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+
+import { changedCodeWindows, extractCurrentCodeWindow, locatePostedFile, locatePostedLine } from './code-window';
 import { expectLinearTime } from './test-utils';
+import { DiffFile } from './types';
 
 describe('extractCurrentCodeWindow', () => {
   function makeFile(lineCount: number): string {
@@ -115,5 +120,65 @@ describe('locatePostedLine', () => {
     expect(locatePostedFile(posted, 2, [['src/a.ts', whole], ['src/b.ts', posted]])).toBeUndefined();
     expect(locatePostedFile(posted, 2, [['src/other.ts', 'nothing here']])).toBeUndefined();
     expect(locatePostedFile(posted, 2, [])).toBeUndefined();
+  });
+});
+
+describe('changedCodeWindows', () => {
+  const numbered = (count: number, width = 0) => Array.from({ length: count }, (_, i) => `line ${i + 1}`.padEnd(width, '.')).join('\n') + '\n';
+  const lines = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => `${from + i}: line ${from + i}`).join('\n');
+  const hunk = (newStart: number, newLines: number, changed = 1) => ({ oldStart: newStart, oldLines: newLines, newStart, newLines, content: '+x\n'.repeat(changed) });
+  const file = (path: string, hunks: DiffFile['hunks'], changeType: DiffFile['changeType'] = 'modified'): DiffFile => ({ path, changeType, hunks });
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'manki-windows-'));
+    mkdirSync(join(root, 'src'));
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it('shows the numbered lines around each hunk, merges windows that meet, and skips files the diff holds whole', () => {
+    writeFileSync(join(root, 'src/a.ts'), numbered(100));
+    writeFileSync(join(root, 'src/new.ts'), numbered(5));
+    writeFileSync(join(root, 'src/end.ts'), numbered(30));
+    const diff = {
+      files: [
+        // A window starts at the first line and ends at the last, and the windows of hunks at 70 and 75 meet.
+        file('src/a.ts', [hunk(10, 2), hunk(70, 1), hunk(75, 1)]),
+        // A hunk that only removes lines shows the code on both sides of the removal.
+        file('src/end.ts', [hunk(25, 0)]),
+        file('src/new.ts', [hunk(1, 5)], 'added'),
+        file('src/gone.ts', [hunk(0, 0)], 'deleted'),
+        // A file the checkout no longer holds gets no window and no notice.
+        file('src/missing.ts', [hunk(1, 1)]),
+      ],
+      totalAdditions: 9,
+      totalDeletions: 0,
+    };
+    const { contents, leftOut } = changedCodeWindows(diff, root);
+    expect([...contents.keys()]).toEqual(['src/a.ts', 'src/end.ts']);
+    expect(contents.get('src/a.ts')).toBe(`${lines(1, 31)}\n\n${lines(50, 95)}`);
+    expect(contents.get('src/end.ts')).toBe(lines(5, 30));
+    expect(leftOut).toEqual([]);
+  });
+
+  it('puts the files the diff changes the largest share of first when the windows exceed the budget, and lists the rest', () => {
+    // Each window holds about 100,000 characters, so only one of the two fits the budget of 150,000.
+    writeFileSync(join(root, 'src/most.ts'), numbered(50, 2000));
+    writeFileSync(join(root, 'src/least.ts'), numbered(400, 2000));
+    writeFileSync(join(root, 'src/small.ts'), numbered(10));
+    writeFileSync(join(root, 'src/huge.ts'), 'x'.repeat(1024 * 1024 + 1));
+    const diff = {
+      files: [
+        file('src/least.ts', [hunk(200, 10, 10)]),
+        file('src/huge.ts', [hunk(1, 1)]),
+        file('src/most.ts', [hunk(1, 50, 50)]),
+        file('src/small.ts', [hunk(5, 1)]),
+      ],
+      totalAdditions: 62,
+      totalDeletions: 0,
+    };
+    const { contents, leftOut } = changedCodeWindows(diff, root);
+    expect([...contents.keys()]).toEqual(['src/most.ts', 'src/small.ts']);
+    expect(leftOut).toEqual([{ path: 'src/huge.ts', reason: 'file_limit' }, { path: 'src/least.ts', reason: 'budget' }]);
   });
 });
