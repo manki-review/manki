@@ -3399,9 +3399,10 @@ export interface CitedLine {
  * Why a warning carried from an earlier review body is no longer listed: its file is gone (`file_gone`), or a finding
  * the judge graded this round names it. That finding is listed (`restated`), a note the
  * review leaves out (`hidden_note`), dropped by the judge (`judge_dropped`) or left out by a later step (`left_out`).
- * A warning left out because nothing proves it ends none. A warning the judge evaluated as addressed ends as `fixed`.
+ * A warning left out because nothing proves it ends none. A warning the judge evaluated as addressed ends as `fixed`,
+ * and one that someone with write access dismissed on the PR as `dismissed`.
  */
-export type CarriedEndReason = 'file_gone' | 'restated' | 'hidden_note' | 'judge_dropped' | 'left_out' | 'fixed';
+export type CarriedEndReason = 'file_gone' | 'restated' | 'hidden_note' | 'judge_dropped' | 'left_out' | 'fixed' | 'dismissed';
 
 export interface CarriedEnd {
   /** The fingerprint key of the warning. */

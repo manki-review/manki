@@ -7,14 +7,15 @@ import { LLMCall, LLMClient, recordCalls, SendMessageOptions } from './providers
 import { messageBox } from './issue-box';
 import { MemoryStore, patternMatchesTitle, writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
 import { BotIdentity, dynamicFence, findingLocation, hasWriteAccess, inline, isBotLogin, isBotUser, MANKI_VERSION, authorClearRole, reactToIssueComment, reactToReviewComment, awaitPushedHead, HeadedPull, readChangesSince, fetchPRDiff, sanitizeMarkdown, TooManyFilesError } from './github';
-import { fencePrText, truncateDiff } from './review';
+import { bodyWarnings, dismissedWarningMarker, fencePrText, truncateDiff } from './review';
 import { closeRawDiff, diffSections, findClosedPattern, parsePRDiff, reviewableDiff } from './diff';
 import { eventPrClosed } from './dispatch';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { clearRecordMarker, SEEN_MARKERS, fetchPriorRoundContexts, recordedThreadGrades, threadSeverity, RecapState, fixClaimMarker, guardedKind, isDisprovedThread, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, UNSETTLED_ANSWER_MARKER, currentFindingLine, findingPlace, withoutCode, BOT_PREFIX_PATTERN, withoutStatementFold } from './recap';
 import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, recordDismissal, reopenNoteOf, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, rolePhrase, unclearedThreads, warningHoldNote } from './state';
-import { AuthorClearRole, FindingSeverity, partlyFixedEffect, ParsedDiff, PrContext, RelatedRepoTools, ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation, RoundContext } from './types';
+import { AuthorClearRole, FindingFingerprintEntry, FindingSeverity, isGuardedFinding, partlyFixedEffect, ParsedDiff, PrContext, RelatedRepoTools, ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation, RoundContext } from './types';
 import { relatedRepoOutcomes, relatedRepoTools, repoTools } from './related-repos';
+import { stringifyFindingFingerprint } from './finding-fingerprint';
 import { CheckedReply, MAX_REPLY_STATEMENTS, MAX_TERM_CHARS, MIN_TERM_CHARS, ThreadState, checkFixedElsewhere, checkReply, fixedElsewhereText, statementFold, statementRecords, unsettledLead, withoutOutcomeOpener } from './reply-check';
 import { formatReplyRecord } from './review-record';
 import { buildRoundUsage, withReads } from './round-context';
@@ -207,7 +208,7 @@ function staysOpenNote(thread: { isSecurity?: boolean; disprovedBlocker?: boolea
 
 const FORGET_USAGE = 'Search term too short: it needs at least 3 characters.\n\nUsage:\n- `/manki forget <text>` removes a learning.\n- `/manki forget suppression <pattern>` removes a suppression.';
 
-const DISMISS_USAGE = 'Usage:\n- `/manki dismiss` as a reply in a Manki finding\'s thread dismisses that finding.\n- `/manki dismiss <finding title>` names a finding Manki posted on this PR by part of its title and stores a suppression, so later reviews do not raise findings with that title.';
+const DISMISS_USAGE = 'Usage:\n- `/manki dismiss` as a reply in a Manki finding\'s thread dismisses that finding.\n- `/manki dismiss <finding title>` names a finding Manki posted on this PR by part of its title and stores a suppression, so later reviews do not raise findings with that title. A warning listed only in a review body is dismissed on this PR alone, with no suppression.';
 
 const DISMISS_NO_FINDING = `Nothing was dismissed, since no finding was named.\n\n${DISMISS_USAGE}`;
 
@@ -990,11 +991,11 @@ export async function handlePRComment(
       break;
     }
     case 'dismiss': {
-      const dismissal = await handleDismiss(octokit, bot, owner, repo, issueNumber, command.args, memory);
+      const dismissal = await handleDismiss(octokit, bot, owner, repo, issueNumber, command.args, memory, true);
       await octokit.rest.issues.createComment({
-        owner, repo, issue_number: issueNumber, body: withMarkers(dismissal?.note ?? DISMISS_NO_FINDING, BOT_MARKER),
+        owner, repo, issue_number: issueNumber, body: withMarkers(dismissal?.note ?? DISMISS_NO_FINDING, BOT_MARKER, ...(dismissal?.markers ?? [])),
       });
-      if (dismissal?.stored) await reactToIssueComment(octokit, owner, repo, commentId, '+1');
+      if (dismissal?.stored || dismissal?.markers.length) await reactToIssueComment(octokit, owner, repo, commentId, '+1');
       break;
     }
     case 'remember':
@@ -1086,9 +1087,25 @@ async function handleExplain(
 }
 
 /**
+ * Returns the warnings that the last review body of the PR listed or carried and that `pattern` names, by `bodyWarnings`,
+ * with the round of that review. A blocker is never among them, and neither is a security finding or the warning of a
+ * disproved blocker, since a dismiss command does not clear those. `incomplete` says that a round record could not be read.
+ */
+async function listedWarnings(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, pattern: string,
+): Promise<{ round: number; entries: FindingFingerprintEntry[]; incomplete: boolean }> {
+  const { priorRounds, priorRoundsIncomplete } = await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber);
+  const entries = bodyWarnings(priorRounds).filter(e => e.severity === 'warning' && !isGuardedFinding(e.tags, e.reviewers ?? [e.specialist]) && patternMatchesTitle(pattern, e.title ?? ''));
+  return { round: priorRounds.at(-1)?.meta.round ?? 0, entries, incomplete: !!priorRoundsIncomplete };
+}
+
+/**
  * Stores a suppression for the finding `findingRef` names. Returns the note to post, and whether the suppression was
  * stored, or `undefined` when `findingRef` names none. A suppression hides findings on every PR, so only text that matches
  * a finding Manki posted on this PR is stored, and nothing on a merged or closed PR. `named` says whether it matched one.
+ * With `listed`, the text may also name a warning the last review body listed or carried, by `listedWarnings`. For
+ * someone with write access, the answer then ends that warning's carry on this PR with `markers`, and stores no
+ * suppression for it.
  */
 async function handleDismiss(
   octokit: Octokit,
@@ -1098,28 +1115,36 @@ async function handleDismiss(
   prNumber: number,
   findingRef: string,
   memory?: MemoryStore,
-): Promise<{ note: string; named: boolean; stored: boolean } | undefined> {
-  if (eventPrClosed()) return { note: DISMISS_PR_CLOSED, named: false, stored: false };
+  listed = false,
+): Promise<{ note: string; named: boolean; stored: boolean; markers: string[] } | undefined> {
+  if (eventPrClosed()) return { note: DISMISS_PR_CLOSED, named: false, stored: false, markers: [] };
   if (!findingRef.trim()) return undefined;
   const sanitizedPattern = findingRef
     .replace(/</g, '').replace(/>/g, '')
     .slice(0, 200)
     .trim();
 
-  if (sanitizedPattern.length < 3) return { note: DISMISS_TOO_SHORT, named: false, stored: false };
+  if (sanitizedPattern.length < 3) return { note: DISMISS_TOO_SHORT, named: false, stored: false, markers: [] };
 
   let threads: ReviewThread[];
   try {
     threads = await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber);
   } catch (error) {
     core.warning(`Failed to read the findings a dismiss names: ${error}`);
-    return { note: DISMISS_LOOKUP_FAILED, named: false, stored: false };
+    return { note: DISMISS_LOOKUP_FAILED, named: false, stored: false, markers: [] };
   }
-  if (!threads.some(t => patternMatchesTitle(sanitizedPattern, t.findingTitle))) {
-    return { note: `No finding Manki posted on this PR matches ${inline(sanitizedPattern)}, so nothing was dismissed.\n\n${DISMISS_USAGE}`, named: false, stored: false };
+  const warnings = listed ? await listedWarnings(octokit, bot, owner, repo, prNumber, sanitizedPattern) : undefined;
+  const onThread = threads.some(t => patternMatchesTitle(sanitizedPattern, t.findingTitle));
+  if (!onThread && !warnings?.entries.length) {
+    // A record that could not be read may list the warning the text names.
+    if (warnings?.incomplete) return { note: DISMISS_LOOKUP_FAILED, named: false, stored: false, markers: [] };
+    return { note: `No finding Manki posted on this PR matches ${inline(sanitizedPattern)}, so nothing was dismissed.\n\n${DISMISS_USAGE}`, named: false, stored: false, markers: [] };
   }
 
   const isTrusted = await commenterCanWrite(octokit, owner, repo);
+  const listedNote = warnings?.entries.length ? listedDismissNote(warnings.entries, isTrusted) : undefined;
+  const markers = isTrusted && warnings ? warnings.entries.map(e => dismissedWarningMarker(warnings.round, stringifyFindingFingerprint(e.fingerprint))) : [];
+  if (!onThread) return { note: listedNote!, named: true, stored: false, markers };
 
   if (!isTrusted) {
     core.info('Dismiss from non-collaborator — acknowledging but not persisting suppression');
@@ -1144,13 +1169,22 @@ async function handleDismiss(
   }
 
   const pattern = inline(sanitizedPattern);
-  if (stored) return { note: `Dismissed: ${pattern}. Stored as a suppression in review memory.`, named: true, stored };
+  const withListed = (note: string) => [note, ...(listedNote ? [listedNote] : [])].join('\n\n');
+  if (stored) return { note: withListed(`Dismissed: ${pattern}. Stored as a suppression in review memory.`), named: true, stored, markers };
   const why = !memory
     ? 'review memory is off or was skipped for this run.'
     : !isTrusted
       ? 'only collaborators can store a dismissal in review memory.'
       : 'the write to review memory failed. The run log has the reason.';
-  return { note: `Nothing was stored for ${pattern}, since ${why} Later reviews can raise it again.`, named: true, stored };
+  return { note: withListed(`Nothing was stored for ${pattern}, since ${why} Later reviews can raise it again.`), named: true, stored, markers };
+}
+
+/** Returns the note on a dismiss of the warnings `entries` that a review body listed or carried, by someone `trusted` with write access or not. */
+function listedDismissNote(entries: FindingFingerprintEntry[], trusted: boolean): string {
+  const titles = entries.map(e => inline(e.title ?? '')).join(', ');
+  const one = entries.length === 1;
+  if (!trusted) return `Only someone with write access can dismiss a warning listed in a review body, so ${titles} ${one ? 'stays' : 'stay'} listed.`;
+  return `Dismissed on this PR: ${titles}. Later reviews of this PR no longer list ${one ? 'it as an earlier warning' : 'them as earlier warnings'}. No suppression is stored, so other PRs can still raise ${one ? 'it' : 'them'}.`;
 }
 
 /**

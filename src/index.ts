@@ -22,7 +22,7 @@ import { loadMemory, MemoryRefusedError, MemorySkip, openMemoryStore, RepoMemory
 import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
 import { findRelatedWork } from './related-work';
 import { currentFindingLine, fetchRecapState, FOUND_AGAIN_MARKER, isGuarded, parseContextBlocks, PreviousFinding, pushTouchesThread, RAISED_MARKER, RecapState, replyClassOf, replyShownToJudge, securityOverridesIn } from './recap';
-import { carryBodyWarnings, citedPlaces, filesChangedByPush, RETRY_HINT, ReviewClients, ReviewOptions, ROUND_TIME_MS, runReview } from './review';
+import { bodyWarnings, carryBodyWarnings, citedPlaces, dismissedWarnings, filesChangedByPush, RETRY_HINT, ReviewClients, ReviewOptions, ROUND_TIME_MS, runReview } from './review';
 import { findPriorThreadId, stringifyFindingFingerprint } from './finding-fingerprint';
 import { buildReviewClients, warmUpClients } from './review-clients';
 import { roundReplyMarker } from './review-record';
@@ -1327,6 +1327,21 @@ async function postPauseNotice(
 const REVIEW_BOXES: readonly SettingsBox[] = ['again', 'deeper'];
 
 /**
+ * Returns the warnings dismissed on the PR, by `dismissedWarnings`, when the last round carries any warning from a review
+ * body. A failed read returns none, so every carried warning stays listed.
+ */
+async function warningDismissals(target: RunTarget, priorRounds: RoundContext[]): Promise<Map<string, number>> {
+  const { octokit, bot, owner, repo, prNumber } = target;
+  if (bodyWarnings(priorRounds).length === 0) return new Map();
+  try {
+    return dismissedWarnings(bot, await fetchPRComments(octokit, owner, repo, prNumber));
+  } catch (error) {
+    core.warning(`Could not read the dismissals of earlier warnings, so they stay listed: ${error}`);
+    return new Map();
+  }
+}
+
+/**
  * Returns Manki's latest notice with `marker` and no ticked box, posted or updated after `lastRoundAt`.
  * A failed lookup returns `undefined`, so a new notice is posted.
  */
@@ -2525,7 +2540,7 @@ async function runFullReview(
     const replies = await replyInOpenThreads(run, result);
     // After the replies, so a note whose reply failed competes for a place like any other note.
     capNotes(result, recap.previousFindings, config.review?.notes);
-    await carryBodyWarnings(result, recap.priorRounds, openRepoFiles(githubRepoFiles(octokit, owner, repo, commitSha), config.closed_paths ?? [], true));
+    await carryBodyWarnings(result, recap.priorRounds, openRepoFiles(githubRepoFiles(octokit, owner, repo, commitSha), config.closed_paths ?? [], true), await warningDismissals(target, recap.priorRounds));
     const context = buildContext();
     if (context.meta.calibrationLowered !== undefined) {
       core.info(`Fix-rate calibration: ${context.meta.calibrationLowered} of ${context.findings.entries.filter(e => e.calibration).length} calibrated findings would be lowered, nothing changed`);

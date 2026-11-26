@@ -1,5 +1,5 @@
 import { parseCommand, buildReplyContext, replyOutcome, ParsedCommand, isBotComment, hasBotMention, mentionsMankiUser, isReviewRequest, isBotMentionNonReview, handleBoxCommand, handlePRComment, handleReviewCommentReply, handleReviewCommentCommand, scopeDiffToFile, isLLMAccessAllowed } from './interaction';
-import { Finding, ReplyRecord, ReviewConfig, ThreadEvaluation } from './types';
+import { Finding, FindingFingerprintEntry, ReplyRecord, ReviewConfig, ThreadEvaluation } from './types';
 import { extractReplyRecords, formatReviewRecord, settledReplyId, settlingDecision, settlingPlaces } from './review-record';
 import { RELATED_REPO_TRUST_RULE, WRITING_RULES } from './writing-rules';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
@@ -17,7 +17,8 @@ import * as state from './state';
 import { RunCancelledError, stopWritesOn } from './abort';
 import * as auth from './auth';
 import { clearRecordMarker, latestAnswer, REOPENED_MARKER, SEEN_MARKERS, UNBACKED_REOPEN_MARKER, UNSETTLED_ANSWER_MARKER, withoutStatementFold } from './recap';
-import { makeRoundContext, TEST_BOT, TEST_LINKS } from './test-utils';
+import { makeFindingFingerprintEntry, makeRoundContext, TEST_BOT, TEST_LINKS } from './test-utils';
+import { stringifyFindingFingerprint } from './finding-fingerprint';
 import { scopeWarnings } from './scope';
 
 jest.mock('@actions/core', () => ({
@@ -83,6 +84,7 @@ jest.mock('./github', () => ({
   isBotLogin: jest.requireActual('./github').isBotLogin,
   isBotUser: jest.requireActual('./github').isBotUser,
   isAutoApproval: jest.requireActual('./github').isAutoApproval,
+  titleToSlug: jest.requireActual('./github').titleToSlug,
   reactToIssueComment: jest.fn().mockResolvedValue(undefined),
   reactToReviewComment: jest.fn().mockResolvedValue(undefined),
   TooManyFilesError: jest.requireActual('./github').TooManyFilesError,
@@ -96,6 +98,8 @@ jest.mock('./github', () => ({
 }));
 
 jest.mock('./review', () => ({
+  bodyWarnings: jest.requireActual('./review').bodyWarnings,
+  dismissedWarningMarker: jest.requireActual('./review').dismissedWarningMarker,
   truncateDiff: jest.fn((s: string) => s),
   parseProof: jest.requireActual('./review').parseProof,
   fencePrText: jest.requireActual('./review').fencePrText,
@@ -2511,7 +2515,7 @@ describe('handleDismiss (via handlePRComment)', () => {
     expect(ghUtils.reactToIssueComment).not.toHaveBeenCalled();
   });
 
-  const usage = 'Usage:\n- `/manki dismiss` as a reply in a Manki finding\'s thread dismisses that finding.\n- `/manki dismiss <finding title>` names a finding Manki posted on this PR by part of its title and stores a suppression, so later reviews do not raise findings with that title.';
+  const usage = 'Usage:\n- `/manki dismiss` as a reply in a Manki finding\'s thread dismisses that finding.\n- `/manki dismiss <finding title>` names a finding Manki posted on this PR by part of its title and stores a suppression, so later reviews do not raise findings with that title. A warning listed only in a review body is dismissed on this PR alone, with no suppression.';
 
   it.each([
     ['names no finding', '@manki dismiss', `Nothing was dismissed, since no finding was named.\n\n${usage}`],
@@ -2565,6 +2569,52 @@ describe('handleDismiss (via handlePRComment)', () => {
     setContext({ comment: { id: 43, body: instruction, user: { type: 'User' }, author_association: 'OWNER' }, issue: { pull_request: { url: 'https://...' }, state: 'closed' }, pull_request: undefined, sender: { login: 'owner' } });
     await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, MEMORY);
     expect(memory.writeLearning).toHaveBeenCalledTimes(1);
+  });
+
+  it('ends the carry of a warning a review body listed or carried, only for someone with write access, and stores no suppression for it', async () => {
+    const listed = (title: string, lineStart: number, more: Partial<FindingFingerprintEntry> = {}): FindingFingerprintEntry =>
+      ({ ...makeFindingFingerprintEntry({ title, lineStart }), posted: 'body', citedLine: { hash: 'abcdef123456', count: 1 }, ...more });
+    const retry = listed('Retry never ends', 2);
+    const queue = listed('Queue grows without bound', 7, { raisedIn: 1 });
+    const both = listed('Null-check-warning in the retry loop', 4);
+    const round = makeRoundContext(3, { findings: { count: 4, severityCounts: {}, entries: [
+      retry, both,
+      // A blocker, a security warning and a warning with a thread are never dismissed this way.
+      listed('Retry blocks the queue', 5, { severity: 'blocker', posted: 'body' }), listed('Retry token in the log', 9, { tags: ['security'] }), listed('Retry backoff is fixed', 11, { threadId: 'T4', posted: 'thread' }),
+    ], carried: [queue] } });
+    const dismiss = async (text: string, sender = 'owner', association = 'OWNER', reviews = [{ id: 7, body: `Reviewed.\n\n${formatReviewRecord(round)}`, user: { login: 'manki-review[bot]' } }]) => {
+      jest.mocked(memory.writeSuppression).mockClear();
+      jest.mocked(ghUtils.reactToIssueComment).mockClear();
+      setContext({ comment: { id: 42, body: `@manki dismiss ${text}`, user: { type: 'User' }, author_association: association }, sender: { login: sender } });
+      const octokit = createMockOctokit();
+      octokit.paginate = jest.fn().mockResolvedValue(reviews);
+      await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, MEMORY);
+      return { body: jest.mocked(octokit.rest.issues.createComment).mock.calls[0][0].body, stored: jest.mocked(memory.writeSuppression).mock.calls.length, reacted: jest.mocked(ghUtils.reactToIssueComment).mock.calls.length };
+    };
+    const marker = (e: FindingFingerprintEntry) => `<!-- manki-dismissed-warning:3:${encodeURIComponent(stringifyFindingFingerprint(e.fingerprint))} -->`;
+
+    expect(await dismiss('retry never')).toEqual({
+      body: `Dismissed on this PR: \`Retry never ends\`. Later reviews of this PR no longer list it as an earlier warning. No suppression is stored, so other PRs can still raise it.\n\n<!-- manki -->\n${marker(retry)}`,
+      stored: 0, reacted: 1,
+    });
+    // A carried warning matches too, and text that names two of them dismisses both.
+    expect((await dismiss('queue grows')).body).toContain(`\n\n<!-- manki -->\n${marker(queue)}`);
+    const two = await dismiss('retry');
+    expect(two.body).toMatch(/^Dismissed on this PR: `Retry never ends`, `Null-check-warning in the retry loop`\. Later reviews of this PR no longer list them as earlier warnings\. No suppression is stored, so other PRs can still raise them\./);
+    expect(two.body).toContain(`\n\n<!-- manki -->\n${marker(retry)}\n${marker(both)}`);
+    expect(await dismiss('token in the log')).toEqual(expect.objectContaining({ body: expect.stringMatching(/^No finding Manki posted on this PR matches/), stored: 0, reacted: 0 }));
+    expect((await dismiss('retry blocks')).body).toMatch(/^No finding Manki posted on this PR matches/);
+    // Without write access, nothing is dismissed.
+    expect(await dismiss('retry never', 'reader', 'MEMBER')).toEqual({
+      body: 'Only someone with write access can dismiss a warning listed in a review body, so `Retry never ends` stays listed.\n\n<!-- manki -->', stored: 0, reacted: 0,
+    });
+    // Text that also names a finding with a thread stores its suppression as before, and ends the carry beside it.
+    const onBoth = await dismiss('null-check-warning');
+    expect([onBoth.stored, onBoth.reacted]).toEqual([1, 1]);
+    expect(onBoth.body).toBe(`Dismissed: \`null-check-warning\`. Stored as a suppression in review memory.\n\nDismissed on this PR: \`Null-check-warning in the retry loop\`. Later reviews of this PR no longer list it as an earlier warning. No suppression is stored, so other PRs can still raise it.\n\n<!-- manki -->\n${marker(both)}`);
+    // A record that cannot be read may list the warning, so a name that matches nothing says the lookup failed.
+    expect((await dismiss('retry never', 'owner', 'OWNER', [{ id: 7, body: 'Reviewed.\n\n<!-- manki-context: {broken -->', user: { login: 'manki-review[bot]' } }])).body)
+      .toBe('Could not read the findings Manki posted on this PR, so nothing was dismissed. The run log has the reason.\n\n<!-- manki -->');
   });
 
   it('stores nothing when the posted findings cannot be read', async () => {
