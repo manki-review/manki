@@ -192,8 +192,8 @@ export async function otherFinderVotes(findings: readonly Finding[], { workspace
  * text in the code that steers the vote cannot also let the PR author clear it, and a warning to a note, also one the
  * judge held at a warning in a blocker cell. A declined blocker, and a declined warning in a blocker cell, keep the
  * cell as `judgeCell`, as a disproof does, so a later round does not restore either from the cell. A declined warning
- * keeps its `gradeIfConfirmed`, which says whether a doubt held its cell, and `cappedGrade` never offers it to a later
- * judge. A finding the refuter lowered from a blocker and one that `gradedByRule` under `rules` keep their grade and get
+ * keeps its `gradeIfConfirmed`, which says whether a doubt held its cell, but has no `pendingGrade`, so no later step
+ * raises it again. A finding the refuter lowered from a blocker and one that `gradedByRule` under `rules` keep their grade and get
  * no vote.
  */
 export function withVote(finding: Finding, vote: OtherFinderVote | undefined, rules?: RulesMode): Finding {

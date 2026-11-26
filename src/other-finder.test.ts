@@ -4,7 +4,7 @@ import { join } from 'path';
 
 import { otherFinderVotes, withVote } from './other-finder';
 import { LLMClient } from './providers';
-import { DISPROVED_TAG, Finding, isGuardedFinding, OtherFinderVote } from './types';
+import { DISPROVED_TAG, Finding, isGuardedFinding, OtherFinderVote, pendingGrade, wouldBlockIfTrue } from './types';
 
 const finding = (more: Partial<Finding>): Finding => ({
   severity: 'warning', title: 'Totals drift', file: 'src/a.ts', line: 3, description: 'Totals drift.', reviewers: ['Finder A'], judgeNotes: '', soleFinder: true, ...more,
@@ -42,6 +42,8 @@ describe('withVote', () => {
     // Its cell moves to `judgeCell` and it drops `gradeIfConfirmed`, so a later round does not raise the note from them.
     const heldNote = withVote(finding({ cell, gradeIfConfirmed: 'blocker' }), declined);
     expect([heldNote.severity, heldNote.cell, heldNote.judgeCell, heldNote.gradeIfConfirmed]).toEqual(['note', undefined, cell, 'blocker']);
+    // The vote settles its grade, so it has no `pendingGrade` and would no longer block if true.
+    expect([pendingGrade(heldNote), wouldBlockIfTrue(heldNote), wouldBlockIfTrue(finding({ cell, gradeIfConfirmed: 'blocker' }))]).toEqual([undefined, false, true]);
     // A warning whose blocker cell an unconfirmed raise already moved to `judgeCell` keeps it there.
     const capped = withVote(finding({ judgeCell: cell, gradeIfConfirmed: 'blocker' }), declined);
     expect([capped.severity, capped.cell, capped.judgeCell, capped.gradeIfConfirmed]).toEqual(['note', undefined, cell, 'blocker']);

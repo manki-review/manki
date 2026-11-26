@@ -1925,6 +1925,13 @@ describe('refuteBlockers', () => {
     const [reopened] = await refuteBlockers(client, [finding('Sum overflows', { severity: 'warning', line: 4, cell: stated })], { workspace, priorRounds: rounds({ refutation: premise('unsettled') }), diff });
     expect([reopened.severity, reopened.gradeIfConfirmed, reopened.doubts, reopened.cell]).toEqual(['blocker', 'blocker', doubts, undefined]);
     expect(client.calls).toHaveLength(1);
+    // A note the other finder's vote lowered keeps its `gradeIfConfirmed` only as a record, so restating it reopens nothing.
+    const note = (gradePath: unknown[]) => refuteBlockers(client, [finding('Sum overflows', { severity: 'note', line: 4 })], {
+      workspace, priorRounds: rounds({ refutation: premise('unsettled'), severity: 'note', gradePath }), diff,
+    });
+    const [capped] = await note([{ from: 'warning', to: 'note', by: 'judge' }]);
+    const [votedDown] = await note([{ from: 'warning', to: 'note', by: 'other_finder' }]);
+    expect([capped.gradeIfConfirmed, votedDown.gradeIfConfirmed, votedDown.severity, client.calls.length]).toEqual(['blocker', undefined, 'note', 2]);
     // The earlier round's cell comes back with its doubts, in place of the cell the judge stated without one. That cell
     // gives its blocker only to a finding a finder filed as one this round. Any other is kept at a warning before a check.
     const recell = (filed: Partial<Finding> = {}) => refuteBlockers(client, [finding('Sum overflows', { severity: 'warning', line: 4, cell: stated, ...filed })], {

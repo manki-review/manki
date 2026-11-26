@@ -253,7 +253,7 @@ export function canLeaveOut(f: Finding): boolean {
 }
 
 /** Whether the other finder's vote lowered `f` to a note, which stays in the review so one vote never removes a warning. */
-export function votedDown(f: Pick<Finding, 'gradePath'> & { severity: FindingSeverity | 'unknown' }): boolean {
+export function votedDown(f: Pick<Finding, 'gradePath'> & { severity?: FindingSeverity | 'unknown' }): boolean {
   return f.severity === 'note' && !!f.gradePath?.some(step => step.by === 'other_finder' && step.to === 'note');
 }
 
@@ -1069,10 +1069,11 @@ export function finderGrade(finding: Pick<Finding, 'reviewerSeverity' | 'lowestR
 
 /**
  * Returns the grade a check gives `f` when it confirms every premise in its `doubts`. A finding that `isRareClaim` has
- * none: its `gradeIfConfirmed` is the grade of the `normal` column, and no answer moves it there.
+ * none: its `gradeIfConfirmed` is the grade of the `normal` column, and no answer moves it there. Nor does a note the
+ * other finder's vote lowered (`votedDown`): the vote settled its grade, and its `gradeIfConfirmed` only records the doubt.
  */
-export function pendingGrade(f: Pick<Finding, 'gradeIfConfirmed' | 'cell'>): FindingSeverity | undefined {
-  return isRareClaim(f.cell) ? undefined : f.gradeIfConfirmed;
+export function pendingGrade(f: Pick<Finding, 'gradeIfConfirmed' | 'cell' | 'gradePath'> & { severity?: FindingSeverity | 'unknown' }): FindingSeverity | undefined {
+  return isRareClaim(f.cell) || votedDown(f) ? undefined : f.gradeIfConfirmed;
 }
 
 /**
