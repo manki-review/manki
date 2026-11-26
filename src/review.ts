@@ -2198,7 +2198,7 @@ export async function runReview(
     finalFindings = checked.filter(f => f.severity !== 'ignore');
     if (stopped) return incompleteAfterJudge(stopped);
   }
-  // The votes wait for the refuter, since a finding a check confirmed gets none.
+  // The votes wait for the refuter, since the voter is shown the lines its checks cite and a disproved blocker gets no vote.
   if (workspace) {
     const kept = finalFindings;
     const reads = replay ? replay.reads : recorded.secondReads?.reads;

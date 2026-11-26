@@ -808,19 +808,19 @@ describe('formatFindingComment', () => {
     // A blocker the other finder's vote lowered says why it does not block and what clears it, next to its refuter's
     // outcome, as the only line of a fold and on a finding that cites nothing. A vote that backed it adds nothing, and
     // neither does one on a warning that no longer holds.
-    const vote: OtherFinderVote = { finder: 'b', harm: 'none', situation: 'none', declined: true };
+    const vote: OtherFinderVote = { finder: 'b', trigger: { reason: 'none' }, result: { reason: 'none' }, answer: 'declines' };
     const clears = 'so it does not block. A reply by the PR author does not clear it. Only a fix or a maintainer does.';
-    const declined = `A finder that had not reported this named no harm in realistic use, ${clears}`;
+    const declined = `A finder that had not reported this cited no trigger and result in normal use, ${clears}`;
     const backedBlocker: Finding = { ...baseFinding, evidence: { checks: ['src/main.ts:42 reads `value`'], proof: [] }, refutation: { ...splitFinding.refutation!, defect: 'confirmed' } };
     const votedDown = withVote(backedBlocker, vote);
     expect(votedDown).toMatchObject({ severity: 'warning', tags: ['disproved-blocker'] });
     expect(render(votedDown)).toContain(`**Double-checked**\nManki tried to disprove this by reading the code and could not. No caller checks \`value\` first. ${seen42}\n\n**Asked the other finder**\n${declined}\n\n</details>`);
     expect(render(withVote({ ...baseFinding, evidence: undefined }, vote))).toContain(`Nothing was cited to back it.\n\n**Asked the other finder**\n${declined}\n`);
-    expect(render(withVote(backedBlocker, { ...vote, line: 'src/main.ts:9', quote: 'gone()' }))).toContain(`A finder that had not reported this could not point to the code where this does harm, ${clears}`);
+    expect(render(withVote(backedBlocker, { ...vote, result: { reason: 'r', line: 'src/main.ts:9', quote: 'gone()', held: false } }))).toContain(`A finder that had not reported this could not point to the code where this goes wrong, ${clears}`);
     // One listed in the review body may have no thread, so it says only why it does not block.
-    expect(formatFindingBlock(votedDown, links)).toContain(`**Asked the other finder**\nA finder that had not reported this named no harm in realistic use, so it does not block.\n\n</details>`);
+    expect(formatFindingBlock(votedDown, links)).toContain(`**Asked the other finder**\nA finder that had not reported this cited no trigger and result in normal use, so it does not block.\n\n</details>`);
     expect(formatFindingComment(votedDown, links, 'detached')).toContain(declined);
-    for (const silent of [withVote(backedBlocker, { ...vote, declined: false }), { ...votedDown, tags: ['pre-existing'] }, loweredFinding]) expect(render(silent)).not.toContain('other finder');
+    for (const silent of [withVote(backedBlocker, { ...vote, answer: 'backs' }), { ...votedDown, tags: ['pre-existing'] }, loweredFinding]) expect(render(silent)).not.toContain('other finder');
     // One that breaks a confirmed rule reads the same on both checks, and neither says the rule keeps it.
     const loweredRule = render({ ...loweredFinding, rule: { file: 'AGENTS.md', quote: 'Every change needs a test.', verdict: 'confirmed' } });
     expect(loweredRule).toContain('so this does not block. Please check it yourself. A `sync.Once` guards the close.');
@@ -2798,13 +2798,13 @@ describe('postReview body lead', () => {
     const below = (more: Partial<Finding>): Finding => ({ ...blocker, title: 'Offset is off by one', line: 30, description: 'The offset skips a row.', severity: 'warning', tags: ['follow-up'], ...more });
     expect(roundSentence(blocked([lowered, kept, below({ gradeIfConfirmed: 'blocker', ...path(['blocker', 'warning', 'judge']) })]))).toBe('Nothing blocks merge.');
     // So does such a warning once the other finder's vote lowered it to a note and moved its cell to `judgeCell`.
-    const declinedHeld = withVote(below({ gradeIfConfirmed: 'blocker', ...path(['blocker', 'warning', 'judge']) }), { finder: 'b', harm: '', situation: '', declined: true });
+    const declinedHeld = withVote(below({ gradeIfConfirmed: 'blocker', ...path(['blocker', 'warning', 'judge']) }), { finder: 'b', trigger: { reason: '' }, result: { reason: '' }, answer: 'declines' });
     expect([declinedHeld.severity, declinedHeld.judgeCell, declinedHeld.gradeIfConfirmed]).toEqual(['note', blocker.cell, 'blocker']);
     expect(roundSentence(blocked([lowered, kept, declinedHeld]))).toBe('Nothing blocks merge.');
     // A blocker the judge raised itself and an unconfirmed raise capped stays one the judge graded once the vote lowers it further.
     const raisedThenCapped = below({ cell: undefined, judgeCell: blocker.cell, ...path(['warning', 'blocker', 'judge'], ['blocker', 'warning', 'unconfirmed_raise']) });
     expect(roundSentence(blocked([lowered, kept, raisedThenCapped]))).toBe('The first item is read unchecked.');
-    expect(roundSentence(blocked([lowered, kept, withVote(raisedThenCapped, { finder: 'b', harm: '', situation: '', declined: true })]))).toBe('The first item is read unchecked.');
+    expect(roundSentence(blocked([lowered, kept, withVote(raisedThenCapped, { finder: 'b', trigger: { reason: '' }, result: { reason: '' }, answer: 'declines' })]))).toBe('The first item is read unchecked.');
     // A blocker held only because one finder reported it is one the judge graded a blocker, so the summary goes when it
     // stays a warning and stands when a check gives the blocker back.
     const soleHeld = below({ gradeIfConfirmed: 'blocker', soleFinder: true, soleHeld: true, ...path(['blocker', 'warning', 'judge']) });
