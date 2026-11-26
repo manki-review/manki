@@ -13,7 +13,7 @@ import { eventPrClosed } from './dispatch';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { clearRecordMarker, SEEN_MARKERS, fetchPriorRoundContexts, recordedThreadGrades, threadSeverity, RecapState, fixClaimMarker, guardedKind, isDisprovedThread, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, UNSETTLED_ANSWER_MARKER, currentFindingLine, findingPlace, withoutCode, BOT_PREFIX_PATTERN, withoutStatementFold } from './recap';
 import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, recordDismissal, authorResolvedNote, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, rolePhrase, unclearedThreads, warningHoldNote } from './state';
-import { AuthorClearRole, FindingSeverity, partlyFixedNote, ParsedDiff, PrContext, RelatedRepoTools, ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation, RoundContext } from './types';
+import { AuthorClearRole, FindingSeverity, partlyFixedEffect, ParsedDiff, PrContext, RelatedRepoTools, ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation, RoundContext } from './types';
 import { relatedRepoOutcomes, relatedRepoTools, repoTools } from './related-repos';
 import { CheckedReply, MAX_REPLY_STATEMENTS, MAX_TERM_CHARS, MIN_TERM_CHARS, ThreadState, checkFixedElsewhere, checkReply, fixedElsewhereText, statementFold, statementRecords, unsettledLead, withoutOutcomeOpener } from './reply-check';
 import { formatReplyRecord } from './review-record';
@@ -305,7 +305,7 @@ function roundLeftOpen(judged: RoundJudgment | undefined, thread: ReviewThread, 
   const { commit, evaluation: { status, remaining, grade } } = judged;
   if (status !== 'partly_addressed' || !remaining || !grade) return undefined;
   if (thread.roundReplies?.some(r => r.commit === commit && Date.parse(r.at) > Date.parse(repliedAt ?? ''))) return undefined;
-  return `The review of \`${commit.slice(0, 7)}\`, which finished after this reply, finds this only partly fixed. ${partlyFixedNote(sanitizeMarkdown(remaining), grade, carried)}`;
+  return `The review of \`${commit.slice(0, 7)}\`, which finished after this reply, finds this only partly fixed${partlyFixedEffect(grade, carried)}. Still open: ${sanitizeMarkdown(remaining)}`;
 }
 
 /** Returns the reply prompt's section with the judgment of a round that finished after the reply and left the thread open. */
