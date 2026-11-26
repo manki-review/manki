@@ -21,6 +21,7 @@ import { compressReviewRecord, extractApprovalRecords, formatReviewRecord, hasOw
 import { modelDisplayName } from './providers/model-registry';
 import { formatRunner } from './run-diagnostics';
 import { RELATED_REPO_HOST } from './related-repos';
+import { TEST_PATH } from './symbol-uses';
 import { distinctModels } from './routing';
 import { latestLimits } from './providers/instrumentation';
 import type { LimitUsage } from './providers/types';
@@ -4415,11 +4416,19 @@ export async function reactToReviewComment(
 const DEFAULT_MAX_FILE_SIZE = 200 * 1024;
 const DEFAULT_MAX_TOTAL_SIZE = 400 * 1024;
 
+/** A file whose content a prompt leaves out, and why: over the size limit of one file, or over the total budget. */
+export interface LeftOutFile {
+  path: string;
+  reason: 'file_limit' | 'budget';
+}
+
 /**
  * Fetch file contents for changed files via the GitHub API.
  * Skips binary files, files exceeding the size limit and symlinks, whose target is never read.
- * If total content exceeds the budget, includes the files in `first` in their order, then the largest of the rest, as many as fit.
- * Adds each file that is not at `ref` to `notFound`, so a caller can tell a file that is gone from one it failed to read.
+ * If total content exceeds the budget, includes the files in `first` in their order, then the rest as many as fit:
+ * files `TEST_PATH` does not match before those it matches, and the smaller first, so one large test file never pushes
+ * out the source it tests. Adds each file that is not at `ref` to `notFound`, so a caller can tell a file that is gone
+ * from one it failed to read, and each file it leaves out for its size to `leftOut`.
  */
 export async function fetchFileContents(
   octokit: Octokit,
@@ -4431,6 +4440,7 @@ export async function fetchFileContents(
   maxTotalSize: number = DEFAULT_MAX_TOTAL_SIZE,
   first: readonly string[] = [],
   notFound?: Set<string>,
+  leftOut?: LeftOutFile[],
 ): Promise<Map<string, string>> {
   const results: Array<{ path: string; content: string }> = [];
 
@@ -4444,6 +4454,7 @@ export async function fetchFileContents(
 
       if (data.size > maxFileSize) {
         core.debug(`Skipping ${path}: ${data.size} bytes exceeds ${maxFileSize} limit`);
+        leftOut?.push({ path, reason: 'file_limit' });
         return null;
       }
 
@@ -4483,9 +4494,12 @@ export async function fetchFileContents(
 
   const byPath = new Map(results.map(r => [r.path, r]));
   const leading = [...new Set(first)].flatMap(p => byPath.get(p) ?? []);
-  for (const { path, content } of [...leading, ...results.filter(r => !leading.includes(r))]) {
+  const rest = results.filter(r => !leading.includes(r))
+    .sort((a, b) => Number(TEST_PATH.test(a.path)) - Number(TEST_PATH.test(b.path)) || a.content.length - b.content.length);
+  for (const { path, content } of [...leading, ...rest]) {
     if (totalSize + content.length > maxTotalSize) {
       core.debug(`Skipping ${path}: would exceed total size budget (${totalSize}/${maxTotalSize})`);
+      leftOut?.push({ path, reason: 'budget' });
       continue;
     }
     kept.add(path);

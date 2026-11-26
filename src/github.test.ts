@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 import { gunzipSync } from 'zlib';
 
-import { formatFindingBlock, readChangesSince, relatedCommits, ApprovalHeld, earlierPlaces, plainCitedFiles, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, autoApproveHeadMarker, reviewedCommit, updateProgressDashboard, startLiveEdits, LIVE_EDIT_MS, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchChangesSince, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, fetchApprovalHold, SupersededError, isFailedProgress, markFailedProgressSuperseded, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError, githubRepoFiles, openRepoFiles, UnreadFileError , awaitPushedHead, HeadedPull } from './github';
+import { formatFindingBlock, readChangesSince, relatedCommits, ApprovalHeld, earlierPlaces, plainCitedFiles, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, LeftOutFile, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, autoApproveHeadMarker, reviewedCommit, updateProgressDashboard, startLiveEdits, LIVE_EDIT_MS, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchChangesSince, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, fetchApprovalHold, SupersededError, isFailedProgress, markFailedProgressSuperseded, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError, githubRepoFiles, openRepoFiles, UnreadFileError , awaitPushedHead, HeadedPull } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases, RoundFix, Refutation, SideCheckState, OriginAnswer, OtherFinderVote } from './types';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -3210,9 +3210,17 @@ describe('fetchFileContents', () => {
     // The default caps inline a 172KB and a 55KB changed file together, and stop above 200KB a file and 400KB in all.
     const sized = (kb: number) => ({ content: 'x'.repeat(kb * 1024), size: kb * 1024 });
     const large = mockOctokit({ 'checker.rs': sized(172), 'collection.rs': sized(55), 'huge.rs': sized(201) });
-    expect([...(await fetchFileContents(large, 'owner', 'repo', 'abc123', ['checker.rs', 'collection.rs', 'huge.rs'])).keys()]).toEqual(['checker.rs', 'collection.rs']);
+    const leftOut: LeftOutFile[] = [];
+    expect([...(await fetchFileContents(large, 'owner', 'repo', 'abc123', ['checker.rs', 'collection.rs', 'huge.rs'], undefined, undefined, [], undefined, leftOut)).keys()]).toEqual(['checker.rs', 'collection.rs']);
+    expect(leftOut).toEqual([{ path: 'huge.rs', reason: 'file_limit' }]);
+    // When the budget cannot hold every file, the smaller are read first, and the map keeps the largest-first order.
     const many = mockOctokit({ 'a.rs': sized(190), 'b.rs': sized(190), 'c.rs': sized(30) });
-    expect([...(await fetchFileContents(many, 'owner', 'repo', 'abc123', ['a.rs', 'b.rs', 'c.rs'])).keys()]).toEqual(['a.rs', 'b.rs']);
+    const overBudget: LeftOutFile[] = [];
+    expect([...(await fetchFileContents(many, 'owner', 'repo', 'abc123', ['a.rs', 'b.rs', 'c.rs'], undefined, undefined, [], undefined, overBudget)).keys()]).toEqual(['a.rs', 'c.rs']);
+    expect(overBudget).toEqual([{ path: 'b.rs', reason: 'budget' }]);
+    // Source files are read before test files, so a large test file never pushes out the source it tests.
+    const tested = mockOctokit({ 'src/lib.test.ts': sized(190), 'src/lib.ts': sized(190), 'src/util.ts': sized(100) });
+    expect([...(await fetchFileContents(tested, 'owner', 'repo', 'abc123', ['src/lib.test.ts', 'src/lib.ts', 'src/util.ts'])).keys()]).toEqual(['src/lib.ts', 'src/util.ts']);
     // A small thread file is read before two large files fill the budget, and the map keeps the largest-first order.
     expect([...(await fetchFileContents(many, 'owner', 'repo', 'abc123', ['a.rs', 'b.rs', 'c.rs'], undefined, undefined, ['c.rs'])).keys()]).toEqual(['a.rs', 'c.rs']);
     // The files in `first` are read in their order, so a later one is the one left out.
@@ -3250,10 +3258,10 @@ describe('fetchFileContents', () => {
       'small.ts': { content: 'b'.repeat(30), size: 30 },
     });
 
-    // Budget of 100 bytes: the large file (80) fits, small file (30) would exceed 110 > 100
+    // Budget of 100 bytes: the small file (30) is read first, and the large file (80) would exceed 110 > 100.
     const result = await fetchFileContents(octokit, 'owner', 'repo', 'abc123', ['large.ts', 'small.ts'], 50000, 100);
     expect(result.size).toBe(1);
-    expect(result.has('large.ts')).toBe(true);
+    expect(result.has('small.ts')).toBe(true);
   });
 
   it('skips binary files containing null bytes', async () => {

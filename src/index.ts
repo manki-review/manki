@@ -48,6 +48,7 @@ import {
   fetchRepoContext,
   formatUnreviewedNotice,
   fetchFileContents,
+  LeftOutFile,
   MAX_CONTENT_API_BYTES,
   fetchChangesSince,
   fetchInterRoundDiff,
@@ -1348,7 +1349,7 @@ async function findOpenNotice(target: RunTarget, marker: string, lastRoundAt: st
  */
 async function collectOpenThreads(
   target: RunTarget, recap: RecapState, diff: ParsedDiff, lockfiles: LockfileDiff[], prAuthorLogin: string | undefined, closedPaths: readonly string[] = [],
-): Promise<{ openThreads: OpenThread[]; fileContents?: Map<string, string> }> {
+): Promise<{ openThreads: OpenThread[]; fileContents?: Map<string, string>; leftOutFiles: LeftOutFile[] }> {
   const { octokit, owner, repo, commitSha } = target;
   const isClosed = (path: string | undefined): boolean => !!path && !!findClosedPattern(path, closedPaths);
   const baseOpenThreads = recap.previousFindings
@@ -1398,11 +1399,12 @@ async function collectOpenThreads(
   let lockfileContents: Map<string, string> | undefined;
   // A file that is not at the head, as one the PR deleted or renamed away, has no code to read, which is no failure to read it.
   const notFound = new Set<string>();
+  const leftOut: LeftOutFile[] = [];
   try {
     [fileContents, lockfileContents] = await Promise.all([
       // The changed files of blocker and warning threads are read first, so the judge sees a fix however large the rest of the change is.
       // A thread file outside the diff keeps its place, since the finders read the same files and need the changed ones.
-      fetchFileContents(octokit, owner, repo, commitSha, filePaths, undefined, undefined, [...fixThreadFiles(baseOpenThreads)].filter(p => changedFilePaths.includes(p)), notFound),
+      fetchFileContents(octokit, owner, repo, commitSha, filePaths, undefined, undefined, [...fixThreadFiles(baseOpenThreads)].filter(p => changedFilePaths.includes(p)), notFound, leftOut),
       lockfileThreadPaths.length > 0 ? fetchFileContents(octokit, owner, repo, commitSha, lockfileThreadPaths, MAX_CONTENT_API_BYTES, Infinity, [], notFound) : new Map<string, string>(),
     ]);
   } catch (error) {
@@ -1459,7 +1461,8 @@ async function collectOpenThreads(
   const read = (path: string): boolean => [fileContents, lockfileContents].some(contents => contents?.has(path));
   const unread = new Set([...filePaths, ...lockfileThreadPaths, ...closedThreadFiles].filter(p => !notFound.has(p) && !read(p)));
   const openThreads = placed.map(t => (unread.has(t.file) ? { ...t, codeUnread: true } : t));
-  return { openThreads, fileContents };
+  // A thread file outside the diff is no changed file the finders are told about.
+  return { openThreads, fileContents, leftOutFiles: leftOut.filter(f => changedFilePaths.includes(f.path)) };
 }
 
 /**
@@ -2430,7 +2433,7 @@ async function runFullReview(
     const digest = changeDigest(fullDiff);
     const countsTowardCap = !options.draft && isNewChange({ commitSha, changeDigest: digest }, recap.priorRounds.at(-1));
 
-    const { openThreads, fileContents } = await collectOpenThreads(target, recap, diff, lockfiles, prAuthorLogin, config.closed_paths);
+    const { openThreads, fileContents, leftOutFiles } = await collectOpenThreads(target, recap, diff, lockfiles, prAuthorLogin, config.closed_paths);
     const [{ interRoundDiff, priorChange, linkedIssues, relatedWork, staticSignals, staticAnalysis }, workspace] = await Promise.all([
       collectRoundSignals(target, config, recap, diff, fullDiff, lockfiles, prContext),
       fetchToolWorkspace(target, [clients.reviewer, clients.judge, ...(clients.reviewerByModel?.values() ?? [])], config.exclude_paths, config.closed_paths),
@@ -2459,6 +2462,7 @@ async function runFullReview(
       instructionFiles: repoContext.files,
       memory,
       fileContents,
+      leftOutFiles,
       prContext: prContext && staticSignals.length > 0 ? { ...prContext, staticSignals } : prContext,
       linkedIssues,
       relatedWork,
