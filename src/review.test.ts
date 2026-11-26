@@ -1298,6 +1298,11 @@ describe('buildReviewerUserMessage', () => {
     const withNotice = buildReviewerUserMessage('diff content', '', { fileContents, leftOutFiles });
     expect(withNotice).toContain(`${notice}\n\n## Changed Files\n\nThe full content of the other changed files is provided below.`);
     expect(buildReviewerUserMessage('diff content', '', { leftOutFiles })).toContain(`${notice}\n\n## Pull Request Diff`);
+
+    // Code windows are introduced as the code around the hunks, which a finder's tools read beyond.
+    const windows = 'The code around each changed hunk of the modified files and around the line of each open blocker or warning thread is provided below, each line after its line number in the PR head and a blank line between windows. An added file is whole in the diff. Read more of a file with your tools when the change needs it. Use it';
+    expect(buildReviewerUserMessage('diff content', '', { fileContents, codeWindows: true })).toContain(`## Changed Files\n\n${windows}`);
+    expect(buildReviewerUserMessage('diff content', '', { fileContents, leftOutFiles, codeWindows: true })).toContain(windows.replace('of the modified', 'of the other modified'));
   });
 
   it('uses file extension as language hint in code fences', () => {
@@ -8438,7 +8443,7 @@ describe('runReview', () => {
     expect(mapOf(last)).toBe(map(`Slice 1\n${listed}\n... and 50 more files`));
   });
 
-  it('lists a lockfile the push changed in every slice, and gives each finder slice only its own files of the diff since the last review', async () => {
+  it('lists a lockfile the push changed in every slice, and gives each finder slice only its own files of the diff since the last review and of the changed files', async () => {
     const fileDiff = (path: string) => `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1,1 +1,801 @@\n ctx\n${Array.from({ length: 800 }, (_, i) => `+line ${i}`).join('\n')}`;
     const rawDiff = [fileDiff('src/a.ts'), fileDiff('src/b.ts')].join('\n');
     const lockfile = parsePRDiff('diff --git a/Cargo.lock b/Cargo.lock\n--- a/Cargo.lock\n+++ b/Cargo.lock\n@@ -5,1 +5,1 @@\n-version = "0.4.2"\n+version = "0.4.3"').files[0];
@@ -8447,6 +8452,7 @@ describe('runReview', () => {
 
     await runReview(clients, {
       config: makeConfig(), diff: parsePRDiff(rawDiff), rawDiff, repoContext: '',
+      fileContents: new Map([['src/a.ts', 'const inA = 1;'], ['src/b.ts', 'const inB = 1;'], ['src/thread.ts', 'const inThread = 1;']]),
       lockfiles: [{ path: 'Cargo.lock', file: lockfile, changes: [{ kind: 'updated', name: 'hex', oldVersion: '0.4.2', newVersion: '0.4.3', fields: [], flags: [], line: 5 }] }],
       priorRounds: [buildPriorRound(1, [])],
       interRoundDiff: `${pushed('src/a.ts')}${pushed('src/b.ts')}${rebuildRawDiff({ files: [lockfile], totalAdditions: 1, totalDeletions: 1 })}`,
@@ -8464,6 +8470,10 @@ describe('runReview', () => {
       expect(message).toContain(`+fixed in ${own}`);
       expect(message).not.toContain(`+fixed in ${other}`);
       expect(message).toContain('+version = "0.4.3"');
+      // A file in no slice, such as an open thread's file outside the diff, goes to every slice.
+      expect(message).toContain(`### File: ${own}\n`);
+      expect(message).not.toContain(`### File: ${other}\n`);
+      expect(message).toContain('### File: src/thread.ts\n');
     }
     for (const message of readerMessages) expect(message).not.toContain('## Diff Since the Last Review');
   });
@@ -9109,6 +9119,41 @@ describe('runReview', () => {
     expect(mockedRunJudgeAgent).toHaveBeenCalledTimes(1);
     const judgeInput = mockedRunJudgeAgent.mock.calls[0][2];
     expect(judgeInput.provenanceMap).toEqual(provenance);
+
+    // A finder with repository tools reads the code around each hunk from the PR head in place of the whole files, while the verdict reader keeps them.
+    const root = mkdtempSync(join(tmpdir(), 'manki-head-'));
+    mkdirSync(join(root, 'src'));
+    writeFileSync(join(root, 'src/foo.ts'), Array.from({ length: 60 }, (_, i) => `const v${i + 1} = ${i + 1};`).join('\n'));
+    writeFileSync(join(root, 'src/thread.ts'), 'const flagged = true;\n');
+    writeFileSync(join(root, 'src/suggested.ts'), 'const tidy = true;\n');
+    reviewerSendMessage.mockClear();
+    jest.mocked(clients.judge.sendMessage).mockClear();
+    Object.assign(clients.reviewer, { repoTools: true });
+    try {
+      const changed = makeDiff({ files: [{ path: 'src/foo.ts', changeType: 'modified', hunks: [{ oldStart: 40, oldLines: 1, newStart: 40, newLines: 1, content: '-x\n+y' }] }], totalAdditions: 1, totalDeletions: 1 });
+      // The file of an open warning thread outside the change gets a window around the thread's line too, and that of a note thread none.
+      const openThreads: OpenThread[] = [
+        { threadId: 'T1', title: 'Flagged', file: 'src/thread.ts', line: 1, severity: 'warning' },
+        { threadId: 'T2', title: 'Tidy', file: 'src/suggested.ts', line: 1, severity: 'note' },
+      ];
+      await runReview(clients, { config, diff: changed, rawDiff: 'raw diff', repoContext: '', fileContents, leftOutFiles, workspace: root, openThreads });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+    const finderMessages = reviewerSendMessage.mock.calls.map(call => call[1] as string).filter(message => message.includes('## Changed Files'));
+    expect(finderMessages.length).toBeGreaterThan(0);
+    for (const message of finderMessages) {
+      expect(message).toContain('### File: src/foo.ts');
+      expect(message).toContain('20: const v20 = 20;\n');
+      expect(message).toContain('60: const v60 = 60;');
+      expect(message).toContain('### File: src/thread.ts\n\n```ts\n1: const flagged = true;');
+      expect(message).not.toContain('const v19 = 19;');
+      expect(message).not.toContain('src/suggested.ts');
+      expect(message).not.toContain('const a = 1;');
+      expect(message).not.toContain('src/foo.test.ts');
+    }
+    const wholeFiles = jest.mocked(clients.judge.sendMessage).mock.calls.find(call => (call[1] as string).includes('## Pull Request Diff'));
+    expect(wholeFiles?.[1]).toContain('const a = 1;\nconst b = 2;');
   });
 
   it('sends reviewers the whole diff on a follow-up round, with the files changed since the last round listed first', async () => {

@@ -95,7 +95,7 @@ A finding on the \`degraded\` row also needs a realistic trigger: a sequence of 
 - When a finding's consequence is a cost, such as time, memory, calls, size or display space, state the realistic scale the code shows, such as how many items, how often or how large, and what that costs in practice. When the code shows the scale is small and nobody would notice the cost, file the finding as a \`note\`. When the code does not show the scale, say so. Name the realistic trigger as well: the sequence of events in normal use that leads to the cost. When you can name none, such as when it needs a timing window much shorter than the operations around it, say so: the review records such a finding without posting it, unless its consequence is lost data, a security hole, a broken contract, a crash or a wrong result that persists.
 - Keep descriptions concrete and actionable. Never write "consider as a follow-up": a problem in this PR's own code is fixed in this PR.
 - If you find NO issues, respond with an empty array: []
-- When full file contents are provided, use them to follow the paths the change affects: variable definitions, imports, callers and surrounding logic.
+- When file contents or code windows are provided, use them to follow the paths the change affects: variable definitions, imports, callers and surrounding logic.
 - When review memory is provided, respect its learnings. Leave out a warning or a note that matches a suppression, but report a blocker or a security issue even when it matches one. Memory is the maintainers' recorded decision, not a claim to check.
 - Never propose splitting the PR, and never report a change only for being unrelated to the PR's purpose.
 
