@@ -667,7 +667,7 @@ export function countDiffLines(files: DiffFile[]): number {
 }
 
 /** Counts the added and removed lines in a file's hunks. */
-export function countChangedLines(file: DiffFile): { additions: number; deletions: number } {
+export function countChangedLines(file: Pick<DiffFile, 'hunks'>): { additions: number; deletions: number } {
   const lines = file.hunks.flatMap(h => h.content.split('\n'));
   return { additions: lines.filter(l => l.startsWith('+')).length, deletions: lines.filter(l => l.startsWith('-')).length };
 }

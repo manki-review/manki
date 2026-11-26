@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 
-import { hunkHas } from './diff';
+import { addedLines, countChangedLines, hunkHas } from './diff';
 import { LinkedIssue, splitDescription, titleToSlug } from './github';
 import { extractJSON } from './json';
 import { LLMClient, SendMessageOptions } from './providers';
@@ -8,7 +8,7 @@ import { codeDigest, isDiffLocation, restsOnSameCode, shownLines } from './refut
 import { PreviousFinding } from './recap';
 import { repoTools } from './related-repos';
 import { buildReviewerUserMessage, parseLocation, parseProof } from './review';
-import { ChangedItem, touchedLines } from './symbol-uses';
+import { ChangedItem, TEST_PATH, touchedLines } from './symbol-uses';
 import { agreedOutcome, confirmsAll, DiffFile, DiffHunk, Finding, ParsedDiff, PrContext, Refutation, RoundContext, RoundScope, SCOPE_DOUBT_TITLE, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, ScopeTopic, SplitFile } from './types';
 import { digestOf, jsonOnlyReply, safeTruncate, sendWithParseRetry } from './utils';
 import { UNTRUSTED_CONTENT_RULE, WRITING_RULES } from './writing-rules';
@@ -21,6 +21,8 @@ const MAX_NAME_CHARS = 120;
 const MAX_CONTENTS_CHARS = 300;
 const MAX_DOUBT_CHARS = 800;
 const MAX_FAILURE_CHARS = 200;
+/** The fewest changed lines a proposed PR of a split needs. Measured on 51 stored splits, where every limit from 20 to 33 drops the same ones. */
+const MIN_SPLIT_PART_LINES = 20;
 
 function systemPrompt(tools: boolean): string {
   return `You judge a pull request as a whole. You answer two questions a reviewer asks before reading the code line by line:
@@ -38,7 +40,7 @@ Otherwise answer \`useful: false\`, say in \`doubt\` what the problem is and wha
 
 Topics. List in \`topics\` each distinct concern of the change, each with a short name and the changed files that belong to it. First name the main purpose of the change from the code, not from the title. A part of the change that the main purpose does not need is its own topic, whatever its kind: a fix in a feature or refactor PR, a refactor or cleanup in a fix or feature PR, a behaviour change in a refactor PR. A part the main change needs stays with it: the refactor it builds on, its tests and its docs. Two concerns are separate topics only when each makes sense merged on its own: neither needs the other to build, to work or to be tested. The same kind of change made in several places for one purpose is one topic, such as removing unused code, renaming one thing or one mechanical migration.
 
-Do not be picky. A side part is its own topic only when it deserves its own review: it changes behaviour in code the main change does not otherwise touch, or it is large or risky enough that someone would want to revert it apart from the main change. A small, obvious fix of a few lines in code the PR already touches stays with the PR, even though it changes behaviour. A typo, a formatting change, an import order or a renamed local is never a topic of its own. When you are unsure, it is not a topic.
+Do not be picky. A side part is its own topic only when it deserves its own review: it changes behaviour in code the main change does not otherwise touch, or it is large or risky enough that someone would want to revert it apart from the main change. A small, obvious fix of a few lines in code the PR already touches stays with the PR, even though it changes behaviour. A part that changes only tests, such as a test helper the PR's own tests use, or one of fewer than ${MIN_SPLIT_PART_LINES} changed lines, is never a PR of its own, and Manki drops a split with such a part. A typo, a formatting change, an import order or a renamed local is never a topic of its own. When you are unsure, it is not a topic.
 
 Split. When there is more than one topic, propose in \`split\` the pull requests to split the change into. Give each a short name, in \`contents\` one or two sentences on what it would contain, in \`needs\` the numbers of the other proposed PRs that must be merged before it, counting the first PR of \`split\` as 1, and its files. A PR that can merge on its own needs none. Every changed hunk goes into exactly one of them. Name a whole file by its path. When one file holds parts of different topics, name each part by its lines on the new side of the diff as \`path:start-end\`. A range takes every hunk it overlaps, and a hunk goes into one PR only, so a file splits only between its hunks. With one topic, \`split\` is empty.
 
@@ -111,11 +113,13 @@ function namedPart(entry: string, diff: ParsedDiff): NamedPart | undefined {
 }
 
 /**
- * Returns why `split` cannot be posted, or `undefined` when it can: at least two PRs, and each hunk of the diff in exactly
- * one of them. A whole file takes all its hunks, and a line range each hunk it overlaps. A file without hunks is taken
- * only whole.
+ * Returns why `split` cannot be posted, or `undefined` when it can: at least two PRs, each hunk of the diff in exactly
+ * one of them, and each PR worth one of its own. A whole file takes all its hunks, and a line range each hunk it
+ * overlaps. A file without hunks is taken only whole. A PR that changes only test code, or fewer than
+ * `MIN_SPLIT_PART_LINES` lines, would not stand alone. A hunk is test code in a file `TEST_PATH` matches, or when each
+ * line it touches lies in one of the test `items`.
  */
-function splitProblem(split: ScopeTopic[], diff: ParsedDiff): string | undefined {
+function splitProblem(split: ScopeTopic[], diff: ParsedDiff, items: readonly ChangedItem[]): string | undefined {
   if (split.length < 2) return 'a split needs at least two PRs';
   if (split.some(part => part.files.length === 0)) return 'a proposed PR has no files';
   const named = split.map(part => part.files.map(f => namedPart(f, diff)));
@@ -129,6 +133,19 @@ function splitProblem(split: ScopeTopic[], diff: ParsedDiff): string | undefined
   if (owners.some(n => n > 1)) return 'a changed hunk is in more than one proposed PR';
   const missing = owners.filter(n => n === 0).length;
   if (missing > 0) return `${missing} changed hunk(s) are in no proposed PR`;
+  const tests = items.filter(item => item.test);
+  // A removal touches the line after it, so one right above a test item touches the item's first line without being in it.
+  const isTest = (file: DiffFile, hunk: DiffHunk) => {
+    const one = { ...file, hunks: [hunk] };
+    const added = addedLines(one);
+    return TEST_PATH.test(file.path) || [...touchedLines(one)].every(line => tests.some(item => item.file === file.path && (added.has(line) ? item.start : item.start + 1) <= line && line <= item.end));
+  };
+  for (const [i, part] of parts.entries()) {
+    const taken = diff.files.flatMap(file => file.hunks.filter(hunk => part.some(n => takes(n, file, hunk))).map(hunk => ({ file, hunk })));
+    if (taken.length > 0 && taken.every(({ file, hunk }) => isTest(file, hunk))) return `proposed PR ${i + 1} changes only test code`;
+    const { additions, deletions } = countChangedLines({ hunks: taken.map(t => t.hunk) });
+    if (additions + deletions < MIN_SPLIT_PART_LINES) return `proposed PR ${i + 1} changes ${additions + deletions} line(s), fewer than ${MIN_SPLIT_PART_LINES}`;
+  }
   return undefined;
 }
 
@@ -138,12 +155,12 @@ function splitProblem(split: ScopeTopic[], diff: ParsedDiff): string | undefined
  * What fails is recorded in `dropped`, and never shows or holds the approval. Topics name only files of the diff,
  * whole or by a line range.
  */
-function checkScope(answer: ScopeAnswer, diff: ParsedDiff, workspace: string | undefined): RoundScope {
+function checkScope(answer: ScopeAnswer, diff: ParsedDiff, workspace: string | undefined, items: readonly ChangedItem[]): RoundScope {
   const dropped: NonNullable<RoundScope['dropped']> = [];
   const proof = !answer.doubt ? [] : workspace ? shownLines(answer.proof, workspace).proof : parseProof(answer.proof, undefined).filter(at => isDiffLocation(at, diff));
   if (answer.doubt && proof.length === 0) dropped.push({ part: 'doubt', reason: 'no cited line exists' });
   const topics = answer.topics.map(t => ({ ...t, files: t.files.filter(f => namedPart(f, diff)) })).filter(t => t.files.length > 0).slice(0, MAX_TOPICS);
-  const problem = answer.split.length > 0 ? splitProblem(answer.split, diff) : undefined;
+  const problem = answer.split.length > 0 ? splitProblem(answer.split, diff, items) : undefined;
   if (problem) dropped.push({ part: 'split', reason: problem });
   const split = answer.split.length > 0 && !problem ? answer.split : [];
   const cited = workspace && proof.length > 0 ? citedDigest(proof, workspace) : undefined;
@@ -243,7 +260,7 @@ function shownFiles(part: ScopeTopic, diff: ParsedDiff, items: readonly ChangedI
 /**
  * Asks one call whether the PR is useful and covers one topic, and returns the round's record of it. It is skipped for a
  * trivial change, and when the diff, the PR title and description, the linked issues, the lines a doubt cites and the
- * hunk positions a split by line ranges names are those of the last round with an answer, whose answer it carries then. The answer is checked by `checkScope`. A call that fails, or a reply that cannot be used, is recorded as `failed`.
+ * hunk positions a split by line ranges names are those of the last round with an answer, whose answer it carries then, with its split checked again by `splitProblem`. The answer is checked by `checkScope`. A call that fails, or a reply that cannot be used, is recorded as `failed`.
  * It never throws.
  */
 export async function runScopeReader(client: LLMClient, { diff, rawDiff, prContext, linkedIssues, workspace, trivial, changeDigest, priorRounds = [], items = [] }: ScopeOptions): Promise<RoundScope> {
@@ -256,8 +273,11 @@ export async function runScopeReader(client: LLMClient, { diff, rawDiff, prConte
   if (changeDigest && carried && last.diff.changeDigest === changeDigest && carried.purpose === purpose && carried.issues === issues && (!carried.hunks || carried.hunks === hunkPositions(diff)) && citedUnchanged(carried, diff, tools ? workspace : undefined)) {
     const since = carried.since ?? last.meta.round;
     core.info(`Scope reader: the diff, the PR text, the linked issues and the cited lines did not change since round ${since}, so it is not asked again`);
-    const { dropped, ...answer } = carriedAnswer(carried);
-    return { ...answer, ...(dropped && { dropped }), skipped: 'unchanged', since };
+    const { dropped = [], split, ...answer } = carriedAnswer(carried);
+    // A split an older check kept is checked again, since the check needs no call.
+    const problem = split && splitProblem(split, diff, items);
+    const left = [...dropped, ...(problem ? [{ part: 'split' as const, reason: problem }] : [])];
+    return { ...answer, ...(split && !problem && { split }), ...(left.length > 0 && { dropped: left }), skipped: 'unchanged', since };
   }
   const options: SendMessageOptions = { effort: 'medium', timeoutMs: SCOPE_TIMEOUT_MS, ...(tools && { repoTools: repoTools(workspace!, SCOPE_STEPS, undefined) }) };
   const message = `${buildReviewerUserMessage(rawDiff, '', { prContext, linkedIssues })}\n\n${jsonOnlyReply()}`;
@@ -271,7 +291,7 @@ export async function runScopeReader(client: LLMClient, { diff, rawDiff, prConte
       },
       error => core.warning(`Scope reader reply could not be used (${error}), asking once more`),
     );
-    const checked = checkScope(answer, diff, tools ? workspace : undefined);
+    const checked = checkScope(answer, diff, tools ? workspace : undefined, items);
     const ranged = checked.split?.some(part => part.files.some(f => namedPart(f, diff)?.lines));
     const split = checked.split?.map(part => ({ ...part, shown: shownFiles(part, diff, items) }));
     const scope = { ...checked, ...(split && { split }), purpose, issues, ...(ranged && { hunks: hunkPositions(diff) }) };
