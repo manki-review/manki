@@ -3991,8 +3991,9 @@ interface EarlierFinding {
 export function earlierFindings(priorRounds: RoundContext[], openThreads: OpenThread[], threadEvaluations: ThreadEvaluation[] | undefined): EarlierFinding[] {
   const addressed = new Set((threadEvaluations ?? []).filter(e => e.status === 'addressed').map(e => e.threadId));
   const open = new Set(openThreads.filter(t => !addressed.has(t.threadId)).map(t => t.threadId));
-  // A finding the body left out for lack of room was never shown, so nothing restates it. A blocker among them stays, since `relistThreadlessBlockers` lists it again.
-  const shown = (entry: FindingFingerprintEntry) => entry.posted !== 'record' || entry.severity === 'blocker';
+  // A finding the body left out for lack of room was never shown, so nothing restates it. A blocker among them stays, since
+  // `relistThreadlessBlockers` lists it again, and so does a warning the next round carries.
+  const shown = (entry: FindingFingerprintEntry) => entry.posted !== 'record' || entry.severity === 'blocker' || carriedNext(entry);
   const entries = priorRounds.flatMap(r => (r.findings.entries ?? []).filter(shown).map(entry => ({ entry, key: stringifyFindingFingerprint(entry.fingerprint), round: entry.raisedIn ?? r.meta.round })));
   const bodyOnly = new Set(entries.filter(e => !e.entry.threadId && e.entry.severity !== 'blocker').map(e => e.key));
   const restatedIn = (threadId: string) => entries.filter(e => e.entry.threadId === threadId && !!e.entry.sameAs && bodyOnly.has(e.entry.sameAs)).map(e => e.entry.sameAs!);
@@ -4089,10 +4090,15 @@ async function foldIntoEarlierFindings(findings: Finding[], earlier: EarlierFind
   });
 }
 
-/** Returns the warnings the last of `priorRounds` listed only in its review body or carried itself: each with a `citedLine`, or marked `unread`. */
+/** Whether the round after the one that recorded `entry` carries it: a warning without a thread, with a `citedLine` or marked `unread`. */
+function carriedNext(entry: FindingFingerprintEntry): boolean {
+  return (!!entry.citedLine || !!entry.unread) && !entry.threadId;
+}
+
+/** Returns the warnings the last of `priorRounds` listed only in its review body or carried itself, each one `carriedNext`. */
 export function bodyWarnings(priorRounds: RoundContext[]): FindingFingerprintEntry[] {
   const last = priorRounds.at(-1);
-  return last ? [...last.findings.entries, ...(last.findings.carried ?? [])].filter(e => (e.citedLine || e.unread) && !e.threadId) : [];
+  return last ? [...last.findings.entries, ...(last.findings.carried ?? [])].filter(carriedNext) : [];
 }
 
 /**
