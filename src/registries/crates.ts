@@ -20,6 +20,12 @@ const normalize = (name: string): string => name.toLowerCase().replace(/-/g, '_'
 /** The Cargo config files of a checkout, which can patch a crate or replace the source of every crate. */
 const CARGO_CONFIGS = /(?:^|\/)\.cargo\/config(?:\.toml)?$/;
 
+/**
+ * The settings of a Cargo config that make a fresh install pick another version than the highest: a minimum publish
+ * age, or the lowest versions. One under `[registries.crates-io]` already refuses the crate as another index.
+ */
+const PICK_SETTINGS = ['registry.global-min-publish-age', 'registry.min-publish-age', 'unstable.minimal-versions', 'unstable.direct-minimal-versions'];
+
 /** The tables of a manifest that list dependencies, each under one of these names. */
 const DEPENDENCY_TABLES = ['dependencies', 'dev-dependencies', 'build-dependencies', 'dev_dependencies', 'build_dependencies'];
 
@@ -30,6 +36,12 @@ const OTHER_SOURCES = ['path', 'git', 'registry', 'registry-index', 'registry_in
 const ENTRY_FIELDS = new Set(['version', 'features', 'optional', 'default-features', 'default_features', 'package', 'public', 'artifact', 'lib', 'target', 'branch', 'tag', 'rev']);
 
 type TomlTable = Record<string, unknown>;
+
+/** Returns the value of `key` in a Cargo config `table`, which may spell it with dashes or with underscores. */
+function configValue(table: TomlTable, key: string): unknown {
+  const spelled = [key, key.replace(/-/g, '_')].find(k => Object.hasOwn(table, k));
+  return spelled === undefined ? undefined : table[spelled];
+}
 
 /** Returns `value` when it is a TOML table, else an empty one. */
 function tableOf(value: unknown): TomlTable {
@@ -112,14 +124,17 @@ function fullRustVersion(value: unknown): string | undefined {
 }
 
 /**
- * Returns which of `files` lets Cargo pick an older version than the highest a requirement allows: a `rust-version`
- * together with the resolver that honours it, from edition 2024, `resolver = "3"` or a Cargo config's
- * `incompatible-rust-versions`. The setting and the `rust-version` can sit in different manifests of one workspace.
+ * Returns which of `files` lets Cargo pick another version than the highest a requirement allows: a Cargo config's
+ * minimum publish age or lowest versions, or the resolver that honours `rust-version`, from edition 2024,
+ * `resolver = "3"` or a Cargo config's `incompatible-rust-versions = "fallback"`. A Cargo config's `"allow"` overrides
+ * the first two, unless another config sets `"fallback"`. The resolver setting and the `rust-version` can sit in
+ * different manifests of one workspace.
  *
  * That resolver prefers the version that fits the most `rust-version`s of the workspace's members, and the highest of
  * those. One without a `rust_version` in the index fits all. With every package stating a `rust-version`, the highest
  * version that fits each of them is the pick of any workspace, so that is left to a test. A workspace whose members
- * state none goes by the compiler's version, which Manki does not know.
+ * state none goes by the compiler's version, which Manki does not know, so the test refuses a version with a
+ * `rust_version`. A Cargo config that sets one of `PICK_SETTINGS` refuses every version.
  */
 function cargoFreshPick(files: readonly RegistryConfig[]): ReturnType<Registry['freshPick']> {
   const stated: Array<{ file: string; version?: string }> = [];
@@ -128,6 +143,8 @@ function cargoFreshPick(files: readonly RegistryConfig[]): ReturnType<Registry['
   let inherits: string | undefined;
   let shares = false;
   let resolver: string | undefined;
+  let configFallback = false;
+  let configAllow = false;
   for (const { file, text } of files) {
     let toml: TomlTable;
     try {
@@ -136,7 +153,18 @@ function cargoFreshPick(files: readonly RegistryConfig[]): ReturnType<Registry['
       throw new Error(`Manki cannot read ${file} with certainty: ${error instanceof Error ? error.message : String(error)}`);
     }
     if (CARGO_CONFIGS.test(file)) {
-      if (Object.hasOwn(tableOf(toml.resolver), 'incompatible-rust-versions')) resolver ??= file;
+      const policy = configValue(tableOf(toml.resolver), 'incompatible-rust-versions');
+      if (policy === 'fallback') {
+        resolver ??= file;
+        configFallback = true;
+      }
+      configAllow ||= policy === 'allow';
+      const setting = PICK_SETTINGS.find(key => {
+        const path = key.split('.');
+        const value = configValue(path.slice(0, -1).reduce((at, name) => tableOf(at[name]), toml), path.at(-1)!);
+        return value !== undefined && value !== false;
+      });
+      if (setting) return `${shown(file)} sets \`${setting}\`, so a fresh install may not pick the highest version a requirement allows`;
       continue;
     }
     const pkg = tableOf(toml.package ?? toml.project);
@@ -153,7 +181,11 @@ function cargoFreshPick(files: readonly RegistryConfig[]): ReturnType<Registry['
     }
     if ([pkg.edition, shared.edition].includes('2024') || [pkg.resolver, workspace.resolver].includes('3')) resolver ??= file;
   }
-  if (!rustVersion || !resolver) return undefined;
+  // `allow` turns the preference for a fitting `rust-version` off, also where the edition or `resolver` turns it on.
+  if (!resolver || (configAllow && !configFallback)) return undefined;
+  // Without a `rust-version`, Cargo picks by the compiler's version, which Manki does not know.
+  if (!rustVersion) return highest => highest.rustVersion === undefined ? undefined
+    : `${shown(resolver)} lets Cargo pick by \`rust-version\` and no package states one, so a fresh install picks by the compiler's version, which Manki does not know, and crates.io states a Rust version for the newest, ${highest.version}`;
   const why = (lacking: string) => `${shown(rustVersion)} sets \`rust-version\` and ${shown(resolver)} lets Cargo pick by it, so a fresh install may pick an older version, since ${lacking}`;
   if (missing) return why(`${shown(missing)} states none`);
   if (inherits && !shares) return why(`${shown(inherits)} inherits one that no workspace states`);

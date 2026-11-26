@@ -573,6 +573,22 @@ describe('dependencyLoader', () => {
     }
     const cargo = (pkg: string) => `[package]\nname = "app"\n${pkg}\n[dependencies]\ndemo = "1.2"\n`;
     expect((await round({ 'Cargo.toml': cargo('edition = "2021"\nrust-version = "1.80"\n') }).load('crates.io/demo')).key).toBe('crates.io/demo@1.2.5');
+    // So does a committed Cargo config with a minimum publish age or the lowest versions, unless it turns the latter off.
+    const cargoConfigs: Array<[string, string]> = [
+      ['[registry]\nglobal-min-publish-age = "14 days"\n', 'registry.global-min-publish-age'], ['[registry]\nmin-publish-age = "3 days"\n', 'registry.min-publish-age'],
+      ['[unstable]\nminimal-versions = true\n', 'unstable.minimal-versions'],
+      ['unstable.direct-minimal-versions = true\n', 'unstable.direct-minimal-versions'],
+      // A Cargo config may spell a key with underscores.
+      ['[registry]\nglobal_min_publish_age = "14 days"\n', 'registry.global-min-publish-age'], ['[registry]\nmin_publish_age = "3 days"\n', 'registry.min-publish-age'],
+      ['[unstable]\nminimal_versions = true\n', 'unstable.minimal-versions'], ['[unstable]\ndirect_minimal_versions = true\n', 'unstable.direct-minimal-versions'],
+    ];
+    for (const [text, key] of cargoConfigs) {
+      await expect(round({ 'Cargo.toml': cargo('edition = "2021"\n'), '.cargo/config.toml': text }).load('crates.io/demo')).rejects.toThrow(`.cargo/config.toml sets \`${key}\`, so a fresh install may not pick the highest version a requirement allows`);
+      expect((await round({ 'Cargo.toml': cargo('edition = "2021"\n'), 'Cargo.lock': cargoLock([{ version: '1.2.0' }]), '.cargo/config.toml': text }).load('crates.io/demo')).key).toBe('crates.io/demo@1.2.0');
+    }
+    for (const text of ['[unstable]\nminimal-versions = false\n', '[registries.other]\nmin-publish-age = "3 days"\n']) {
+      expect((await round({ 'Cargo.toml': cargo('edition = "2021"\n'), '.cargo/config.toml': text }).load('crates.io/demo')).key).toBe('crates.io/demo@1.2.5');
+    }
   });
 
   it('reads the newest version under a Cargo resolver that honours `rust-version` only when no older one can be picked', async () => {
@@ -588,6 +604,10 @@ describe('dependencyLoader', () => {
       // The yanked 1.2.0 and the prerelease need an older Rust and are no candidates. An equal or a partial version fits.
       [{ 'Cargo.toml': pkg(`${edition}rust-version = "1.75"\n`) }],
       [{ 'Cargo.toml': pkg('rust-version = "1.80"\n'), ...config }],
+      // `allow` turns the preference off, also where edition 2024 or `resolver = "3"` turns it on, so no `rust-version` is read.
+      [{ 'Cargo.toml': pkg('rust-version = "x"\n'), '.cargo/config.toml': '[resolver]\nincompatible-rust-versions = "allow"\n' }],
+      [{ 'Cargo.toml': pkg(`${edition}rust-version = "x"\n`), '.cargo/config.toml': '[resolver]\nincompatible-rust-versions = "allow"\n' }],
+      [{ 'Cargo.toml': root(''), 'a/Cargo.toml': pkg('rust-version = "x"\n'), '.cargo/config.toml': '[resolver]\nincompatible_rust_versions = "allow"\n' }],
       [{ 'Cargo.toml': shared, 'a/Cargo.toml': pkg(inherits), 'b/Cargo.toml': `${none}${inherits}` }],
       [{ 'Cargo.toml': root(''), 'a/Cargo.toml': pkg('rust-version = "1.80"\n'), 'b/Cargo.toml': `${none}rust-version = "1.76"\n` }],
       // A version the index states no Rust version for fits every one.
@@ -595,6 +615,8 @@ describe('dependencyLoader', () => {
       [{ 'Cargo.toml': pkg(`${edition}rust-version = "1.31"\n`, 'unfit = "3"') }, 'unfit@3.0.0'],
       // The requirement alone leaves one version that fits.
       [{ 'Cargo.toml': pkg(`${edition}rust-version = "1.60"\n`, 'fits = "=1.0.0"') }, 'fits@1.0.0'],
+      // Without any `rust-version` Cargo picks by the compiler's version, which a version with none in the index fits.
+      [{ 'Cargo.toml': pkg(edition, 'demo = "1.2"') }, 'demo@1.2.5'],
     ];
     for (const [files, key = 'fits@1.1.0'] of read) {
       expect((await round(files).load(`crates.io/${key.split('@')[0]}`)).key).toBe(`crates.io/${key}`);
@@ -609,6 +631,9 @@ describe('dependencyLoader', () => {
       ...['"1.89.0-nightly"', '"^1.89"', '"1.x"', '""', '"0.9"', '"1.89.0.1"', '"1.089"', '1.89', '{ workspace = false }'].map((value): [Record<string, string>, string] => (
         [{ 'Cargo.toml': pkg(`${edition}rust-version = ${value}\n`) }, `${older} the one in Cargo.toml is no version Manki reads.`])),
       [{ 'Cargo.toml': pkg('rust-version = "x"\n'), ...config }, 'Cargo.toml sets `rust-version` and .cargo/config.toml lets Cargo pick by it'],
+      [{ 'Cargo.toml': pkg('rust-version = "x"\n'), '.cargo/config.toml': '[resolver]\nincompatible_rust_versions = "fallback"\n' }, 'Cargo.toml sets `rust-version` and .cargo/config.toml lets Cargo pick by it'],
+      // Another config that sets `fallback` keeps the preference on whatever one sets `allow`.
+      [{ 'Cargo.toml': pkg(`${edition}rust-version = "x"\n`), '.cargo/config.toml': '[resolver]\nincompatible-rust-versions = "allow"\n', 'a/.cargo/config.toml': config['.cargo/config.toml'] }, `${older} the one in Cargo.toml is no version Manki reads.`],
     ];
     const asked = server.requests.length;
     for (const [files, reason] of refused) await expect(round(files).load('crates.io/fits')).rejects.toThrow(reason);
@@ -623,6 +648,9 @@ describe('dependencyLoader', () => {
       [{ 'Cargo.toml': pkg(`${edition}rust-version = "1.89"\n`, 'unfit = "1"') }, `${older} crates.io states a Rust version Manki does not read for 1.1.0.`, 'unfit'],
       [{ 'Cargo.toml': pkg(`${edition}rust-version = "1.89"\n`, 'unfit = "2"') }, 'crates.io states a Rust version Manki does not read for 2.0.0.', 'unfit'],
       [{ 'Cargo.toml': pkg(`${edition}rust-version = "1.89"\n`, 'unfit = "4"') }, 'the newest, 4.0.0, needs Rust 2.0.0 and Cargo.toml states 1.89.0.', 'unfit'],
+      // The compiler's version is unknown, so with no `rust-version` any Rust version in the index refuses the newest.
+      [{ 'Cargo.toml': pkg(edition) }, "Cargo.toml lets Cargo pick by `rust-version` and no package states one, so a fresh install picks by the compiler's version, which Manki does not know, and crates.io states a Rust version for the newest, 1.1.0."],
+      [{ 'Cargo.toml': root(''), 'a/Cargo.toml': pkg(''), 'b/Cargo.toml': none }, 'Cargo.toml lets Cargo pick by `rust-version` and no package states one'],
     ];
     for (const [files, reason, name = 'fits'] of unfit) {
       const { stateDir, load } = round(files);
