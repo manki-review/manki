@@ -1116,6 +1116,10 @@ interface VariantSummary {
   bySeverity: Partial<Record<KeySeverity, SeverityRecall>>;
   falseBlockers: number;
   unexpectedWarnings: number;
+  /** Blocker findings that match key items, all of them below blocker, by `overGradedBlockers`. */
+  overGradedBlockers: number;
+  /** Must-catch blocker items matched only below blocker, by `underGradedBlockers`. */
+  underGradedBlockers: number;
   extraFindings: number;
   duplicates: number;
   /** Sums over the complete runs of follow-up cases, `null` without one. */
@@ -1244,6 +1248,8 @@ function summarize(cases: CaseReport[]): VariantSummary {
     bySeverity,
     falseBlockers: runs.reduce((total, r) => total + r.falseBlockers, 0),
     unexpectedWarnings: cases.reduce((total, c) => total + c.runs.reduce((sum, run) => sum + unexpectedWarnings(c, run), 0), 0),
+    overGradedBlockers: cases.reduce((total, c) => total + c.runs.reduce((sum, run) => sum + overGradedBlockers(c, run), 0), 0),
+    underGradedBlockers: cases.reduce((total, c) => total + c.runs.reduce((sum, run) => sum + underGradedBlockers(c, run), 0), 0),
     extraFindings: runs.reduce((total, r) => total + r.extraFindings, 0),
     duplicates: runs.reduce((total, r) => total + r.duplicates, 0),
     resolvedRight: sum(f => f.resolvedRight),
@@ -1293,6 +1299,28 @@ function matchedKeyGrade(c: CaseReport, run: RunScore, n: number): KeySeverity |
   const repeatIds = repeatItemIds(c);
   const items = c.items.filter(item => matchedFindings(run.matches.filter(m => m.item === item.id), id => repeatIds.has(id)).has(n));
   return KEY_SEVERITIES.find(severity => items.some(item => item.severity === severity));
+}
+
+/** The blocker findings of a complete reported run that match key items, all of them below blocker, by `matchedKeyGrade`. */
+function overGradedBlockers(c: CaseReport, run: RunScore): number {
+  if (!run.complete) return 0;
+  return run.findings.filter((f, n) => {
+    const grade = f.severity === 'blocker' ? matchedKeyGrade(c, run, n) : undefined;
+    return grade !== undefined && grade !== 'blocker';
+  }).length;
+}
+
+/** The must-catch blocker items of a complete reported run that a finding matches, with no matching finding graded blocker. */
+function underGradedBlockers(c: CaseReport, run: RunScore): number {
+  if (!run.complete) return 0;
+  return c.items.filter(item => item.tier === 'must_catch' && item.severity === 'blocker'
+    && run.matches.some(m => m.item === item.id && m.verdict === 'MATCH') && !foundAtGrade(item, run)).length;
+}
+
+/** Returns the counts of `overGradedBlockers` and `underGradedBlockers` for a run line, each only when above 0. */
+function gradeGaps(c: CaseReport, run: RunScore): string {
+  const [over, under] = [overGradedBlockers(c, run), underGradedBlockers(c, run)];
+  return `${over > 0 ? `, ${over} blockers above key grade` : ''}${under > 0 ? `, ${under} key blockers posted lower` : ''}`;
 }
 
 /** The warning findings of a reported run that match no key item. They are counted from the run's findings and matches when its ref did not score them. */
@@ -1456,6 +1484,10 @@ interface GateSide {
   falseBlockers: number;
   /** Warning findings that match no key item. */
   unexpectedWarnings: number;
+  /** Blocker findings that match key items, all of them below blocker. */
+  overGradedBlockers: number;
+  /** Must-catch blocker items matched only below blocker. */
+  underGradedBlockers: number;
   /** Earlier threads resolved that the key says stay open. */
   resolvedWrong: number;
   /** Findings that restate an earlier finding the key says must not be posted again. */
@@ -1475,6 +1507,12 @@ const GATE_FIGURES: Array<{ key: GateFigure; label: string; row: string; better:
   { key: 'unexpectedWarnings', label: 'Unexpected warnings', row: 'Unexpected warnings', better: 'less' },
   { key: 'resolvedWrong', label: 'Earlier threads resolved that the key keeps open', row: 'Resolved wrong', better: 'less' },
   { key: 'repeats', label: 'Earlier findings posted again', row: 'Repeats', better: 'less' },
+];
+
+/** The figures the gate table shows that decide nothing. */
+const SHOWN_FIGURES: Array<{ key: GateFigure; row: string }> = [
+  { key: 'overGradedBlockers', row: 'Blockers above key grade' },
+  { key: 'underGradedBlockers', row: 'Key blockers posted lower' },
 ];
 
 /** How many runs of one side got a key item right. */
@@ -1522,6 +1560,8 @@ function gateSide(variants: VariantReport[], shared: string[]): GateSide {
     resolvedRight: meanPerRun((_, run) => run.followUp?.resolvedRight ?? 0),
     falseBlockers: meanPerRun((_, run) => run.falseBlockers),
     unexpectedWarnings: meanPerRun(unexpectedWarnings),
+    overGradedBlockers: meanPerRun(overGradedBlockers),
+    underGradedBlockers: meanPerRun(underGradedBlockers),
     resolvedWrong: meanPerRun((_, run) => run.followUp?.resolvedWrong ?? 0),
     repeats: meanPerRun((_, run) => run.followUp?.repeats ?? 0),
   };
@@ -1704,7 +1744,7 @@ export function formatGate(results: GateResult[]): string {
     const lines = [`### Release gate, ${r.variant}: ${r.verdict}`, '', r.reason, ''];
     if (r.baseline && r.candidate) {
       const row = (label: string, key: keyof GateSide) => `| ${label} | ${figure(r.baseline![key])} | ${figure(r.candidate![key])} |`;
-      lines.push('| Figure | Baseline | Candidate |', '| --- | --- | --- |', row('Runs per case', 'runs'), ...GATE_FIGURES.map(f => row(f.row, f.key)), '');
+      lines.push('| Figure | Baseline | Candidate |', '| --- | --- | --- |', row('Runs per case', 'runs'), ...[...GATE_FIGURES, ...SHOWN_FIGURES].map(f => row(f.row, f.key)), '');
     }
     if (r.items) {
       const runs = (side: ItemRuns) => `${side.right} of ${side.runs}`;
@@ -1810,6 +1850,8 @@ export function formatComparison(variants: VariantReport[]): string {
     figure('Verdict accuracy', s => percent(s.verdictAccuracy)),
     figure('False blockers', s => String(s.falseBlockers)),
     figure('Unexpected warnings', s => String(s.unexpectedWarnings)),
+    figure('Blockers above key grade', s => String(s.overGradedBlockers)),
+    figure('Key blockers posted lower', s => String(s.underGradedBlockers)),
     figure('Extra findings', s => String(s.extraFindings)),
     figure('Duplicates', s => String(s.duplicates)),
     figure('Resolved right', s => count(s.resolvedRight)),
@@ -1969,7 +2011,7 @@ export function formatBenchSummary(report: BenchReport): string {
         const readAgain = run.secondReads ? `, by second reads ${run.secondReads.map(f => `${f.name} ${f.filesRead}`).join(', ')}` : '';
         lines.push(run.error
           ? `  run ${i + 1}: ${run.outcome}: ${shown ? oneLine(run.error) : 'the reason is in the report'}${run.unscored ? ' (unscored: the review completed, and `--rescore` scores it without a new review)' : ''}`
-          : `  run ${i + 1}: ${run.outcome}, recall ${percent(run.mustCatchRecall)}, ${run.falseBlockers} false blockers, ${unexpectedWarnings(c, run)} unexpected warnings, ${run.extraFindings} extra, ${run.duplicates} duplicates${run.followUp ? `, resolved ${run.followUp.resolvedRight} right and ${run.followUp.resolvedWrong} wrong, ${run.followUp.repeats} repeats` : ''}, files read ${reads}${readAgain}, $${run.costUsd.toFixed(2)}`);
+          : `  run ${i + 1}: ${run.outcome}, recall ${percent(run.mustCatchRecall)}, ${run.falseBlockers} false blockers, ${unexpectedWarnings(c, run)} unexpected warnings${gradeGaps(c, run)}, ${run.extraFindings} extra, ${run.duplicates} duplicates${run.followUp ? `, resolved ${run.followUp.resolvedRight} right and ${run.followUp.resolvedWrong} wrong, ${run.followUp.repeats} repeats` : ''}, files read ${reads}${readAgain}, $${run.costUsd.toFixed(2)}`);
         // A hold-out case shows only the kind and codes, since a message can quote what the model answered.
         for (const cause of run.finderErrors ?? []) lines.push(`    ${cause.finder} failed: ${oneLine(formatFinderError(cause, shown))}`);
         const lost = run.complete ? run.raw?.caught.filter(caught => !caught.posted) ?? [] : [];
@@ -1980,7 +2022,7 @@ export function formatBenchSummary(report: BenchReport): string {
     for (const { label, summary: s } of setSummaries(variant)) {
       const severities = KEY_SEVERITIES.flatMap(sev => (s.bySeverity[sev] ? [`${sev} ${s.bySeverity[sev]!.caught}/${s.bySeverity[sev]!.total}`] : []));
       lines.push(`${label ? `${label}: ` : ''}${s.runs} runs (${s.incompleteRuns} incomplete). Must-catch recall ${percent(s.mustCatchRecall)}, weighted ${percent(s.weightedRecall)}, at grade ${percent(s.atGradeRecall)}, verdicts ${percent(s.verdictAccuracy)}.`);
-      lines.push(`By severity: ${severities.join(', ') || 'n/a'}. False blockers ${s.falseBlockers}, unexpected warnings ${s.unexpectedWarnings}, extra findings ${s.extraFindings}, duplicates ${s.duplicates}, cost $${s.costUsd.toFixed(2)}.`);
+      lines.push(`By severity: ${severities.join(', ') || 'n/a'}. False blockers ${s.falseBlockers}, unexpected warnings ${s.unexpectedWarnings}, blockers above key grade ${s.overGradedBlockers}, key blockers posted lower ${s.underGradedBlockers}, extra findings ${s.extraFindings}, duplicates ${s.duplicates}, cost $${s.costUsd.toFixed(2)}.`);
       if (s.repeats !== null) lines.push(`Follow-up rounds: resolved ${s.resolvedRight} right and ${s.resolvedWrong} wrong, ${s.repeats} repeats.`);
       if (s.raw) lines.push(formatRawSummary(s.raw));
     }

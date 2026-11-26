@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { isMap, isScalar, parseDocument } from 'yaml';
 
-import { BenchCase, BenchReport, buildReport, candidateFindings, caseSet, formatBenchSummary, formatBlockerRoutes, formatGate, formatImportance, formatUnmatched, formatVotes, formatWarningSources, gateReports, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, MatcherSpend, mergeReports, parseBenchArgs, parseCase, readReport, rescoreReport, resolveVariants, runBench, runBenchCommand, scoreRun } from './bench';
+import { BenchCase, BenchReport, buildReport, candidateFindings, caseSet, formatBenchSummary, formatBlockerRoutes, formatComparison, formatGate, formatImportance, formatUnmatched, formatVotes, formatWarningSources, gateReports, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, MatcherSpend, mergeReports, parseBenchArgs, parseCase, readReport, rescoreReport, resolveVariants, runBench, runBenchCommand, scoreRun } from './bench';
 import { loadConfigWithOverrides } from './local-review';
 import type { LocalReview, LocalReviewInput } from './local-review';
 import { printableError } from './cli';
@@ -434,6 +434,13 @@ describe('scoreRun', () => {
       secondReads: [{ name: 'Second read 1', model: 'claude-sonnet-5-5', toolSteps: 2, filesRead: 1 }],
       costUsd: 1.25, inputTokens: 1000, outputTokens: 100, durationMs: 90,
     });
+    // The blocker that matches only the warning item K2 is above the key's grade. With only the warning matching K1, the key blocker is posted lower.
+    const lower = await scoreRun(benchCase, makeReview('ADDRESS_FIRST', findings), stub({ K1: { verdict: 'MATCH', findings: [0], reason: 'same' }, K2: { verdict: 'PARTIAL', findings: [0], reason: 'vague' } }));
+    const graded = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 3, matcherModel: 'model-a' }, [{ variant: { name: 'base', overrides: {} }, results: [{ benchCase, runs: [score, lower, { ...lower, complete: false }] }] }]);
+    expect(graded.variants[0].summary).toMatchObject({ overGradedBlockers: 2, underGradedBlockers: 1 });
+    expect(formatBenchSummary(graded)).toContain('run 2: ADDRESS_FIRST, recall 50%, 2 false blockers, 0 unexpected warnings, 1 blockers above key grade, 1 key blockers posted lower, 2 extra');
+    expect(formatBenchSummary(graded)).toContain('blockers above key grade 2, key blockers posted lower 1,');
+    expect(formatComparison(graded.variants)).toContain('| Blockers above key grade | 2 |\n| Key blockers posted lower | 1 |');
     expect(score.findings.slice(1, 3)).toEqual([
       { severity: 'blocker', title: 'Lock dropped', file: 'src/lock.rs', line: 1, description: 'Calls `unlock` early.', route: { finderGrade: 'blocker', raisedBy: ['finder'], finders: ['reviewer'] } },
       { severity: 'blocker', title: 'Invented', file: 'src/other.rs', line: 1, description: 'Something.', route: { finderGrade: 'blocker', raisedBy: ['finder'], finders: ['reviewer'] } },
@@ -989,7 +996,7 @@ describe('runBench and buildReport', () => {
     expect(report.variants[0].summary).toEqual({
       runs: 5, incompleteRuns: 2, mustCatchRecall: 1 / 3, weightedRecall: expect.closeTo(0.4), atGradeRecall: 1 / 3, verdictAccuracy: 2 / 3,
       bySeverity: { blocker: { caught: 2, partial: 1, total: 3 }, warning: { caught: 0, partial: 0, total: 3 } },
-      falseBlockers: 0, unexpectedWarnings: 0, extraFindings: 0, duplicates: 0, resolvedRight: null, resolvedWrong: null, repeats: null,
+      falseBlockers: 0, unexpectedWarnings: 0, overGradedBlockers: 0, underGradedBlockers: 0, extraFindings: 0, duplicates: 0, resolvedRight: null, resolvedWrong: null, repeats: null,
       raw: { items: 6, found: 0, posted: 2, lost: {}, unscored: 0, matcherCostUsd: 0 }, costUsd: 5, costPerRunUsd: 1.25, wallTimePerRunMs: 90,
     });
     expect(JSON.parse(JSON.stringify(report))).toStrictEqual(report);
@@ -1002,7 +1009,7 @@ describe('runBench and buildReport', () => {
     expect(summary).toContain('  run 3: READY, recall 0%, 0 false blockers, 0 unexpected warnings, 0 extra, 0 duplicates, files read finder-a 3 (asked again) (2 units not covered), by second reads Second read 1 1, $1.25\n');
     expect(summary).toContain('5 runs (2 incomplete). Must-catch recall 33%, weighted 40%, at grade 33%, verdicts 67%.');
     expect(summary).not.toContain('Follow-up rounds');
-    expect(summary).toContain('By severity: blocker 2/3, warning 0/3. False blockers 0, unexpected warnings 0, extra findings 0, duplicates 0, cost $5.00.');
+    expect(summary).toContain('By severity: blocker 2/3, warning 0/3. False blockers 0, unexpected warnings 0, blockers above key grade 0, key blockers posted lower 0, extra findings 0, duplicates 0, cost $5.00.');
     expect(summary).toContain("\nFinders' findings: 0 of 6 must-catch items found by a finder, 2 found by the review. Missed by the review after a finder found it: none. Matcher cost of this scoring $0.00.\n");
     expect(summary.slice(summary.indexOf('| Metric'))).toBe([
       '| Metric | base | opus |',
@@ -1013,6 +1020,8 @@ describe('runBench and buildReport', () => {
       '| Verdict accuracy | 67% | 67% |',
       '| False blockers | 0 | 0 |',
       '| Unexpected warnings | 0 | 0 |',
+      '| Blockers above key grade | 0 | 0 |',
+      '| Key blockers posted lower | 0 | 0 |',
       '| Extra findings | 0 | 0 |',
       '| Duplicates | 0 | 0 |',
       '| Resolved right | n/a | n/a |',
@@ -1521,6 +1530,13 @@ describe('mergeReports and gateReports', () => {
       variant: 'base', verdict: 'PASS', shared: ['demo-1', 'demo-2'],
       baseline: { runs: 2, found: 2, falseBlockers: 0, unexpectedWarnings: 0 }, candidate: { runs: 1, found: 2, falseBlockers: 0, unexpectedWarnings: 0 },
     });
+    // A blocker on a warning item shows in the gate table and decides nothing.
+    const overGraded = (benchCase: BenchCase) => scoreRun(benchCase, makeReview('ADDRESS_FIRST', [
+      makeFinding({ severity: 'blocker', file: 'src/read.rs' }), makeFinding({ severity: 'blocker', file: 'src/lock.rs', description: 'Calls `unlock` early.' }),
+    ]), async item => (item.id === 'N1' ? { verdict: 'NONE', findings: [], reason: 'none' } : { verdict: 'MATCH', findings: [0], reason: 'same' }));
+    const above = gateReports([baseline, again(baseline)], [report([[first, [await overGraded(first)]], [second, [await overGraded(second)]]])]);
+    expect(above[0]).toMatchObject({ verdict: 'PASS', baseline: { overGradedBlockers: 0, underGradedBlockers: 0 }, candidate: { found: 4, overGradedBlockers: 2, underGradedBlockers: 0 } });
+    expect(formatGate(above)).toContain('| Repeats | 0 | 0 |\n| Blockers above key grade | 0 | 2 |\n| Key blockers posted lower | 0 | 0 |\n');
     expect(gateReports([baseline], [baseline])[0]).toMatchObject({
       verdict: 'NO DECISION', baseline: { runs: 1 },
       reason: "The baseline has 1 run per case, and the gate decides on 2. Run the baseline's ref again and give both runs as the baseline.",
