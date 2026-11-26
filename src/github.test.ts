@@ -6928,6 +6928,8 @@ describe('postReview non-blocking findings', () => {
     ]), diff, makeContext({ meta: { ...makeContext().meta, round: 3 } }));
     const third = createReview.mock.calls[1][0];
     expect(third.comments.map((c: { line: number; body: string }) => [c.line, c.body.split('\n')[2]])).toEqual([[12, '**Warning listed in round 1**']]);
+    // Its thread says that an earlier review body listed it, and that it still holds the approval.
+    expect(third.comments[0].body.split('\n\n')[2]).toBe('_An earlier round already listed this in its review body. It still holds the approval._');
     expect(third.body).toContain('### Found this round · 1 suggestion\n\n<details>\n<summary>\u2728 <b>New off the diff</b>');
     expect(third.body).toContain('### Still open from round 1 · 2 suggestions\n\nRound 1 listed these, and this round finds them again.\n\n<details>\n<summary>\u2728 <b>Listed in round 1</b>');
     expect(third.body).toContain('### Still open from round 2 · 1 suggestion\n\nRound 2 listed it, and this round finds it again.');

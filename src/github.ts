@@ -2094,6 +2094,15 @@ const MISSED_EARLIER_NOTE = missedEarlierNote('It is in this PR\'s own code, so 
 /** `MISSED_EARLIER_NOTE` for a security warning, which a reply does not clear. */
 const MISSED_EARLIER_SECURITY_NOTE = missedEarlierNote('It is in this PR\'s own code, so it still needs a fix or a maintainer to resolve it');
 
+/** Matches the line under the title of a thread for a warning that restates one an earlier review body listed. */
+const LISTED_EARLIER_NOTE_RE = /^_An earlier round already listed this in its review body[^\n]*/;
+
+/** Returns the line under the title of a thread for `finding`, a warning that restates one an earlier review body listed. */
+function listedEarlierNote(finding: Finding): string {
+  const guarded = isGuardedFinding(finding.tags, finding.reviewers);
+  return `_An earlier round already listed this in its review body. ${guarded ? 'It still needs a fix or a maintainer to resolve it' : 'It still holds the approval'}._`;
+}
+
 /** Returns the note for `finding`, which does not call the code the PR's own below a `baseNote` that says otherwise. */
 function missedEarlierNoteFor(finding: Finding): string {
   const guarded = isGuardedFinding(finding.tags, finding.reviewers);
@@ -4310,6 +4319,7 @@ function formatFindingComment(finding: Finding, links: CodeLinks, place: 'line' 
     if (note) comment += `${note}\n\n`;
   }
   if (finding.origin === 'reviewed' && holdsApproval(finding)) comment += `${missedEarlierNoteFor(finding)}\n\n`;
+  if (finding.origin === 'earlier' && holdsApproval(finding)) comment += `${listedEarlierNote(finding)}\n\n`;
   // A committable suggestion stays open, so GitHub offers to commit it. Any other code fix goes in the fold. Committing
   // writes the block over the commented line, so only a thread on the finding's line gets one.
   const fixParts = finding.suggestedFix?.trim() ? splitFix(finding.suggestedFix, finding.file) : [];
@@ -4922,5 +4932,5 @@ async function standingOnCommit<T extends { id: number; state?: string; body?: s
 }
 
 export type { CodeLinks };
-export { APPROVED_LINE, CHECKS_MARKER, isAutoApproval, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_NOTE_RE, MISSED_EARLIER_SECURITY_NOTE, BASE_NOTE_RE, TRACKED_NOTE_RE, TRUST_NOTE_RE, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isBotUser, authorClearRole, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, givesVerdict, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, standingOnCommit, fetchStandingVerdict, REVIEW_STATE_VERDICTS, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, HELD_FOR_PERSON_MARKER };
+export { APPROVED_LINE, CHECKS_MARKER, isAutoApproval, FIX_LABEL, LISTED_EARLIER_NOTE_RE, MISSED_EARLIER_NOTE, MISSED_EARLIER_NOTE_RE, MISSED_EARLIER_SECURITY_NOTE, BASE_NOTE_RE, TRACKED_NOTE_RE, TRUST_NOTE_RE, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isBotUser, authorClearRole, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, givesVerdict, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, standingOnCommit, fetchStandingVerdict, REVIEW_STATE_VERDICTS, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, HELD_FOR_PERSON_MARKER };
 export type { StandingVerdict };

@@ -2804,6 +2804,14 @@ describe('parseFindingFromComment', () => {
       const security = formatFindingComment({ severity: 'warning', title: 'Token in log', file: 'src/a.ts', line: 2, description: 'The token is logged.', reviewers: [], origin: 'reviewed', tags: ['follow-up', 'security'], checkStatus }, TEST_LINKS);
       expect(security).toMatch(/^⚠️ \*\*Warning, needs a fix\*\*\n/u);
       expect(parseFindingFromComment(security)).toEqual({ description: 'The token is logged.', suggestedFix: undefined });
+      // Nor is the sentence on a warning that restates one an earlier review body listed.
+      for (const tags of [['follow-up'], ['follow-up', 'security']]) {
+        const listed = formatFindingComment({ severity: 'warning', title: 'Token in log', file: 'src/a.ts', line: 2, description: 'The token is logged.', reviewers: [], origin: 'earlier', raisedIn: 1, tags, checkStatus }, TEST_LINKS);
+        expect(listed).toContain(tags.includes('security')
+          ? '_An earlier round already listed this in its review body. It still needs a fix or a maintainer to resolve it._'
+          : '_An earlier round already listed this in its review body. It still holds the approval._');
+        expect(parseFindingFromComment(listed)).toEqual({ description: 'The token is logged.', suggestedFix: undefined });
+      }
     }
     // The issue box, and the link that replaces it once ticked, are not part of the description.
     expect(body).toContain('Create an issue for this');
