@@ -105,7 +105,7 @@ jest.mock('./state', () => ({
   announceSecurityOverrides: jest.fn(async (overrides: unknown[]) => overrides),
   recordDismissal: jest.fn().mockResolvedValue(true),
   approveOrSayWhy: jest.fn().mockResolvedValue({ approved: true }),
-  authorResolvedNote: jest.fn().mockResolvedValue(undefined),
+  reopenNoteOf: jest.fn().mockResolvedValue(undefined),
   rolePhrase: jest.requireActual('./state').rolePhrase,
   fetchBotReviewThreads: jest.fn().mockResolvedValue([]),
   fixedMarker: jest.requireActual('./state').fixedMarker,
@@ -929,7 +929,7 @@ describe('handleReviewCommentReply', () => {
     expect(state.fetchBotReviewThreads).not.toHaveBeenCalled();
     // Without a live thread no round record changes the answer, so none is read.
     expect(octokit.paginate).not.toHaveBeenCalledWith(octokit.rest.pulls.listReviews, expect.anything());
-    expect(state.authorResolvedNote).not.toHaveBeenCalled();
+    expect(state.reopenNoteOf).not.toHaveBeenCalled();
     expect(state.reopenThread).not.toHaveBeenCalled();
     expect(state.resolveReviewThread).not.toHaveBeenCalled();
     expect(memory.writeLearning).not.toHaveBeenCalled();
@@ -1093,7 +1093,7 @@ describe('handleReviewCommentReply', () => {
         isBlocking: kind !== 'warning', isSecurity: kind === 'security', findingTitle: 'This',
       },
     ]);
-    jest.mocked(state.authorResolvedNote).mockResolvedValue(authorResolved ? 'Reopened. The PR author cannot resolve it.' : undefined);
+    jest.mocked(state.reopenNoteOf).mockResolvedValue(authorResolved ? 'Reopened. The PR author cannot resolve it.' : undefined);
     jest.mocked(state.resolveReviewThread).mockClear();
     jest.mocked(state.reopenThread).mockClear().mockResolvedValue(reopens);
 
@@ -1135,7 +1135,7 @@ describe('handleReviewCommentReply', () => {
     expect(record.decision).toEqual(outcome ? { outcome, thread: fate } : undefined);
     // Only a guarded thread the PR author resolved is looked up, and the answer that reopens one carries the marker that stops a second reopen.
     const byAuthor = resolved && kind !== 'warning' && (resolver ?? (authorResolved ? prAuthor : undefined)) === prAuthor;
-    expect(jest.mocked(state.authorResolvedNote).mock.calls).toEqual(byAuthor ? [[octokit, TEST_BOT, 'test-owner', 'test-repo', 1, prAuthor, CONFIG, 'PRRT_this']] : []);
+    expect(jest.mocked(state.reopenNoteOf).mock.calls).toEqual(byAuthor ? [[octokit, TEST_BOT, 'test-owner', 'test-repo', 1, prAuthor, CONFIG, 'PRRT_this']] : []);
     expect(body.endsWith(`\n${REOPENED_MARKER}`)).toBe(noted);
     // Every reader takes an answer led by its state as its outcome, by its marker.
     expect(Object.values(SEEN_MARKERS).filter(marker => body.includes(marker))).toEqual(seen && lead ? [SEEN_MARKERS[outcome!]] : []);
@@ -1283,7 +1283,7 @@ describe('handleReviewCommentReply', () => {
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([
       { id: 'PRRT_this', rootCommentId: 99, isResolved: authorResolved, ...(authorResolved && { resolvedByLogin: 'pr-author' }), isBlocking: kind !== 'warning' && kind !== 'disproved', isSecurity: kind === 'security', disprovedBlocker: kind === 'disproved', findingTitle: 'This' },
     ]);
-    jest.mocked(state.authorResolvedNote).mockResolvedValue(authorResolved ? 'Reopened. The PR author cannot resolve it.' : undefined);
+    jest.mocked(state.reopenNoteOf).mockResolvedValue(authorResolved ? 'Reopened. The PR author cannot resolve it.' : undefined);
     jest.mocked(state.resolveReviewThread).mockClear();
     jest.mocked(state.reopenThread).mockClear().mockResolvedValue(true);
     jest.mocked(memory.writeLearning).mockClear();
@@ -1329,7 +1329,7 @@ describe('handleReviewCommentReply', () => {
     const client = createMockClient();
     jest.mocked(client.sendMessage).mockResolvedValue({ content: structured('Fixed. The guard now runs first.', { proof }) });
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: false, findingTitle: 'This' }]);
-    jest.mocked(state.authorResolvedNote).mockResolvedValue(undefined);
+    jest.mocked(state.reopenNoteOf).mockResolvedValue(undefined);
     jest.mocked(state.resolveReviewThread).mockClear();
 
     await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, undefined, CONFIG);
@@ -1370,7 +1370,7 @@ describe('handleReviewCommentReply', () => {
     const client = createMockClient();
     jest.mocked(client.sendMessage).mockResolvedValue({ content: structured('Fixed. The guard now runs first.', { proof: [`${path}:10`] }) });
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: false, findingTitle: 'This' }]);
-    jest.mocked(state.authorResolvedNote).mockResolvedValue(undefined);
+    jest.mocked(state.reopenNoteOf).mockResolvedValue(undefined);
     jest.mocked(state.resolveReviewThread).mockClear();
 
     await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, undefined, { ...CONFIG, closed_paths: ['keys/**'] });
@@ -1429,7 +1429,7 @@ describe('handleReviewCommentReply', () => {
       id: 'PRRT_this', rootCommentId: 99, isResolved: resolved, ...(resolved && (byAuthor ? { resolvedByLogin: 'pr-author' } : { resolvedByLogin: 'manki-review[bot]', addressed: true })),
       isBlocking: kind === 'blocker', ...(kind === 'security' && { isSecurity: true }), ...(kind === 'warning' && { isWarning: true as const }), findingTitle: 'This',
     }]);
-    jest.mocked(state.authorResolvedNote).mockResolvedValue(undefined);
+    jest.mocked(state.reopenNoteOf).mockResolvedValue(undefined);
     jest.mocked(state.warningHoldNote).mockResolvedValue(kind === 'warning' ? HOLDS : undefined);
     jest.mocked(state.resolveReviewThread).mockClear();
     jest.mocked(state.reopenThread).mockClear();
@@ -1489,7 +1489,7 @@ describe('handleReviewCommentReply', () => {
       id: 'PRRT_this', rootCommentId: 99, isResolved: resolved, ...(resolved && { resolvedByLogin: 'manki-review[bot]', addressed: true }),
       isBlocking: kind === 'blocker', ...(kind === 'warning' && { isWarning: true as const }), findingTitle: 'This',
     }]);
-    jest.mocked(state.authorResolvedNote).mockResolvedValue(undefined);
+    jest.mocked(state.reopenNoteOf).mockResolvedValue(undefined);
     jest.mocked(state.warningHoldNote).mockResolvedValue(holds ? HOLDS : undefined);
     jest.mocked(state.resolveReviewThread).mockClear();
     jest.mocked(state.reopenThread).mockClear();
@@ -1544,7 +1544,7 @@ describe('handleReviewCommentReply', () => {
         id: 'PRRT_this', rootCommentId: 99, isResolved: !!resolver, ...(resolver && { resolvedByLogin: resolver, ...(resolver !== 'manki-review[bot]' && { writerResolverLogin: resolver }) }),
         isBlocking: kind === 'blocker', ...(kind === 'security' && { isSecurity: true }), ...(kind === 'warning' && { isWarning: true as const }), findingTitle: 'This',
       }]);
-      jest.mocked(state.authorResolvedNote).mockResolvedValue(reopen ? 'Reopened. The PR author cannot resolve it.' : undefined);
+      jest.mocked(state.reopenNoteOf).mockResolvedValue(reopen ? 'Reopened. The PR author cannot resolve it.' : undefined);
       jest.mocked(state.reopenThread).mockClear().mockResolvedValue(reopens);
       jest.mocked(state.warningHoldNote).mockResolvedValue(holds ? HOLDS : undefined);
 
@@ -1554,7 +1554,7 @@ describe('handleReviewCommentReply', () => {
       expect(body.split('\n\n')[0]).toBe(text);
       expect(state.reopenThread).toHaveBeenCalledTimes(reopen ? 1 : 0);
     }
-    jest.mocked(state.authorResolvedNote).mockResolvedValue(undefined);
+    jest.mocked(state.reopenNoteOf).mockResolvedValue(undefined);
     jest.mocked(state.reopenThread).mockResolvedValue(true);
     jest.mocked(state.warningHoldNote).mockResolvedValue(undefined);
   });
@@ -1576,7 +1576,7 @@ describe('handleReviewCommentReply', () => {
     const client = createMockClient();
     jest.mocked(client.sendMessage).mockResolvedValue({ content: structured('Fixed. The guard now runs first.', { proof: ['src/file.ts:10'] }) });
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: false, findingTitle: 'This' }]);
-    jest.mocked(state.authorResolvedNote).mockResolvedValue(undefined);
+    jest.mocked(state.reopenNoteOf).mockResolvedValue(undefined);
     const reply = async (reviews: Promise<unknown>) => {
       octokit.paginate = jest.fn().mockReturnValue(reviews);
       jest.mocked(ghUtils.readChangesSince).mockClear();
@@ -1637,7 +1637,7 @@ describe('handleReviewCommentReply', () => {
     const answered = (outcome: string) => ({ content: structured(`${outcome}. The description no longer names the constant.`, { proof: [], statements: [{ quote: said, ...statement }] }) });
     jest.mocked(client.sendMessage).mockResolvedValueOnce(answered('Fixed')).mockResolvedValueOnce(answered('Withdrawn'));
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: false, findingTitle: 'This' }]);
-    jest.mocked(state.authorResolvedNote).mockResolvedValue(undefined);
+    jest.mocked(state.reopenNoteOf).mockResolvedValue(undefined);
     jest.mocked(state.resolveReviewThread).mockClear();
 
     await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, undefined, CONFIG);
@@ -1695,7 +1695,7 @@ describe('handleReviewCommentReply', () => {
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([
       { id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: true, isSecurity: kind === 'security', findingTitle: 'This' },
     ]);
-    jest.mocked(state.authorResolvedNote).mockResolvedValue(undefined);
+    jest.mocked(state.reopenNoteOf).mockResolvedValue(undefined);
     jest.mocked(state.resolveReviewThread).mockClear();
 
     await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, undefined, CONFIG);
@@ -1757,7 +1757,7 @@ describe('handleReviewCommentReply', () => {
       { id: 'PRRT_this', rootCommentId: 99, isResolved: authorResolved, isBlocking: blocking, findingTitle: 'This', ...((pointer === null || holds) && { fixedOn: [head] }) },
     ]);
     jest.mocked(state.warningHoldNote).mockResolvedValue(holds ? 'This warning holds the approval until it is fixed.' : undefined);
-    jest.mocked(state.authorResolvedNote).mockResolvedValue(authorResolved ? 'Reopened. The PR author cannot resolve it.' : undefined);
+    jest.mocked(state.reopenNoteOf).mockResolvedValue(authorResolved ? 'Reopened. The PR author cannot resolve it.' : undefined);
     jest.mocked(state.resolveReviewThread).mockClear();
     jest.mocked(state.reopenThread).mockClear().mockResolvedValue(true);
 
@@ -1857,7 +1857,7 @@ describe('handleReviewCommentReply', () => {
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{
       id: 'PRRT_this', rootCommentId: 99, isResolved: true, resolvedByLogin: 'manki-review[bot]', addressed: true, isBlocking: true, findingTitle: 'This', fixedOn: [head], ...c.thread,
     }]);
-    jest.mocked(state.authorResolvedNote).mockResolvedValue(undefined);
+    jest.mocked(state.reopenNoteOf).mockResolvedValue(undefined);
     jest.mocked(state.warningHoldNote).mockResolvedValue(undefined);
     jest.mocked(state.resolveReviewThread).mockClear();
     jest.mocked(state.reopenThread).mockClear();
@@ -1968,7 +1968,7 @@ describe('handleReviewCommentReply', () => {
       id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: c.kind === 'blocker', findingTitle: 'This',
       ...(c.spoke && { roundReplies: [{ commit: head, at: `2026-11-06T${c.spoke}Z` }] }),
     }]);
-    jest.mocked(state.authorResolvedNote).mockResolvedValue(undefined);
+    jest.mocked(state.reopenNoteOf).mockResolvedValue(undefined);
     jest.mocked(state.warningHoldNote).mockResolvedValue(undefined);
 
     await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, undefined, CONFIG);
@@ -2366,7 +2366,7 @@ describe('handleReviewCommentReply', () => {
     else jest.mocked(state.fetchBotReviewThreads).mockResolvedValue(threadCase === 'missing' ? [] : [thread]);
     jest.mocked(ghUtils.authorClearRole).mockResolvedValue(authorResolved && saves ? 'maintain' : undefined);
     // Manki reopens a thread the PR author resolved only once, so this resolve gets no reopen note.
-    jest.mocked(state.authorResolvedNote).mockResolvedValue(undefined);
+    jest.mocked(state.reopenNoteOf).mockResolvedValue(undefined);
     if (threadCase === 'resolve-fails') jest.mocked(state.resolveReviewThread).mockRejectedValueOnce(new Error('GraphQL timeout'));
     if (threadCase === 'save-fails') jest.mocked(memory.writeLearning).mockRejectedValueOnce(new Error('memory repo is down'));
     if (threadCase === 'note-fails') octokit.rest.pulls.updateReviewComment.mockRejectedValue(new Error('GitHub is down'));

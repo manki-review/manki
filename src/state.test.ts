@@ -1,5 +1,5 @@
 import * as core from '@actions/core';
-import { approveOrSayWhy, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, checkAndAutoApprove, holdApproval, pauseState, reopenAuthorResolvedThreads, retireStaleNotices, BOT_MARKER, ReviewThread, TRACKED_MARKER, unclearedThreads, warningHoldNote, withdrawBlockedApproval } from './state';
+import { approveOrSayWhy, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, checkAndAutoApprove, holdApproval, pauseState, reopenUnsettledThreads, retireStaleNotices, BOT_MARKER, ReviewThread, TRACKED_MARKER, unclearedThreads, warningHoldNote, withdrawBlockedApproval } from './state';
 import { clearRecordMarker, dismissRecordMarker, FOUND_AGAIN_MARKER, PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './recap';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, namingCommit, paginateSinglePage, reviewedLine, TEST_BOT, TEST_LINKS, testSha } from './test-utils';
 import { APPROVED_LINE, autoApproveHeadMarker, formatFindingComment, postReview, reviewedCommit, titleToSlug } from './github';
@@ -556,7 +556,7 @@ describe('fetchBotReviewThreads', () => {
   });
 });
 
-describe('reopenAuthorResolvedThreads', () => {
+describe('reopenUnsettledThreads', () => {
   const previous = (threadId: string, reopen: boolean): PreviousFinding => ({
     title: 'Token leaks into logs', file: 'src/a.ts', line: 3, severity: 'blocker', status: 'open', threadId, isSecurity: true, ...(reopen && { reopen }),
   });
@@ -564,7 +564,7 @@ describe('reopenAuthorResolvedThreads', () => {
   const mutation = (call: unknown[]) => [String(call[0]).match(/unresolveReviewThread|addPullRequestReviewThreadReply/)?.[0], (call[1] as { threadId: string }).threadId];
 
   const reopen = (graphql: jest.Mock, previousFindings: PreviousFinding[]) =>
-    reopenAuthorResolvedThreads({ graphql } as unknown as Octokit, { previousFindings, priorRounds: [] });
+    reopenUnsettledThreads({ graphql } as unknown as Octokit, { previousFindings, priorRounds: [] });
 
   it('reopens, then replies with the markers, for flagged threads only', async () => {
     const graphql = jest.fn().mockResolvedValue({});

@@ -283,7 +283,7 @@ jest.mock('./state', () => ({
   pauseState: jest.requireActual('./state').pauseState,
   authorClearLine: jest.requireActual('./state').authorClearLine,
   autoReviewHalt: jest.requireActual('./state').autoReviewHalt,
-  reopenAuthorResolvedThreads: jest.fn().mockResolvedValue(undefined),
+  reopenUnsettledThreads: jest.fn().mockResolvedValue(undefined),
   reopenThread: jest.requireActual('./state').reopenThread,
   replyToReviewThread: jest.requireActual('./state').replyToReviewThread,
   deleteThreadReply: jest.requireActual('./state').deleteThreadReply,
@@ -2300,7 +2300,7 @@ describe('main', () => {
     expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
     // The role a PR author needs is unknown too, so no thread is read as cleared or reopened.
     expect(jest.mocked(recapModule.fetchRecapState)).not.toHaveBeenCalled();
-    expect(jest.mocked(stateModule.reopenAuthorResolvedThreads)).not.toHaveBeenCalled();
+    expect(jest.mocked(stateModule.reopenUnsettledThreads)).not.toHaveBeenCalled();
     expect(jest.mocked(stateModule.checkAndAutoApprove)).not.toHaveBeenCalled();
   });
 
@@ -7558,7 +7558,7 @@ describe('runFullReview orchestration', () => {
       const notice = pauseNotice();
       expect(notice).toContain('came back after a fix');
       expect(notice).toContain(PAUSE_NOTICE_MARKER);
-      expect(jest.mocked(stateModule.reopenAuthorResolvedThreads)).toHaveBeenCalledWith(expect.anything(), { previousFindings, priorRounds: rounds });
+      expect(jest.mocked(stateModule.reopenUnsettledThreads)).toHaveBeenCalledWith(expect.anything(), { previousFindings, priorRounds: rounds });
       // A security override is recorded in its thread once, even while review is paused.
       expect(jest.mocked(stateModule.announceSecurityOverrides)).toHaveBeenCalledWith(expect.anything(), [
         { thread: 'T_new', login: 'owner', role: 'maintain', via: 'resolve', announced: false },
@@ -8731,7 +8731,7 @@ describe('handleReviewStateCheck', () => {
     // The role the author needs comes from the base branch's config.
     expect(jest.mocked(ghUtils.readConfigFile)).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 'main', '.manki.yml');
     expect(jest.mocked(recapModule.fetchRecapState)).toHaveBeenCalledWith(expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 1, 'author', 'admin');
-    expect(jest.mocked(stateModule.reopenAuthorResolvedThreads)).toHaveBeenCalledWith(expect.anything(), { previousFindings, priorRounds: [round] });
+    expect(jest.mocked(stateModule.reopenUnsettledThreads)).toHaveBeenCalledWith(expect.anything(), { previousFindings, priorRounds: [round] });
     expect(jest.mocked(core.info)).toHaveBeenCalledWith(
       'auto_approve is disabled — skipping state check',
     );
@@ -8753,7 +8753,7 @@ describe('handleReviewStateCheck', () => {
       expect(jest.mocked(core.info)).toHaveBeenCalledWith('PR #1 is merged or closed, skipping the state check');
       expect(jest.mocked(ghUtils.readConfigFile)).not.toHaveBeenCalled();
       expect(jest.mocked(recapModule.fetchRecapState)).not.toHaveBeenCalled();
-      expect(jest.mocked(stateModule.reopenAuthorResolvedThreads)).not.toHaveBeenCalled();
+      expect(jest.mocked(stateModule.reopenUnsettledThreads)).not.toHaveBeenCalled();
       expect(jest.mocked(stateModule.checkAndAutoApprove)).not.toHaveBeenCalled();
     }
   });
@@ -8776,7 +8776,7 @@ describe('handleReviewStateCheck', () => {
 
     await handleReviewStateCheck();
 
-    expect(jest.mocked(stateModule.reopenAuthorResolvedThreads)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ previousFindings: [] }));
+    expect(jest.mocked(stateModule.reopenUnsettledThreads)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ previousFindings: [] }));
     expect(jest.mocked(stateModule.checkAndAutoApprove)).toHaveBeenCalledWith(
       expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 5, expect.objectContaining({ auto_approve: true }),
     );
@@ -8786,7 +8786,7 @@ describe('handleReviewStateCheck', () => {
 
     // A config that cannot be read says neither whether Manki may approve nor which role clears a thread, so the check does nothing.
     jest.mocked(recapModule.fetchRecapState).mockClear();
-    jest.mocked(stateModule.reopenAuthorResolvedThreads).mockClear();
+    jest.mocked(stateModule.reopenUnsettledThreads).mockClear();
     jest.mocked(stateModule.checkAndAutoApprove).mockClear();
     jest.mocked(ghUtils.readConfigFile).mockRejectedValueOnce(new Error('socket hang up')).mockRejectedValueOnce(new Error('socket hang up'));
 
@@ -8794,7 +8794,7 @@ describe('handleReviewStateCheck', () => {
 
     expect(jest.mocked(core.warning)).toHaveBeenCalledWith('Could not read .manki.yml on the base branch, using the defaults and no approval: socket hang up');
     expect(jest.mocked(recapModule.fetchRecapState)).not.toHaveBeenCalled();
-    expect(jest.mocked(stateModule.reopenAuthorResolvedThreads)).not.toHaveBeenCalled();
+    expect(jest.mocked(stateModule.reopenUnsettledThreads)).not.toHaveBeenCalled();
     expect(jest.mocked(stateModule.checkAndAutoApprove)).not.toHaveBeenCalled();
   });
 });

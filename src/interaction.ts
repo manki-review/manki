@@ -12,7 +12,7 @@ import { closeRawDiff, diffSections, findClosedPattern, parsePRDiff, reviewableD
 import { eventPrClosed } from './dispatch';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { clearRecordMarker, SEEN_MARKERS, fetchPriorRoundContexts, recordedThreadGrades, threadSeverity, RecapState, fixClaimMarker, guardedKind, isDisprovedThread, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, UNSETTLED_ANSWER_MARKER, currentFindingLine, findingPlace, withoutCode, BOT_PREFIX_PATTERN, withoutStatementFold } from './recap';
-import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, recordDismissal, authorResolvedNote, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, rolePhrase, unclearedThreads, warningHoldNote } from './state';
+import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, recordDismissal, reopenNoteOf, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, rolePhrase, unclearedThreads, warningHoldNote } from './state';
 import { AuthorClearRole, FindingSeverity, partlyFixedEffect, ParsedDiff, PrContext, RelatedRepoTools, ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation, RoundContext } from './types';
 import { relatedRepoOutcomes, relatedRepoTools, repoTools } from './related-repos';
 import { CheckedReply, MAX_REPLY_STATEMENTS, MAX_TERM_CHARS, MIN_TERM_CHARS, ThreadState, checkFixedElsewhere, checkReply, fixedElsewhereText, statementFold, statementRecords, unsettledLead, withoutOutcomeOpener } from './reply-check';
@@ -796,7 +796,7 @@ export async function handleReviewCommentReply(
     }
     // Only a guarded thread the PR author resolved is reopened, so no other thread reads the recap for a note.
     const authorResolved = !!live?.isResolved && isGuarded(live) && !!prAuthorLogin && live.resolvedByLogin?.toLowerCase() === prAuthorLogin.toLowerCase();
-    const reopenNote = config && authorResolved ? await authorResolvedNote(octokit, bot, owner, repo, prNumber, prAuthorLogin, config, live!.id) : undefined;
+    const reopenNote = config && authorResolved ? await reopenNoteOf(octokit, bot, owner, repo, prNumber, prAuthorLogin, config, live!.id) : undefined;
     const repeats = outcome === 'Fixed' && head && thread?.fixedOn?.includes(head) ? thread : undefined;
     // A second "Fixed." on a head is posted only when its record lifts a warning's hold that the first one left, or
     // records who a guarded thread is cleared for, which is what later rounds read the clear from.

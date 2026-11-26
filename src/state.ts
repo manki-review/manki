@@ -368,7 +368,7 @@ function reopenReply(thread: { isSecurity?: boolean; disprovedBlocker?: boolean 
  * Returns the reply that says why the thread `threadId` is reopened. Returns `undefined` unless the PR author resolved that
  * guarded thread and Manki has not reopened it yet.
  */
-async function authorResolvedNote(
+async function reopenNoteOf(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, prAuthorLogin: string | undefined, config: ReviewConfig, threadId: string,
 ): Promise<string | undefined> {
   const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, prAuthorLogin, config.author_clear_role);
@@ -377,7 +377,7 @@ async function authorResolvedNote(
 }
 
 /** Reopens each guarded thread of `recap` that the PR author resolved, and replies once to say why. */
-async function reopenAuthorResolvedThreads(octokit: Octokit, recap: RecapState): Promise<void> {
+async function reopenUnsettledThreads(octokit: Octokit, recap: RecapState): Promise<void> {
   for (const f of recap.previousFindings) {
     if (!f.reopen || !f.threadId) continue;
     // The thread opens first. The reply's marker stops every later reopen, so it must never sit on a thread that stayed resolved.
@@ -1271,4 +1271,4 @@ async function approveOrSayWhy(
   return refusal ? heldBy(refusal) : { approved: true };
 }
 
-export { ApprovalCheck, PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, recordDismissal, approveOrSayWhy, authorClearLine, authorResolvedNote, autoReviewHalt, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, rolePhrase, resolveReviewThread, retireStaleNotices, unclearedThreads, unresolveReviewThread, warningHoldNote, withdrawBlockedApproval, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX, TRACKED_MARKER };
+export { ApprovalCheck, PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, recordDismissal, approveOrSayWhy, authorClearLine, reopenNoteOf, autoReviewHalt, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenUnsettledThreads, reopenThread, replyToReviewThread, rolePhrase, resolveReviewThread, retireStaleNotices, unclearedThreads, unresolveReviewThread, warningHoldNote, withdrawBlockedApproval, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX, TRACKED_MARKER };
