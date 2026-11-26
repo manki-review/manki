@@ -139,6 +139,7 @@ describe('changedCodeWindows', () => {
   it('shows the numbered lines around each hunk and open thread, merges windows that meet, and skips files the diff holds whole', () => {
     writeFileSync(join(root, 'src/a.ts'), numbered(100));
     writeFileSync(join(root, 'src/other.ts'), numbered(200));
+    writeFileSync(join(root, 'src/far.ts'), numbered(200));
     writeFileSync(join(root, 'src/new.ts'), numbered(5));
     writeFileSync(join(root, 'src/end.ts'), numbered(30));
     const diff = {
@@ -147,6 +148,7 @@ describe('changedCodeWindows', () => {
         file('src/a.ts', [hunk(10, 2), hunk(70, 1), hunk(75, 1)]),
         // A hunk that only removes lines shows the code on both sides of the removal.
         file('src/end.ts', [hunk(25, 0)]),
+        file('src/far.ts', [hunk(10, 1)]),
         file('src/new.ts', [hunk(1, 5)], 'added'),
         file('src/gone.ts', [hunk(0, 0)], 'deleted'),
         // A file the checkout no longer holds gets no window and no notice.
@@ -158,6 +160,8 @@ describe('changedCodeWindows', () => {
     const threads = [
       // A thread's window joins the hunk windows it meets.
       { file: 'src/a.ts', line: 40 },
+      // A thread in a changed file far from its hunks gets a window of its own.
+      { file: 'src/far.ts', line: 150 },
       // A thread's file outside the diff gets its own window.
       { file: 'src/other.ts', line: 150 },
       // A thread on a file the diff holds whole, a line past the end and a thread tied to no line get none.
@@ -166,7 +170,8 @@ describe('changedCodeWindows', () => {
       { file: 'src/other.ts', line: 0 },
     ];
     const { contents, leftOut } = changedCodeWindows(diff, root, threads);
-    expect([...contents.keys()]).toEqual(['src/a.ts', 'src/end.ts', 'src/other.ts']);
+    expect([...contents.keys()]).toEqual(['src/a.ts', 'src/end.ts', 'src/far.ts', 'src/other.ts']);
+    expect(contents.get('src/far.ts')).toBe(`${lines(1, 30)}\n\n${lines(130, 170)}`);
     expect(contents.get('src/a.ts')).toBe(lines(1, 95));
     expect(contents.get('src/end.ts')).toBe(lines(5, 30));
     expect(contents.get('src/other.ts')).toBe(lines(130, 170));
