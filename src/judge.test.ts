@@ -2478,9 +2478,11 @@ describe('runJudgeAgent', () => {
       const repeats = new Map([['Second read 1', ['Finder A']], ['Sweep 1', ['Finder A']], ['Sweep 2', ['Finder A', 'Finder B']]]);
       expect(await judgeSplit(['blocker'], unsettled, [['Second read 1']], pair, { doubts: [] }, repeats)).toEqual([['warning', undefined, 1, alone, 'sole held']]);
       expect(await judgeSplit(['blocker'], unsettled, [['Sweep 1']], pair, { doubts: [] }, repeats)).toEqual([['warning', undefined, 1, alone, 'sole held']]);
-      // A read beside the finder it repeated is still one finder, and one beside the other finder is a second reporter.
+      // A read was shown every finder's findings, so beside a finder's copy it adds no reporter, also when it repeated the
+      // other finder's call, and on a copy that names a finder too.
       expect(await judgeSplit(['blocker', 'blocker'], unsettled, [['Finder A'], ['Second read 1']], pair, { doubts: [] }, repeats)).toEqual([['warning', undefined, 1, alone, 'sole held']]);
-      expect(await judgeSplit(['blocker', 'blocker'], unsettled, [['Finder B'], ['Second read 1']], pair, { doubts: [] }, repeats)).toEqual([['blocker', undefined, undefined, undefined]]);
+      expect(await judgeSplit(['blocker', 'blocker'], unsettled, [['Finder B'], ['Second read 1']], pair, { doubts: [] }, repeats)).toEqual([['warning', undefined, 1, alone, 'sole held']]);
+      expect(await judgeSplit(['blocker'], unsettled, [['Finder B', 'Second read 1']], pair, { doubts: [] }, repeats)).toEqual([['warning', undefined, 1, alone, 'sole held']]);
       // A sweep from a finding both finders reported counts as both, and a read without a known finder, or one of a lead
       // carried from an earlier round, counts as nobody, so such a blocker blocks as before.
       expect(await judgeSplit(['blocker'], unsettled, [['Sweep 2']], pair, { doubts: [] }, repeats)).toEqual([['blocker', undefined, undefined, undefined]]);

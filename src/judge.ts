@@ -1903,8 +1903,8 @@ function matchesInPrSuppression(finding: Finding, suppression: InPrSuppression):
  * duplicates, and then the copies `deduplicateFindings` merges by title and place. A `sameAs` or `variantOf` that names no entry of
  * `priorFindings` is ignored. Throws when a finding has no entry, so no grade is posted that the judge did not state.
  * A drop gets a `dropCheck` only with `dropsChecked`, set when a refuter checks the round, so no record shows a check that cannot run.
- * A finding is `soleFinder` when two or more of `finderNames` ran and its copies have one reporter, one of them, by
- * `countedReporters` with `countsAs`.
+ * A finding is `soleFinder` when two or more of `finderNames` ran and the copies `copies` keeps have one reporter, one of
+ * them, by `countedReporters` with `countsAs`.
  */
 export function mapJudgedToFindings(
   original: Finding[],
@@ -1919,17 +1919,17 @@ export function mapJudgedToFindings(
   const roots = duplicateRoots(aligned);
   // The copies both folds merge are graded as one finding, which is filed as a blocker only when every copy was.
   const groups = copyGroups(roots.map(root => original[root - 1]));
-  const group = (i: number): Finding[] => original.filter((_, j) => groups[j] === groups[i]);
   // A second read's copy is graded by no finder, so it counts only where no finder's copy is.
   const copies = (i: number): Finding[] => {
-    const byFinders = group(i).filter(f => !bySecondReadsOnly(f));
-    return byFinders.length > 0 ? byFinders : group(i);
+    const all = original.filter((_, j) => groups[j] === groups[i]);
+    const byFinders = all.filter(f => !bySecondReadsOnly(f));
+    return byFinders.length > 0 ? byFinders : all;
   };
   const filedBlocker = (i: number): boolean => copies(i).every(f => finderGrade(f, 'lowest') === 'blocker');
-  // A second read saw every finder's findings and a sweep starts from a kept one, so neither agrees with the finder it
-  // repeats. Any other check that reports the same finding counts as a second reporter.
+  // A second read saw every finder's findings and a sweep starts from a kept one, so neither is a second reporter. Any
+  // other check that reports the same finding is.
   const soleFinder = (i: number): boolean => {
-    const reporters = new Set(group(i).flatMap(f => countedReporters(f, countsAs)));
+    const reporters = new Set(copies(i).flatMap(f => countedReporters(f, countsAs)));
     return finderNames.length >= 2 && reporters.size === 1 && finderNames.some(name => reporters.has(name));
   };
   // A drop is checked when any finder filed a copy as a blocker, whichever copy the merge keeps.
