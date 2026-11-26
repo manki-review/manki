@@ -4138,7 +4138,9 @@ function refutationParts(finding: Finding, links: CodeLinks, known: readonly str
 function votePart(finding: Finding, inThread: boolean): FoldPart[] {
   if (!holdsApproval(finding) || !finding.gradePath?.some(step => step.by === 'other_finder' && step.from === 'blocker')) return [];
   const label = 'Asked the other finder';
-  const answer = finding.otherFinderVote?.line ? 'could not point to the code where this does harm' : 'named no harm in realistic use';
+  const vote = finding.otherFinderVote;
+  const misquoted = !!vote && [vote.trigger, vote.result].some(line => line.line && !line.held);
+  const answer = misquoted ? 'could not point to the code where this goes wrong' : 'cited no trigger and result in normal use';
   const text = `A finder that had not reported this ${answer}, so it does not block.${inThread ? ' A reply by the PR author does not clear it. Only a fix or a maintainer does.' : ''}`;
   return [{ label, text, open: `**${label}:** ${text}` }];
 }
