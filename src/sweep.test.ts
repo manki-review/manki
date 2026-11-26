@@ -110,7 +110,7 @@ describe('runSweeps', () => {
     ];
 
     const progress = { started: jest.fn(), ended: jest.fn() };
-    const { findings, sweeps } = await runSweeps(() => client, blockers, { rawDiff, progress });
+    const { findings, sweeps, sourceOf } = await runSweeps(() => client, blockers, { rawDiff, progress });
 
     expect(findings).toEqual([]);
     // The progress counts the sweeps asked, not those cut, and each one ends, the failed one too.
@@ -129,6 +129,8 @@ describe('runSweeps', () => {
       ['Sweep 8', 'src/cache.ts:7', 'note', 'cut'],
       ['Sweep 9', 'src/cache.ts:6', 'note', 'cut'],
     ]);
+    // Only the sweeps asked name their source.
+    expect([...sourceOf].map(([reviewer, f]) => [reviewer, f.line])).toEqual([['Sweep 1', 5], ['Sweep 2', 4], ['Sweep 3', 3]]);
     expect(client.calls.filter(c => c.user.includes(': Broken reply'))).toHaveLength(2);
     // Without tools, the call reads only the diff it is given.
     expect(client.calls[0].options).toEqual({ timeoutMs: 600_000 });

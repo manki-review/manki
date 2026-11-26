@@ -2437,11 +2437,11 @@ describe('runJudgeAgent', () => {
         title: 'Rows lost on retry', row: 'severe', column: 'normal', gradeIfConfirmed: 'blocker', reasoning: 'warning. The retry path sits outside the code shown.',
         doubts: [{ premise: 'The retry skips the rows already sent', decides: 'defect' }, { premise: 'The stored table misses those rows', decides: 'consequence' }],
       };
-      const judgeSplit = async (order: readonly Finding['severity'][], consequenceAnswer: object, reviewers?: string[][], finderNames?: string[], judged: { doubts?: object[]; security?: boolean; grade?: string; gradeIfConfirmed?: string } = {}) => {
+      const judgeSplit = async (order: readonly Finding['severity'][], consequenceAnswer: object, reviewers?: string[][], finderNames?: string[], judged: { doubts?: object[]; security?: boolean; grade?: string; gradeIfConfirmed?: string } = {}, countsAs?: Map<string, string[]>, leadSince?: number) => {
         mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 's', findings: order.map((_, i) => ({ id: i + 1, ...doubted, ...judged })) }) });
         replies['Rows lost on retry'] = judged.doubts?.length === 0 ? { ...consequenceAnswer, premises: [consequenceAnswer] } : { ...skips, premises: [skips, consequenceAnswer] };
-        const findings = order.map((severity, i) => copy(severity, reviewers?.[i]));
-        const split = await runJudgeAgent(mockClient, makeConfig(), { findings, diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, finderNames, refutation: { client: refuter, workspace } });
+        const findings = order.map((severity, i) => ({ ...copy(severity, reviewers?.[i]), ...(leadSince && { leadSince }) }));
+        const split = await runJudgeAgent(mockClient, makeConfig(), { findings, diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, finderNames, countsAs, refutation: { client: refuter, workspace } });
         return split.findings.map(f => [f.severity, f.lowestReviewerSeverity, f.doubts?.filter(d => d.consequence).length, f.gradePath?.find(step => step.by === 'judge')?.reason, ...(f.soleHeld ? ['sole held'] : [])]);
       };
       const missing = { outcome: 'confirmed', reason: 'The table misses them.', proof: ['src/index.ts:19'] };
@@ -2473,6 +2473,21 @@ describe('runJudgeAgent', () => {
       expect((await judgeSplit(['blocker'], unsettled, [['Finder A']], pair, { doubts: [], gradeIfConfirmed: 'warning' }))[0]).not.toContain('sole held');
       // Both finders reporting it leave such a blocker as it was.
       expect(await judgeSplit(['blocker', 'blocker'], unsettled, [['Finder A'], ['Finder B']], pair, { doubts: [] })).toEqual([['blocker', undefined, undefined, undefined]]);
+      // A second read counts as the finder whose call it repeated, and a sweep as the reporters of the finding it started
+      // from, so a blocker only they reported is held like one finder's.
+      const repeats = new Map([['Second read 1', ['Finder A']], ['Sweep 1', ['Finder A']], ['Sweep 2', ['Finder A', 'Finder B']]]);
+      expect(await judgeSplit(['blocker'], unsettled, [['Second read 1']], pair, { doubts: [] }, repeats)).toEqual([['warning', undefined, 1, alone, 'sole held']]);
+      expect(await judgeSplit(['blocker'], unsettled, [['Sweep 1']], pair, { doubts: [] }, repeats)).toEqual([['warning', undefined, 1, alone, 'sole held']]);
+      // A read was shown every finder's findings, so beside a finder's copy it adds no reporter, also when it repeated the
+      // other finder's call, and on a copy that names a finder too.
+      expect(await judgeSplit(['blocker', 'blocker'], unsettled, [['Finder A'], ['Second read 1']], pair, { doubts: [] }, repeats)).toEqual([['warning', undefined, 1, alone, 'sole held']]);
+      expect(await judgeSplit(['blocker', 'blocker'], unsettled, [['Finder B'], ['Second read 1']], pair, { doubts: [] }, repeats)).toEqual([['warning', undefined, 1, alone, 'sole held']]);
+      expect(await judgeSplit(['blocker'], unsettled, [['Finder B', 'Second read 1']], pair, { doubts: [] }, repeats)).toEqual([['warning', undefined, 1, alone, 'sole held']]);
+      // A sweep from a finding both finders reported counts as both, and a read without a known finder, or one of a lead
+      // carried from an earlier round, counts as nobody, so such a blocker blocks as before.
+      expect(await judgeSplit(['blocker'], unsettled, [['Sweep 2']], pair, { doubts: [] }, repeats)).toEqual([['blocker', undefined, undefined, undefined]]);
+      expect(await judgeSplit(['blocker'], unsettled, [['Second read 2']], pair, { doubts: [] }, repeats)).toEqual([['blocker', undefined, undefined, undefined]]);
+      expect(await judgeSplit(['blocker'], unsettled, [['Second read 1']], pair, { doubts: [] }, repeats, 1)).toEqual([['blocker', undefined, undefined, undefined]]);
       // A round with one finder and a security finding are unchanged.
       expect(await judgeSplit(['blocker'], unsettled, [['Finder A']], ['Finder A'])).toEqual([['blocker', undefined, 0, undefined]]);
       expect(await judgeSplit(['blocker'], unsettled, [['Finder A']], pair, { security: true })).toEqual([['blocker', undefined, 0, undefined]]);
