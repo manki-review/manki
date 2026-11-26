@@ -1034,7 +1034,8 @@ async function buildUsesSection(
       for (const { name, kind, line, start, end, test } of changed) {
         if ((kind === 'function' || kind === 'type') && start !== undefined && end !== undefined) items.push({ file: file.path, name, line, start, end, ...((test || testFile) && { test: true as const }) });
       }
-      for (const block of parsed.testBlocks) if ([...lines].some(l => block.start <= l && l <= block.end)) items.push({ file: file.path, ...block, test: true });
+      const sorted = parsed.testBlocks.length > 0 ? [...lines].sort((a, b) => a - b) : [];
+      for (const block of parsed.testBlocks) if ((sorted[firstAtOrAfter(sorted, block.start)] ?? Infinity) <= block.end) items.push({ file: file.path, ...block, test: true });
       for (const symbol of changed) addSymbol(symbols, symbol);
       for (const { name, kind, owner } of changed) if (kind === 'field' && owner) appendTo(changedOwners, name, { owner, file: file.path });
       const replaced = replacedLines(file);
@@ -2210,7 +2211,8 @@ class ParsedFile {
 
   /**
    * Returns `testBlocks`: the outermost test node around each test declaration that is no declaration itself, each read
-   * once however many tests it holds. One without a name, such as a Rust `#[cfg(test)] impl`, is named `tests`.
+   * once however many tests it holds. One without a name, such as a Rust `#[cfg(test)] impl`, or with one longer than
+   * `MAX_NAME_LENGTH`, is named `tests`.
    */
   private findTestBlocks(): Array<Omit<ChangedItem, 'file' | 'test'>> {
     const modules = new Map<number, Omit<ChangedItem, 'file' | 'test'>>();
@@ -2219,7 +2221,8 @@ class ParsedFile {
       const top = [decl.node, ...this.tree.ancestors(decl.node)].filter(n => this.hasTestAttribute(n) || this.isTestModule(n)).at(-1);
       if (!top || this.rules.declarations[String(top.kind())] || modules.has(top.range().start.index)) continue;
       const name = top.field('name');
-      modules.set(top.range().start.index, { name: name?.text() ?? 'tests', line: lineOf(name ?? top), start: this.leadingStart(top).line, end: top.range().end.line + 1 });
+      const short = name && name.range().end.index - name.range().start.index <= MAX_NAME_LENGTH ? name : undefined;
+      modules.set(top.range().start.index, { name: short?.text() ?? 'tests', line: lineOf(name ?? top), start: this.leadingStart(top).line, end: top.range().end.line + 1 });
     }
     return [...modules.values()];
   }

@@ -575,15 +575,17 @@ describe('listUsesOutsideDiff', () => {
       { file: 'src/limits.rs', name: 'tests', line: 11, start: 10, end: 18, test: true },
       { file: 'src/refs.rs', name: 'pick', line: 1, start: 1, end: 9 },
     ]);
-    // A module of tests is read once however many tests it holds, and one without a name, such as a `#[cfg(test)] impl`, shows as `tests`.
-    const longName = `long_${'x'.repeat(200)}`;
-    const suite = (body: string) => `pub fn run() {}\n\n#[cfg(test)]\nmod ${longName} {\n${Array.from({ length: 50 }, (_, i) => `    #[test]\n    fn case_${i}() {${body}}\n`).join('')}}\n\n#[cfg(test)]\nimpl Gate {\n    #[test]\n    fn opens() {${body}}\n}\n`;
+    // A module of tests is read once however many tests it holds. One without a name, such as a `#[cfg(test)] impl`, or with a
+    // name longer than 160 characters shows as `tests`.
+    const longName = `long_${'x'.repeat(150)}`;
+    const suite = (body: string) => `pub fn run() {}\n\n#[cfg(test)]\nmod ${longName} {\n${Array.from({ length: 50 }, (_, i) => `    #[test]\n    fn case_${i}() {${body}}\n`).join('')}}\n\n#[cfg(test)]\nimpl Gate {\n    #[test]\n    fn opens() {${body}}\n}\n\n#[cfg(test)]\nmod ${'y'.repeat(200)} {\n    #[test]\n    fn over() {${body}}\n}\n`;
     const texts = jest.spyOn(napi.SgNode.prototype, 'text');
     try {
       const { items: suiteItems } = await usesFor({ 'src/suite.rs': suite('') }, { 'src/suite.rs': suite(' run(); ') });
-      expect(suiteItems?.filter(item => !/^(case_\d+|opens)$/.test(item.name))).toEqual([
+      expect(suiteItems?.filter(item => !/^(case_\d+|opens|over)$/.test(item.name))).toEqual([
         { file: 'src/suite.rs', name: longName, line: 4, start: 3, end: 105, test: true },
         { file: 'src/suite.rs', name: 'tests', line: 108, start: 107, end: 111, test: true },
+        { file: 'src/suite.rs', name: 'tests', line: 114, start: 113, end: 117, test: true },
       ]);
       expect(texts.mock.results.filter(result => result.value === longName).length).toBeLessThanOrEqual(4);
     } finally {
