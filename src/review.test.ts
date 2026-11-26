@@ -3260,7 +3260,7 @@ describe('runReview', () => {
       // The finders and their second read read the description, and nothing about the claims or their checks.
       const finders = reviewerCalls(clients).filter(([system]) => !isCheck(system) && !isPatternCheck(system));
       expect(finders.filter(([, user]) => !isSecondRead(user))).toHaveLength(2);
-      expect(result.secondReads).toEqual({ reads: [{ reviewer: 'Second read 1', finder: expect.any(String), status: 'answered', findings: 0, added: 0 }], stop: 'nothing_new' });
+      expect(result.secondReads).toEqual({ reads: [{ reviewer: 'Second read 1', finder: expect.any(String), model: expect.any(String), status: 'answered', findings: 0, added: 0 }], stop: 'nothing_new' });
       for (const [system, user] of finders) {
         expect(user).toContain('Drops the sort and the size check.');
         expect(`${system}${user}`).not.toMatch(/Claim check|## Statement/);
@@ -4528,10 +4528,10 @@ describe('runReview', () => {
   it('asks a finder that did not report a blocker or warning one finder alone reported for its harm, and lowers it when the answer names no line the head holds', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'manki-vote-'));
     mkdirSync(join(workspace, 'src'));
-    writeFileSync(join(workspace, 'src', 'a.ts'), Array.from({ length: 16 }, (_, i) => `const line${i + 1} = ${i + 1};`).join('\n'));
+    writeFileSync(join(workspace, 'src', 'a.ts'), Array.from({ length: 24 }, (_, i) => `const line${i + 1} = ${i + 1};`).join('\n'));
     const titles = [
       'Backed blocker', 'Declined blocker', 'Declined warning', 'Misquoted warning', 'Backed warning', 'Security warning', 'Vote fails', 'Both finders found it', 'Restates a thread',
-      'Breaks a rule', 'Held blocker cell', 'Quote nearby', 'Unreadable file', 'Confirmed blocker', 'Confirmed warning',
+      'Breaks a rule', 'Held blocker cell', 'Quote nearby', 'Unreadable file', 'Confirmed blocker', 'Confirmed warning', 'Not shown', 'Times out once', 'Times out twice', 'Limit reached',
     ];
     const reported = titles.map((title, i) => ({ severity: i < 2 || title === 'Confirmed blocker' ? 'blocker' : 'warning', title, file: 'src/a.ts', line: i + 1, description: `${title}.`, evidence: [`src/a.ts:${i + 1} shows it`], proof: [`src/a.ts:${i + 1}`] }));
     const declines = { harm: '', situation: '', line: 'none' };
@@ -4550,43 +4550,63 @@ describe('runReview', () => {
       'Quote nearby': { harm: 'A total is wrong.', situation: 'Any export.', line: 'src/a.ts:12', quote: 'const line9 = 9;' },
       // Manki cannot read the line, so the answer neither backs nor declines the finding.
       'Unreadable file': { harm: 'A total is wrong.', situation: 'Any export.', line: 'src/gone.ts:3', quote: 'const gone = 3;' },
+      // The answer depends on code the message does not show, so it leaves the finding as it is.
+      'Not shown': { harm: '', situation: '', line: 'not_shown' },
+      'Times out once': declines,
+      'Times out twice': declines,
+      'Second read only': declines,
+      'Limit reached': declines,
+      'Carried': declines,
     };
+    const timeouts: Record<string, number> = { 'Times out once': 1, 'Times out twice': 2 };
     const rule = { file: 'AGENTS.md', quote: 'Every export is logged.', verdict: 'confirmed' as const };
     /** Runs the round, and calls `afterJudge` once the judge answered. */
-    const run = async (afterJudge = (): void => undefined) => {
+    const run = async (afterJudge = (): void => undefined, more: Partial<Parameters<typeof runReview>[1]> = {}) => {
       const asked: string[] = [];
+      const timedOut: Record<string, number> = {};
       const clients = makeClients();
+      const fallback = { model: 'gpt-5.5', client: { sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify(declines) }) } as unknown as LLMClient };
+      const models = ['anthropic/claude-sonnet-5-5', 'anthropic/claude-opus-5-5'];
+      clients.reviewerByModel = new Map(models.map(model => [model, clients.reviewer]));
+      clients.fallbacks = { reviewerByModel: new Map(models.map(model => [model, fallback])) };
       let finderCalls = 0;
       jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string, user: string) => {
         if (system.startsWith('You test a claim')) {
-          const title = titles.find(t => user.includes(`## Claim: ${t}\n`))!;
+          const title = Object.keys(answers).find(t => user.includes(`## Claim: ${t}\n`))!;
           asked.push(title);
+          if ((timedOut[title] ?? 0) < (timeouts[title] ?? 0)) {
+            timedOut[title] = (timedOut[title] ?? 0) + 1;
+            throw new TimeoutError('Claude CLI timed out after 120s');
+          }
+          if (title === 'Limit reached') throw new QuotaError('limit', 'weekly limit');
           const answer = answers[title];
           return { content: typeof answer === 'string' ? answer : JSON.stringify(answer) };
         }
         return { content: finderCalls++ === 0 ? JSON.stringify(reported) : '[]' };
       });
-      // The judge marks each finding only the first finder reported, as `mapJudgedToFindings` does.
+      // The judge marks each finding only the first finder reported, as `mapJudgedToFindings` does. A second read alone reported the last one.
       mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => {
         afterJudge();
+        const read = { ...input.findings[0], severity: 'warning' as const, title: 'Second read only', line: 21, description: 'Second read only.', reviewers: ['Second read 1'] };
         return {
-          summary: 'ok', findings: input.findings.map(f => ({
-            ...f, ...(f.title !== 'Both finders found it' && { soleFinder: true }), ...(f.title === 'Security warning' && { tags: ['security'] }), ...(f.title === 'Restates a thread' && { threadId: 'T9' }),
+          summary: 'ok', findings: [...input.findings, read].map(f => ({
+            ...f, ...(f.title !== 'Both finders found it' && f.title !== 'Second read only' && { soleFinder: true }), ...(f.title === 'Security warning' && { tags: ['security'] }), ...(f.title === 'Restates a thread' && { threadId: 'T9' }),
             ...(f.title === 'Breaks a rule' && { rule }), ...(f.title === 'Held blocker cell' && { cell: { row: 'wrong' as const, column: 'normal' as const }, gradeIfConfirmed: 'blocker' as const }),
             ...(f.title === 'Declined blocker' && { cell: { row: 'wrong' as const, column: 'normal' as const } }),
             ...(f.title.startsWith('Confirmed') && { refutation: { outcome: 'confirmed' as const, defect: 'confirmed' as const, reason: 'It drifts.', files: ['src/a.ts'], codeDigest: 'abc' } }),
           })),
         };
       });
-      const result = await runReview(clients, { config: makeConfig({ review: { rules: 'warn' } }), diff: diffChanging('src/a.ts'), rawDiff: 'raw diff', repoContext: '', workspace, deadline: Date.now() + 20 * 60_000 });
+      const result = await runReview(clients, { config: makeConfig({ review: { rules: 'warn' } }), diff: diffChanging('src/a.ts'), rawDiff: 'raw diff', repoContext: '', workspace, deadline: Date.now() + 20 * 60_000, ...more });
       return { result, asked };
     };
     try {
       const { result, asked } = await run();
-      // A security finding, one more than one finder reported, one that restates a thread and one a rule grades get no vote,
-      // and a failed call asks once more.
+      // A security finding, one more than one finder reported, one that restates a thread and one a rule grades get no vote.
+      // A failed call asks once more, and so does a call that timed out, once.
       expect(asked.sort()).toEqual([
-        'Backed blocker', 'Backed warning', 'Confirmed blocker', 'Confirmed warning', 'Declined blocker', 'Declined warning', 'Held blocker cell', 'Misquoted warning', 'Quote nearby', 'Unreadable file', 'Vote fails', 'Vote fails',
+        'Backed blocker', 'Backed warning', 'Confirmed blocker', 'Confirmed warning', 'Declined blocker', 'Declined warning', 'Held blocker cell', 'Limit reached', 'Misquoted warning', 'Not shown', 'Quote nearby',
+        'Second read only', 'Times out once', 'Times out once', 'Times out twice', 'Times out twice', 'Unreadable file', 'Vote fails', 'Vote fails',
       ]);
       const reporter = result.findings[0].reviewers[0];
       expect(result.findings.map(f => [f.title, f.severity, f.otherFinderVote?.declined, f.gradePath?.at(-1)?.reason])).toEqual([
@@ -4602,23 +4622,50 @@ describe('runReview', () => {
         ['Both finders found it', 'warning', undefined, undefined],
         ['Restates a thread', 'warning', undefined, undefined],
         ['Breaks a rule', 'warning', undefined, undefined],
-        // A vote lowers a finding one step below its cell at most, so a blocker cell held at a warning stays posted.
-        ['Held blocker cell', 'warning', true, undefined],
+        // A warning the judge held in a blocker cell goes to a note like any other declined warning.
+        ['Held blocker cell', 'note', true, 'the other finder named no harm in realistic use'],
         ['Quote nearby', 'warning', false, undefined],
         ['Unreadable file', 'warning', undefined, undefined],
         // A check confirms the code path, not the harm, so a confirmed blocker the other finder declines still becomes a warning.
         ['Confirmed blocker', 'warning', true, 'the other finder would not block on it'],
         // A check confirms the code path, not the harm, so a confirmed warning the other finder declines still becomes a note.
         ['Confirmed warning', 'note', true, 'the other finder named no harm in realistic use'],
+        ['Not shown', 'warning', undefined, undefined],
+        // A vote that timed out once is asked again, and one that timed out twice stays no vote.
+        ['Times out once', 'note', true, 'the other finder named no harm in realistic use'],
+        ['Times out twice', 'warning', undefined, undefined],
+        // A vote never moves to a fallback model, which can be the model that reported the finding.
+        ['Limit reached', 'warning', undefined, undefined],
+        // A finding only a second read reported goes to a finder on another model than the read's.
+        ['Second read only', 'note', true, 'the other finder named no harm in realistic use'],
       ]);
+      const readFinder = result.secondReads?.reads[0]?.finder;
+      expect([readFinder, result.findings.find(f => f.title === 'Second read only')?.otherFinderVote?.finder]).toEqual([expect.any(String), expect.not.stringMatching(readFinder!)]);
       // A declined blocker's thread is guarded, so the PR author's answer alone does not clear it.
       // Its cell moves to `judgeCell` in the record, so a later round does not restore the blocker from it.
       const declinedBlocker = result.allJudgedFindings?.find(f => f.title === 'Declined blocker');
       expect([declinedBlocker?.tags, declinedBlocker?.cell, declinedBlocker?.judgeCell]).toEqual([expect.arrayContaining([DISPROVED_TAG]), undefined, { row: 'wrong', column: 'normal' }]);
       // The other finder answered, never the one that reported it, and the record keeps its answer with the quoted line.
       expect(result.findings[0].otherFinderVote).toEqual({ finder: expect.not.stringMatching(reporter), harm: 'A total is wrong.', situation: 'Any export.', line: 'src/a.ts:1', quote: 'const line1 = 1;', declined: false });
-      expect(result.llmCalls?.filter(c => c.stage === 'vote').length).toBe(12);
+      expect(result.llmCalls?.filter(c => c.stage === 'vote').length).toBe(19);
       expect(result.unposted ?? []).toEqual([]);
+
+      // A replay runs no read, so it takes the read's model from the stored round, and asks no vote on the read's finding without it.
+      const { reviewer, model } = result.secondReads!.reads[0];
+      const replay = { planner: null, finders: result.agentNames, findings: postedRecord(result).reviewers.rawFindings! };
+      const readVoter = async (more: Partial<Parameters<typeof runReview>[1]>) =>
+        (await run(undefined, more)).result.findings.find(f => f.title === 'Second read only')!.otherFinderVote?.finder;
+      expect(await readVoter({ replay: { ...replay, reads: [{ reviewer, model }] } })).toBe(result.findings.find(f => f.title === 'Second read only')!.otherFinderVote!.finder);
+      expect(await readVoter({ replay })).toBeUndefined();
+      // A lead carried from an earlier round names that round's read, so the name tells no model of its own. The read of
+      // this round under the same name still gives the model of the findings it reported.
+      const last = buildPriorRound(1, []);
+      last.leads = [{ title: 'Carried', file: 'src/a.ts', line: 1, severity: 'blocker', reviewers: [reviewer], description: 'Carried.', lead: { checked: 'c', left: 'l' }, outcome: 'unsettled', since: 1 }];
+      const interRoundDiff = 'diff --git a/src/b.ts b/src/b.ts\n--- a/src/b.ts\n+++ b/src/b.ts\n@@ -1 +1 @@\n-a\n+b\n';
+      const withLead = await run(undefined, { replay: { ...replay, reads: [{ reviewer, model }] }, priorRounds: [last], interRoundDiff });
+      expect(withLead.asked).not.toContain('Carried');
+      expect([withLead.result.findings.find(f => f.title === 'Carried')?.severity, withLead.result.findings.find(f => f.title === 'Carried')?.otherFinderVote]).toEqual(['blocker', undefined]);
+      expect(withLead.result.findings.find(f => f.title === 'Second read only')?.otherFinderVote?.finder).toBe(result.findings.find(f => f.title === 'Second read only')!.otherFinderVote!.finder);
 
       // A vote starts only with the time for its whole timeout and a judge call after it, so with 3 minutes left it is
       // skipped, and the round goes on without it.
@@ -8795,8 +8842,8 @@ describe('runReview', () => {
     expect([result.outcome, result.reviewComplete]).toEqual(['READY', true]);
     expect(result.secondReads).toEqual({
       reads: [
-        { reviewer: 'Second read 1', finder: opusName, status: 'answered', findings: 1, added: 1 },
-        { reviewer: 'Second read 2', finder: sonnetName, status: 'answered', findings: 1, added: 0 },
+        { reviewer: 'Second read 1', finder: opusName, model: 'claude-opus-5-5', status: 'answered', findings: 1, added: 1 },
+        { reviewer: 'Second read 2', finder: sonnetName, model: 'claude-sonnet-5-5', status: 'answered', findings: 1, added: 0 },
       ],
       stop: 'nothing_new',
     });
@@ -8825,20 +8872,20 @@ describe('runReview', () => {
     const capped = await review(pairedClients(finder([finding('Off by one', 10)], [finding('Leaked handle', 120, 'blocker')]), finder([], [finding('Lost error', 60)])));
     expect(capped.secondReads).toEqual({
       reads: [
-        { reviewer: 'Second read 1', finder: opusName, status: 'answered', findings: 1, added: 1 },
-        { reviewer: 'Second read 2', finder: sonnetName, status: 'answered', findings: 1, added: 1 },
+        { reviewer: 'Second read 1', finder: opusName, model: 'claude-opus-5-5', status: 'answered', findings: 1, added: 1 },
+        { reviewer: 'Second read 2', finder: sonnetName, model: 'claude-sonnet-5-5', status: 'answered', findings: 1, added: 1 },
       ],
       stop: 'cap',
     });
 
     // So does a read that adds only a finding graded `ignore`.
     const ignored = await review(pairedClients(finder([finding('Off by one', 10)]), finder([], [finding('Unused import', 90, 'ignore')])));
-    expect(ignored.secondReads).toEqual({ reads: [{ reviewer: 'Second read 1', finder: opusName, status: 'answered', findings: 1, added: 0 }], stop: 'nothing_new' });
+    expect(ignored.secondReads).toEqual({ reads: [{ reviewer: 'Second read 1', finder: opusName, model: 'claude-opus-5-5', status: 'answered', findings: 1, added: 0 }], stop: 'nothing_new' });
 
     // A finding the read was shown, said again near its line, adds nothing, but still reaches the judge.
     mockedRunJudgeAgent.mockClear();
     const restated = await review(pairedClients(finder([finding('Off by one', 10)]), finder([], [finding('Index runs one past the end', 12)])));
-    expect(restated.secondReads).toEqual({ reads: [{ reviewer: 'Second read 1', finder: opusName, status: 'answered', findings: 1, added: 0 }], stop: 'nothing_new' });
+    expect(restated.secondReads).toEqual({ reads: [{ reviewer: 'Second read 1', finder: opusName, model: 'claude-opus-5-5', status: 'answered', findings: 1, added: 0 }], stop: 'nothing_new' });
     expect(mockedRunJudgeAgent.mock.calls[0][2].findings.map(f => f.reviewers)).toEqual([[sonnetName], ['Second read 1']]);
 
     // A read that fails ends the reads and leaves the round complete with what the finders found.
@@ -8847,7 +8894,7 @@ describe('runReview', () => {
     const failed = await review(pairedClients(finder([finding('Off by one', 10)]), finder([], new Error('Codex CLI invocation failed'))), { onProgress: failedProgress });
     expect(readEvents(failedProgress)).toEqual([{ kind: 'second_read', total: 1 }, { kind: 'second_read', ended: 0 }]);
     expect([failed.outcome, failed.reviewComplete, failed.failedAgents]).toEqual(['READY', true, undefined]);
-    expect(failed.secondReads).toEqual({ reads: [{ reviewer: 'Second read 1', finder: opusName, status: 'failed', error: 'Codex CLI invocation failed' }], stop: 'failed' });
+    expect(failed.secondReads).toEqual({ reads: [{ reviewer: 'Second read 1', finder: opusName, model: 'claude-opus-5-5', status: 'failed', error: 'Codex CLI invocation failed' }], stop: 'failed' });
     expect(mockedRunJudgeAgent.mock.calls[0][2].findings.map(f => f.title)).toEqual(['Off by one']);
     // A read cut off because the review stopped stops the round, rather than counting as a failed read.
     mockedRunJudgeAgent.mockClear();

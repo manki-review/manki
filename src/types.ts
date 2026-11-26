@@ -253,8 +253,8 @@ export function canLeaveOut(f: Finding): boolean {
 }
 
 /** Whether the other finder's vote lowered `f` to a note, which stays in the review so one vote never removes a warning. */
-export function votedDown(f: Pick<Finding, 'severity' | 'gradePath'>): boolean {
-  return isNote(f.severity) && !!f.gradePath?.some(step => step.by === 'other_finder' && step.to === 'note');
+export function votedDown(f: Pick<Finding, 'gradePath'> & { severity?: FindingSeverity | 'unknown' }): boolean {
+  return f.severity === 'note' && !!f.gradePath?.some(step => step.by === 'other_finder' && step.to === 'note');
 }
 
 /**
@@ -844,6 +844,8 @@ export interface RoundSecondRead {
   reviewer: string;
   /** The finder whose model, effort and message it reused. */
   finder: string;
+  /** That finder's model. A read has no fallback model. */
+  model?: string;
   status: 'answered' | 'failed';
   /** The findings it reported, before dedup and the judge. */
   findings?: number;
@@ -1067,10 +1069,11 @@ export function finderGrade(finding: Pick<Finding, 'reviewerSeverity' | 'lowestR
 
 /**
  * Returns the grade a check gives `f` when it confirms every premise in its `doubts`. A finding that `isRareClaim` has
- * none: its `gradeIfConfirmed` is the grade of the `normal` column, and no answer moves it there.
+ * none: its `gradeIfConfirmed` is the grade of the `normal` column, and no answer moves it there. Nor does a note the
+ * other finder's vote lowered (`votedDown`): the vote settled its grade, and its `gradeIfConfirmed` only records the doubt.
  */
-export function pendingGrade(f: Pick<Finding, 'gradeIfConfirmed' | 'cell'>): FindingSeverity | undefined {
-  return isRareClaim(f.cell) ? undefined : f.gradeIfConfirmed;
+export function pendingGrade(f: Pick<Finding, 'gradeIfConfirmed' | 'cell' | 'gradePath'> & { severity?: FindingSeverity | 'unknown' }): FindingSeverity | undefined {
+  return isRareClaim(f.cell) || votedDown(f) ? undefined : f.gradeIfConfirmed;
 }
 
 /**
@@ -2732,6 +2735,8 @@ export interface FinderReplay {
   findings: RoundRawFinding[];
   /** The fix checks' records, which keep an earlier thread open on a workaround. */
   fixes?: RoundFix[];
+  /** The model of each second read, without which no vote is asked on what only that read reported. */
+  reads?: Array<Pick<RoundSecondRead, 'reviewer' | 'model'>>;
 }
 
 /** Round-cap accounting captured at the moment a round was admitted. */

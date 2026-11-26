@@ -1057,6 +1057,11 @@ describe('buildJudgeUserMessage', () => {
     } satisfies FindingFingerprintEntry;
     const dropDisproved = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, [makeRoundContext(1, { findings: { count: 1, severityCounts: {}, entries: [unstatedDrop] } })]);
     expect(dropDisproved).toContain('"premise": "The route never sets tenant",\n            "decides": "drop",\n            "check": "disproved"');
+    // A note the other finder's vote lowered is capped by no doubt any more, also one whose cell an unconfirmed raise moved to `judgeCell`.
+    const votedNote = (more: Partial<FindingFingerprintEntry>): FindingFingerprintEntry => ({ ...capped, severity: 'note', gradePath: [{ from: 'warning', to: 'note', by: 'other_finder' }], ...more });
+    const voted = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, [makeRoundContext(1, { findings: { count: 2, severityCounts: {}, entries: [votedNote({}), votedNote({ cell: undefined, judgeCell: capped.cell })] } })]);
+    const votedPayload = JSON.parse(voted.slice(voted.indexOf('```json') + 7, voted.indexOf('```', voted.indexOf('```json') + 7))) as { findings: Record<string, unknown>[] }[];
+    expect(votedPayload[0].findings.map(f => f.gradeIfConfirmed)).toEqual([undefined, undefined]);
     // The list of link targets shows the cell too, so Grade Stability can keep it for a finding outside the recent rounds.
     // It shows the conditional grade with it, so a cell a doubt holds down is not restated as if nothing were open.
     expect(doubted.split('\n').filter(l => /^- \*\*P\d/.test(l))).toEqual([
@@ -1376,6 +1381,8 @@ describe('parseJudgeResponse', () => {
       { id: 1, title: 'Covered', row: 'degraded', reasoning: 'r' }, { id: 2, title: 'Covered again', row: 'degraded', reasoning: 'r', trigger: 'When a page loads', duplicateOf: 1 },
     ] }), undefined).findings;
     expect(mapJudgedToFindings([{ ...base, title: 'Covered' }, { ...base, title: 'Covered again' }], filled).map(f => f.trigger)).toEqual(['When a page loads']);
+    // A merge with a lead carried from an earlier round keeps the round the lead came up in, so the other finder's vote knows it.
+    expect(mapJudgedToFindings([{ ...base, title: 'Covered' }, { ...base, title: 'Covered again', leadSince: 2 }], filled).map(f => f.leadSince)).toEqual([2]);
     // A doubt keeps only a premise it names, and one that does not decide only the grade decides whether the defect exists.
     const doubts = parseJudgeResponse(JSON.stringify({ summary: 's', findings: [
       { id: 1, title: 'A', row: 'degraded', reasoning: 'r', doubts: [
@@ -5817,6 +5824,8 @@ describe('deduplicateFindings', () => {
     // The kept finding takes the trigger of a copy when it names none, so the merge never leaves a `degraded` warning without one.
     expect(deduplicateFindings([findings[0], { ...findings[1], trigger: 'When a page loads' }])[0].trigger).toBe('When a page loads');
     expect(deduplicateFindings([{ ...findings[0], trigger: 'When a user saves' }, { ...findings[1], trigger: 'When a page loads' }])[0].trigger).toBe('When a user saves');
+    expect(deduplicateFindings([findings[0], { ...findings[1], leadSince: 2 }])[0].leadSince).toBe(2);
+    expect(deduplicateFindings([{ ...findings[0], leadSince: 1 }, { ...findings[1], leadSince: 2 }])[0].leadSince).toBe(1);
     expect(deduplicateFindings([findings[0], { ...findings[1], preExisting: 'Old code.' }])[0].preExisting).toBe('Old code.');
     // The kept finding takes a copy's located revert gap, and keeps `caught` only when every copy states it.
     const gaps = (first?: string, second?: string) => deduplicateFindings([{ ...findings[0], revertGap: first }, { ...findings[1], revertGap: second }])[0];
