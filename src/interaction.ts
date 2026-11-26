@@ -51,7 +51,7 @@ Pick exactly one outcome:
 - "Fixed": The PR changed code since the finding was posted, or since the latest review that still found it open, and that change fixes it.
 - "FixedElsewhere": The developer says that another pull request of this repository fixes it, and names that pull request as \`#N\` or by its URL. Give its number as \`fixed_in\`. Its code is checked separately, so do not judge the claim, and say in the answer only which pull request the developer named.
 - "Withdrawn": The code shows the finding was wrong: it does not apply, or the code is intentional.
-- "Agreed": The developer will handle the finding in later work. Accept a deferral without arguing.
+- "Agreed": The developer will handle the finding in later work. Accept a deferral without arguing. When the developer names the issue that tracks the finding, write "Tracked in #N." in the answer.
 - "Kept": The finding stands. In the answer, cite as \`file:line\` the lines that show it still goes wrong, lines the finding did not cite yet, and say what change resolves it.
 - "Unverified": The developer's point rests on facts that neither the code nor the PR description can show, such as how an external API or tool behaves or what documentation says. Say what you can't verify from the code.
 
