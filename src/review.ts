@@ -3885,14 +3885,18 @@ function confirmFixes(
   const all = evaluations || unanswered.length > 0 ? [...(evaluations ?? []), ...unanswered] : undefined;
   return all?.map(e => {
     const thread = openThreadIndex.get(e.threadId);
-    const confirmed = confirm(e, thread);
+    const replaced = confirm(e, thread);
+    const confirmed = replaced.status === e.status ? replaced : { ...replaced, judgeStatus: e.status };
     const grade = partialFixGrade(confirmed, thread, namedThreadIds, pushChangedFiles);
     // Only a grade `partialFixGrade` bounds stays, so a judge grade for a thread that is not open is dropped.
     const { grade: _judged, cell, ...rest } = confirmed;
     if (!grade) return rest;
+    // A grade above the one the judge read and the one it gave raises the thread past the judge's answer.
+    const above = (other: FindingSeverity | undefined): boolean => !!other && SEVERITY_ORDER.indexOf(grade) < SEVERITY_ORDER.indexOf(other);
+    const raised = above(thread?.recordedGrade) && (!confirmed.grade || above(confirmed.grade));
     // A later prompt shows `cell` next to `grade`, so a cell that gives another grade is kept apart from it.
     const givesGrade = isGradeCell(cell) && cellGrade(cell.row, cell.column) === grade;
-    return { ...rest, grade, ...(cell && (givesGrade ? { cell } : { judgeCell: cell })) };
+    return { ...rest, grade, ...(raised && { judgeStatus: rest.judgeStatus ?? e.status }), ...(cell && (givesGrade ? { cell } : { judgeCell: cell })) };
   });
 }
 

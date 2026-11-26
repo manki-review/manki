@@ -7307,7 +7307,8 @@ describe('runFullReview orchestration', () => {
       expect(posts[0][5].verdictTrace).toBeUndefined();
       return;
     }
-    expect(posts[0][7]).toMatchObject({ verdict: 'REQUEST_CHANGES', judge: { threadEvaluations: [expect.objectContaining({ threadId: 'PRRT_fail', status: 'uncertain' })] } });
+    // The record keeps that the judge found the thread fixed, so the judge's summary is not shown as what blocks.
+    expect(posts[0][7]).toMatchObject({ verdict: 'REQUEST_CHANGES', judge: { threadEvaluations: [expect.objectContaining({ threadId: 'PRRT_fail', status: 'uncertain', judgeStatus: 'addressed' })] } });
     expect(posts[0][5]).toMatchObject({
       verdict: 'REQUEST_CHANGES',
       outcome: 'ADDRESS_FIRST',

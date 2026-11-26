@@ -15,7 +15,7 @@ import { issueBox, ISSUE_BOX_LABEL, messageBox, withMessageBoxes } from './issue
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import type { FixClaim, PreviousFinding } from './recap';
-import { AUTHOR_CLEAR_ROLES, REVERT_CAUGHT, AuthorClearRole, breaksRule, cellGrade, votedDown, findingKey, isDisprovedBlocker, isGuardedFinding, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, overruledDisproof, gradedAbove, pendingGrade, SEVERITY_NAME, SEVERITY_ORDER, threadBlocks } from './types';
+import { AUTHOR_CLEAR_ROLES, REVERT_CAUGHT, AuthorClearRole, breaksRule, overrodeJudge, cellGrade, votedDown, findingKey, isDisprovedBlocker, isGuardedFinding, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, overruledDisproof, gradedAbove, pendingGrade, SEVERITY_NAME, SEVERITY_ORDER, threadBlocks } from './types';
 import { formatDuration, hiddenCharacters, ownMarker, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { compressReviewRecord, extractApprovalRecords, formatReviewRecord, hasOwnMarker, hasReviewRecord, smallerRecords } from './review-record';
 import { modelDisplayName } from './providers/model-registry';
@@ -3291,8 +3291,9 @@ function formatBlockerCounts({ fresh, earlier, followUp }: BlockerCounts): strin
  * blocker's description, or nothing when no finding blocks. The judge writes its summary before later steps take
  * findings out of the round, so the summary is left out when the judge kept a finding and `result.findings` holds none
  * of the findings it kept, itself or as the verdict reader's finding it was folded into. Later steps also make blockers the summary never saw and lower blockers it names. So it is
- * left out unless the findings the judge graded a blocker in that call are exactly the findings that block. An
- * incomplete round's summary says why the round did not finish, so it is returned as it is.
+ * left out unless the findings the judge graded a blocker in that call are exactly the findings that block. It is also
+ * left out when the round blocks on an earlier thread that code keeps open or blocking against the judge's reading
+ * (`overrodeJudge`). An incomplete round's summary says why the round did not finish, so it is returned as it is.
  */
 export function roundSentence(result: ReviewResult): string {
   if (!result.reviewComplete) return result.summary;
@@ -3312,8 +3313,10 @@ export function roundSentence(result: ReviewResult): string {
   };
   const blockers = new Set(result.findings.filter(f => f.severity === 'blocker').map(findingKey));
   const sameBlockers = [...(result.allJudgedFindings ?? []), ...result.findings].every(f => judgeGraded(f) === blockers.has(findingKey(f)));
+  const overruled = new Set((result.threadEvaluations ?? []).filter(overrodeJudge).map(e => e.threadId));
+  const blocksOnOverruled = !!result.verdictTrace?.unresolvedPriors.some(p => !!p.threadId && overruled.has(p.threadId));
   // The judge writes its summary before the verdict reader runs, so it never describes the reader's blockers.
-  const stands = result.verdictReason !== 'verdict_reader' && (kept.length === 0 || kept.some(stillListed)) && sameBlockers;
+  const stands = result.verdictReason !== 'verdict_reader' && (kept.length === 0 || kept.some(stillListed)) && sameBlockers && !blocksOnOverruled;
   if (stands && result.summary.trim()) return result.summary;
   // Only a blocker stands in for the summary, so a round nothing blocks then has no sentence.
   const top = result.findings.find(f => f.severity === 'blocker');
