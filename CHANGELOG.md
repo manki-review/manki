@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.8.2] - 2026-11-26
+
+Manki 7.8.2 proposes only splits worth making and shows what each proposed PR holds. Answers to a fix claim also say first whether they settle the thread.
+
+### Review loop and verdicts
+
+- A proposed split is left out when one of its PRs would change fewer than 20 lines or only test code, such as a test module inside a source file. A split carried from an earlier round is checked the same way, without a new call. With `review.scope_blocks`, such a split no longer holds the approval ([#2105](https://github.com/manki-review/manki/pull/2105)).
+- An answer to "Fixed" that Manki cannot prove from a changed line starts with a bold line on what happens next, such as "the next review after a push checks the fix", or that a maintainer should decide. A file that `closed_paths` closes gets the maintainer line. "Fixed" on a blocker or security thread the sender may not clear starts with "Fix seen" and says that the thread stays open until a review or a maintainer confirms it ([#2101](https://github.com/manki-review/manki/pull/2101)).
+- When a push changes nothing and warnings hold the approval of a draft or a PR that conflicts with its base, the `Manki` check names the warnings first and the draft or conflict in one sentence after them ([#2098](https://github.com/manki-review/manki/pull/2098)).
+
+### Review format
+
+- Each proposed PR of a split names the changed functions and tests it holds, linked to their lines, instead of line ranges. It lists at most 10 files, with "And N more files." after them. A scope warning no longer says it is not tied to a changed file ([#2104](https://github.com/manki-review/manki/pull/2104)).
+- A possible problem carried from an earlier round, which no check of this round settled, shows the reason that round's check gave ([#2099](https://github.com/manki-review/manki/pull/2099)).
+
 ## [7.8.1] - 2026-11-26
 
 Manki 7.8.1 makes reviews and answers easier to read: what a reader has to know comes first, long lists are folded, a proposed split says what each PR would contain, and a possible problem left open says why. A check can also read a crate's source in more Rust repositories.
