@@ -8,7 +8,7 @@ import * as github from '@actions/github';
 import { assertWritesAllowed } from './abort';
 import { isAllowedAccount } from './auth';
 import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig, readClosedPaths } from './config';
-import { AgentProgressEntry, ApprovalRecord, RecordOnlyReason, SideCheckKind, agreedOutcome, oneCheckOnBase, sameOnBase, confirmsAll, confirmsCodePath, confirmsDefect, openCodePremise, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, RoundDependencySource, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundScope, ScopeTopic, isScopeSplit, isScopeThread, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, SCOPE_READER_NAME, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
+import { AgentProgressEntry, ApprovalRecord, RecordOnlyReason, SideCheckKind, agreedOutcome, oneCheckOnBase, sameOnBase, confirmsAll, confirmsCodePath, confirmsDefect, openCodePremise, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, RoundDependencySource, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundScope, ScopeTopic, SplitFile, SplitItem, isScopeSplit, isScopeThread, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, SCOPE_READER_NAME, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { holdsLines } from './code-window';
 import { firstCommentableLine, isLineInDiff, listedFilesDiff, findClosedPattern } from './diff';
 import { issueBox, ISSUE_BOX_LABEL, messageBox, withMessageBoxes } from './issue-box';
@@ -2587,7 +2587,8 @@ export async function postReview(
       fileOnly.push(comment);
     }
     threadFindings.push(f);
-    if (elsewhere) (blocking ? detached : detachedWarnings).push(f);
+    // A scope warning judges the whole PR, so the body does not list it as one that missed its file.
+    if (elsewhere && !isScopeThread(f.file, f.reviewers)) (blocking ? detached : detachedWarnings).push(f);
   };
 
   for (const f of result.findings) {
@@ -3375,37 +3376,61 @@ const RELATION_ACTION: Record<Extract<RelatedRelation, 'duplicate' | 'fixes_issu
 /** Files a list of files shows by name before it counts the rest. */
 const MAX_LISTED_FILES = 10;
 
-/** Returns `files` as inline code, at most `MAX_LISTED_FILES` of them and a count of the rest. */
-export function fileList(files: readonly string[]): string {
-  const shown = files.slice(0, MAX_LISTED_FILES).map(f => inlineCode(sanitizeFilePath(f))).join(', ');
-  return files.length > MAX_LISTED_FILES ? `${shown} and ${files.length - MAX_LISTED_FILES} more` : shown;
-}
-
 /** Why the scope reader proposes a split, as its thread and the review body say it. */
 export const SPLIT_REASON = 'The parts make sense on their own and are easier to review and revert separately.';
 
-/** Returns `files` as one line per folder: the folder, then the names in it, as `fileList` writes them. */
-function folderLines(files: readonly string[]): string[] {
+/** Returns the files of `part` as Manki worked them out, or for an older record its files without the line ranges the model gave. */
+function partFiles(part: ScopeTopic): SplitFile[] {
+  return part.shown ?? [...new Set(part.files.map(entry => entry.replace(/:\d+(?:-\d+)?$/, '')))].map(path => ({ path }));
+}
+
+/** Returns `names` up to `MAX_LISTED_FILES`, then how many more there are. */
+function cappedList(names: readonly string[]): string {
+  const shown = names.slice(0, MAX_LISTED_FILES).join(', ');
+  return names.length > MAX_LISTED_FILES ? `${shown} and ${names.length - MAX_LISTED_FILES} more` : shown;
+}
+
+/** Returns the name of `file` in its folder, with its changed items in parentheses, tests last, each linked to its line. */
+function splitFileName({ path, items = [] }: SplitFile, folder: string, linkTo?: LineLink): string {
+  const name = inlineCode(sanitizeFilePath(path.slice(folder.length)));
+  const item = ({ name: itemName, line }: SplitItem) => linked(inlineCode(itemName), linkTo?.(path, line));
+  const code = items.filter(i => !i.test).map(item);
+  const tests = items.filter(i => i.test).map(item);
+  const named = [...code, ...tests.map((test, i) => i === 0 ? `tests ${test}` : test)];
+  return named.length > 0 ? `${name} (${cappedList(named)})` : name;
+}
+
+/**
+ * Returns the first `MAX_LISTED_FILES` of `files` as one line per folder: the folder, then the names in it, as
+ * `splitFileName` writes them. A last line says how many files the cap left out.
+ */
+function folderLines(files: readonly SplitFile[], linkTo?: LineLink): string[] {
   const byFolder = new Map<string, string[]>();
-  for (const file of files) {
-    const folder = file.slice(0, file.lastIndexOf('/') + 1);
-    byFolder.set(folder, [...(byFolder.get(folder) ?? []), file.slice(folder.length)]);
+  for (const file of files.slice(0, MAX_LISTED_FILES)) {
+    const folder = file.path.slice(0, file.path.lastIndexOf('/') + 1);
+    byFolder.set(folder, [...(byFolder.get(folder) ?? []), splitFileName(file, folder, linkTo)]);
   }
-  return [...byFolder].map(([folder, names]) => `${folder ? `${inlineCode(sanitizeFilePath(folder))}: ` : ''}${fileList(names)}`);
+  const lines = [...byFolder].map(([folder, names]) => `${folder ? `${inlineCode(sanitizeFilePath(folder))}: ` : ''}${names.join(', ')}`);
+  return files.length > MAX_LISTED_FILES ? [...lines, `And ${countOf(files.length - MAX_LISTED_FILES, 'more file')}.`] : lines;
 }
 
 /**
  * Returns the proposed PRs of `split`, each under its number and name, with what it would contain, its files by folder and
  * the PRs it needs first. A part without `contents` or `needs`, such as one of an older round record, shows neither line.
- * The model's text is not sanitized here, so the caller sanitizes the whole.
+ * The model's text is sanitized here, and `linkTo` links each changed item to its line.
  */
-export function formatSplit(split: readonly ScopeTopic[]): string {
+export function formatSplit(split: readonly ScopeTopic[], linkTo?: LineLink): string {
   return split.map((part, i) => [
-    `**PR ${i + 1}: ${part.name}**`,
-    ...(part.contents ? [part.contents] : []),
-    ...folderLines(part.files),
+    `**PR ${i + 1}: ${sanitizeMarkdown(part.name)}**`,
+    ...(part.contents ? [sanitizeMarkdown(part.contents)] : []),
+    ...folderLines(partFiles(part), linkTo),
     ...(part.needs?.length ? [`Needs ${joinCounts(part.needs.map(n => `PR ${n}`))} first.`] : []),
   ].join('\n')).join('\n\n');
+}
+
+/** Returns the description of the split warning the scope reader posts with `review.scope_blocks`. */
+export function splitDescription(split: readonly ScopeTopic[], linkTo?: LineLink): string {
+  return `Suggestion about the PR as a whole, not a defect in its code. ${SPLIT_REASON}\n\n${formatSplit(split, linkTo)}\n\nSplit it as proposed, or reply with why the parts belong together.`;
 }
 
 /**
@@ -3420,7 +3445,7 @@ function formatScope(scope: RoundScope | undefined, linkTo: LineLink): string | 
   }), linkTo);
   const parts = [
     scope.doubt && `**Is this change useful?** ${sanitizeMarkdown(scope.doubt)}${cited ? ` See ${cited}.` : ''}`,
-    scope.split && `**Split into ${scope.split.length} PRs?** ${SPLIT_REASON}\n\n${sanitizeMarkdown(formatSplit(scope.split))}`,
+    scope.split && `**Split into ${scope.split.length} PRs?** ${SPLIT_REASON}\n\n${formatSplit(scope.split, linkTo)}`,
   ].filter(Boolean);
   return `**Scope:** a judgment of the PR as a whole, not a defect in its code. It never holds the approval.\n\n${parts.join('\n\n')}`;
 }
@@ -4295,7 +4320,8 @@ function formatFindingComment(finding: Finding, links: CodeLinks, place: 'line' 
   const open = `${suggestion ? `\n\n${suggestion}` : ''}\n\n${formatFold(fix, '', checks)}`;
   // The line note takes no room, so a thread shows the same description with it as without it.
   const room = Math.max(MIN_VISIBLE_DESCRIPTION, MAX_VISIBLE_COMMENT - (visibleLength(comment) - visibleLength(onLine)) - label.length - visibleLength(open));
-  const description = sanitizeMarkdown(finding.description);
+  // The split is written from its parts, which sanitizes the model's text and keeps Manki's own links.
+  const description = isScopeSplit(finding) && finding.split ? splitDescription(finding.split, links.linkTo) : sanitizeMarkdown(finding.description);
   // A scope warning's list is what it proposes, so no length budget folds it, and the split shows whole.
   const { lead, rest } = isScopeSplit(finding) ? { lead: description.trim(), rest: '' } : splitLead(description, 3, finding.reviewers.includes(SCOPE_READER_NAME) ? Infinity : room, MAX_WHOLE_FIRST_SENTENCE);
   // A fold never holds a single sentence, so one sentence past the lead shows with it, unless the lead was cut short.

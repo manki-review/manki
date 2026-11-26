@@ -560,7 +560,16 @@ describe('listUsesOutsideDiff', () => {
       'docs/guide.md': '# Guide\n\nif you want, open the gate && close it.\n',
       'dist/out.js': 'if (a && b) run();\n',
     };
-    const { units } = await usesFor(base, head, ['dist/**']);
+    const { units, items } = await usesFor(base, head, ['dist/**']);
+    // The functions and types the diff touches, a test one and the type around a changed method included, name what a proposed PR of a split holds.
+    expect(items).toEqual([
+      { file: 'src/auth.ts', name: 'Gate', line: 1, start: 1, end: 5 },
+      { file: 'src/auth.ts', name: 'open', line: 2, start: 2, end: 4 },
+      { file: 'src/gate.py', name: 'allowed', line: 1, start: 1, end: 2 },
+      { file: 'src/limits.rs', name: 'admit', line: 1, start: 1, end: 6 },
+      { file: 'src/limits.rs', name: 'admits', line: 13, start: 12, end: 16, test: true },
+      { file: 'src/refs.rs', name: 'pick', line: 1, start: 1, end: 9 },
+    ]);
     const condition = (file: string, start: number, end: number, code: string) => ({ kind: 'condition', file, start, end, code });
     expect(units?.map(({ id: _id, ...unit }) => unit)).toEqual([
       condition('.github/workflows/ci.yml', 6, 6, "+      - if: github.event_name == 'push'"),
@@ -1336,8 +1345,9 @@ ${body}	return true
       expect(await listUsesOutsideDiff(root, diff, { loadApi: failingLoad })).toEqual({ ...NOTHING, record: { failed: 'no pinned ast-grep build for plan9-x64' } });
       expect(core.warning).toHaveBeenCalledWith('Skipped the list of uses outside the diff: no pinned ast-grep build for plan9-x64');
       const changes = [{ file: 'src/a.rs', symbol: 'function compute_total', change: 'body changed' }];
+      const items = [{ file: 'src/a.rs', name: 'compute_total', line: 1, start: 1, end: 1 }];
       expect(await listUsesOutsideDiff(root, diff, { loadApi })).toEqual({
-        ...NOTHING, referenceNames: ['compute_total'], units: [{ id: 'U1', kind: 'function', file: 'src/a.rs', start: 1, end: 1, name: 'compute_total' }], changes,
+        ...NOTHING, referenceNames: ['compute_total'], units: [{ id: 'U1', kind: 'function', file: 'src/a.rs', start: 1, end: 1, name: 'compute_total' }], changes, items,
       });
       expect(core.info).toHaveBeenCalledWith(expect.stringMatching(/^Listed uses outside the diff in \d+ ms: none found, with 0 sibling field and 0 sibling implementation comparisons, 0 added pieces and 1 units$/));
       // A `git grep` that fails is reported by what git said, never by its command line, which holds every searched name,
@@ -1345,7 +1355,7 @@ ${body}	return true
       rmSync(join(root, '.git'), { recursive: true, force: true });
       mkdirSync(join(root, '.git'));
       const broken = await listUsesOutsideDiff(root, diff, { loadApi });
-      expect(broken).toEqual({ ...NOTHING, changes, record: { failed: expect.stringMatching(/^git grep failed with exit code 128: fatal: not a git repository/) } });
+      expect(broken).toEqual({ ...NOTHING, changes, items, record: { failed: expect.stringMatching(/^git grep failed with exit code 128: fatal: not a git repository/) } });
       expect(core.warning).toHaveBeenLastCalledWith(`Skipped the list of uses outside the diff: ${broken.record?.failed}`);
       // A `git grep` that a signal ends leaves no exit code, and the reason names the signal.
       const bin = mkdtempSync(join(tmpdir(), 'manki-bin-'));
