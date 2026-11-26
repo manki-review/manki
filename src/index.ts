@@ -110,7 +110,7 @@ import {
   wasEdited,
 } from './github';
 import type { ApprovalHeld, BotIdentity, EarlierPlace, LinkedIssue, StandingVerdict } from './github';
-import { announceSecurityOverrides, approveOrSayWhy, authorClearLine, autoReviewHalt, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, findUnchangedVerdict, fixedMarker, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread, withdrawBlockedApproval } from './state';
+import { announceSecurityOverrides, approveOrSayWhy, authorClearLine, autoReviewHalt, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, findUnchangedVerdict, fixedMarker, holdApproval, isNewChange, pauseState, reopenUnsettledThreads, reopenThread, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread, withdrawBlockedApproval } from './state';
 import type { PauseState, ReviewThread } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -1146,7 +1146,7 @@ async function loadRecap(
     return undefined;
   }
 
-  await reopenAuthorResolvedThreads(octokit, recap);
+  await reopenUnsettledThreads(octokit, recap);
   await announceSecurityOverrides(octokit, securityOverridesIn(recap.previousFindings).filter(o => !o.announced));
   return recap;
 }
@@ -2629,7 +2629,7 @@ async function runStateCheck(
 
   // A guarded thread the PR author resolved blocks with `auto_approve` off too, so it is reopened first.
   const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, prAuthorLogin, config.author_clear_role);
-  await reopenAuthorResolvedThreads(octokit, recap);
+  await reopenUnsettledThreads(octokit, recap);
 
   if (!config.auto_approve) {
     core.info('auto_approve is disabled — skipping state check');

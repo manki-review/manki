@@ -122,6 +122,8 @@ const REPEAT_LINE_TOLERANCE = 5;
 
 /** Marks Manki's reply on a security thread it reopened after the PR author resolved it. */
 const REOPENED_MARKER = '<!-- manki-reopened -->';
+/** Sits beside `REOPENED_MARKER` on a reopen of a thread Manki resolved without a record, which leaves the PR author's next resolve to be reopened too. */
+const UNBACKED_REOPEN_MARKER = '<!-- manki-reopened-unbacked -->';
 
 /**
  * Marks Manki's reply that shows no outcome word and settles nothing, such as an unproven fix. Every reader of the thread
@@ -540,8 +542,8 @@ interface PreviousFinding extends FindingMetadata {
   disprovedBlocker?: boolean;
   /** On a guarded thread, whether the latest replier may agree it away: `mayClearSecurityThread` with write access. */
   authorReplyMayClear?: boolean;
-  /** A guarded thread the PR author resolved, which Manki has not reopened before. */
-  reopen?: boolean;
+  /** Why Manki reopens the resolved thread, by `reopenReason`. */
+  reopen?: 'author' | 'unbacked';
   /** A guarded thread the PR author cleared with a role that `author_clear_role` allows. */
   securityOverride?: ThreadSecurityOverride;
   /** Manki's latest answer to a developer in the thread, from `latestAnswer`. */
@@ -784,6 +786,7 @@ async function fetchRecapState(
   const previousFindings = botThreads.map(t => {
     const facts = { ...t, ...backing.get(t.threadId) };
     const settled = settledBy(facts, bot, prAuthorLogin, prAuthorRole);
+    const reopen = settled ? undefined : reopenReason(t, bot, prAuthorLogin);
     const securityOverride = settled === 'override' ? securityOverrideOf(t, prAuthorLogin, prAuthorRole) : undefined;
     const replierMayClear = authorCannotClear(t) && mayClearSecurityThread(facts.writerReplyLogin, bot, prAuthorLogin);
     const status = threadStatus(t, settled);
@@ -820,7 +823,7 @@ async function fetchRecapState(
       ...(t.isSecurity && { isSecurity: true }),
       ...(t.disprovedBlocker && { disprovedBlocker: true }),
       ...(replierMayClear && { authorReplyMayClear: true }),
-      ...(!settled && shouldReopen(t, prAuthorLogin) && { reopen: true }),
+      ...(reopen && { reopen }),
       ...(securityOverride && { securityOverride }),
       ...(t.answer && { answer: t.answer }),
       ...(t.filedIssue && { filedIssue: t.filedIssue }),
@@ -869,9 +872,18 @@ function judgeAddressedThreadIds(rounds: RoundContext[], latestOnly = false): Se
   return ids;
 }
 
-/** Whether the PR author resolved a thread they cannot clear, and Manki has not reopened it yet. Only asked for a thread that is not settled. */
-function shouldReopen(t: ReviewThread, prAuthorLogin: string | undefined): boolean {
-  return authorCannotClear(t) && t.isResolved && t.resolvedByHuman && !t.reopenedByManki && isLogin(t.resolvedByLogin, prAuthorLogin);
+/**
+ * Returns why Manki reopens the resolved thread `t`, which is not settled. `author`: the PR author resolved a thread they
+ * cannot clear, and Manki has not reopened it yet. `unbacked`: Manki resolved a guarded thread, and no record of its own
+ * names a person or an override behind that resolve. A record whose person a lookup no longer confirms reopens nothing,
+ * since a failed lookup reads the same. Nor does a thread whose comments or round records were not all read, which may
+ * hide a record, or one whose finding continues in another thread.
+ */
+function reopenReason(t: ReviewThread, bot: BotIdentity, prAuthorLogin: string | undefined): PreviousFinding['reopen'] {
+  if (!t.isResolved) return undefined;
+  if (authorCannotClear(t) && t.resolvedByHuman && !t.reopenedByManki && isLogin(t.resolvedByLogin, prAuthorLogin)) return 'author';
+  const unread = !!t.gradeUnknown || !!t.commentsIncomplete;
+  return isGuarded(t) && isBotLogin(bot, t.resolvedByLogin) && !unread && !t.raised && !t.clearLogin && !t.recordedOverride ? 'unbacked' : undefined;
 }
 
 /**
@@ -1417,7 +1429,8 @@ async function fetchReviewThreads(
         ...(thread.resolvedBy?.login && { resolvedByLogin: thread.resolvedBy.login }),
         isSecurity: isBotThread && isSecurityThread(body),
         ...(isBotThread && isDisprovedThread(body) && { disprovedBlocker: true }),
-        reopenedByManki: thread.comments.nodes.slice(1).some(c => isBotLogin(bot, c.author?.login) && hasOwnMarker(c.body ?? '', REOPENED_MARKER, COMMENT_MARKER)),
+        reopenedByManki: thread.comments.nodes.slice(1).some(c => isBotLogin(bot, c.author?.login) && hasOwnMarker(c.body ?? '', REOPENED_MARKER, COMMENT_MARKER)
+          && !hasOwnMarker(c.body ?? '', UNBACKED_REOPEN_MARKER, COMMENT_MARKER)),
         ...(isBotThread && thread.isResolved && thread.comments.nodes.slice(1).some(c => isBotLogin(bot, c.author?.login) && hasOwnMarker(c.body ?? '', RAISED_MARKER, COMMENT_MARKER)) && { raised: true as const }),
         ...(recordedOverride && { recordedOverride }),
         ...(fixClaim && { fixClaim }),
@@ -1763,4 +1776,4 @@ function dropWaivedRestatements(
   return { unique, duplicates };
 }
 
-export { AGAINST_HEADING, authorCannotClear, BOT_PREFIX_PATTERN, STATEMENTS_HEADING, latestAnswer, withoutStatementFold, personReplies, RAISED_MARKER, UNSETTLED_ANSWER_MARKER, SEEN_MARKERS, guardedKind, isDisprovedThread, clearRecordLogin, clearRecordMarker, dismissRecordLogins, dismissRecordMarker, dropWaivedRestatements, withoutCode, blockersToRecheck, currentFindingLine, DuplicateMatch, FixClaim, fixClaimMarker, fixClaimOf, namedPullRequests, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, pushTouchesThread, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };
+export { AGAINST_HEADING, authorCannotClear, BOT_PREFIX_PATTERN, STATEMENTS_HEADING, latestAnswer, withoutStatementFold, personReplies, RAISED_MARKER, UNSETTLED_ANSWER_MARKER, SEEN_MARKERS, guardedKind, isDisprovedThread, clearRecordLogin, clearRecordMarker, dismissRecordLogins, dismissRecordMarker, dropWaivedRestatements, withoutCode, blockersToRecheck, currentFindingLine, DuplicateMatch, FixClaim, fixClaimMarker, fixClaimOf, namedPullRequests, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, pushTouchesThread, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, UNBACKED_REOPEN_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };

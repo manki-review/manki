@@ -5764,7 +5764,7 @@ describe('runReview', () => {
     const diff = diffChanging('src/x.ts');
     const openThread = makePriorOpenThread({ severity: 'blocker', threadUrl: 'https://github.com/o/r/pull/1#t1' });
     const thread = (status: PreviousFinding['status'], reopen = false): PreviousFinding => (
-      { title: 'Old issue', file: 'src/x.ts', line: 10, severity: 'blocker', status, threadId: 'T1', ...(reopen && { reopen }) });
+      { title: 'Old issue', file: 'src/x.ts', line: 10, severity: 'blocker', status, threadId: 'T1', ...(reopen && { reopen: 'author' as const }) });
     const runOn = (clients: ReviewClients, headSha: string, openThreads: OpenThread[] | null = [openThread], previousFindings = [thread('open')], priorRounds = [prior], interRoundDiff?: string) => runReview(
       clients, {
         config: makeConfig(),

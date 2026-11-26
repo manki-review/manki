@@ -9,7 +9,7 @@ import { ISSUE_BOX_LABEL, withMessageBoxes } from './issue-box';
 import { MessageBox, SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
-import { authorCannotClear, clearRecordLogin, latestAnswer, personReplies, dismissRecordLogins, dismissRecordMarker, FixClaim, fixClaimOf, fetchPriorRoundContexts, fetchRecapState, guardedKind, isDisprovedThread, isOverrideCandidate, judgeAddressedThreadIds, parseContextBlocks, RAISED_MARKER, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, RecordedGrade, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingPlace } from './recap';
+import { authorCannotClear, clearRecordLogin, latestAnswer, personReplies, dismissRecordLogins, dismissRecordMarker, FixClaim, fixClaimOf, fetchPriorRoundContexts, fetchRecapState, guardedKind, isDisprovedThread, isOverrideCandidate, judgeAddressedThreadIds, parseContextBlocks, RAISED_MARKER, recordedThreadGrades, isSecurityThread, parseFindingData, PreviousFinding, RecapState, RecordedGrade, recordedSecurityOverride, REOPENED_MARKER, UNBACKED_REOPEN_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingPlace } from './recap';
 import { FIXED_MARKER_OPENER, fixedMarker, formatApprovalRecord, hasOwnMarker, hasReviewRecord, ROUND_REPLY_OPENER, settlingDecision } from './review-record';
 import { findPriorThreadId } from './finding-fingerprint';
 import { ApprovalRecord, AuthorClearRole, FindingSeverity, gradedAbove, PRE_EXISTING_TAG, ReviewConfig, RoundContext, SecurityOverride, threadBlocks, threadWarns } from './types';
@@ -356,45 +356,62 @@ async function deleteThreadReply(octokit: Octokit, commentId: string): Promise<v
   await octokit.graphql('mutation($id: ID!) { deletePullRequestReviewComment(input: { id: $id }) { clientMutationId } }', { id: commentId });
 }
 
-/** Returns the reply that says why a thread is reopened. A review never clears a thread tied to no `file`, so its reply names no fix. */
-function reopenReply(thread: { isSecurity?: boolean; disprovedBlocker?: boolean }, file: string): string {
+/**
+ * Returns the reply that says why a thread is reopened, for its `reopen` reason. A review never clears a thread tied to no
+ * `file`, so its reply names no fix.
+ */
+function reopenReply(thread: Parameters<typeof threadBlocks>[0] & { reopen?: PreviousFinding['reopen'] }, file: string): string {
   const kind = guardedKind(thread);
+  if (thread.reopen === 'unbacked') {
+    const why = `Reopened. Manki resolved this ${kind} earlier, but has no record of a confirmed fix or of a maintainer who cleared it, so it still ${threadBlocks(thread) ? 'blocks' : 'holds the approval'}.`;
+    return file
+      ? `${why} Push a fix and the next Manki review will check it again, or a reviewer with write access can resolve it. ${AFTER_PUSH_LINE}`
+      : `${why} It is not tied to a file, so no review can confirm a fix for it. A reviewer with write access can resolve it.`;
+  }
   return file
     ? `Reopened. A ${kind} needs a maintainer or a fix: the PR author cannot resolve it. A reviewer with write access can resolve it, or push a fix and the next Manki review will check it. ${AFTER_PUSH_LINE}`
     : `Reopened. A ${kind} that is not tied to a file needs a maintainer: the PR author cannot resolve it, and no review can confirm a fix for it. A reviewer with write access can resolve it.`;
 }
 
-/**
- * Returns the reply that says why the thread `threadId` is reopened. Returns `undefined` unless the PR author resolved that
- * guarded thread and Manki has not reopened it yet.
- */
-async function authorResolvedNote(
-  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, prAuthorLogin: string | undefined, config: ReviewConfig, threadId: string,
-): Promise<string | undefined> {
-  const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, prAuthorLogin, config.author_clear_role);
-  const finding = recap.previousFindings.find(f => f.reopen && f.threadId === threadId);
-  return finding && reopenReply(finding, finding.file);
+/** Returns the markers of the reply that reopens a thread for `reason`. */
+function reopenMarkers(reason: NonNullable<PreviousFinding['reopen']>): string[] {
+  return reason === 'unbacked' ? [REOPENED_MARKER, UNBACKED_REOPEN_MARKER] : [REOPENED_MARKER];
 }
 
-/** Reopens each guarded thread of `recap` that the PR author resolved, and replies once to say why. */
-async function reopenAuthorResolvedThreads(octokit: Octokit, recap: RecapState): Promise<void> {
+/**
+ * Returns the reply that says why the thread `threadId` is reopened, with the markers that reply carries. Returns
+ * `undefined` unless `reopenReason` gives that resolved thread a reason.
+ */
+async function reopenNoteOf(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, prAuthorLogin: string | undefined, config: ReviewConfig, threadId: string,
+): Promise<{ note: string; markers: string[] } | undefined> {
+  const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, prAuthorLogin, config.author_clear_role);
+  const finding = recap.previousFindings.find(f => f.reopen && f.threadId === threadId);
+  return finding?.reopen && { note: reopenReply(finding, finding.file), markers: reopenMarkers(finding.reopen) };
+}
+
+/**
+ * Reopens each resolved thread of `recap` that Manki still counts as open: a guarded one the PR author resolved, or one
+ * Manki resolved without a record behind it. Replies once to say why.
+ */
+async function reopenUnsettledThreads(octokit: Octokit, recap: RecapState): Promise<void> {
   for (const f of recap.previousFindings) {
     if (!f.reopen || !f.threadId) continue;
-    // The thread opens first. The reply's marker stops every later reopen, so it must never sit on a thread that stayed resolved.
+    // The thread opens first. The reply's marker stops a later reopen after the PR author's resolve, so it must never sit on a thread that stayed resolved.
     if (!await reopenThread(octokit, f.threadId)) continue;
     try {
-      await replyToReviewThread(octokit, f.threadId, reopenReply(f, f.file), REOPENED_MARKER);
+      await replyToReviewThread(octokit, f.threadId, reopenReply(f, f.file), ...reopenMarkers(f.reopen));
     } catch (error) {
       core.warning(`Reopened thread ${f.threadId}, but failed to say why: ${error}`);
     }
   }
 }
 
-/** Reopens the thread `threadId` that someone other than Manki resolved, and returns whether that worked. A failure is logged and leaves the thread resolved. */
+/** Reopens the resolved thread `threadId`, and returns whether that worked. A failure is logged and leaves the thread resolved. */
 async function reopenThread(octokit: Octokit, threadId: string): Promise<boolean> {
   try {
     await unresolveReviewThread(octokit, threadId);
-    core.info(`Reopened thread ${threadId} that someone other than Manki resolved`);
+    core.info(`Reopened thread ${threadId}`);
     return true;
   } catch (error) {
     core.warning(`Failed to reopen thread ${threadId}: ${error}`);
@@ -1271,4 +1288,4 @@ async function approveOrSayWhy(
   return refusal ? heldBy(refusal) : { approved: true };
 }
 
-export { ApprovalCheck, PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, recordDismissal, approveOrSayWhy, authorClearLine, authorResolvedNote, autoReviewHalt, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, rolePhrase, resolveReviewThread, retireStaleNotices, unclearedThreads, unresolveReviewThread, warningHoldNote, withdrawBlockedApproval, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX, TRACKED_MARKER };
+export { ApprovalCheck, PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, recordDismissal, approveOrSayWhy, authorClearLine, autoReviewHalt, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenNoteOf, reopenUnsettledThreads, reopenThread, replyToReviewThread, rolePhrase, resolveReviewThread, retireStaleNotices, unclearedThreads, unresolveReviewThread, warningHoldNote, withdrawBlockedApproval, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX, TRACKED_MARKER };

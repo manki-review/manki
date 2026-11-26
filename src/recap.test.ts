@@ -1,5 +1,5 @@
 import { AuthorReplyClass, Finding, FindingFingerprintEntry, ReplyDecision, RoundContext, SCOPE_DOUBT_TITLE, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, SECURITY_TAG, ThreadEvaluation, threadBlocks } from './types';
-import { clearRecordMarker, UNSETTLED_ANSWER_MARKER, collectGuardedThreadIds, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, currentFindingLine, deduplicateFindings, dismissRecordMarker, fingerprintFinding, findingPlace, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, parseFindingFromComment, RAISED_MARKER, threadSeverity } from './recap';
+import { clearRecordMarker, UNSETTLED_ANSWER_MARKER, collectGuardedThreadIds, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, currentFindingLine, deduplicateFindings, dismissRecordMarker, fingerprintFinding, findingPlace, PreviousFinding, fetchRecapState, REOPENED_MARKER, UNBACKED_REOPEN_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, parseFindingFromComment, RAISED_MARKER, threadSeverity } from './recap';
 import { AUTO_APPROVE_MARKER, BOT_LOGIN, formatFindingComment, titleToSlug } from './github';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { determineOutcome } from './review';
@@ -923,11 +923,12 @@ describe('fetchRecapState', () => {
         { body: `**Withdrawn.** Every caller checks it.\n\n<!-- manki -->\n${clearRecordMarker('bob')}`, author: { login: 'manki-review[bot]' } }, ...after];
       const cut = mockOctokit([makeThread({ id: 'tb', isResolved: true, resolvedBy: { login: 'manki-review[bot]' }, comments: { pageInfo, nodes } })]);
       Object.assign(cut.rest, { repos: { getCollaboratorPermissionLevel: jest.fn(async () => ({ data: { permission: 'write', user: { type: 'User' } } })) } });
-      return (await fetchRecapState(cut, TEST_BOT, 'owner', 'repo', 1, 'author')).previousFindings.map(f => [f.status, !!f.authorReplyMayClear]);
+      return (await fetchRecapState(cut, TEST_BOT, 'owner', 'repo', 1, 'author')).previousFindings.map(f => [f.status, !!f.authorReplyMayClear, f.reopen]);
     };
-    expect(await backed(LAST_PAGE)).toEqual([['auto-resolved', true]]);
-    expect(await backed(LAST_PAGE, [{ body: 'Thanks!', author: { login: 'author' } }])).toEqual([['auto-resolved', false]]);
-    expect(await backed({ hasNextPage: true, endCursor: 'c1' })).toEqual([['replied', false]]);
+    expect(await backed(LAST_PAGE)).toEqual([['auto-resolved', true, undefined]]);
+    expect(await backed(LAST_PAGE, [{ body: 'Thanks!', author: { login: 'author' } }])).toEqual([['auto-resolved', false, undefined]]);
+    // Such a thread blocks, but is not reopened: the record may sit on a page Manki did not read.
+    expect(await backed({ hasNextPage: true, endCursor: 'c1' })).toEqual([['replied', false, undefined]]);
   });
 
   it('carries the fix claim of Manki\'s own answer on a blocker the PR author dismissed, and none from a thread not read in full', async () => {
@@ -1504,7 +1505,15 @@ describe('fetchRecapState', () => {
       ]));
 
       const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
-      expect(state.previousFindings.map(f => f.status)).toEqual(['resolved', 'auto-resolved', 'resolved', 'open', 'open']);
+      // Manki reopens its own resolve that nothing backs.
+      expect(state.previousFindings.map(f => [f.status, f.reopen])).toEqual([
+        ['resolved', undefined], ['auto-resolved', undefined], ['resolved', undefined], ['open', undefined], ['open', 'unbacked'],
+      ]);
+      // A record whose person's access cannot be read leaves the resolve unbacked, but reopens nothing: the lookup may only have failed.
+      const unreadAccess = thread('T_BOT', files.bot, BOT_LOGIN);
+      unreadAccess.comments.nodes.push({ body: `**Withdrawn.** The caller checks it.\n\n<!-- manki -->\n${clearRecordMarker('carol')}`, author: { login: BOT_LOGIN } });
+      const lookupFailed = await fetchRecapState(withWriter(mockOctokit([unreadAccess], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }])), TEST_BOT, 'owner', 'repo', 1, 'author');
+      expect(lookupFailed.previousFindings.map(f => [f.status, f.reopen])).toEqual([['open', undefined]]);
 
       // Manki reopens a thread the PR author resolved, and resolves it itself once a maintainer clears it. Its status is the same.
       const cleared = thread('T_BOT', files.bot, BOT_LOGIN);
@@ -1665,7 +1674,17 @@ describe('fetchRecapState', () => {
         [thread('T_JUDGE', files.judge, BOT_LOGIN), warning],
         [ctx, laterCtx].map((record, i) => ({ id: 100 + i, body: htmlCommentBlock(record), user: { login: BOT_LOGIN } })),
       ), TEST_BOT, 'owner', 'repo', 1);
-      expect(later.previousFindings.map(f => [f.status, f.fixed ?? false])).toEqual([['open', false], ['resolved', true]]);
+      // Manki reopens that thread, since it still counts it as open.
+      expect(later.previousFindings.map(f => [f.status, f.fixed ?? false, f.reopen])).toEqual([['open', false, 'unbacked'], ['resolved', true, undefined]]);
+      // Such a reopen still leaves the PR author's next resolve of the thread to be reopened. A reopen after the author's resolve does not.
+      const afterReopen = async (markers: string[]) => {
+        const resolved = thread('T_JUDGE', files.judge, 'author');
+        resolved.comments.nodes.push({ body: `Reopened.\n\n<!-- manki -->\n${markers.join('\n')}`, author: { login: BOT_LOGIN } });
+        const read = await fetchRecapState(mockOctokit([resolved], [ctx, laterCtx].map((record, i) => ({ id: 100 + i, body: htmlCommentBlock(record), user: { login: BOT_LOGIN } }))), TEST_BOT, 'owner', 'repo', 1, 'author');
+        return read.previousFindings.map(f => f.reopen);
+      };
+      expect(await afterReopen([REOPENED_MARKER, UNBACKED_REOPEN_MARKER])).toEqual(['author']);
+      expect(await afterReopen([REOPENED_MARKER])).toEqual([undefined]);
       // A thread a round's judge once found fixed is never decided without a fix, whatever the answer after it says.
       const onceFixed = await fetchRecapState(withWriter(mockOctokit(
         [answeredWith('T_JUDGE', files.judge, [answer('Withdrawn')])],
@@ -1802,7 +1821,12 @@ describe('fetchRecapState', () => {
 
       // The author can push, which is below the default level `maintain`, so their own resolve clears nothing.
       const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1, 'author', 'maintain');
-      expect(state.previousFindings.filter(f => f.reopen).map(f => f.file)).toEqual(['src/author-resolved.ts', 'src/judge-addressed-author-resolved.ts', 'src/blocker-author-resolved.ts']);
+      // Manki also reopens a thread it resolved with no record behind it, as for a maintainer's reply before the clear
+      // records. A record whose person cannot clear the thread reopens nothing, since a failed lookup reads the same.
+      expect(state.previousFindings.filter(f => f.reopen).map(f => [f.file, f.reopen])).toEqual([
+        ['src/author-resolved.ts', 'author'], ['src/bot-resolved.ts', 'unbacked'], ['src/collaborator-reply-only.ts', 'unbacked'],
+        ['src/judge-addressed-author-resolved.ts', 'author'], ['src/blocker-author-resolved.ts', 'author'], ['src/blocker-bot-resolved.ts', 'unbacked'],
+      ]);
       expect(state.previousFindings.filter(f => f.securityOverride)).toEqual([]);
       // A thread someone with write access agreed away stays `replied`. Once Manki resolved it for such a person it is
       // `auto-resolved`: neither open nor dismissed.
@@ -1843,7 +1867,7 @@ describe('fetchRecapState', () => {
       roles.author = 'maintain';
       const admin = Object.create(octokit);
       const adminState = await fetchRecapState(admin, TEST_BOT, 'owner', 'repo', 1, 'author', 'maintain');
-      expect(adminState.previousFindings.filter(f => f.reopen)).toEqual([]);
+      expect(adminState.previousFindings.filter(f => f.reopen === 'author')).toEqual([]);
       expect(adminState.previousFindings.filter(f => f.securityOverride).map(f => [f.file, f.securityOverride])).toEqual([
         ['src/author-resolved.ts', { login: 'author', via: 'resolve', role: 'maintain', announced: false }],
         ['src/author-dismissed.ts', { login: 'author', via: 'dismiss', role: 'maintain', announced: true }],
@@ -1855,7 +1879,7 @@ describe('fetchRecapState', () => {
       // The same author clears nothing where the repository asks for `admin`, or where no level is known. The threads are reopened as for any author.
       for (const level of ['admin', undefined] as const) {
         const below = await fetchRecapState(Object.create(octokit), TEST_BOT, 'owner', 'repo', 1, 'author', level);
-        expect([level, below.previousFindings.filter(f => f.securityOverride), below.previousFindings.filter(f => f.reopen).map(f => f.file)])
+        expect([level, below.previousFindings.filter(f => f.securityOverride), below.previousFindings.filter(f => f.reopen === 'author').map(f => f.file)])
           .toEqual([level, [], ['src/author-resolved.ts', 'src/judge-addressed-author-resolved.ts', 'src/blocker-author-resolved.ts']]);
       }
       const adminOpen = adminState.previousFindings.filter(f => f.status === 'open' || f.status === 'replied')
@@ -2117,7 +2141,8 @@ describe('fetchRecapState', () => {
       const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1, 'author');
       // The skipped record may have raised the threads, so neither the PR author's resolution nor agreement clears them,
       // and neither does Manki's own resolve with nothing to back it, as in the approval check.
-      expect(state.previousFindings.map(f => [f.status, f.reopen, f.gradeUnknown])).toEqual([['open', true, true], ['replied', undefined, true], ['resolved', undefined, true], ['open', undefined, true]]);
+      // Manki's resolve is not reopened, since the unread record may back it.
+      expect(state.previousFindings.map(f => [f.status, f.reopen, f.gradeUnknown])).toEqual([['open', 'author', true], ['replied', undefined, true], ['resolved', undefined, true], ['open', undefined, true]]);
       expect(collectInPrSuppressions(state.previousFindings, 'author').map(s => s.fingerprint.file)).toEqual(['src/c.ts']);
       // An unknown grade never makes a resolution count as someone else's, so a new blocker there still reaches the judge.
       const repeat = makeFinding({ severity: 'blocker', title: 'Stale cache', file: 'src/c.ts', line: 4 });

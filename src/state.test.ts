@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
-import { approveOrSayWhy, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, checkAndAutoApprove, holdApproval, pauseState, reopenAuthorResolvedThreads, retireStaleNotices, BOT_MARKER, ReviewThread, TRACKED_MARKER, unclearedThreads, warningHoldNote, withdrawBlockedApproval } from './state';
-import { clearRecordMarker, dismissRecordMarker, FOUND_AGAIN_MARKER, PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './recap';
+import { approveOrSayWhy, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, checkAndAutoApprove, holdApproval, pauseState, reopenUnsettledThreads, retireStaleNotices, BOT_MARKER, ReviewThread, TRACKED_MARKER, unclearedThreads, warningHoldNote, withdrawBlockedApproval } from './state';
+import { clearRecordMarker, dismissRecordMarker, FOUND_AGAIN_MARKER, PreviousFinding, REOPENED_MARKER, securityOverrideMarker, UNBACKED_REOPEN_MARKER } from './recap';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, namingCommit, paginateSinglePage, reviewedLine, TEST_BOT, TEST_LINKS, testSha } from './test-utils';
 import { APPROVED_LINE, autoApproveHeadMarker, formatFindingComment, postReview, reviewedCommit, titleToSlug } from './github';
 import { extractApprovalRecords, formatApprovalRecord, formatReplyRecord, formatReviewRecord, roundReplyMarker } from './review-record';
@@ -556,20 +556,20 @@ describe('fetchBotReviewThreads', () => {
   });
 });
 
-describe('reopenAuthorResolvedThreads', () => {
-  const previous = (threadId: string, reopen: boolean): PreviousFinding => ({
+describe('reopenUnsettledThreads', () => {
+  const previous = (threadId: string, reopen?: PreviousFinding['reopen']): PreviousFinding => ({
     title: 'Token leaks into logs', file: 'src/a.ts', line: 3, severity: 'blocker', status: 'open', threadId, isSecurity: true, ...(reopen && { reopen }),
   });
 
   const mutation = (call: unknown[]) => [String(call[0]).match(/unresolveReviewThread|addPullRequestReviewThreadReply/)?.[0], (call[1] as { threadId: string }).threadId];
 
   const reopen = (graphql: jest.Mock, previousFindings: PreviousFinding[]) =>
-    reopenAuthorResolvedThreads({ graphql } as unknown as Octokit, { previousFindings, priorRounds: [] });
+    reopenUnsettledThreads({ graphql } as unknown as Octokit, { previousFindings, priorRounds: [] });
 
   it('reopens, then replies with the markers, for flagged threads only', async () => {
     const graphql = jest.fn().mockResolvedValue({});
 
-    await reopen(graphql, [previous('T_author', true), previous('T_other', false)]);
+    await reopen(graphql, [previous('T_author', 'author'), previous('T_other')]);
 
     expect(graphql.mock.calls.map(mutation)).toEqual([
       ['unresolveReviewThread', 'T_author'],
@@ -583,15 +583,39 @@ describe('reopenAuthorResolvedThreads', () => {
     );
 
     graphql.mockClear();
-    await reopen(graphql, [{ ...previous('T_plain', true), isSecurity: false }]);
+    await reopen(graphql, [{ ...previous('T_plain', 'author'), isSecurity: false }]);
     expect(graphql.mock.calls[1][1].body).toMatch(/^Reopened\. A blocking finding needs a maintainer or a fix/);
     // No review clears a thread tied to no file, so its reply names no fix and no review.
     graphql.mockClear();
-    await reopen(graphql, [{ ...previous('T_nowhere', true), isSecurity: false, file: '', line: 0 }]);
+    await reopen(graphql, [{ ...previous('T_nowhere', 'author'), isSecurity: false, file: '', line: 0 }]);
     expect(graphql.mock.calls[1][1].body).toBe(
       'Reopened. A blocking finding that is not tied to a file needs a maintainer: the PR author cannot resolve it, and no review can confirm a fix for it. '
       + `A reviewer with write access can resolve it.\n\n${BOT_MARKER}\n${REOPENED_MARKER}`,
     );
+    // A thread Manki resolved without a record behind it hears that Manki has none, not that the PR author resolved it.
+    // Its reply is marked as such, so the PR author's next resolve is reopened too.
+    graphql.mockClear();
+    await reopen(graphql, [previous('T_unbacked', 'unbacked'), { ...previous('T_unbacked_nowhere', 'unbacked'), isSecurity: false, file: '', line: 0 }]);
+    expect(graphql.mock.calls.map(c => c[1].body)).toEqual([
+      undefined,
+      'Reopened. Manki resolved this security finding earlier, but has no record of a confirmed fix or of a maintainer who cleared it, so it still blocks. '
+      + 'Push a fix and the next Manki review will check it again, or a reviewer with write access can resolve it. If the push starts no review, as while automatic review is off or paused, comment `/manki review`.'
+      + `\n\n${BOT_MARKER}\n${REOPENED_MARKER}\n${UNBACKED_REOPEN_MARKER}`,
+      undefined,
+      'Reopened. Manki resolved this blocking finding earlier, but has no record of a confirmed fix or of a maintainer who cleared it, so it still blocks. '
+      + `It is not tied to a file, so no review can confirm a fix for it. A reviewer with write access can resolve it.\n\n${BOT_MARKER}\n${REOPENED_MARKER}\n${UNBACKED_REOPEN_MARKER}`,
+    ]);
+    // The reply says the thread blocks only when the approval check reads it as blocking. Any other guarded thread holds the approval.
+    for (const [grade, verb] of [
+      [{ isSecurity: true, severity: 'warning' }, 'holds the approval'],
+      [{ isSecurity: false, severity: 'warning', disprovedBlocker: true }, 'holds the approval'],
+      [{ isSecurity: false, severity: 'warning', disprovedBlocker: true, recordedGrade: 'blocker' }, 'blocks'],
+      [{ isSecurity: false, severity: 'blocker' }, 'blocks'],
+    ] as const) {
+      graphql.mockClear();
+      await reopen(graphql, [{ ...previous('T_unbacked_graded', 'unbacked'), ...grade }]);
+      expect(graphql.mock.calls[1][1].body).toMatch(new RegExp(`^Reopened\\. Manki resolved this .* so it still ${verb}\\. Push a fix`));
+    }
   });
 
   // The reply's marker stops every later reopen, so a thread that stayed resolved must not get it.
@@ -603,7 +627,7 @@ describe('reopenAuthorResolvedThreads', () => {
       .mockRejectedValueOnce(new Error('reply refused'))
       .mockResolvedValue({});
 
-    await reopen(graphql, [previous('T_1', true), previous('T_2', true), previous('T_3', true)]);
+    await reopen(graphql, [previous('T_1', 'author'), previous('T_2', 'author'), previous('T_3', 'author')]);
 
     expect(graphql.mock.calls.map(mutation)).toEqual([
       ['unresolveReviewThread', 'T_1'],

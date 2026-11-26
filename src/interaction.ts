@@ -11,8 +11,8 @@ import { fencePrText, truncateDiff } from './review';
 import { closeRawDiff, diffSections, findClosedPattern, parsePRDiff, reviewableDiff } from './diff';
 import { eventPrClosed } from './dispatch';
 import { codeTokensFromDiff, highlightCode } from './highlight';
-import { clearRecordMarker, SEEN_MARKERS, fetchPriorRoundContexts, recordedThreadGrades, threadSeverity, RecapState, fixClaimMarker, guardedKind, isDisprovedThread, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, UNSETTLED_ANSWER_MARKER, currentFindingLine, findingPlace, withoutCode, BOT_PREFIX_PATTERN, withoutStatementFold } from './recap';
-import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, recordDismissal, authorResolvedNote, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, rolePhrase, unclearedThreads, warningHoldNote } from './state';
+import { clearRecordMarker, SEEN_MARKERS, fetchPriorRoundContexts, recordedThreadGrades, threadSeverity, RecapState, fixClaimMarker, guardedKind, isDisprovedThread, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, UNSETTLED_ANSWER_MARKER, currentFindingLine, findingPlace, withoutCode, BOT_PREFIX_PATTERN, withoutStatementFold } from './recap';
+import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, recordDismissal, reopenNoteOf, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, rolePhrase, unclearedThreads, warningHoldNote } from './state';
 import { AuthorClearRole, FindingSeverity, partlyFixedEffect, ParsedDiff, PrContext, RelatedRepoTools, ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation, RoundContext } from './types';
 import { relatedRepoOutcomes, relatedRepoTools, repoTools } from './related-repos';
 import { CheckedReply, MAX_REPLY_STATEMENTS, MAX_TERM_CHARS, MIN_TERM_CHARS, ThreadState, checkFixedElsewhere, checkReply, fixedElsewhereText, statementFold, statementRecords, unsettledLead, withoutOutcomeOpener } from './reply-check';
@@ -794,15 +794,15 @@ export async function handleReviewCommentReply(
       core.info(`Deferred the reply to the review of ${contradicted.commit.slice(0, 7)}, which found the thread ${contradicted.evaluation.status}`);
       return;
     }
-    // Only a guarded thread the PR author resolved is reopened, so no other thread reads the recap for a note.
-    const authorResolved = !!live?.isResolved && isGuarded(live) && !!prAuthorLogin && live.resolvedByLogin?.toLowerCase() === prAuthorLogin.toLowerCase();
-    const reopenNote = config && authorResolved ? await authorResolvedNote(octokit, bot, owner, repo, prNumber, prAuthorLogin, config, live!.id) : undefined;
+    // Only a guarded thread the PR author resolved, or one Manki resolved, may be reopened, so no other thread reads the recap for a note.
+    const reopenable = !!live?.isResolved && isGuarded(live) && (isBotLogin(bot, live.resolvedByLogin) || (!!prAuthorLogin && live.resolvedByLogin?.toLowerCase() === prAuthorLogin.toLowerCase()));
+    const reopen = config && reopenable ? await reopenNoteOf(octokit, bot, owner, repo, prNumber, prAuthorLogin, config, live!.id) : undefined;
     const repeats = outcome === 'Fixed' && head && thread?.fixedOn?.includes(head) ? thread : undefined;
     // A second "Fixed." on a head is posted only when its record lifts a warning's hold that the first one left, or
     // records who a guarded thread is cleared for, which is what later rounds read the clear from.
     const posts = !repeats || (mayClear && isGuarded(repeats)) || (mayResolve && !closed && !!await warningHoldNote(octokit, bot, owner, repo, repeats, config?.author_clear_role));
     // A guarded thread the PR author resolved keeps blocking, also once Manki has reopened it and has no reopen note left to give.
-    const held = !!live && (!!reopenNote || await resolveIsHeld(octokit, bot, owner, repo, live, prAuthorLogin, config?.author_clear_role));
+    const held = !!live && (!!reopen || await resolveIsHeld(octokit, bot, owner, repo, live, prAuthorLogin, config?.author_clear_role));
     // The model saw the fix and cited no line that counts, but a round that finished since confirmed it. The thread stays as it is.
     const unprovenFix = checked.modelOutcome === 'Fixed' && checked.outcome === 'Unverified';
     const confirmed = unprovenFix && live && rounds
@@ -827,7 +827,7 @@ export async function handleReviewCommentReply(
     // An answer that settles such a thread for someone who may clear it clears it, as on an open thread.
     const clears = !!outcome && mayClear && held;
     // Every other answer reopens it with the note. The note's marker stops every later reopen, so the thread opens before the answer is posted.
-    const noted = !!reopenNote && !!live && posts && !clears && await reopenThread(octokit, live.id);
+    const noted = !!reopen && !!live && posts && !clears && await reopenThread(octokit, live.id);
     const staysOpen = !!thread && !mayClear && !noted && (thread.isResolved ? held : isGuarded(thread));
     // A settling answer that leaves a guarded thread open says so first, and a "Fixed." says when a review can confirm the
     // fix. No review ever confirms one on a thread tied to no file, so that answer settles nothing and the thread hears who clears it.
@@ -857,7 +857,7 @@ export async function handleReviewCommentReply(
       core.info(`Thread ${thread?.id} already confirms the fix on ${head?.slice(0, 7)}, so the reply posts no second one`);
     } else {
       // After "Fixed." the next review decides, so the reopened thread hears what an open one does, not that it needs a maintainer or a fix.
-      const reopened = noted && reopenNote ? [settled === 'Fixed' ? staysOpenNote(guard, true, config?.author_clear_role) : reopenNote] : [];
+      const reopened = noted && reopen ? [settled === 'Fixed' ? staysOpenNote(guard, true, config?.author_clear_role) : reopen.note] : [];
       // An answer that accepts nothing lifts no hold, and neither does one to someone Manki resolves no thread for, so a warning thread hears what does.
       const holdNote = (!outcome || !mayResolve) && live && !closed ? await warningHoldNote(octokit, bot, owner, repo, live, config?.author_clear_role) : undefined;
       // Read as the answer leaves the thread. Manki may have opened it above, and a resolved one can still hold the approval.
@@ -898,7 +898,7 @@ export async function handleReviewCommentReply(
         ...(fixClaim ? [fixClaimMarker(fixClaim)] : []),
         ...(unsettled || (leftOpen && !settled) ? [UNSETTLED_ANSWER_MARKER] : []),
         ...(seen && settled ? [SEEN_MARKERS[settled]] : []),
-        ...(noted ? [REOPENED_MARKER] : []),
+        ...(noted && reopen ? reopen.markers : []),
         ...(settled && thread && mayClear && senderLogin ? [clearRecordMarker(senderLogin)] : []),
       ];
       const { data: posted } = await octokit.rest.pulls.createReplyForReviewComment({
