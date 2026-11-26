@@ -6661,6 +6661,30 @@ describe('runReview', () => {
     const keptPosted = (severity: Finding['severity']) => [{}, linkedTo, answeredBy].map(link => restatesEarlier(earlierOnes, finding(severity, 'Retry never ends', 'src/x.ts', 10, link)));
     expect([keptPosted('warning'), keptPosted('note')]).toEqual([[false, false, false], [true, true, true]]);
 
+    // A warning a later round restated under a thread of its own is carried by that thread from then on, whichever entry
+    // the judge links to, so the third round posts no second thread for it.
+    const listedKey = 'src/x.ts:50:50:cache-is-unbounded';
+    const bodyRound = buildPriorRound(1, [makePriorWarningFinding({ title: 'Cache is unbounded', threadId: undefined, fingerprint: { file: 'src/x.ts', lineStart: 50, lineEnd: 50, slug: 'cache-is-unbounded' } })]);
+    const restatedRound = buildPriorRound(2, [makePriorWarningFinding({ title: 'Cache grows without bound', threadId: 'T2', fingerprint: { file: 'src/x.ts', lineStart: 52, lineEnd: 52, slug: 'cache-grows-without-bound' } })]);
+    restatedRound.findings.entries[0] = { ...restatedRound.findings.entries[0], sameAs: listedKey, raisedIn: 1, origin: 'earlier', posted: 'thread' };
+    const restatedThread = makePriorOpenThread({ threadId: 'T2', title: 'Cache grows without bound', line: 52 });
+    expect(earlierFindings([bodyRound, restatedRound], [restatedThread], undefined).map(e => [e.threadId, [...e.keys]]))
+      .toEqual([['T2', ['src/x.ts:52:52:cache-grows-without-bound', listedKey]]]);
+    mockedRunJudgeAgent.mockResolvedValue({
+      summary: 'Findings.',
+      findings: [
+        finding('warning', 'Cache has no limit', 'src/x.ts', 53, { sameAs: listedKey }),
+        finding('warning', 'Cache keeps every entry', 'src/x.ts', 54, { sameAs: 'src/x.ts:52:52:cache-grows-without-bound' }),
+      ],
+    });
+    const thirdRound = await runReview(makeClients(), {
+      config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true,
+      openThreads: [restatedThread], previousFindings: [], priorRounds: [bodyRound, restatedRound], headSha: 'sha3',
+    });
+    expect(thirdRound.findings.map(f => [f.title, f.threadId, f.raisedIn])).toEqual([['Cache has no limit', 'T2', undefined], ['Cache keeps every entry', 'T2', undefined]]);
+    // Once that thread is closed, the warning is listed on its own again, as an earlier review body listed it.
+    expect(earlierFindings([bodyRound, restatedRound], [], undefined).map(e => [e.threadId, [...e.keys], e.raisedIn])).toEqual([[undefined, [listedKey], 1]]);
+
     // A security finding never rides a thread that is not a security thread, since only the first comment makes a thread
     // guarded. It is posted on its own, while a security thread takes it.
     mockedRunJudgeAgent.mockResolvedValue({ summary: 'Findings.', findings: [finding('blocker', 'Retry never ends', 'src/x.ts', 10, { tags: ['security'] })] });

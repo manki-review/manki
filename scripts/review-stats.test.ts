@@ -282,9 +282,10 @@ describe('review stats', () => {
       pr(10, [
         // Round 1 needs no origin. A note and a pre-existing finding count in no column.
         round(1, '7.6.0', [entry('blocker', { origin: 'new' }), entry('warning', { origin: 'new' }), entry('warning'), entry('note'), entry('warning', { tags: [PRE_EXISTING_TAG] })]),
-        // A finding on code the push changed, one that restates an earlier one, one under an earlier thread and a pre-existing one are not late.
+        // A finding on code the push changed, one that restates an earlier one, also in a thread of its own, one under an
+        // earlier thread and a pre-existing one are not late.
         round(2, '7.6.0', [
-          entry('warning', { origin: 'reviewed' }), entry('blocker', { origin: 'new' }), entry('note', { origin: 'reviewed' }), entry('warning', { origin: 'earlier', raisedIn: 1 }),
+          entry('warning', { origin: 'reviewed' }), entry('blocker', { origin: 'new' }), entry('note', { origin: 'reviewed' }), entry('warning', { origin: 'earlier', raisedIn: 1, posted: 'thread' }),
           entry('warning', { origin: 'reviewed', posted: 'earlier_thread' }), entry('blocker', { origin: 'reviewed', tags: [PRE_EXISTING_TAG] }),
         ]),
         round(3, '7.6.1', [entry('blocker', { origin: 'reviewed' })], carried),
