@@ -1300,7 +1300,7 @@ describe('buildReviewerUserMessage', () => {
     expect(buildReviewerUserMessage('diff content', '', { leftOutFiles })).toContain(`${notice}\n\n## Pull Request Diff`);
 
     // Code windows are introduced as the code around the hunks, which a finder's tools read beyond.
-    const windows = 'The code around each changed hunk of the modified files is provided below, each line after its line number in the PR head and a blank line between windows. An added file is whole in the diff. Read more of a file with your tools when the change needs it. Use it';
+    const windows = 'The code around each changed hunk of the modified files and around the line of each open review thread is provided below, each line after its line number in the PR head and a blank line between windows. An added file is whole in the diff. Read more of a file with your tools when the change needs it. Use it';
     expect(buildReviewerUserMessage('diff content', '', { fileContents, codeWindows: true })).toContain(`## Changed Files\n\n${windows}`);
     expect(buildReviewerUserMessage('diff content', '', { fileContents, leftOutFiles, codeWindows: true })).toContain(windows.replace('of the modified', 'of the other modified'));
   });
@@ -9117,12 +9117,15 @@ describe('runReview', () => {
     const root = mkdtempSync(join(tmpdir(), 'manki-head-'));
     mkdirSync(join(root, 'src'));
     writeFileSync(join(root, 'src/foo.ts'), Array.from({ length: 60 }, (_, i) => `const v${i + 1} = ${i + 1};`).join('\n'));
+    writeFileSync(join(root, 'src/thread.ts'), 'const flagged = true;\n');
     reviewerSendMessage.mockClear();
     jest.mocked(clients.judge.sendMessage).mockClear();
     Object.assign(clients.reviewer, { repoTools: true });
     try {
       const changed = makeDiff({ files: [{ path: 'src/foo.ts', changeType: 'modified', hunks: [{ oldStart: 40, oldLines: 1, newStart: 40, newLines: 1, content: '-x\n+y' }] }], totalAdditions: 1, totalDeletions: 1 });
-      await runReview(clients, { config, diff: changed, rawDiff: 'raw diff', repoContext: '', fileContents, leftOutFiles, workspace: root });
+      // The file of an open thread outside the change gets a window around the thread's line too.
+      const openThreads: OpenThread[] = [{ threadId: 'T1', title: 'Flagged', file: 'src/thread.ts', line: 1, severity: 'warning' }];
+      await runReview(clients, { config, diff: changed, rawDiff: 'raw diff', repoContext: '', fileContents, leftOutFiles, workspace: root, openThreads });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -9132,6 +9135,7 @@ describe('runReview', () => {
       expect(message).toContain('### File: src/foo.ts');
       expect(message).toContain('20: const v20 = 20;\n');
       expect(message).toContain('60: const v60 = 60;');
+      expect(message).toContain('### File: src/thread.ts\n\n```ts\n1: const flagged = true;');
       expect(message).not.toContain('const v19 = 19;');
       expect(message).not.toContain('const a = 1;');
       expect(message).not.toContain('src/foo.test.ts');

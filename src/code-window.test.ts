@@ -136,8 +136,9 @@ describe('changedCodeWindows', () => {
   });
   afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-  it('shows the numbered lines around each hunk, merges windows that meet, and skips files the diff holds whole', () => {
+  it('shows the numbered lines around each hunk and open thread, merges windows that meet, and skips files the diff holds whole', () => {
     writeFileSync(join(root, 'src/a.ts'), numbered(100));
+    writeFileSync(join(root, 'src/other.ts'), numbered(200));
     writeFileSync(join(root, 'src/new.ts'), numbered(5));
     writeFileSync(join(root, 'src/end.ts'), numbered(30));
     const diff = {
@@ -154,10 +155,22 @@ describe('changedCodeWindows', () => {
       totalAdditions: 9,
       totalDeletions: 0,
     };
-    const { contents, leftOut } = changedCodeWindows(diff, root);
-    expect([...contents.keys()]).toEqual(['src/a.ts', 'src/end.ts']);
-    expect(contents.get('src/a.ts')).toBe(`${lines(1, 31)}\n\n${lines(50, 95)}`);
+    const threads = [
+      // A thread's window joins the hunk windows it meets.
+      { file: 'src/a.ts', line: 40 },
+      // A thread's file outside the diff gets its own window.
+      { file: 'src/other.ts', line: 150 },
+      // A thread on a file the diff holds whole, a line past the end and a thread tied to no line get none.
+      { file: 'src/new.ts', line: 2 },
+      { file: 'src/other.ts', line: 500 },
+      { file: 'src/other.ts', line: 0 },
+    ];
+    const { contents, leftOut } = changedCodeWindows(diff, root, threads);
+    expect([...contents.keys()]).toEqual(['src/a.ts', 'src/end.ts', 'src/other.ts']);
+    expect(contents.get('src/a.ts')).toBe(lines(1, 95));
     expect(contents.get('src/end.ts')).toBe(lines(5, 30));
+    expect(contents.get('src/other.ts')).toBe(lines(130, 170));
+    expect(changedCodeWindows(diff, root).contents.get('src/a.ts')).toBe(`${lines(1, 31)}\n\n${lines(50, 95)}`);
     expect(leftOut).toEqual([]);
   });
 
@@ -180,5 +193,10 @@ describe('changedCodeWindows', () => {
     const { contents, leftOut } = changedCodeWindows(diff, root);
     expect([...contents.keys()]).toEqual(['src/most.ts', 'src/small.ts']);
     expect(leftOut).toEqual([{ path: 'src/huge.ts', reason: 'file_limit' }, { path: 'src/least.ts', reason: 'budget' }]);
+
+    // The file of an open thread comes first, however small a share of it the diff changes.
+    const withThread = changedCodeWindows(diff, root, [{ file: 'src/least.ts', line: 205 }]);
+    expect([...withThread.contents.keys()]).toEqual(['src/least.ts', 'src/small.ts']);
+    expect(withThread.leftOut).toEqual([{ path: 'src/huge.ts', reason: 'file_limit' }, { path: 'src/most.ts', reason: 'budget' }]);
   });
 });
