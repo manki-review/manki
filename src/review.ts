@@ -3991,7 +3991,9 @@ interface EarlierFinding {
 export function earlierFindings(priorRounds: RoundContext[], openThreads: OpenThread[], threadEvaluations: ThreadEvaluation[] | undefined): EarlierFinding[] {
   const addressed = new Set((threadEvaluations ?? []).filter(e => e.status === 'addressed').map(e => e.threadId));
   const open = new Set(openThreads.filter(t => !addressed.has(t.threadId)).map(t => t.threadId));
-  const entries = priorRounds.flatMap(r => (r.findings.entries ?? []).map(entry => ({ entry, key: stringifyFindingFingerprint(entry.fingerprint), round: entry.raisedIn ?? r.meta.round })));
+  // A finding the body left out for lack of room was never shown, so nothing restates it. A blocker among them stays, since `relistThreadlessBlockers` lists it again.
+  const shown = (entry: FindingFingerprintEntry) => entry.posted !== 'record' || entry.severity === 'blocker';
+  const entries = priorRounds.flatMap(r => (r.findings.entries ?? []).filter(shown).map(entry => ({ entry, key: stringifyFindingFingerprint(entry.fingerprint), round: entry.raisedIn ?? r.meta.round })));
   const bodyOnly = new Set(entries.filter(e => !e.entry.threadId && e.entry.severity !== 'blocker').map(e => e.key));
   const restatedIn = (threadId: string) => entries.filter(e => e.entry.threadId === threadId && !!e.entry.sameAs && bodyOnly.has(e.entry.sameAs)).map(e => e.entry.sameAs!);
   const threads = openThreads.filter(t => open.has(t.threadId)).map(t => ({

@@ -6675,6 +6675,15 @@ describe('runReview', () => {
     const answeredBy = { answeredIn: { threadId: 'T8', answer: 'Agreed.', grade: { severity: 'note' as const } } };
     const keptPosted = (severity: Finding['severity']) => [{}, linkedTo, answeredBy].map(link => restatesEarlier(earlierOnes, finding(severity, 'Retry never ends', 'src/x.ts', 10, link)));
     expect([keptPosted('warning'), keptPosted('note')]).toEqual([[false, false, false], [true, true, true]]);
+    // A finding the body left out for lack of room was never shown, so nothing restates it. A blocker among them is listed again, so it stays.
+    const cut = buildPriorRound(1, [
+      makePriorWarningFinding({ severity: 'note', title: 'Cache is unbounded', threadId: undefined, fingerprint: { file: 'src/x.ts', lineStart: 50, lineEnd: 50, slug: 'cache-is-unbounded' } }),
+      makePriorWarningFinding({ severity: 'warning', title: 'Retry never ends', threadId: undefined, fingerprint: { file: 'src/x.ts', lineStart: 10, lineEnd: 10, slug: 'retry-never-ends' } }),
+      makePriorWarningFinding({ severity: 'blocker', title: 'Lock is dropped', threadId: undefined, fingerprint: { file: 'src/x.ts', lineStart: 70, lineEnd: 70, slug: 'lock-is-dropped' } }),
+    ]);
+    cut.findings.entries = cut.findings.entries.map(e => ({ ...e, posted: 'record' }));
+    expect(earlierFindings([cut], [], undefined).map(e => e.finding.title)).toEqual(['Lock is dropped']);
+    expect(restatesEarlier(earlierFindings([cut], [], undefined), finding('warning', 'Retry never ends', 'src/x.ts', 10))).toBe(false);
 
     // A warning a later round restated under a thread of its own is carried by that thread from then on, whichever entry
     // the judge links to, so the third round posts no second thread for it.
