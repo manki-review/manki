@@ -2,10 +2,10 @@ import * as core from '@actions/core';
 
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, quotaResetTime, recordCalls, SendMessageOptions, TimeoutError, UnreachableError, withModelFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput, NotStartedError } from './providers';
-import { appendTo, digestOf, escapeRegExp, formatDuration, jsonOnlyReply, mapWithConcurrency, parseRetryNote } from './utils';
+import { appendTo, COMMENT_MARKER, digestOf, escapeRegExp, formatDuration, jsonOnlyReply, linesBelow, mapWithConcurrency, parseRetryNote } from './utils';
 import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDiff, interRoundDiffFirst, MAX_INTER_ROUND_DIFF_CHARS, runJudgeAgent, JudgeInput, PriorFinding, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
-import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, formatResetTime, InstructionFile, LeftOutFile, LinkedIssue, MANKI_VERSION, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
+import { AFTER_PUSH_LINE, BotIdentity, cachedFileLines, dynamicFence, fenceText, formatResetTime, InstructionFile, isBotLogin, LeftOutFile, LinkedIssue, MANKI_VERSION, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, pushTouchesThread, replyClassOf, titleOverlapType, dropWaivedRestatements } from './recap';
 import { isGuardedFinding, isImportance, canLeaveOut, countedReporters, CheckProgress, UnpostedReason, foundOnBase, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, Importance, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, threadWarns, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FinderReplay, isSweepName, VERDICT_READER_NAME, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundAgentMetric, RoundComparison, RoundContext, RoundDedupDuplicateMatch, RoundFix, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundPrClaim, RoundRawFinding, RoundRelatedRepo, RoundReusedFrom, RoundStaticSignalMatch, RoundUnitLine, RoundUses, EarlierAttempt, DiffHunk, EffortLevel, Finder, FinderError, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, SCOPE_READER_NAME, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType, secondReadName, RoundSecondReads } from './types';
 import { countChangedLines, diffSections, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE, repoPath } from './diff';
@@ -4099,6 +4099,38 @@ function carriedNext(entry: FindingFingerprintEntry): boolean {
   return (!!entry.citedLine || !!entry.unread) && !entry.threadId;
 }
 
+const DISMISSED_WARNING_OPENER = '<!-- manki-dismissed-warning:';
+
+/**
+ * Marks Manki's answer to a dismiss of the warning with the fingerprint `key`, which the review body of round `round`
+ * listed or carried. Manki writes it only for someone with write access. The key is URI-encoded, so it holds no close.
+ */
+export function dismissedWarningMarker(round: number, key: string): string {
+  return `${DISMISSED_WARNING_OPENER}${round}:${encodeURIComponent(key)} -->`;
+}
+
+/**
+ * Returns the warnings that Manki's own `comments` record as dismissed, by `dismissedWarningMarker`: for each key, the
+ * latest round it was dismissed against. Only lines below Manki's comment marker count, since a person can type a marker.
+ */
+export function dismissedWarnings(bot: BotIdentity, comments: ReadonlyArray<{ body?: string | null; user?: { login?: string | null } | null }>): Map<string, number> {
+  const dismissed = new Map<string, number>();
+  for (const c of comments.filter(c => isBotLogin(bot, c.user?.login))) {
+    for (const line of linesBelow(c.body ?? '', COMMENT_MARKER)) {
+      const match = line.startsWith(DISMISSED_WARNING_OPENER) ? line.slice(DISMISSED_WARNING_OPENER.length).match(/^(\d{1,6}):([\w.~!*'()%-]+) -->$/) : null;
+      if (!match) continue;
+      let key: string;
+      try {
+        key = decodeURIComponent(match[2]);
+      } catch {
+        continue;
+      }
+      dismissed.set(key, Math.max(dismissed.get(key) ?? 0, Number(match[1])));
+    }
+  }
+  return dismissed;
+}
+
 /** Returns the warnings the last of `priorRounds` listed only in its review body or carried itself, each one `carriedNext`. */
 export function bodyWarnings(priorRounds: RoundContext[]): FindingFingerprintEntry[] {
   const last = priorRounds.at(-1);
@@ -4116,8 +4148,10 @@ export function bodyWarnings(priorRounds: RoundContext[]): FindingFingerprintEnt
  * A file `head` cannot read keeps its warnings. A carried entry gets `currentLine` when one place of the file reads like
  * its `citedLine`, which is also the line a finding of this round is compared with. Call it after the last step that
  * takes a finding out of `result.findings`, so each reason says where the naming finding ended up.
+ * A warning in `dismissed`, from `dismissedWarnings`, ends as `dismissed` when the round it was dismissed against is not
+ * older than the round that first listed it. So a dismissal never ends a later listing of the same warning.
  */
-export async function carryBodyWarnings(result: ReviewResult, priorRounds: RoundContext[], head: Pick<RepoFiles, 'read'>): Promise<void> {
+export async function carryBodyWarnings(result: ReviewResult, priorRounds: RoundContext[], head: Pick<RepoFiles, 'read'>, dismissed: ReadonlyMap<string, number> = new Map()): Promise<void> {
   const last = priorRounds.at(-1);
   if (!last) return;
   const warnings = bodyWarnings(priorRounds);
@@ -4145,7 +4179,10 @@ export async function carryBodyWarnings(result: ReviewResult, priorRounds: Round
     const currentLine = places?.length === 1 ? places[0] : undefined;
     const located: Located = { title: entry.title ?? '', file, line: currentLine ?? entry.fingerprint.lineStart, evidence: entry.evidence };
     const names = (f: Finding) => f.sameAs === key || (!!f.sameAs && f.sameAs === entry.sameAs) || sameProblem(located, f);
-    const reason = judged.find(([, findings]) => findings.some(names))?.[0] ?? (entry.citedLine && lines?.length === 0 ? 'file_gone' : fixed.has(key) ? 'fixed' : undefined);
+    const dismissedIn = dismissed.get(key);
+    const dismissedNow = dismissedIn !== undefined && dismissedIn >= (entry.raisedIn ?? last.meta.round);
+    const reason = judged.find(([, findings]) => findings.some(names))?.[0]
+      ?? (dismissedNow ? 'dismissed' : entry.citedLine && lines?.length === 0 ? 'file_gone' : fixed.has(key) ? 'fixed' : undefined);
     if (reason) {
       core.info(`No longer carrying the warning "${entry.title}" on ${file}:${located.line}: ${reason}`);
       ended.push({ key, reason });

@@ -191,6 +191,8 @@ jest.mock('./review', () => ({
   ROUND_TIME_MS: jest.requireActual('./review').ROUND_TIME_MS,
   filesChangedByPush: jest.requireActual('./review').filesChangedByPush,
   carryBodyWarnings: jest.requireActual('./review').carryBodyWarnings,
+  bodyWarnings: jest.requireActual('./review').bodyWarnings,
+  dismissedWarnings: jest.requireActual('./review').dismissedWarnings,
   citedPlaces: jest.requireActual('./review').citedPlaces,
   selectTeam: jest.fn().mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, model: 'claude-sonnet-5-5', effort: 'high', sentEffort: 'high', steps: 15 }], routing: { matched: ['internal'], classSource: 'triage', group: 'solo', groupSource: 'routing' }, triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false }),
 }));
@@ -3232,6 +3234,23 @@ describe('runFullReview orchestration', () => {
       expect(read).not.toHaveBeenCalled();
       const closed = jest.mocked(ghUtils.postReview).mock.calls[3][7];
       expect(closed?.findings.carried?.map(e => e.title)).toEqual(['Queue has no limit', 'Retry never ends']);
+
+      // A warning Manki's answer to a dismiss records ends as dismissed. A person's copy of that marker ends nothing.
+      jest.mocked(configModule.loadConfig).mockReturnValue(defaults);
+      const comment = (login: string, body: string) => ({ id: 1, body, user: { login }, updated_at: '2026-11-20T10:00:00Z' });
+      jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([
+        comment('manki-review[bot]', 'Dismissed on this PR: `Retry never ends`.\n\n<!-- manki -->\n<!-- manki-dismissed-warning:2:src%2Fapp.ts%3A2%3A2%3ARetry-never-ends -->'),
+        comment('mallory', '<!-- manki -->\n<!-- manki-dismissed-warning:2:src%2Fapp.ts%3A5%3A5%3AQueue-has-no-limit -->'),
+      ] as Awaited<ReturnType<typeof ghUtils.fetchPRComments>>);
+      await runWith({ fullReview: true });
+      const dismissed = jest.mocked(ghUtils.postReview).mock.calls[4][7];
+      expect(dismissed?.findings.carriedEnded).toEqual([{ key: 'src/app.ts:2:2:Retry-never-ends', reason: 'dismissed' }]);
+      expect(dismissed?.findings.carried?.map(e => e.title)).toEqual(['Queue has no limit']);
+      // A failed read keeps every warning listed.
+      jest.mocked(ghUtils.fetchPRComments).mockRejectedValue(new Error('Server Error'));
+      await runWith({ fullReview: true });
+      expect(jest.mocked(ghUtils.postReview).mock.calls[5][7]?.findings.carried?.map(e => e.title)).toEqual(['Queue has no limit', 'Retry never ends']);
+      jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([]);
     });
   });
 

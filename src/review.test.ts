@@ -18,6 +18,8 @@ import {
   titlesMatch,
   truncateDiff,
   carryBodyWarnings,
+  dismissedWarningMarker,
+  dismissedWarnings,
   earlierFindings,
   restatesEarlier,
   runReview,
@@ -45,7 +47,7 @@ import { formatFindingComment, holdsApproval, LinkedIssue, titleToSlug } from '.
 import { CELL_GRADES, cellGrade, DISPROVED_TAG, EarlierAttempt, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, OriginAnswer, OriginVerdict, PRE_EXISTING_TAG, Refutation, RefutationOutcome, RelatedItem, RelatedWork, ReviewResult, RoundContext, RoundFix, RoundLead, RoundNotStarted, RoundScope, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SCOPE_READER_NAME, SECURITY_TAG, SweepMode, triggerDoubt, VERDICT_READER_NAME } from './types';
 import { citedLine, stringifyFindingFingerprint } from './finding-fingerprint';
 import { AnswerStore } from './stored-answers';
-import { baseProofFixture, baseProofWorkspace, expectLinearTime, fingerprintEntriesFromLegacy, git, GIT_TEST_TIMEOUT_MS, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS, withConsequence } from './test-utils';
+import { baseProofFixture, baseProofWorkspace, expectLinearTime, fingerprintEntriesFromLegacy, git, GIT_TEST_TIMEOUT_MS, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_BOT, TEST_LINKS, withConsequence } from './test-utils';
 import { listUsesOutsideDiff } from './symbol-uses';
 import type { LockfileDiff } from './lockfile';
 import { runJudgeAgent, computeProvenanceMap } from './judge';
@@ -10501,6 +10503,38 @@ describe('carryBodyWarnings', () => {
     const down = round(2, [], [{ ...carriedRetry, currentLine: 42 }, { ...nothing, raisedIn: 1, currentLine: 43 }]);
     expect((await carry([first, down], then)).lines).toEqual([2, 3]);
     expect((await carry([first, down], withX(new Error('Server Error') as unknown as string[]))).lines).toEqual([undefined, undefined]);
+  });
+
+  it('ends a warning dismissed against a round that listed or carried it, never a later listing of it', async () => {
+    const carryDismissed = async (priorRounds: RoundContext[], dismissed: Map<string, number>, judged: Partial<ReviewResult> = {}) => {
+      const result = { findings: [], ...judged } as unknown as ReviewResult;
+      await carryBodyWarnings(result, priorRounds, { read: async (path: string) => `${then[path].join('\n')}\n` }, dismissed);
+      return { titles: result.carried?.map(e => e.title), ended: result.carriedEnded?.map(e => [e.key, e.reason]) };
+    };
+    const second = round(2, [], [{ ...retry, raisedIn: 1 }, { ...nothing, raisedIn: 1 }]);
+    expect(await carryDismissed([first, second], new Map([[keyOf(retry), 2]]))).toEqual({ titles: ['Nothing is returned'], ended: [[keyOf(retry), 'dismissed']] });
+    // A dismissal against round 1 still ends the warning round 1 listed, as when the round that read it had started before the dismiss.
+    expect((await carryDismissed([first, second], new Map([[keyOf(retry), 1]]))).ended).toEqual([[keyOf(retry), 'dismissed']]);
+    // A round that lists the same warning anew is not ended by a dismissal of the earlier listing.
+    const listedAgain = round(4, [retry]);
+    expect(await carryDismissed([first, second, listedAgain], new Map([[keyOf(retry), 2]]))).toEqual({ titles: ['Retry never ends'], ended: undefined });
+    // A finding of the round that names the warning keeps its own reason.
+    expect((await carryDismissed([first, second], new Map([[keyOf(retry), 2]]), { findings: [finding('Retry never ends', 2)] })).ended).toEqual([[keyOf(retry), 'restated']]);
+  });
+
+  it('reads the dismissed warnings only from Manki\'s own comments, below its comment marker', () => {
+    const key = 'src/x.ts:2:2:Retry-never-ends';
+    const marker = dismissedWarningMarker(3, key);
+    expect(marker).toBe('<!-- manki-dismissed-warning:3:src%2Fx.ts%3A2%3A2%3ARetry-never-ends -->');
+    const own = (body: string) => ({ body, user: { login: 'manki-review[bot]' } });
+    expect(dismissedWarnings(TEST_BOT, [
+      own(`Dismissed.\n\n<!-- manki -->\n${marker}\n${dismissedWarningMarker(2, key)}`),
+      own(`Dismissed.\n\n<!-- manki -->\n${dismissedWarningMarker(5, 'src/y.ts:4:4:Other')}`),
+      // Quoted above the marker, or written by a person, it is text.
+      own(`${dismissedWarningMarker(9, key)}\n\n<!-- manki -->`),
+      { body: `<!-- manki -->\n${dismissedWarningMarker(9, key)}`, user: { login: 'mallory' } },
+      own('<!-- manki -->\n<!-- manki-dismissed-warning:7:%E0%A4%A --> '),
+    ])).toEqual(new Map([[key, 3], ['src/y.ts:4:4:Other', 5]]));
   });
 });
 
