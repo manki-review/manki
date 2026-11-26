@@ -757,7 +757,9 @@ export async function handleReviewCommentReply(
       core.info(`Deferred the reply to the review of ${contradicted.commit.slice(0, 7)}, which found the thread ${contradicted.evaluation.status}`);
       return;
     }
-    const reopenNote = config && live?.isResolved ? await authorResolvedNote(octokit, bot, owner, repo, prNumber, prAuthorLogin, config, live.id) : undefined;
+    // Only a guarded thread the PR author resolved is reopened, so no other thread reads the recap for a note.
+    const authorResolved = !!live?.isResolved && isGuarded(live) && !!prAuthorLogin && live.resolvedByLogin?.toLowerCase() === prAuthorLogin.toLowerCase();
+    const reopenNote = config && authorResolved ? await authorResolvedNote(octokit, bot, owner, repo, prNumber, prAuthorLogin, config, live!.id) : undefined;
     const repeats = outcome === 'Fixed' && head && thread?.fixedOn?.includes(head) ? thread : undefined;
     // A second "Fixed." on a head is posted only when its record lifts a warning's hold that the first one left, or
     // records who a guarded thread is cleared for, which is what later rounds read the clear from.

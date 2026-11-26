@@ -9,7 +9,7 @@ import { ISSUE_BOX_LABEL, withMessageBoxes } from './issue-box';
 import { MessageBox, SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
-import { clearRecordLogin, latestAnswer, personReplies, dismissRecordLogins, dismissRecordMarker, FixClaim, fixClaimOf, fetchPriorRoundContexts, fetchRecapState, guardedKind, isDisprovedThread, isOverrideCandidate, judgeAddressedThreadIds, parseContextBlocks, RAISED_MARKER, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, RecordedGrade, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingPlace } from './recap';
+import { authorCannotClear, clearRecordLogin, latestAnswer, personReplies, dismissRecordLogins, dismissRecordMarker, FixClaim, fixClaimOf, fetchPriorRoundContexts, fetchRecapState, guardedKind, isDisprovedThread, isOverrideCandidate, judgeAddressedThreadIds, parseContextBlocks, RAISED_MARKER, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, RecordedGrade, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingPlace } from './recap';
 import { FIXED_MARKER_OPENER, fixedMarker, formatApprovalRecord, hasOwnMarker, hasReviewRecord, ROUND_REPLY_OPENER, settlingDecision } from './review-record';
 import { findPriorThreadId } from './finding-fingerprint';
 import { ApprovalRecord, AuthorClearRole, FindingSeverity, gradedAbove, PRE_EXISTING_TAG, ReviewConfig, RoundContext, SecurityOverride, threadBlocks, threadWarns } from './types';
@@ -214,7 +214,22 @@ async function fetchBotReviewThreads(
   // Only Manki's own resolve needs its record to back it. A thread at the comment limit may hide a later reopen, so it names none.
   const byManki = (thread: typeof botThreads[number]) => thread.isResolved && isBotLogin(bot, thread.resolvedBy?.login);
   const repliesUnread = (thread: typeof botThreads[number]) => byManki(thread) && thread.comments.nodes.length >= THREAD_COMMENTS_LIMIT;
+  const facts = new Map(botThreads.map(thread => {
+    const body = thread.comments.nodes[0]?.body ?? '';
+    const severity = threadSeverity(body);
+    const isSecurity = isSecurityThread(body);
+    const disprovedBlocker = isDisprovedThread(body);
+    const recorded = grades.get(thread.id)?.grade;
+    const peak = grades.get(thread.id)?.peak;
+    const gradeUnknown = 'priorRoundsIncomplete' in records;
+    const mayCarryBlocker = !gradedAbove('blocker', { severity, ...(peak && { peakGrade: peak }), ...(gradeUnknown && { gradeUnknown: true }) });
+    // Only `settledBy` reads who cleared or resolved a thread, and only for one the PR author cannot clear or one that
+    // carries a blocker of the latest round, so no other thread looks up a permission.
+    const mayBlock = mayCarryBlocker || authorCannotClear({ severity, ...(recorded && { recordedGrade: recorded }), isSecurity, disprovedBlocker, gradeUnknown });
+    return [thread.id, { body, severity, isSecurity, disprovedBlocker, recorded, mayCarryBlocker, mayBlock }];
+  }));
   const backing = await resolveBacking(octokit, owner, repo, rounds, botThreads.map(thread => {
+    if (!facts.get(thread.id)!.mayBlock) return { id: thread.id };
     const cleared = byManki(thread) && !repliesUnread(thread) ? clearRecordLogin(bot, thread.comments.nodes) : undefined;
     const resolver = thread.isResolved && !byManki(thread) ? thread.resolvedBy?.login : undefined;
     return { id: thread.id, ...(cleared && { clearLogin: cleared }), ...(resolver && { resolverLogin: resolver }) };
@@ -222,15 +237,9 @@ async function fetchBotReviewThreads(
   if ('priorRoundsIncomplete' in records) core.warning('Without every round record, every Manki thread counts as blocking');
   return botThreads
     .map(thread => {
-      const body = thread.comments.nodes[0]?.body ?? '';
-      const severity = threadSeverity(body);
-      const isSecurity = isSecurityThread(body);
-      const disprovedBlocker = isDisprovedThread(body);
-      const recorded = grades.get(thread.id)?.grade;
-      const peak = grades.get(thread.id)?.peak;
+      const { body, severity, isSecurity, disprovedBlocker, recorded, mayCarryBlocker } = facts.get(thread.id)!;
       // An unreadable record could hide a raise, so the thread blocks rather than let auto-approve pass it.
       const isBlocking = 'priorRoundsIncomplete' in records || threadBlocks({ severity, ...(recorded && { recordedGrade: recorded }), isSecurity, disprovedBlocker });
-      const mayCarryBlocker = !gradedAbove('blocker', { severity, ...(peak && { peakGrade: peak }), ...('priorRoundsIncomplete' in records && { gradeUnknown: true }) });
       // The marker's slug turned every other character into a hyphen, so the finding data keeps the real title.
       const markerSlug = threadMarkerSlug(body);
       const data = parseFindingData(body);
