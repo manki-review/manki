@@ -59,6 +59,7 @@ import {
   fetchHeadSha,
   assertHeadUnchanged,
   SupersededError,
+  PrClosedError,
   TooManyFilesError,
   postProgressComment,
   updateProgressComment,
@@ -703,6 +704,7 @@ async function handlePullRequest(): Promise<void> {
   const trigger = buildRoundTrigger();
   await runFullReview(owner, repo, prNumber, commitSha, pr.base.ref, prContext, {
     prAuthorLogin: pr.user?.login,
+    closed: pr.state === 'closed',
     trigger,
     ...(forced && { forceReview: true, skipCap: true, bypassHint: 'force_review' as const }),
     settings,
@@ -819,6 +821,7 @@ async function handleCommentTrigger(settingsTick = false, message?: TickedMessag
 
   await runFullReview(owner, repo, prNumber, pr.head.sha, pr.base.ref, prContext, {
     prAuthorLogin: pr.user?.login,
+    closed: pr.state === 'closed',
     ...(forced ? { forceReview: true, skipCap: true, bypassHint: 'force_review' as const } : { skipCap: true, bypassHint: 'manual_review_command' as const }),
     trigger: buildRoundTrigger(settings.runModes),
     settings,
@@ -907,6 +910,8 @@ interface RunTarget {
   prNumber: number;
   commitSha: string;
   baseRef: string;
+  /** Whether the PR was merged or closed when the run started, so its closing does not stop the run. */
+  closedAtStart?: boolean;
 }
 
 /** The progress comment of a run, its live dashboard edits and whether its review is posted, which the failure path also reads. */
@@ -1189,9 +1194,9 @@ async function collectLockfiles(target: RunTarget, fullDiff: ParsedDiff): Promis
 async function replacePreviousReviews(
   target: RunTarget, progress: RunProgress, reviewId: number, state: 'CHANGES_REQUESTED' | 'APPROVED' = 'CHANGES_REQUESTED',
 ): ReturnType<typeof dismissPreviousReviews> {
-  const { octokit, bot, owner, repo, prNumber, commitSha } = target;
+  const { octokit, bot, owner, repo, prNumber, commitSha, closedAtStart } = target;
   progress.reviewPosted = true;
-  await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
+  await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha, closedAtStart);
   progress.stopHeadWatch();
   return dismissPreviousReviews(octokit, bot, owner, repo, prNumber, reviewId, state);
 }
@@ -1204,10 +1209,10 @@ async function replacePreviousReviews(
 async function postUnreviewedRound(
   target: RunTarget, progress: RunProgress, commentId: number, dashboard: DashboardData, diff: ParsedDiff, summary: string, metadata: ReviewMetadata,
 ): Promise<CheckReport> {
-  const { octokit, bot, owner, repo, prNumber, commitSha } = target;
-  await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
+  const { octokit, bot, owner, repo, prNumber, commitSha, closedAtStart } = target;
+  await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha, closedAtStart);
   const result = { verdict: 'COMMENT' as const, summary, findings: [], highlights: [], reviewComplete: true, agentNames: [] as string[] };
-  const { id: reviewId } = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, undefined, undefined, { noVerdict: true });
+  const { id: reviewId } = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, undefined, undefined, { noVerdict: true, closedAtStart });
   // Once every approval is gone, the coordinator no longer records one.
   const { dismissed, failed } = await replacePreviousReviews(target, progress, reviewId, 'APPROVED');
   if (dismissed > 0 && !failed) await reportPrState(owner, repo, prNumber, { approval: null });
@@ -1680,12 +1685,12 @@ async function reviewRound(
  * coordinator's record of one is cleared too. Returns the report for the PR check.
  */
 async function postIncompleteRound(run: ReviewRun, result: ReviewResult, buildContext: () => RoundContext, reviewTimeMs: number): Promise<CheckReport> {
-  const { octokit, bot, owner, repo, prNumber, commitSha, commentId, dashboard, diff } = run;
-  await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
+  const { octokit, bot, owner, repo, prNumber, commitSha, closedAtStart, commentId, dashboard, diff } = run;
+  await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha, closedAtStart);
   await stopLiveEdits(run.progress);
   core.setFailed(`Review incomplete: ${failureReason(result.summary)}`);
   result.verdict = 'COMMENT';
-  const { id: reviewId } = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, buildContext(), reviewTimeMs, { noVerdict: true, rules: run.config.review?.rules, closedPaths: run.config.closed_paths });
+  const { id: reviewId } = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, buildContext(), reviewTimeMs, { noVerdict: true, rules: run.config.review?.rules, closedPaths: run.config.closed_paths, closedAtStart });
   const { dismissed, failed, kept } = await dismissPreviousReviews(octokit, bot, owner, repo, prNumber, reviewId, 'APPROVED', commitSha);
   if (dismissed > 0 && !failed && kept === 0) await reportPrState(owner, repo, prNumber, { approval: null });
   dashboard.phase = 'complete';
@@ -2090,6 +2095,7 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
     autoApprove: run.config.auto_approve,
     rules: run.config.review?.rules,
     closedPaths: run.config.closed_paths,
+    closedAtStart: run.closedAtStart,
     configHold: run.configHold,
     memorySkip: run.memorySkip?.message,
     restart,
@@ -2280,11 +2286,11 @@ function setReviewOutputs({ id, approvalHeld }: { id: number; approvalHeld: Appr
  * Checks the PR head every `HEAD_POLL_MS` and aborts `controller` with `SupersededError` once it moved past the
  * commit under review. A failed lookup lets the review go on. Returns the function that stops the checks.
  */
-function watchHead({ octokit, owner, repo, prNumber, commitSha }: RunTarget, controller: AbortController): () => void {
+function watchHead({ octokit, owner, repo, prNumber, commitSha, closedAtStart }: RunTarget, controller: AbortController): () => void {
   let stopped = false;
   const timer = setInterval(() => {
     if (controller.signal.aborted) return;
-    assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha).catch((error: unknown) => {
+    assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha, closedAtStart).catch((error: unknown) => {
       if (stopped) return;
       core.info(`${error instanceof Error ? error.message : error}, stopping the review`);
       controller.abort(error);
@@ -2318,7 +2324,7 @@ async function runFullReview(
 
   const startTime = Date.now();
   const { octokit, bot } = await getAuth();
-  const target: RunTarget = { octokit, bot, owner, repo, prNumber, commitSha, baseRef };
+  const target: RunTarget = { octokit, bot, owner, repo, prNumber, commitSha, baseRef, closedAtStart: options.closed };
 
   const headMoved = new AbortController();
   const stop = stopWritesOn(headMoved.signal);
@@ -2452,7 +2458,7 @@ async function runFullReview(
     const stage = await reviewRound(run, clients, {
       checkpoint: async () => {
         stop.signal.throwIfAborted();
-        await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
+        await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha, target.closedAtStart);
       },
       signal: stop.signal,
       // Counted from the start of the action, which is as close to the job's start as a step can see.
@@ -2511,7 +2517,7 @@ async function runFullReview(
     // Only the diff since the last round shows a line the push moved or restored, so without it no line counts as reviewed for certain.
     if (!options.fullReview) hideSeenNotes(result, interRoundDiff === undefined ? undefined : reviewed);
 
-    await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
+    await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha, target.closedAtStart);
     // Resolved before posting, so a thread that stays open settles the verdict of the one review the round posts.
     const resolved = await resolveAddressedThreads(run, result);
     // A round record that could not be read may hold a raise, so the round requests changes while a Manki thread stays open,
@@ -2563,6 +2569,11 @@ async function runFullReview(
     const error = stop.signal.aborted ? stop.signal.reason : caught;
     if (error instanceof RunCancelledError) {
       core.info(`${error.message}, writing nothing more to GitHub`);
+      return;
+    }
+    if (error instanceof PrClosedError) {
+      core.info(`${error.message}, posting nothing for it`);
+      checkReport = { conclusion: 'neutral', title: 'PR closed, review stopped', summary: 'The pull request was closed or merged during the review, so Manki stopped it.' };
       return;
     }
     if (error instanceof SupersededError) {

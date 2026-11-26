@@ -2736,6 +2736,8 @@ export interface RoundCap {
 /** Options forwarded from the dispatch site into `runFullReview`. */
 export interface FullReviewOptions {
   prAuthorLogin?: string;
+  /** Whether the PR was merged or closed when the run started, which only Review anyway reviews. Only a PR open at the start stops the run once it closes. */
+  closed?: boolean;
   /** Whether the PR is a draft. A draft round never approves and does not count toward the round cap. */
   draft?: boolean;
   forceReview?: boolean;
