@@ -847,13 +847,17 @@ export async function handleReviewCommentReply(
         : leftOpen ? leftOpenLead(settled, !noted && !!thread?.isResolved)
           : closed ? `**${SEEN_OPENERS[settled]}, but this pull request is merged or closed, so the thread stays as it is.**`
             : thread && !mayResolve ? `**${SEEN_OPENERS[settled]}, but only the PR author or someone with write access settles a thread by a reply.**` : undefined;
-      // Only a "Kept." has neither a lead nor a settling outcome, and it keeps its outcome word as the lead of a hold note.
-      const added = seen ?? (leftOpen ? NO_FILE_FIX_LEAD : !shown.lead && holdNote ? '**Kept.**' : undefined);
-      const lead = added ?? shown.lead;
+      // What a later round found and what lifts a warning's hold follow the lead, before the model's text. A round that
+      // left this to the answer has said nothing in the thread yet.
+      const stateNotes = [...replaces, ...(leftOpenByRound && !cleared ? [leftOpenByRound] : []), ...(holdNote ? [holdNote] : [])];
+      // An answer without a lead keeps its outcome word as the lead of those notes.
+      const opener = !shown.lead && stateNotes.length > 0 ? OUTCOME_OPENER_RE.exec(shown.text)?.[0] : undefined;
+      const added = seen ?? (leftOpen ? NO_FILE_FIX_LEAD : opener && `**${opener.replace(/\*/g, '')}**`);
+      const lead = [added ?? shown.lead, ...stateNotes].filter(Boolean).join(' ');
       // A lead added here takes the place of the outcome word the text opens with.
       const below = added ? withoutOutcomeOpener(shown.text.replace(OUTCOME_OPENER_RE, '').trim()) : shown.text;
       const fixNote = leftOpen && settled === 'Fixed' ? ` ${fixReviewNote(filePath, evidenceFiles)}` : '';
-      const answer = [...(lead ? [holdNote ? `${lead} ${holdNote}` : lead] : []), ...(below ? [`${below}${fixNote}`] : [])].join('\n\n');
+      const answer = [lead, ...(below ? [`${below}${fixNote}`] : [])].filter(Boolean).join('\n\n');
       const notes = [...(staysOpen ? [staysOpenNote(guard, settled === 'Fixed', config?.author_clear_role, thread?.isResolved)] : []), ...reopened];
       const decision = replyDecision(settled, closed ? 'pr_closed' : lookupFailed ? 'lookup_failed' : thread, mayResolve, staysOpen, noted, resolved, clears);
       // Whether the finding still blocks once this answer is posted. Only a maintainer's settling answer clears it.
@@ -866,8 +870,7 @@ export async function handleReviewCommentReply(
         ...statementFold(checked, blocks || !live),
         ...(saysClear ? [staysOpenNote(guard, !!filePath, config?.author_clear_role, live.isResolved)] : []),
       ];
-      // A round that left this to the answer has said nothing in the thread yet.
-      const text = [answer, ...replaces, ...(leftOpenByRound && !cleared ? [leftOpenByRound] : []), ...checks, ...notes];
+      const text = [answer, ...checks, ...notes];
       const markers = [
         BOT_MARKER, response.record(decision, replyChecks(checked), comment.id),
         ...(settled === 'Fixed' && head && !closed ? [fixedMarker(head)] : []),

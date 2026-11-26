@@ -1930,8 +1930,9 @@ describe('handleReviewCommentReply', () => {
 
     const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls[0][0].body as string;
     // An answer that leaves the thread as it is opens with that state, and every reader still takes it as its outcome.
-    expect(latestAnswer(TEST_BOT, [{ body: 'x', author: { login: 'manki-review[bot]' } }, { body, author: { login: 'manki-review[bot]' } }] as never)?.startsWith(`${outcome}.`)).toBe(true);
-    expect(body.includes('\n\nThis answer reads your reply and replaces the verdict of the review of `aaaaaaa` above.')).toBe(replaces);
+    expect(latestAnswer(TEST_BOT, [{ body: 'x', author: { login: 'manki-review[bot]' } }, { body, author: { login: 'manki-review[bot]' } }] as never)?.replace(/^\*\*/, '').startsWith(`${outcome}.`)).toBe(true);
+    // The note follows the bold outcome word, before the model's text.
+    expect(body.startsWith(`**${outcome}.** This answer reads your reply and replaces the verdict of the review of \`aaaaaaa\` above.\n\n`)).toBe(replaces);
   });
 
   const PARTLY = 'The review of `aaaaaaa`, which finished after this reply, finds this only partly fixed. Still open: One path left.';
@@ -1973,8 +1974,10 @@ describe('handleReviewCommentReply', () => {
 
     const posted = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.map(([r]: [{ body: string }]) => r.body);
     expect(posted).toHaveLength(1);
-    const paragraphs = posted[0].split('\n\n');
-    expect(paragraphs.filter((p: string) => p.startsWith('The review of '))).toEqual(carries ? [carries] : []);
+    // What the round left open follows Manki's bold lead, before the model's text. A "Fixed." the round has the last word on gets that note alone.
+    const [lead] = posted[0].split('\n\n');
+    expect(posted[0].includes('The review of ')).toBe(!!carries);
+    if (carries) expect(lead === carries || (lead.startsWith('**') && lead.endsWith(`** ${carries}`))).toBe(true);
     // The model decides with the round's judgment in view, fenced as untrusted, only when that round came after the reply.
     const prompt = jest.mocked(client.sendMessage).mock.calls[0][1];
     expect(prompt.includes('## The Latest Review of This Thread')).toBe(!c.repliedAt);
