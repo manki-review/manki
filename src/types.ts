@@ -2651,6 +2651,8 @@ export interface RoundMeta {
   timestamp: string;
   /** `version` from `package.json` of the manki release that produced this round. */
   mankiVersion: string;
+  /** The commit of the Manki build that ran the round, when the workflow names it in `MANKI_BUILD_COMMIT`. A release is named by its version. */
+  mankiCommit?: string;
   promptVersions?: PromptVersions;
   /**
    * Round-cap accounting captured at the moment this round was admitted.
