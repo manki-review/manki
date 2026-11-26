@@ -1336,7 +1336,7 @@ function changedDeclarations(declarations: Declaration[], touched: Set<number>, 
 const TEST_ATTRIBUTE = /^#\[(?:[\w:]+::)?test\b|^#\[cfg\(test\)\]/;
 
 /** Returns the index of the first of the sorted `lines` that is at least `line`, or `lines.length` when none is. */
-function firstAtOrAfter(lines: number[], line: number): number {
+export function firstAtOrAfter(lines: number[], line: number): number {
   let [low, high] = [0, lines.length];
   while (low < high) {
     const mid = (low + high) >> 1;

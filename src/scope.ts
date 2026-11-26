@@ -8,7 +8,7 @@ import { codeDigest, isDiffLocation, restsOnSameCode, shownLines } from './refut
 import { PreviousFinding } from './recap';
 import { repoTools } from './related-repos';
 import { buildReviewerUserMessage, parseLocation, parseProof } from './review';
-import { ChangedItem, TEST_PATH, touchedLines } from './symbol-uses';
+import { ChangedItem, firstAtOrAfter, TEST_PATH, touchedLines } from './symbol-uses';
 import { agreedOutcome, confirmsAll, DiffFile, DiffHunk, Finding, ParsedDiff, PrContext, Refutation, RoundContext, RoundScope, SCOPE_DOUBT_TITLE, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, ScopeTopic, SplitFile } from './types';
 import { digestOf, jsonOnlyReply, safeTruncate, sendWithParseRetry } from './utils';
 import { UNTRUSTED_CONTENT_RULE, WRITING_RULES } from './writing-rules';
@@ -133,12 +133,29 @@ function splitProblem(split: ScopeTopic[], diff: ParsedDiff, items: readonly Cha
   if (owners.some(n => n > 1)) return 'a changed hunk is in more than one proposed PR';
   const missing = owners.filter(n => n === 0).length;
   if (missing > 0) return `${missing} changed hunk(s) are in no proposed PR`;
-  const tests = items.filter(item => item.test);
+  // The test items of each file as sorted ranges that do not overlap, so each touched line is found by a binary search.
+  const tests = new Map<string, { starts: number[]; ends: number[] }>();
+  for (const item of items.filter(i => i.test).sort((a, b) => a.start - b.start)) {
+    const ranges = tests.get(item.file) ?? { starts: [], ends: [] };
+    const last = ranges.ends.length - 1;
+    if (last >= 0 && item.start <= ranges.ends[last]) {
+      ranges.ends[last] = Math.max(ranges.ends[last], item.end);
+    } else {
+      ranges.starts.push(item.start);
+      ranges.ends.push(item.end);
+    }
+    tests.set(item.file, ranges);
+  }
   // A removal touches the line after it, so one right above a test item touches the item's first line without being in it.
+  const inTest = (path: string, line: number, added: boolean) => {
+    const ranges = tests.get(path);
+    const at = ranges ? firstAtOrAfter(ranges.starts, line + 1) - 1 : -1;
+    return at >= 0 && line <= ranges!.ends[at] && (added || ranges!.starts[at] < line);
+  };
   const isTest = (file: DiffFile, hunk: DiffHunk) => {
     const one = { ...file, hunks: [hunk] };
     const added = addedLines(one);
-    return TEST_PATH.test(file.path) || [...touchedLines(one)].every(line => tests.some(item => item.file === file.path && (added.has(line) ? item.start : item.start + 1) <= line && line <= item.end));
+    return TEST_PATH.test(file.path) || [...touchedLines(one)].every(line => inTest(file.path, line, added.has(line)));
   };
   for (const [i, part] of parts.entries()) {
     const taken = diff.files.flatMap(file => file.hunks.filter(hunk => part.some(n => takes(n, file, hunk))).map(hunk => ({ file, hunk })));
