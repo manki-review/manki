@@ -6,7 +6,7 @@ import { join } from 'path';
 import { otherFinderVotes, withVote } from './other-finder';
 import type { LLMClient } from './providers';
 import { GIT_TEST_TIMEOUT_MS } from './test-utils';
-import { DISPROVED_TAG, Finding, isGuardedFinding, OtherFinderVote, pendingGrade, wouldBlockIfTrue } from './types';
+import { DISPROVED_TAG, Finding, isGuardedFinding, OtherFinderVote, ParsedDiff, pendingGrade, wouldBlockIfTrue } from './types';
 import { closePaths } from './workspace';
 
 const finding = (more: Partial<Finding>): Finding => ({
@@ -136,4 +136,39 @@ describe('otherFinderVotes', () => {
       rmSync(workspace, { recursive: true, force: true });
     }
   }, GIT_TEST_TIMEOUT_MS);
+
+  it('finds the quote anywhere in the hunk of the named line, also across lines, and only near a line outside every hunk', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'manki-vote-'));
+    mkdirSync(join(workspace, 'src'));
+    for (const name of ['a.ts', 'b.ts']) writeFileSync(join(workspace, 'src', name), Array.from({ length: 40 }, (_, i) => `const line${i + 1} = ${i + 1};`).join('\n'));
+    const removedSix = [' const line20 = 20;', ...Array.from({ length: 6 }, (_, i) => `-const gone${i} = ${i};`), '+const line21 = 21;', ' const line22 = 22;', ' const line23 = 23;'].join('\n');
+    const diff: ParsedDiff = { files: [{ path: 'src/a.ts', changeType: 'modified', hunks: [{ oldStart: 10, oldLines: 10, newStart: 10, newLines: 10, content: '' }, { oldStart: 20, oldLines: 9, newStart: 20, newLines: 4, content: removedSix }] },
+      // A line in the head lines of the second hunk belongs to it, even within the count past the first hunk's removed lines.
+      { path: 'src/b.ts', changeType: 'modified', hunks: [{ oldStart: 10, oldLines: 9, newStart: 10, newLines: 4, content: removedSix }, { oldStart: 19, oldLines: 4, newStart: 15, newLines: 4, content: '' }] }], totalAdditions: 1, totalDeletions: 1 };
+    const answers: Record<string, { line: string; quote: string }> = {
+      // The voter counted 6 lines off inside the hunk.
+      'Off by several': { line: 'src/a.ts:12', quote: 'const line18 = 18;' },
+      'Across two lines': { line: 'src/a.ts:14', quote: 'const line14 = 14;\nconst line15 = 15;' },
+      'Outside the hunk': { line: 'src/a.ts:12', quote: 'const line25 = 25;' },
+      'Near a line outside every hunk': { line: 'src/a.ts:33', quote: 'const line35 = 35;' },
+      'Far from a line outside every hunk': { line: 'src/a.ts:33', quote: 'const line38 = 38;' },
+      // The second hunk removes 6 lines, which the voter counted as if they had head numbers.
+      'Counted past removed lines': { line: 'src/a.ts:29', quote: 'const line23 = 23;' },
+      'Top of the next hunk': { line: 'src/b.ts:15', quote: 'const line10 = 10;' },
+    };
+    const client = { sendMessage: jest.fn(async (_system: string, message: string) => {
+      const [title, answer] = Object.entries(answers).find(([t]) => message.includes(`## Claim: ${t}\n`))!;
+      return { content: JSON.stringify({ trigger: { reason: `${title} triggers.`, ...answer }, result: { reason: `${title} shows.`, ...answer } }) };
+    }) } as unknown as LLMClient;
+    try {
+      const findings = Object.keys(answers).map(title => finding({ title }));
+      const votes = await otherFinderVotes(findings, { workspace, diff, finders: [{ name: 'Finder A', model: 'opus', client }, { name: 'Finder B', model: 'sol', client }], restates: () => false });
+      expect(findings.map((f, i) => [f.title, votes[i]?.answer])).toEqual([
+        ['Off by several', 'backs'], ['Across two lines', 'backs'], ['Outside the hunk', 'declines'], ['Near a line outside every hunk', 'backs'], ['Far from a line outside every hunk', 'declines'],
+        ['Counted past removed lines', 'backs'], ['Top of the next hunk', 'declines'],
+      ]);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
 });
