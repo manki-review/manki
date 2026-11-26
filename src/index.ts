@@ -34,7 +34,7 @@ import { fetchWorkspace } from './workspace';
 import { messageBox, tickedIssueBoxes, tickedMessageBoxes, withMessageBoxes } from './issue-box';
 import { handleIssueBoxTick, handleReviewBoxTick, settleTickedBox, TickedMessage } from './issue-tick';
 import { parseSettingsBlock, SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
-import { ConfigSource, partlyFixedNote, DashboardData, disproof, DisprovedFinding, EarlierAttempt, Finding, findingKey, fixThreadFiles, FullReviewOptions, isSecurityFinding, LaterDrop, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RecordOnlyReason, RoundTrigger, StateReport, StaticSignal, UnpostedReason, roundContextToFlatAliases, SCOPE_READER_NAME, SEVERITY_NAME, threadBlocks, SkippedFile } from './types';
+import { ConfigSource, partlyFixedEffect, DashboardData, disproof, DisprovedFinding, EarlierAttempt, Finding, findingKey, fixThreadFiles, FullReviewOptions, isSecurityFinding, LaterDrop, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RecordOnlyReason, RoundTrigger, StateReport, StaticSignal, UnpostedReason, roundContextToFlatAliases, SCOPE_READER_NAME, SEVERITY_NAME, threadBlocks, SkippedFile } from './types';
 import {
   fetchPRDiff,
   brokenConfig,
@@ -1906,9 +1906,9 @@ async function replyPartlyFixedThreads(run: ReviewRun, result: ReviewResult, jud
         core.info(`Thread ${threadId} is partly fixed, and the queued answer to the reply there says so`);
         continue;
       }
-      body = `**Partly fixed.** ${partlyFixedNote(sanitizeMarkdown(remaining), grade, carried)}`;
+      body = `**Partly fixed${partlyFixedEffect(grade, carried)}.** Still open: ${sanitizeMarkdown(remaining)}`;
     } else if (grade !== carried) {
-      body = `**Open again.** ${sanitizeMarkdown(reason)} This thread is a ${SEVERITY_NAME[grade]} again${grade === 'blocker' ? ', so it blocks' : ''}.`;
+      body = `**Open again: this thread is a ${SEVERITY_NAME[grade]} again${grade === 'blocker' ? ', so it blocks' : ''}.** ${sanitizeMarkdown(reason)}`;
     } else {
       continue;
     }

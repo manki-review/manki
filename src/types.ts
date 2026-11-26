@@ -2239,10 +2239,12 @@ export interface ThreadEvaluation {
   ownFix?: true;
 }
 
-/** Returns what a partial fix leaves open in a thread graded `carried` before it. `remaining` is already safe to post. */
-export function partlyFixedNote(remaining: string, grade: FindingSeverity, carried: FindingSeverity): string {
-  const regraded = grade === carried ? '' : ` What remains is a ${SEVERITY_NAME[grade]}${carried === 'blocker' ? ', so this thread no longer blocks' : ''}.`;
-  return `Still open: ${remaining}${regraded}`;
+/**
+ * Returns how a partial fix that leaves a thread graded `grade` changes it from `carried`, as a clause to follow "Partly
+ * fixed", or '' when the grade stays.
+ */
+export function partlyFixedEffect(grade: FindingSeverity, carried: FindingSeverity): string {
+  return grade === carried ? '' : `: what remains is a ${SEVERITY_NAME[grade]}${carried === 'blocker' ? ', so this thread no longer blocks' : ''}`;
 }
 
 /**

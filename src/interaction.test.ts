@@ -1935,13 +1935,14 @@ describe('handleReviewCommentReply', () => {
     expect(body.startsWith(`**${outcome}.** This answer reads your reply and replaces the verdict of the review of \`aaaaaaa\` above.\n\n`)).toBe(replaces);
   });
 
-  const PARTLY = 'The review of `aaaaaaa`, which finished after this reply, finds this only partly fixed. Still open: One path left.';
+  const PARTLY = 'The review of `aaaaaaa`, which finished after this reply, finds this only partly fixed';
+  const LEFT = 'Still open: One path left.';
   it.each<[string, { answer?: string; kind?: FindingKind; status?: ThreadEvaluation['status']; spoke?: string; repliedAt?: string; sender?: string }, string | undefined]>([
-    ['a kept finding the round said nothing about', {}, `${PARTLY} What remains is a suggestion.`],
-    ['a blocker thread the round lowered', { kind: 'blocker' }, `${PARTLY} What remains is a suggestion, so this thread no longer blocks.`],
-    ['a "Fixed." on a blocker thread, where the round has the last word', { kind: 'blocker', answer: 'Fixed. The guard now runs first.' }, `${PARTLY} What remains is a suggestion, so this thread no longer blocks.`],
-    ['a reader whose withdrawal resolves nothing', { answer: 'Withdrawn. The caller already checks for null.', sender: 'reader' }, `${PARTLY} What remains is a suggestion.`],
-    ['a round that spoke before the reply', { spoke: '14:30:00' }, `${PARTLY} What remains is a suggestion.`],
+    ['a kept finding the round said nothing about', {}, `${PARTLY}: what remains is a suggestion. ${LEFT}`],
+    ['a blocker thread the round lowered', { kind: 'blocker' }, `${PARTLY}: what remains is a suggestion, so this thread no longer blocks. ${LEFT}`],
+    ['a "Fixed." on a blocker thread, where the round has the last word', { kind: 'blocker', answer: 'Fixed. The guard now runs first.' }, `${PARTLY}: what remains is a suggestion, so this thread no longer blocks. ${LEFT}`],
+    ['a reader whose withdrawal resolves nothing', { answer: 'Withdrawn. The caller already checks for null.', sender: 'reader' }, `${PARTLY}: what remains is a suggestion. ${LEFT}`],
+    ['a round that spoke before the reply', { spoke: '14:30:00' }, `${PARTLY}: what remains is a suggestion. ${LEFT}`],
     ['a round that spoke in the thread after the reply', { spoke: '14:34:11' }, undefined],
     ['a withdrawal that settles the thread', { answer: 'Withdrawn. The caller already checks for null.' }, undefined],
     ['a round that found the thread open', { status: 'not_addressed' }, undefined],

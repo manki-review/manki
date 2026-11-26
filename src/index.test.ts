@@ -7048,9 +7048,9 @@ describe('runFullReview orchestration', () => {
     // The push left the file alone, so a thread that already carries this grade gets no second reply. The round
     // record keeps each grade, so a reply only tells the thread, and its marker names only the head it was given on.
     expect(await run('abc123')).toEqual([
-      { threadId: 'PRRT_abc', body: '**Partly fixed.** Still open: No timeout yet, ask @\u200Balice. What remains is a warning, so this thread no longer blocks.\n\n<!-- manki -->\n<!-- manki-round-reply:abc123 -->' },
-      { threadId: 'PRRT_ghi', body: '**Partly fixed.** Still open: One path left. What remains is a suggestion.\n\n<!-- manki -->\n<!-- manki-round-reply:abc123 -->' },
-      { threadId: 'PRRT_jkl', body: '**Open again.** The timeout is gone again. This thread is a blocker again, so it blocks.\n\n<!-- manki -->\n<!-- manki-round-reply:abc123 -->' },
+      { threadId: 'PRRT_abc', body: '**Partly fixed: what remains is a warning, so this thread no longer blocks.** Still open: No timeout yet, ask @\u200Balice.\n\n<!-- manki -->\n<!-- manki-round-reply:abc123 -->' },
+      { threadId: 'PRRT_ghi', body: '**Partly fixed: what remains is a suggestion.** Still open: One path left.\n\n<!-- manki -->\n<!-- manki-round-reply:abc123 -->' },
+      { threadId: 'PRRT_jkl', body: '**Open again: this thread is a blocker again, so it blocks.** The timeout is gone again.\n\n<!-- manki -->\n<!-- manki-round-reply:abc123 -->' },
     ]);
     // The record carries each thread's grade with the review that decided it.
     expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)![7]!.judge.threadEvaluations?.map(e => [e.threadId, e.grade])).toEqual([
