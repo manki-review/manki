@@ -175,6 +175,7 @@ export function recordCalls(client: LLMClient, label: { stage: string; agent?: s
           ...(response.closedCalls && { closedCalls: response.closedCalls }),
           ...(response.filesRead && { filesRead: response.filesRead }),
           ...(response.limits && { limits: response.limits }),
+          ...(response.cut && { cut: response.cut }),
           // Only a client that reports its tool steps shows whether the model was told to wrap up.
           ...(stepBudget !== undefined && toolSteps && wrapUpNoted(toolSteps.length, stepBudget) && { wrapUpNoted: true as const }),
           durationMs: response.latencyMs ?? Date.now() - start,

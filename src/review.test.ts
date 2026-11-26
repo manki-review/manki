@@ -10140,6 +10140,14 @@ describe('recordCalls', () => {
     await recordCalls(idle, finder, unused).sendMessage('sys', 'user', { repoTools: { root: '/work', steps: 3, related: undefined } });
     expect([unused[0].toolSteps, 'wrapUpNoted' in unused[0], unused[0].stepBudget]).toEqual([[], false, 3]);
     expect(buildRoundUsage(unused).llmCalls?.[0].toolSteps).toEqual([]);
+    expect(unused[0]).not.toHaveProperty('cut');
+    // A reply cut at the output limit keeps how many messages were cut and whether they were joined, up to the round record.
+    const cutCalls: LLMCall[] = [];
+    for (const joined of [true, false]) {
+      const cutting = { sendMessage: jest.fn().mockResolvedValue({ content: 'ok', usage, model: 'claude-opus-5-5', cut: { messages: joined ? 2 : 1, joined } }) } as unknown as LLMClient;
+      await recordCalls(cutting, finder, cutCalls).sendMessage('sys', 'user');
+    }
+    expect(buildRoundUsage(cutCalls).llmCalls?.map(c => c.cut)).toEqual([{ messages: 2, joined: true }, { messages: 1, joined: false }]);
     // A call that failed keeps the related repo reads and files read its error carries.
     const timedOut = Object.assign(new Error('Codex CLI timed out'), { relatedReads: { 'o/r': 1 }, filesRead: ['src/b.ts'] });
     const failing = { sendMessage: jest.fn().mockRejectedValue(timedOut), repoTools: true } as unknown as LLMClient;

@@ -374,6 +374,7 @@ export class AnthropicClient implements LLMClient {
     let messageText = '';
     let stopReason: unknown;
     let wentOn = false;
+    let cutMessages = 0;
     let joined: string | undefined;
     let replyTail = '';
     let jsonBuffer = '';
@@ -395,6 +396,7 @@ export class AnthropicClient implements LLMClient {
       if (delta.requestInput !== undefined) {
         requestInputs.push(delta.requestInput);
         wentOn = stopReason === 'max_tokens';
+        cutMessages = wentOn ? cutMessages + 1 : 0;
         cutText = wentOn ? cutText + messageText : '';
         messageText = '';
         stopReason = undefined;
@@ -506,6 +508,7 @@ export class AnthropicClient implements LLMClient {
       truncated,
       ...((toolSteps.length > 0 || options?.repoTools) && { toolSteps }),
       ...readings(),
+      ...(wentOn ? { cut: { messages: cutMessages, joined: !!joined } } : {}),
     };
   }
 
