@@ -1,3 +1,7 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+
 import { otherFinderVotes, withVote } from './other-finder';
 import { LLMClient } from './providers';
 import { DISPROVED_TAG, Finding, isGuardedFinding, OtherFinderVote } from './types';
@@ -34,8 +38,13 @@ describe('withVote', () => {
     expect(withVote(disproved, declined)).toBe(disproved);
     const unguarded = finding({ gradePath: [{ from: 'blocker', to: 'warning', by: 'refutation' }] });
     expect(withVote(unguarded, declined)).toBe(unguarded);
-    // A blocker cell held at a warning for its one finder keeps it as `judgeCell` once disproved, and stays posted.
-    expect(withVote(finding({ judgeCell: { row: 'wrong', column: 'normal' } }), declined).severity).toBe('warning');
+    // A warning the judge held in a blocker cell goes to a note like any other warning, whether it holds the cell as `cell` or `judgeCell`.
+    // Its cell moves to `judgeCell` and it drops `gradeIfConfirmed`, so a later round does not raise the note from them.
+    const heldNote = withVote(finding({ cell, gradeIfConfirmed: 'blocker' }), declined);
+    expect([heldNote.severity, heldNote.cell, heldNote.judgeCell, heldNote.gradeIfConfirmed]).toEqual(['note', undefined, cell, undefined]);
+    const degraded = { row: 'degraded' as const, column: 'normal' as const };
+    expect(withVote(finding({ cell: degraded }), declined)).toMatchObject({ severity: 'note', cell: degraded });
+    expect(withVote(finding({ judgeCell: cell }), declined).severity).toBe('note');
 
     // A rule the refuter confirmed after the vote was asked gives the finding its grade.
     const rule = { file: 'AGENTS.md', quote: 'Every export is logged.', verdict: 'confirmed' as const };
@@ -48,10 +57,36 @@ describe('withVote', () => {
 describe('otherFinderVotes', () => {
   it('asks a finder other than the one a second read or a sweep counts as', async () => {
     const client = (): LLMClient => ({ sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify({ harm: '', situation: '', line: 'none' }) }) }) as unknown as LLMClient;
-    const finders = [{ name: 'Finder A', client: client() }, { name: 'Finder B', client: client() }];
+    const finders = [{ name: 'Finder A', model: 'opus', client: client() }, { name: 'Finder B', model: 'sol', client: client() }];
     const countsAs = new Map([['Second read 1', ['Finder A']], ['Sweep 1', ['Finder A']]]);
     const findings = [finding({ reviewers: ['Second read 1'] }), finding({ reviewers: ['Sweep 1'] }), finding({ reviewers: ['Finder B'] })];
-    const votes = await otherFinderVotes(findings, { workspace: '/work/pr-head', finders, restates: () => false, countsAs });
+    const votes = await otherFinderVotes(findings, { workspace: '/work/pr-head', finders, restates: () => false, countsAs, reads: [{ reviewer: 'Second read 1', model: 'opus' }] });
     expect(votes.map(v => v?.finder)).toEqual(['Finder B', 'Finder B', 'Finder A']);
+  });
+
+  it('asks a finding only second reads reported of a finder on another model than every read that reported it, and of none when no such finder ran', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'manki-vote-'));
+    mkdirSync(join(workspace, 'src'));
+    writeFileSync(join(workspace, 'src', 'a.ts'), 'let total = 0;\ntotal += 1;\ntotal += 1;\n');
+    const client = (): LLMClient => ({ sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify({ harm: '', situation: '', line: 'none' }) }) } as unknown as LLMClient);
+    const read = finding({ reviewers: ['Second read 1'], soleFinder: undefined });
+    const reads = [{ reviewer: 'Second read 1', model: 'opus' }];
+    const vote = async (models: string[], reported = read) => (await otherFinderVotes([reported], {
+      workspace, reads, restates: () => false, finders: models.map((model, i) => ({ name: `Finder ${'ABC'[i]}`, model, client: client() })),
+    }))[0]?.finder;
+    try {
+      expect(await vote(['opus', 'sol'])).toBe('Finder B');
+      expect(await vote(['opus', 'opus', 'sol'])).toBe('Finder C');
+      expect(await vote(['opus', 'opus'])).toBeUndefined();
+      // A read without a known model could be any finder's, so its finding gets no vote, also beside a read whose model is known.
+      expect(await vote(['sol', 'terra'])).toBeUndefined();
+      expect(await vote(['opus', 'sol'], finding({ reviewers: ['Second read 1', 'Second read 2'], soleFinder: undefined }))).toBeUndefined();
+      // A finding a finder reported keeps its voter, also when a second read on that voter's model reported it too.
+      const both = finding({ reviewers: ['Finder A', 'Second read 1'] });
+      const voters = [{ name: 'Finder A', model: 'opus', client: client() }, { name: 'Finder B', model: 'sol', client: client() }];
+      expect((await otherFinderVotes([both], { workspace, reads: [{ reviewer: 'Second read 1', model: 'sol' }], restates: () => false, finders: voters }))[0]?.finder).toBe('Finder B');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 });

@@ -2797,6 +2797,10 @@ describe('postReview body lead', () => {
     // A finding the judge graded below blocker changes nothing, and neither does a blocker cell held down by a doubt nobody confirmed.
     const below = (more: Partial<Finding>): Finding => ({ ...blocker, title: 'Offset is off by one', line: 30, description: 'The offset skips a row.', severity: 'warning', tags: ['follow-up'], ...more });
     expect(roundSentence(blocked([lowered, kept, below({ gradeIfConfirmed: 'blocker', ...path(['blocker', 'warning', 'judge']) })]))).toBe('Nothing blocks merge.');
+    // So does such a warning once the other finder's vote lowered it to a note and moved its cell to `judgeCell`.
+    const declinedHeld = withVote(below({ gradeIfConfirmed: 'blocker', ...path(['blocker', 'warning', 'judge']) }), { finder: 'b', harm: '', situation: '', declined: true });
+    expect([declinedHeld.severity, declinedHeld.judgeCell, declinedHeld.gradeIfConfirmed]).toEqual(['note', blocker.cell, undefined]);
+    expect(roundSentence(blocked([lowered, kept, declinedHeld]))).toBe('Nothing blocks merge.');
     // A blocker held only because one finder reported it is one the judge graded a blocker, so the summary goes when it
     // stays a warning and stands when a check gives the blocker back.
     const soleHeld = below({ gradeIfConfirmed: 'blocker', soleFinder: true, soleHeld: true, ...path(['blocker', 'warning', 'judge']) });
