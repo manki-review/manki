@@ -297,7 +297,7 @@ function namesWhole(text: string, name: string): boolean {
 /**
  * Whether the title or excerpt of `item` names the file or the code that `finding` cites, as a whole name. With
  * `codeOnly`, a file path or file name names nothing, since an issue about another defect of the same file names it
- * too. A plain lowercase name such as `dialed` counts then, when both write it in a code span, as in `Bans::dialed`.
+ * too, and a name counts only when both write it in a code span, as `dialed` in `Bans::dialed`.
  */
 export function namesCitedCode(item: RelatedItem, finding: Pick<Finding, 'title' | 'description' | 'file'>, codeOnly = false): boolean {
   const text = `${item.title}\n${item.excerpt}`;
@@ -305,7 +305,7 @@ export function namesCitedCode(item: RelatedItem, finding: Pick<Finding, 'title'
   const spans = [...text.matchAll(/`([^`\n]+)`/g)].map(m => m[1]).join('\n');
   const files = fileNames(finding.file);
   return spannedNames(`${finding.title}\n${finding.description}`).filter(name => name.length >= 3 && !name.includes('/') && !files.includes(name))
-    .some(name => (/^[a-z]+$/.test(name) ? namesWhole(spans, name) : namesWhole(text, name)));
+    .some(name => namesWhole(spans, name));
 }
 
 /**

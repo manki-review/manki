@@ -913,15 +913,27 @@ interface Settlement {
   latestWaiver?: 'answer' | 'dismiss' | 'override';
   /** For an `answer` waiver, the lines of the PR that answer cited. */
   answerPlaces?: string[];
-  /** For an `answer` waiver that agreed, the issues and PRs of `repo` that answer names, other than the PR itself. */
+  /** For an `answer` waiver that agreed, the issues that answer names as tracking the finding (`trackingIssuesNamed`), other than the PR itself. */
   trackingIssues?: number[];
+}
+
+// The words that name an issue as the place a finding is tracked, as in "Tracked in #12." or "Filed as #12".
+const TRACKING_ISSUE_RE = /\b(?:tracked\s+(?:in|by|as|under)|filed\s+(?:as|in|under)|deferred\s+to|tracking\s+issue|(?:in|to|under|by)\s+(?:the\s+)?(?:tracking\s+)?issue)\s+#(\d{1,9})\b/gi;
+
+/**
+ * Returns the issues Manki's answer `body` names as tracking the finding. Only Manki's own words count, so an issue
+ * that the answer mentions in passing, or that a statement of the developer's reply quotes, names none.
+ */
+function trackingIssuesNamed(body: string): number[] {
+  const own = body.split('\n\n<!--')[0].split(AGAINST_HEADING)[0].split(STATEMENTS_HEADING)[0];
+  return [...new Set([...withoutCode(own).matchAll(TRACKING_ISSUE_RE)].map(m => Number(m[1])))];
 }
 
 /**
  * Returns how Manki's own comments settled a thread. No person's comment counts, whoever wrote it. A reopen by Manki
  * ends every settlement before it, so only Manki's comments after it can waive the thread.
  */
-function settlement(bot: BotIdentity, comments: ThreadCommentNode[], repo: string, prNumber: number): Settlement {
+function settlement(bot: BotIdentity, comments: ThreadCommentNode[], prNumber: number): Settlement {
   const own = (c: ThreadCommentNode) => isBotLogin(bot, c.author?.login);
   const fix = (body: string) => settlingDecision(body)?.outcome === 'Fixed' || ownMarker(body, FIXED_MARKER_OPENER, COMMENT_MARKER) !== undefined;
   const kind = (body: string): Array<'fix' | 'answer' | 'dismiss' | 'override'> => {
@@ -931,7 +943,7 @@ function settlement(bot: BotIdentity, comments: ThreadCommentNode[], repo: strin
     return ownMarker(body, SECURITY_OVERRIDE_OPENER, COMMENT_MARKER) !== undefined ? ['override'] : [];
   };
   const [latest, body] = sinceLastReopen(bot, comments).filter(own).map(c => c.body ?? '').flatMap(b => kind(b).map(k => [k, b] as const)).at(-1) ?? [];
-  const named = latest === 'answer' && settlingDecision(body!)?.outcome === 'Agreed' ? namedPullRequests(withoutStatementFold(body!.split('\n\n<!--')[0]), repo).filter(n => n !== prNumber) : [];
+  const named = latest === 'answer' && settlingDecision(body!)?.outcome === 'Agreed' ? trackingIssuesNamed(body!).filter(n => n !== prNumber) : [];
   return {
     fixAnswered: comments.slice(1).some(c => own(c) && fix(c.body ?? '')), ...(latest && latest !== 'fix' && { latestWaiver: latest }),
     ...(latest === 'answer' && { answerPlaces: settlingPlaces(body!) }),
@@ -1392,7 +1404,7 @@ async function fetchReviewThreads(
       const fixClaim = isBotThread && !incomplete.has(thread.id) ? fixClaimOf(bot, thread.comments.nodes, `${owner}/${repo}`, prNumber) : undefined;
       const answer = isBotThread ? latestAnswer(bot, thread.comments.nodes) : undefined;
       const filed = isBotThread ? filedIssue(bot, thread.comments.nodes) : undefined;
-      const settled = isBotThread && !incomplete.has(thread.id) ? settlement(bot, thread.comments.nodes, `${owner}/${repo}`, prNumber) : undefined;
+      const settled = isBotThread && !incomplete.has(thread.id) ? settlement(bot, thread.comments.nodes, prNumber) : undefined;
       const agreed = isBotThread && !incomplete.has(thread.id) && replyAgreed(bot, thread.comments.nodes);
       const clearLogin = isBotThread && !incomplete.has(thread.id) ? clearRecordLogin(bot, thread.comments.nodes) : undefined;
 
