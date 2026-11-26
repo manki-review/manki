@@ -2117,6 +2117,19 @@ describe('fetchRecapState', () => {
       const repeat = makeFinding({ severity: 'blocker', title: 'Stale cache', file: 'src/c.ts', line: 4 });
       expect(deduplicateFindings([repeat], state.previousFindings).unique).toHaveLength(1);
 
+      // Manki's resolve with its raise reply is backed, since the finding continues in another thread. A thread whose first
+      // comment guards it is never raised, so a raise reply there backs nothing.
+      const raiseReply = { body: `Raised to a blocker, continued in [this thread](https://github.com/o/r/pull/1#discussion_T2).\n\n<!-- manki -->\n${RAISED_MARKER}`, author: { login: BOT_LOGIN } };
+      const raisedThread = (id: string, tags?: string[]) => makeThread({
+        id, isResolved: true, resolvedBy: { login: BOT_LOGIN }, path: `src/${id}.ts`, line: 6,
+        comments: { nodes: [{ body: formatFindingComment(makeFinding({ severity: 'warning', title: 'Slow loop', file: `src/${id}.ts`, line: 6, ...(tags && { tags }) }), TEST_LINKS), author: { login: BOT_LOGIN } }, raiseReply] },
+      });
+      const raisedState = await fetchRecapState(mockOctokit([raisedThread('tr'), raisedThread('ts', [SECURITY_TAG])], [
+        { id: 500, body: malformed, user: { login: BOT_LOGIN } },
+        { id: 501, body: htmlCommentBlock(ctx3), user: { login: BOT_LOGIN } },
+      ]), TEST_BOT, 'owner', 'repo', 1, 'author');
+      expect(raisedState.previousFindings.map(f => [f.threadId, f.status, f.raised, f.isSecurity ?? false])).toEqual([['tr', 'auto-resolved', true, false], ['ts', 'open', true, true]]);
+
       // An author whose role allows it still clears their own resolved thread, as with a blocker.
       const admin = Object.create(octokit);
       Object.assign(admin, { rest: { ...octokit.rest, repos: { getCollaboratorPermissionLevel: jest.fn(async () => ({ data: { permission: 'admin', role_name: 'admin', user: { type: 'User' } } })) } } });

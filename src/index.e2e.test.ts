@@ -1512,6 +1512,7 @@ describe('runFullReview end to end', () => {
       expect(mockGitHub.roundContext(again).findings.entries).toEqual([expect.objectContaining({ severity: 'blocker', posted: 'earlier_thread', threadId: 'PRRT_2' })]);
       expect(mockGitHub.threads).toHaveLength(2);
       expect(old.comments).toHaveLength(2);
+      expect(mockLLM.asked.judge).not.toContain('PRRT_1');
 
       // A push fixes it. The warning thread holds nothing, so the round approves.
       mockGitHub.headSha = 'c3'.repeat(20);
@@ -1523,6 +1524,7 @@ describe('runFullReview end to end', () => {
       expect(postedReviews().at(-1)!.state).toBe('APPROVED');
       expect(raised.isResolved).toBe(true);
       expect(old.comments).toHaveLength(2);
+      expect(mockLLM.asked.judge).not.toContain('PRRT_1');
     });
 
     it('resolves a plain warning thread for a security warning, and leaves a security warning thread open for a security blocker', async () => {
@@ -1573,7 +1575,7 @@ describe('runFullReview end to end', () => {
       expect(core.info).toHaveBeenCalledWith(`Thread PRRT_1 stays as it is: ${why}`);
     });
 
-    it('keeps the warning thread open and counted when the security warning that raises it rides on its own earlier thread', async () => {
+    it('resolves the warning thread when the security warning that raises it rides on its own earlier thread', async () => {
       await warnFirst();
       const secure = { row: 'degraded', trigger: 'When an invoice sums very large amounts', security: true };
       await restateAfterPush(secure, [variant]);
@@ -1583,9 +1585,12 @@ describe('runFullReview end to end', () => {
       Object.assign(mockLLM.replies, { reviewer: JSON.stringify([{ ...warning, title }]), judge: restated(secure, 'P1', title) });
       await forcedRound();
       const review = postedReviews().at(-1)!;
-      expect(mockGitHub.threads.map(t => [t.id, t.isResolved])).toEqual([['PRRT_1', false], ['PRRT_2', false]]);
-      expect(review.body).toMatch(/^⚠️ \*\*2 warnings to address\.\*\*/);
-      expect(review.body).toContain('**Still open from earlier reviews:**\n- `src/math.ts:2`: Sum is never range checked');
+      expect(mockGitHub.threads.map(t => [t.id, t.isResolved])).toEqual([['PRRT_1', true], ['PRRT_2', false]]);
+      expect(mockGitHub.threads[0].comments.at(-1)!.body).toMatch(/^Raised to a security warning, continued in \[this thread\]\(https:\/\/github\.com\/acme\/widgets\/pull\/42#discussion_PRRT_2\)\./);
+      // The review counts the warning once, in the thread that carries it.
+      expect(review.body).toMatch(/^⚠️ \*\*1 warning to address\.\*\*/);
+      expect(review.body).toContain('**Still open from earlier reviews:**\n- `src/math.ts:2`: Unbounded sum reaches the invoice total');
+      expect(review.body).not.toContain('Sum is never range checked');
     });
 
     it('resolves a suggestion thread for a security suggestion, since the suggestion held nothing', async () => {

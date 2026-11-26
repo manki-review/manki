@@ -1786,8 +1786,9 @@ async function replyFixedThreads(run: ReviewRun, threads: OpenThread[]): Promise
 }
 
 /**
- * Points each earlier thread a finding `raises` to the thread the round posted for that finding, and resolves it, so the
- * PR shows the defect once. The reply lifts a warning's hold, so the earlier thread stays open, with no reply, unless the
+ * Points each earlier thread a finding `raises` to the thread that carries that finding, and resolves it, so the PR
+ * shows the defect once. That thread is the one the round posted for the finding, or the earlier thread the review put
+ * it into by `placements`. The reply lifts a warning's hold, so the earlier thread stays open, with no reply, unless the
  * new thread blocks whenever it blocked and blocks or warns whenever it warned, and no finding of this round went into it.
  * A guarded thread stays open too, since only a fix or a person clears it.
  */
@@ -1808,8 +1809,9 @@ async function closeRaisedThreads(run: ReviewRun, result: ReviewResult, placemen
   const closed = new Set<string>();
   for (const f of raising) {
     const old = live.find(t => t.id === f.raises);
-    const fresh = posted.find(t => t.threadId === findPriorThreadId({ file: f.file, lineStart: f.line, lineEnd: f.line, slug: titleToSlug(f.title) }, posted))?.thread;
-    const keeps = !fresh?.threadUrl ? `"${f.title}" got no thread of its own`
+    const placed = placements.get(f)?.threadId;
+    const fresh = placed ? live.find(t => t.id === placed) : posted.find(t => t.threadId === findPriorThreadId({ file: f.file, lineStart: f.line, lineEnd: f.line, slug: titleToSlug(f.title) }, posted))?.thread;
+    const keeps = !fresh?.threadUrl || fresh.isResolved ? `"${f.title}" is in no open thread`
       : !old || old.isResolved || isGuarded(old) ? 'it is resolved or guarded'
       : !raised.has(old.id) ? 'a finding of this round went into it'
       : !holdsAtLeast(fresh, old) ? `${fresh.id} holds less than it does`
@@ -1836,13 +1838,13 @@ async function closeRaisedThreads(run: ReviewRun, result: ReviewResult, placemen
 
 /**
  * Returns the findings that raise each earlier thread, which `closeRaisedThreads` may close. By the review's `placements`,
- * only a finding the review posts on its own counts, and only for a thread that takes no finding of the round.
+ * only a thread that takes no finding of the round counts.
  */
 function raisedThreads(result: ReviewResult, placements: ReadonlyMap<Finding, EarlierPlace | undefined>): Map<string, Finding[]> {
   const taking = new Set([...placements.values()].map(p => p?.threadId));
   const raised = new Map<string, Finding[]>();
   for (const f of result.findings) {
-    if (!f.raises || taking.has(f.raises) || placements.get(f)) continue;
+    if (!f.raises || taking.has(f.raises)) continue;
     raised.set(f.raises, [...raised.get(f.raises) ?? [], f]);
   }
   return raised;
