@@ -7645,7 +7645,7 @@ describe('runFullReview orchestration', () => {
         thread('Retry never stops', 'warning', 'replied', 2),
         thread('Fixed already', 'blocker', 'resolved', 3),
         thread('Name could be clearer', 'note', 'open', 4),
-        { ...thread('Token logged', 'blocker', 'resolved', 5), reopen: true },
+        { ...thread('Token logged', 'blocker', 'resolved', 5), reopen: 'author' as const },
         thread('Posted before severity markers', 'unknown', 'open', 6),
         { ...thread('Token in error message', 'warning', 'open', 7), isSecurity: true },
         { ...thread('Secret in URL', 'blocker', 'open', 8), isSecurity: true },
@@ -8723,7 +8723,7 @@ describe('handleReviewStateCheck', () => {
     // The reopen note says whether a push starts a review, which it reads from the config and the rounds.
     const round = roundContextFromLegacy({ round: 1, commitSha: 'sha1', timestamp: '2025-01-01T00:00:00Z', findings: [] });
     round.meta.outcome = 'NOT_CONVERGING';
-    const previousFindings = [{ title: 'Token leaks into logs', file: 'src/a.ts', line: 3, severity: 'blocker' as const, status: 'open' as const, threadId: 'T_1', reopen: true }];
+    const previousFindings = [{ title: 'Token leaks into logs', file: 'src/a.ts', line: 3, severity: 'blocker' as const, status: 'open' as const, threadId: 'T_1', reopen: 'author' as const }];
     jest.mocked(recapModule.fetchRecapState).mockResolvedValueOnce({ previousFindings, priorRounds: [round] });
 
     await handleReviewStateCheck();

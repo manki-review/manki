@@ -540,8 +540,8 @@ interface PreviousFinding extends FindingMetadata {
   disprovedBlocker?: boolean;
   /** On a guarded thread, whether the latest replier may agree it away: `mayClearSecurityThread` with write access. */
   authorReplyMayClear?: boolean;
-  /** A guarded thread the PR author resolved, which Manki has not reopened before. */
-  reopen?: boolean;
+  /** Why Manki reopens the resolved thread, by `reopenReason`. */
+  reopen?: 'author' | 'unbacked';
   /** A guarded thread the PR author cleared with a role that `author_clear_role` allows. */
   securityOverride?: ThreadSecurityOverride;
   /** Manki's latest answer to a developer in the thread, from `latestAnswer`. */
@@ -784,6 +784,7 @@ async function fetchRecapState(
   const previousFindings = botThreads.map(t => {
     const facts = { ...t, ...backing.get(t.threadId) };
     const settled = settledBy(facts, bot, prAuthorLogin, prAuthorRole);
+    const reopen = settled ? undefined : reopenReason(t, bot, prAuthorLogin);
     const securityOverride = settled === 'override' ? securityOverrideOf(t, prAuthorLogin, prAuthorRole) : undefined;
     const replierMayClear = authorCannotClear(t) && mayClearSecurityThread(facts.writerReplyLogin, bot, prAuthorLogin);
     const status = threadStatus(t, settled);
@@ -820,7 +821,7 @@ async function fetchRecapState(
       ...(t.isSecurity && { isSecurity: true }),
       ...(t.disprovedBlocker && { disprovedBlocker: true }),
       ...(replierMayClear && { authorReplyMayClear: true }),
-      ...(!settled && shouldReopen(t, prAuthorLogin) && { reopen: true }),
+      ...(reopen && { reopen }),
       ...(securityOverride && { securityOverride }),
       ...(t.answer && { answer: t.answer }),
       ...(t.filedIssue && { filedIssue: t.filedIssue }),
@@ -869,9 +870,18 @@ function judgeAddressedThreadIds(rounds: RoundContext[], latestOnly = false): Se
   return ids;
 }
 
-/** Whether the PR author resolved a thread they cannot clear, and Manki has not reopened it yet. Only asked for a thread that is not settled. */
-function shouldReopen(t: ReviewThread, prAuthorLogin: string | undefined): boolean {
-  return authorCannotClear(t) && t.isResolved && t.resolvedByHuman && !t.reopenedByManki && isLogin(t.resolvedByLogin, prAuthorLogin);
+/**
+ * Returns why Manki reopens the resolved thread `t`, which is not settled. `author`: the PR author resolved a thread they
+ * cannot clear, and Manki has not reopened it yet. `unbacked`: Manki resolved a guarded thread, and no record of its own
+ * names a person or an override behind that resolve. A record whose person a lookup no longer confirms reopens nothing,
+ * since a failed lookup reads the same. Nor does a thread whose comments or round records were not all read, which may
+ * hide a record, or one whose finding continues in another thread.
+ */
+function reopenReason(t: ReviewThread, bot: BotIdentity, prAuthorLogin: string | undefined): PreviousFinding['reopen'] {
+  if (!t.isResolved) return undefined;
+  if (authorCannotClear(t) && t.resolvedByHuman && !t.reopenedByManki && isLogin(t.resolvedByLogin, prAuthorLogin)) return 'author';
+  const unread = !!t.gradeUnknown || !!t.commentsIncomplete;
+  return isGuarded(t) && isBotLogin(bot, t.resolvedByLogin) && !unread && !t.raised && !t.clearLogin && !t.recordedOverride ? 'unbacked' : undefined;
 }
 
 /**
