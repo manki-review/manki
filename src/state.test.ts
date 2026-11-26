@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 import { approveOrSayWhy, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, checkAndAutoApprove, holdApproval, pauseState, reopenUnsettledThreads, retireStaleNotices, BOT_MARKER, ReviewThread, TRACKED_MARKER, unclearedThreads, warningHoldNote, withdrawBlockedApproval } from './state';
-import { clearRecordMarker, dismissRecordMarker, FOUND_AGAIN_MARKER, PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './recap';
+import { clearRecordMarker, dismissRecordMarker, FOUND_AGAIN_MARKER, PreviousFinding, REOPENED_MARKER, securityOverrideMarker, UNBACKED_REOPEN_MARKER } from './recap';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, namingCommit, paginateSinglePage, reviewedLine, TEST_BOT, TEST_LINKS, testSha } from './test-utils';
 import { APPROVED_LINE, autoApproveHeadMarker, formatFindingComment, postReview, reviewedCommit, titleToSlug } from './github';
 import { extractApprovalRecords, formatApprovalRecord, formatReplyRecord, formatReviewRecord, roundReplyMarker } from './review-record';
@@ -593,16 +593,17 @@ describe('reopenUnsettledThreads', () => {
       + `A reviewer with write access can resolve it.\n\n${BOT_MARKER}\n${REOPENED_MARKER}`,
     );
     // A thread Manki resolved without a record behind it hears that Manki has none, not that the PR author resolved it.
+    // Its reply is marked as such, so the PR author's next resolve is reopened too.
     graphql.mockClear();
     await reopen(graphql, [previous('T_unbacked', 'unbacked'), { ...previous('T_unbacked_nowhere', 'unbacked'), isSecurity: false, file: '', line: 0 }]);
     expect(graphql.mock.calls.map(c => c[1].body)).toEqual([
       undefined,
       'Reopened. Manki resolved this security finding earlier, but has no record of a confirmed fix or of a maintainer who cleared it, so it still blocks. '
       + 'Push a fix and the next Manki review will check it again, or a reviewer with write access can resolve it. If the push starts no review, as while automatic review is off or paused, comment `/manki review`.'
-      + `\n\n${BOT_MARKER}\n${REOPENED_MARKER}`,
+      + `\n\n${BOT_MARKER}\n${REOPENED_MARKER}\n${UNBACKED_REOPEN_MARKER}`,
       undefined,
       'Reopened. Manki resolved this blocking finding earlier, but has no record of a confirmed fix or of a maintainer who cleared it, so it still blocks. '
-      + `It is not tied to a file, so no review can confirm a fix for it. A reviewer with write access can resolve it.\n\n${BOT_MARKER}\n${REOPENED_MARKER}`,
+      + `It is not tied to a file, so no review can confirm a fix for it. A reviewer with write access can resolve it.\n\n${BOT_MARKER}\n${REOPENED_MARKER}\n${UNBACKED_REOPEN_MARKER}`,
     ]);
   });
 

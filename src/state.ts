@@ -9,7 +9,7 @@ import { ISSUE_BOX_LABEL, withMessageBoxes } from './issue-box';
 import { MessageBox, SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
-import { authorCannotClear, clearRecordLogin, latestAnswer, personReplies, dismissRecordLogins, dismissRecordMarker, FixClaim, fixClaimOf, fetchPriorRoundContexts, fetchRecapState, guardedKind, isDisprovedThread, isOverrideCandidate, judgeAddressedThreadIds, parseContextBlocks, RAISED_MARKER, recordedThreadGrades, isSecurityThread, parseFindingData, PreviousFinding, RecapState, RecordedGrade, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingPlace } from './recap';
+import { authorCannotClear, clearRecordLogin, latestAnswer, personReplies, dismissRecordLogins, dismissRecordMarker, FixClaim, fixClaimOf, fetchPriorRoundContexts, fetchRecapState, guardedKind, isDisprovedThread, isOverrideCandidate, judgeAddressedThreadIds, parseContextBlocks, RAISED_MARKER, recordedThreadGrades, isSecurityThread, parseFindingData, PreviousFinding, RecapState, RecordedGrade, recordedSecurityOverride, REOPENED_MARKER, UNBACKED_REOPEN_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingPlace } from './recap';
 import { FIXED_MARKER_OPENER, fixedMarker, formatApprovalRecord, hasOwnMarker, hasReviewRecord, ROUND_REPLY_OPENER, settlingDecision } from './review-record';
 import { findPriorThreadId } from './finding-fingerprint';
 import { ApprovalRecord, AuthorClearRole, FindingSeverity, gradedAbove, PRE_EXISTING_TAG, ReviewConfig, RoundContext, SecurityOverride, threadBlocks, threadWarns } from './types';
@@ -373,16 +373,21 @@ function reopenReply(thread: { isSecurity?: boolean; disprovedBlocker?: boolean;
     : `Reopened. A ${kind} that is not tied to a file needs a maintainer: the PR author cannot resolve it, and no review can confirm a fix for it. A reviewer with write access can resolve it.`;
 }
 
+/** Returns the markers of the reply that reopens a thread for `reason`. */
+function reopenMarkers(reason: NonNullable<PreviousFinding['reopen']>): string[] {
+  return reason === 'unbacked' ? [REOPENED_MARKER, UNBACKED_REOPEN_MARKER] : [REOPENED_MARKER];
+}
+
 /**
- * Returns the reply that says why the thread `threadId` is reopened. Returns `undefined` unless `reopenReason` gives
- * that resolved thread a reason.
+ * Returns the reply that says why the thread `threadId` is reopened, with the markers that reply carries. Returns
+ * `undefined` unless `reopenReason` gives that resolved thread a reason.
  */
 async function reopenNoteOf(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, prAuthorLogin: string | undefined, config: ReviewConfig, threadId: string,
-): Promise<string | undefined> {
+): Promise<{ note: string; markers: string[] } | undefined> {
   const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, prAuthorLogin, config.author_clear_role);
   const finding = recap.previousFindings.find(f => f.reopen && f.threadId === threadId);
-  return finding && reopenReply(finding, finding.file);
+  return finding?.reopen && { note: reopenReply(finding, finding.file), markers: reopenMarkers(finding.reopen) };
 }
 
 /**
@@ -395,7 +400,7 @@ async function reopenUnsettledThreads(octokit: Octokit, recap: RecapState): Prom
     // The thread opens first. The reply's marker stops a later reopen after the PR author's resolve, so it must never sit on a thread that stayed resolved.
     if (!await reopenThread(octokit, f.threadId)) continue;
     try {
-      await replyToReviewThread(octokit, f.threadId, reopenReply(f, f.file), REOPENED_MARKER);
+      await replyToReviewThread(octokit, f.threadId, reopenReply(f, f.file), ...reopenMarkers(f.reopen));
     } catch (error) {
       core.warning(`Reopened thread ${f.threadId}, but failed to say why: ${error}`);
     }

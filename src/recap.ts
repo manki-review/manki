@@ -122,6 +122,8 @@ const REPEAT_LINE_TOLERANCE = 5;
 
 /** Marks Manki's reply on a security thread it reopened after the PR author resolved it. */
 const REOPENED_MARKER = '<!-- manki-reopened -->';
+/** Sits beside `REOPENED_MARKER` on a reopen of a thread Manki resolved without a record, which leaves the PR author's next resolve to be reopened too. */
+const UNBACKED_REOPEN_MARKER = '<!-- manki-reopened-unbacked -->';
 
 /**
  * Marks Manki's reply that shows no outcome word and settles nothing, such as an unproven fix. Every reader of the thread
@@ -1427,7 +1429,8 @@ async function fetchReviewThreads(
         ...(thread.resolvedBy?.login && { resolvedByLogin: thread.resolvedBy.login }),
         isSecurity: isBotThread && isSecurityThread(body),
         ...(isBotThread && isDisprovedThread(body) && { disprovedBlocker: true }),
-        reopenedByManki: thread.comments.nodes.slice(1).some(c => isBotLogin(bot, c.author?.login) && hasOwnMarker(c.body ?? '', REOPENED_MARKER, COMMENT_MARKER)),
+        reopenedByManki: thread.comments.nodes.slice(1).some(c => isBotLogin(bot, c.author?.login) && hasOwnMarker(c.body ?? '', REOPENED_MARKER, COMMENT_MARKER)
+          && !hasOwnMarker(c.body ?? '', UNBACKED_REOPEN_MARKER, COMMENT_MARKER)),
         ...(isBotThread && thread.isResolved && thread.comments.nodes.slice(1).some(c => isBotLogin(bot, c.author?.login) && hasOwnMarker(c.body ?? '', RAISED_MARKER, COMMENT_MARKER)) && { raised: true as const }),
         ...(recordedOverride && { recordedOverride }),
         ...(fixClaim && { fixClaim }),
@@ -1773,4 +1776,4 @@ function dropWaivedRestatements(
   return { unique, duplicates };
 }
 
-export { AGAINST_HEADING, authorCannotClear, BOT_PREFIX_PATTERN, STATEMENTS_HEADING, latestAnswer, withoutStatementFold, personReplies, RAISED_MARKER, UNSETTLED_ANSWER_MARKER, SEEN_MARKERS, guardedKind, isDisprovedThread, clearRecordLogin, clearRecordMarker, dismissRecordLogins, dismissRecordMarker, dropWaivedRestatements, withoutCode, blockersToRecheck, currentFindingLine, DuplicateMatch, FixClaim, fixClaimMarker, fixClaimOf, namedPullRequests, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, pushTouchesThread, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };
+export { AGAINST_HEADING, authorCannotClear, BOT_PREFIX_PATTERN, STATEMENTS_HEADING, latestAnswer, withoutStatementFold, personReplies, RAISED_MARKER, UNSETTLED_ANSWER_MARKER, SEEN_MARKERS, guardedKind, isDisprovedThread, clearRecordLogin, clearRecordMarker, dismissRecordLogins, dismissRecordMarker, dropWaivedRestatements, withoutCode, blockersToRecheck, currentFindingLine, DuplicateMatch, FixClaim, fixClaimMarker, fixClaimOf, namedPullRequests, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, pushTouchesThread, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, UNBACKED_REOPEN_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };

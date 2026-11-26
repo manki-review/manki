@@ -1,5 +1,5 @@
 import { AuthorReplyClass, Finding, FindingFingerprintEntry, ReplyDecision, RoundContext, SCOPE_DOUBT_TITLE, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, SECURITY_TAG, ThreadEvaluation, threadBlocks } from './types';
-import { clearRecordMarker, UNSETTLED_ANSWER_MARKER, collectGuardedThreadIds, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, currentFindingLine, deduplicateFindings, dismissRecordMarker, fingerprintFinding, findingPlace, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, parseFindingFromComment, RAISED_MARKER, threadSeverity } from './recap';
+import { clearRecordMarker, UNSETTLED_ANSWER_MARKER, collectGuardedThreadIds, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, currentFindingLine, deduplicateFindings, dismissRecordMarker, fingerprintFinding, findingPlace, PreviousFinding, fetchRecapState, REOPENED_MARKER, UNBACKED_REOPEN_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, parseFindingFromComment, RAISED_MARKER, threadSeverity } from './recap';
 import { AUTO_APPROVE_MARKER, BOT_LOGIN, formatFindingComment, titleToSlug } from './github';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { determineOutcome } from './review';
@@ -1676,6 +1676,15 @@ describe('fetchRecapState', () => {
       ), TEST_BOT, 'owner', 'repo', 1);
       // Manki reopens that thread, since it still counts it as open.
       expect(later.previousFindings.map(f => [f.status, f.fixed ?? false, f.reopen])).toEqual([['open', false, 'unbacked'], ['resolved', true, undefined]]);
+      // Such a reopen still leaves the PR author's next resolve of the thread to be reopened. A reopen after the author's resolve does not.
+      const afterReopen = async (markers: string[]) => {
+        const resolved = thread('T_JUDGE', files.judge, 'author');
+        resolved.comments.nodes.push({ body: `Reopened.\n\n<!-- manki -->\n${markers.join('\n')}`, author: { login: BOT_LOGIN } });
+        const read = await fetchRecapState(mockOctokit([resolved], [ctx, laterCtx].map((record, i) => ({ id: 100 + i, body: htmlCommentBlock(record), user: { login: BOT_LOGIN } }))), TEST_BOT, 'owner', 'repo', 1, 'author');
+        return read.previousFindings.map(f => f.reopen);
+      };
+      expect(await afterReopen([REOPENED_MARKER, UNBACKED_REOPEN_MARKER])).toEqual(['author']);
+      expect(await afterReopen([REOPENED_MARKER])).toEqual([undefined]);
       // A thread a round's judge once found fixed is never decided without a fix, whatever the answer after it says.
       const onceFixed = await fetchRecapState(withWriter(mockOctokit(
         [answeredWith('T_JUDGE', files.judge, [answer('Withdrawn')])],
