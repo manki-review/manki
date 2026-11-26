@@ -122,6 +122,16 @@ const postedRecord = (result: ReviewResult, input: Partial<RoundRecordInput> = {
 }, result, { judgeDurationMs: 0 }))) as RoundContext;
 
 describe('buildRoundContext', () => {
+  it('names the Manki build commit the workflow gives, and only a full commit SHA', () => {
+    const result: ReviewResult = { verdict: 'APPROVE', outcome: 'READY', summary: '', findings: [], highlights: [], reviewComplete: true, agentNames: [] };
+    expect(postedRecord(result).meta).not.toHaveProperty('mankiCommit');
+    for (const [given, recorded] of [['0123456789abcdef0123456789abcdef01234567', '0123456789abcdef0123456789abcdef01234567'], ['main', undefined]] as const) {
+      process.env.MANKI_BUILD_COMMIT = given;
+      expect(postedRecord(result).meta.mankiCommit).toBe(recorded);
+    }
+    delete process.env.MANKI_BUILD_COMMIT;
+  });
+
   it('records the fix rate of each posted finding\'s class and the count it would lower, and changes nothing else', () => {
     const fixRates = aggregateFixRates([JSON.stringify({ pr: 1, counts: [
       { severity: 'warning', specialist: 'GPT 6.2 Sol · high', category: 'correctness', posted: 25, fixed: 5 },

@@ -76,6 +76,12 @@ export function buildRoundRecap(recap: {
   };
 }
 
+/** Returns the commit `MANKI_BUILD_COMMIT` names, when it is a full commit SHA. */
+function mankiCommit(): string | undefined {
+  const commit = process.env.MANKI_BUILD_COMMIT;
+  return commit && /^[0-9a-f]{40}$/.test(commit) ? commit : undefined;
+}
+
 /**
  * Totals `calls`, per stage and per model, and keeps the calls. Only the newest reading of each usage limit is kept.
  * Counts the tool calls refused for a closed path when any was.
@@ -305,6 +311,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
       round,
       timestamp: new Date().toISOString(),
       mankiVersion: MANKI_VERSION,
+      ...(mankiCommit() && { mankiCommit: mankiCommit() }),
       cap,
       trigger,
       ...(result.outcome && { outcome: result.outcome }),

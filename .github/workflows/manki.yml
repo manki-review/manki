@@ -76,6 +76,9 @@ jobs:
           GEMINI_OAUTH_TOKEN: ${{ secrets.GEMINI_OAUTH_TOKEN }}
       - name: Manki Review
         uses: ./  # Use local action for self-testing
+        env:
+          # The round record names the build that ran it, since the version alone does not tell a PR's builds apart.
+          MANKI_BUILD_COMMIT: ${{ steps.head.outputs.sha }}
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
