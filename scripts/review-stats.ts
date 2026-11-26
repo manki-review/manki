@@ -525,6 +525,9 @@ export function originsProven(round: RoundContext): boolean {
  * later round when it sits on code round 1 reviewed, by `onRoundOneCode`. A pre-existing finding counts in neither. A
  * later round that posted one but cannot prove its origins counts as unproven instead, and so does a record out of sequence.
  */
+/** The fields of a finding entry whose lines `citedPlaces` reads, which a record cut to fit can leave out. */
+const CITED_LINE_FIELDS = ['findings.entries.evidence', 'findings.entries.refutation', 'findings.entries.pairRefutation'];
+
 function tallyFirstRound(found: FirstRoundPr, round: RoundContext, previous: RoundContext | undefined, posted: FindingFingerprintEntry[], sinceRoundOne: RoundOneDiffs | undefined): void {
   const graded = posted.filter((entry): entry is FindingFingerprintEntry & { severity: FirstRoundGrade } =>
     (FIRST_ROUND_GRADES as readonly string[]).includes(entry.severity) && !entry.tags?.includes(PRE_EXISTING_TAG));
@@ -543,8 +546,10 @@ function tallyFirstRound(found: FirstRoundPr, round: RoundContext, previous: Rou
     return;
   }
   const reviewed = graded.filter(entry => entry.origin === 'reviewed');
-  // A round's origins compare with the round before it, which for round 2 is round 1.
-  const late = previous.meta.round === 1 ? reviewed : onRoundOneCode(reviewed, sinceRoundOne);
+  // A round's origins compare with the round before it, which for round 2 is round 1. A record cut without the cited
+  // lines can place a finding by its own line only, so it counts like a round without the diffs.
+  const citesCut = round.meta.omitted?.some(field => CITED_LINE_FIELDS.includes(field));
+  const late = previous.meta.round === 1 ? reviewed : onRoundOneCode(reviewed, citesCut ? undefined : sinceRoundOne);
   if (!late) {
     found.unproven++;
     return;

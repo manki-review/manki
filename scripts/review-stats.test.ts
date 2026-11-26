@@ -388,6 +388,7 @@ describe('review stats', () => {
       ({ ...prRecords('o/r', number, { reviews: rounds.map((context, i) => review(number * 10 + i, context)), threadComments: [] }), ...(sinceRoundOne && { sinceRoundOne }) });
     // A push after round 1 added line 40, so round 1 never saw it.
     const addedLater: RoundOneDiffs = { prior: addsTo([10, 'const a = 1;']), current: addsTo([10, 'const a = 1;'], [40, 'const b = 2;']), interRound: addsTo([40, 'const b = 2;']) };
+    const cut = round(3, [entry('warning', 10)], 801);
     const prs = [
       pr(1, [round(1, [entry('blocker', 10)]), round(2, []), round(3, [entry('blocker', 10), entry('warning', 40)], 299)], [undefined, undefined, addedLater]),
       // Round 2 compares with round 1 by its own origins.
@@ -395,6 +396,8 @@ describe('review stats', () => {
       // Without the diffs since round 1, a finding of round 3 on reviewed code cannot be placed.
       pr(3, [round(1, []), round(2, []), round(3, [entry('warning', 10)], 801)]),
       pr(4, [round(1, [entry('warning', 10)]), round(2, [], 801)]),
+      // A record cut without the cited lines cannot place a finding either.
+      pr(5, [round(1, []), round(2, []), { ...cut, meta: { ...cut.meta, omitted: ['findings.entries.evidence'] } }], [undefined, undefined, untouchedSinceRoundOne]),
     ];
     const stats = computeStats(prs);
     expect(stats.firstRound.map(({ number, size, grades, unproven }) => [number, size, grades.blocker, grades.warning, unproven])).toEqual([
@@ -402,6 +405,7 @@ describe('review stats', () => {
       [2, 800, { firstRound: 0, later: 0 }, { firstRound: 1, later: 1 }, 0],
       [3, 801, { firstRound: 0, later: 0 }, { firstRound: 0, later: 0 }, 1],
       [4, 801, { firstRound: 0, later: 0 }, { firstRound: 1, later: 0 }, 0],
+      [5, 801, { firstRound: 0, later: 0 }, { firstRound: 0, later: 0 }, 1],
     ]);
     expect(renderStats(stats)).toContain([
       '| PR size, changed lines as last reviewed | PRs | round 1 | later | found in round 1 |',
