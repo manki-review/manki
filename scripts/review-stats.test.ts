@@ -1,10 +1,12 @@
 import type { LLMCall } from '../src/providers';
+import { parsePRDiff } from '../src/diff';
 import { SEEN_MARKERS, UNSETTLED_ANSWER_MARKER } from '../src/recap';
 import { formatApprovalRecord, formatReplyRecord, formatReviewRecord } from '../src/review-record';
 import { makeFindingFingerprintEntry, makeRoundContext } from '../src/test-utils';
 import { PRE_EXISTING_TAG } from '../src/types';
 import type { ApprovalRecord, FindingFingerprintEntry, ReplyRecord, RoundContext } from '../src/types';
-import { computeStats, prRecords, renderStats, roundNumbering } from './review-stats';
+import { computeStats, fetchSinceRoundOne, prRecords, renderStats, roundNumbering } from './review-stats';
+import type { PrRecords, RoundOneDiffs } from './review-stats';
 
 const bot = { login: 'manki-review[bot]', type: 'Bot' };
 const person = { login: 'alice', type: 'User' };
@@ -15,6 +17,13 @@ const call = (model: string, steps: number): LLMCall => ({
 });
 
 const review = (id: number, context: RoundContext) => ({ id, body: `Review.\n${formatReviewRecord(context)}`, user: bot });
+
+/** Returns the diff of `src/a.ts` that adds each line of `added` at its line number. */
+const addsTo = (...added: Array<[number, string]>) => parsePRDiff(added.length === 0 ? '' : [
+  'diff --git a/src/a.ts b/src/a.ts', '--- a/src/a.ts', '+++ b/src/a.ts', ...added.flatMap(([line, text]) => [`@@ -${line - 1},0 +${line},1 @@`, `+${text}`]), '',
+].join('\n'));
+/** The diffs of a later round whose push since round 1 added nothing to the PR's change on line 10 of `src/a.ts`. */
+const untouchedSinceRoundOne: RoundOneDiffs = { prior: addsTo([10, 'const a = 1;']), current: addsTo([10, 'const a = 1;']), interRound: addsTo() };
 
 describe('review stats', () => {
   it('adds up rounds, findings, blocker outcomes, finders, refutations, cost and inter-round diffs over merged PRs', () => {
@@ -277,7 +286,8 @@ describe('review stats', () => {
       judge: { summary: '', ...(interRoundDiffState && { interRoundDiffState }) }, findings: { count: entries.length, severityCounts: {}, entries, ...more },
     });
     const carried = { carried: [entry('warning', { raisedIn: 1 })] };
-    const pr = (number: number, rounds: RoundContext[]) => prRecords('o/r', number, { reviews: rounds.map((context, i) => review(number * 10 + i, context)), threadComments: [] });
+    const pr = (number: number, rounds: RoundContext[], sinceRoundOne?: PrRecords['sinceRoundOne']): PrRecords =>
+      ({ ...prRecords('o/r', number, { reviews: rounds.map((context, i) => review(number * 10 + i, context)), threadComments: [] }), ...(sinceRoundOne && { sinceRoundOne }) });
     const prs = [
       pr(10, [
         // Round 1 needs no origin. A note and a pre-existing finding count in no column.
@@ -289,14 +299,14 @@ describe('review stats', () => {
           entry('warning', { origin: 'reviewed', posted: 'earlier_thread' }), entry('blocker', { origin: 'reviewed', tags: [PRE_EXISTING_TAG] }),
         ]),
         round(3, '7.6.1', [entry('blocker', { origin: 'reviewed' })], carried),
-      ]),
+      ], [undefined, undefined, untouchedSinceRoundOne]),
       // A later round of a release that did not flag a round without the earlier change cannot prove a finding new.
       pr(11, [round(1, '7.4.0', [entry('warning')]), round(2, '7.4.0', [entry('warning', { origin: 'new' })]), round(3, '7.4.0', [entry('note', { origin: 'reviewed' })])]),
       // A round without the earlier change, and one whose findings have no origin, prove nothing either.
       pr(12, [round(1, '7.6.0', [entry('blocker')]), round(2, '7.6.0', [entry('warning', { origin: 'new' })], { originsWithoutPrior: true }), round(3, '7.6.0', [entry('warning')])]),
       // A later round of an old release that posted no blocker or warning adds nothing late, so the PR still counts.
       pr(13, [round(1, '6.1.0', [entry('warning')]), round(2, '6.1.0', [entry('note')])]),
-      // Without the record of round 1 the PR's first findings are unknown, and so are those its later rounds call late.
+      // Without the record of round 1 the PR's first findings are unknown, and so are those its later rounds call late, which nothing compares with round 1.
       // Nor did it pass after one round, and its later round is no known follow-up round.
       pr(14, [round(2, '7.6.0', [entry('warning', { origin: 'reviewed' })], {}, 'READY'), round(3, '7.6.0', [entry('warning', { origin: 'reviewed' })])]),
       pr(15, [round(1, '7.6.0', [], {}, 'READY')]),
@@ -327,13 +337,13 @@ describe('review stats', () => {
     const grades = (blocker: [number, number], warning: [number, number]) => ({
       blocker: { firstRound: blocker[0], later: blocker[1] }, warning: { firstRound: warning[0], later: warning[1] },
     });
-    const counts = (number: number, blocker: [number, number], warning: [number, number], unproven = 0, noFirstRound = false) => ({ number, grades: grades(blocker, warning), noFirstRound, unproven });
+    const counts = (number: number, blocker: [number, number], warning: [number, number], unproven = 0, noFirstRound = false) => ({ number, size: 0, grades: grades(blocker, warning), noFirstRound, unproven });
     expect(stats.firstRound).toEqual([
       counts(10, [1, 1], [2, 1]),
       counts(11, [0, 0], [1, 0], 1),
       counts(12, [1, 0], [0, 0], 2),
       counts(13, [0, 0], [1, 0]),
-      counts(14, [0, 0], [0, 1], 0, true),
+      counts(14, [0, 0], [0, 0], 1, true),
       counts(15, [0, 0], [0, 0]),
       counts(16, [0, 0], [1, 0], 1),
       counts(17, [1, 0], [0, 0], 1),
@@ -345,13 +355,13 @@ describe('review stats', () => {
     expect(report).toContain('- PRs left out of the share passed after one round, the findings first raised in a later round, the follow-up rounds and the rounds a carried warning waited, because a round record did not decode or the records are not rounds 1, 2, 3 in posting order: 4\n');
     expect(report).toContain([
       '## Found in round 1', '',
-      '| grade | round 1 | later, on code an earlier round reviewed | found in round 1 |',
+      '| grade | round 1 | later, on code round 1 reviewed | found in round 1 |',
       '| --- | ---: | ---: | ---: |',
       '| blocker | 1 | 1 | 50% (1 of 2) |',
       '| warning | 3 | 1 | 75% (3 of 4) |',
       '| both | 4 | 2 | 67% (4 of 6) |',
     ].join('\n'));
-    expect(report).toContain('\n\n7 PRs left out (#11, #12, #14, #16, #17, #19, #18): 1 without a round 1 record, 7 round records that cannot say where a finding was first raised.\n\n');
+    expect(report).toContain('\n\n7 PRs left out (#11, #12, #14, #16, #17, #19, #18): 1 without a round 1 record, 8 round records that cannot say where a finding was first raised.\n\n');
     expect(report).toContain([
       '| PR | round 1 blockers | round 1 warnings | later blockers | later warnings | found in round 1 |',
       '| --- | ---: | ---: | ---: | ---: | ---: |',
@@ -364,6 +374,63 @@ describe('review stats', () => {
     expect(none).toContain('| both | 0 | 0 | - |');
     expect(none).not.toContain('left out (');
     expect(none).not.toContain('| PR | round 1 blockers');
+  });
+
+  it('counts a finding of round 3 on reviewed code as late only when round 1 reviewed that code too, and splits the share by PR size', async () => {
+    const entry = (severity: 'blocker' | 'warning', line: number) => ({ ...makeFindingFingerprintEntry({ severity, title: `Line ${line}`, lineStart: line }), origin: 'reviewed' as const });
+    const round = (number: number, entries: FindingFingerprintEntry[], changed = 0) => makeRoundContext(number, {
+      meta: { prNumber: 1, commitSha: `head${number}`, round: number, timestamp: 't', mankiVersion: '7.8.0' },
+      judge: { summary: '', ...(number > 1 && { interRoundDiffState: 'changed' as const }) },
+      findings: { count: entries.length, severityCounts: {}, entries },
+      diff: { ...makeRoundContext(number).diff, additions: changed, deletions: 0 },
+    });
+    const pr = (number: number, rounds: RoundContext[], sinceRoundOne?: PrRecords['sinceRoundOne']): PrRecords =>
+      ({ ...prRecords('o/r', number, { reviews: rounds.map((context, i) => review(number * 10 + i, context)), threadComments: [] }), ...(sinceRoundOne && { sinceRoundOne }) });
+    // A push after round 1 added line 40, so round 1 never saw it.
+    const addedLater: RoundOneDiffs = { prior: addsTo([10, 'const a = 1;']), current: addsTo([10, 'const a = 1;'], [40, 'const b = 2;']), interRound: addsTo([40, 'const b = 2;']) };
+    const prs = [
+      pr(1, [round(1, [entry('blocker', 10)]), round(2, []), round(3, [entry('blocker', 10), entry('warning', 40)], 299)], [undefined, undefined, addedLater]),
+      // Round 2 compares with round 1 by its own origins.
+      pr(2, [round(1, [entry('warning', 10)]), round(2, [entry('warning', 10)], 800)]),
+      // Without the diffs since round 1, a finding of round 3 on reviewed code cannot be placed.
+      pr(3, [round(1, []), round(2, []), round(3, [entry('warning', 10)], 801)]),
+      pr(4, [round(1, [entry('warning', 10)]), round(2, [], 801)]),
+    ];
+    const stats = computeStats(prs);
+    expect(stats.firstRound.map(({ number, size, grades, unproven }) => [number, size, grades.blocker, grades.warning, unproven])).toEqual([
+      [1, 299, { firstRound: 1, later: 1 }, { firstRound: 0, later: 0 }, 0],
+      [2, 800, { firstRound: 0, later: 0 }, { firstRound: 1, later: 1 }, 0],
+      [3, 801, { firstRound: 0, later: 0 }, { firstRound: 0, later: 0 }, 1],
+      [4, 801, { firstRound: 0, later: 0 }, { firstRound: 1, later: 0 }, 0],
+    ]);
+    expect(renderStats(stats)).toContain([
+      '| PR size, changed lines as last reviewed | PRs | round 1 | later | found in round 1 |',
+      '| --- | ---: | ---: | ---: | ---: |',
+      '| under 300 lines | 1 | 1 | 1 | 50% (1 of 2) |',
+      '| 300 to 800 lines | 1 | 1 | 1 | 50% (1 of 2) |',
+      '| over 800 lines | 1 | 1 | 0 | 100% (1 of 1) |',
+    ].join('\n'));
+
+    // The diffs are read only for a round from round 3 on with a finding on reviewed code: the PR's change from the base
+    // at round 1 and at that round, and the change between the two commits. A diff that cannot be read gives none.
+    const diffs: Record<string, string> = {
+      'base...head1': 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -9,0 +10,1 @@\n+const a = 1;\n',
+      'base...head3': 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -9,0 +10,1 @@\n+const a = 1;\n@@ -39,0 +40,1 @@\n+const b = 2;\n',
+      'head1...head3': 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -39,0 +40,1 @@\n+const b = 2;\n',
+    };
+    const compareCommits = jest.fn(async ({ base, head }: { base: string; head: string }) => {
+      if (!(`${base}...${head}` in diffs)) throw new Error('Not Found');
+      return { data: diffs[`${base}...${head}`] };
+    });
+    const octokit = { rest: { repos: { compareCommits } } } as unknown as Parameters<typeof fetchSinceRoundOne>[0];
+    const [read] = (await fetchSinceRoundOne(octokit, 'o', 'r', prs[0], 'base'))!.slice(2);
+    expect(compareCommits.mock.calls.map(([{ base, head }]) => `${base}...${head}`).sort()).toEqual(Object.keys(diffs).sort());
+    expect(computeStats([{ ...prs[0], sinceRoundOne: [undefined, undefined, read] }]).firstRound[0].grades.blocker).toEqual({ firstRound: 1, later: 1 });
+    expect(await fetchSinceRoundOne(octokit, 'o', 'r', prs[1], 'base')).toBeUndefined();
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    expect(await fetchSinceRoundOne(octokit, 'o', 'r', prs[2], 'gone')).toEqual([undefined, undefined, undefined]);
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('#3 round 3: the diffs since round 1 could not be read'));
+    errorSpy.mockRestore();
   });
 
   it('tallies every decision the round and reply records keep, and lists each in the report', () => {

@@ -12,16 +12,18 @@
 import * as github from '@actions/github';
 import { readFileSync } from 'fs';
 
+import { ownChangeSince, parsePRDiff, tagFindingOrigins } from '../src/diff';
 import { findPriorThreadId } from '../src/finding-fingerprint';
+import { fetchInterRoundDiff } from '../src/github';
 import { replyOutcome } from '../src/interaction';
 import { compareVersions } from '../src/lockfile';
 import { summarizeCalls } from '../src/providers';
 import type { LLMCall } from '../src/providers';
 import { findingPlace, ledOutcome, threadMarkerSlug, threadSeverity } from '../src/recap';
-import { readFileParts } from '../src/review';
+import { citedPlaces, readFileParts } from '../src/review';
 import { extractApprovalRecords } from '../src/review-record';
 import { isSecondReadName, isSweepName, outcomeOf, PRE_EXISTING_TAG, SEVERITY_ORDER } from '../src/types';
-import type { ApprovalRecord, FindingFingerprintEntry, Refutation, ReplyRecord, RoundContext, RoundSweep, TokenServiceCall } from '../src/types';
+import type { ApprovalRecord, Finding, FindingFingerprintEntry, ParsedDiff, Refutation, ReplyRecord, RoundContext, RoundSweep, TokenServiceCall } from '../src/types';
 import { aggregate, renderTable } from './fix-rate-report';
 import { githubToken, historyLines } from './review-history';
 
@@ -58,6 +60,20 @@ export interface PrRecords {
   /** The decisions of the review state checks, from their approval reviews and the notices still standing. */
   approvals: ApprovalRecord[];
   threadComments: ThreadComment[];
+  /**
+   * The diffs that compare each round from round 3 on with round 1's commit, by the round's index in `rounds`. Unset for
+   * a round with no finding on reviewed code, and for one whose diffs could not be read.
+   */
+  sinceRoundOne?: Array<RoundOneDiffs | undefined>;
+}
+
+/** What `tagFindingOrigins` compares a later round's findings with to tell code round 1 reviewed from code added since. */
+export interface RoundOneDiffs {
+  /** The PR's change at the later round's commit, and at round 1's. */
+  current: ParsedDiff;
+  prior: ParsedDiff;
+  /** The PR's own change from round 1's commit to the later round's, without what a rebase brought in. */
+  interRound: ParsedDiff;
 }
 
 interface FinderStats {
@@ -103,6 +119,8 @@ interface SeverityStats {
 const noFindings = (): SeverityStats => ({ posted: 0, inApprovedRounds: 0, raisedLater: 0, onReviewedCode: 0 });
 
 const FIRST_ROUND_GRADES = ['blocker', 'warning'] as const;
+/** The PR sizes the share of findings found in round 1 is split by, by the changed lines up to which each reaches. */
+const PR_SIZES = [{ label: 'under 300 lines', below: 300 }, { label: '300 to 800 lines', below: 801 }, { label: 'over 800 lines', below: Infinity }] as const;
 
 type FirstRoundGrade = (typeof FIRST_ROUND_GRADES)[number];
 
@@ -115,6 +133,8 @@ const ORIGINS_PROVEN_TEXT = `ran on Manki ${ORIGINS_PROVEN_FROM} or later, read 
 /** The blockers and warnings one PR posted: those round 1 found, and those a later round first raised on code an earlier round reviewed. */
 interface FirstRoundPr {
   number: number;
+  /** The changed lines of the PR as its last round reviewed it. */
+  size: number;
   grades: Record<FirstRoundGrade, { firstRound: number; later: number }>;
   /** Whether the PR's first record in posting order is of a round other than 1. Such a PR counts in no share. */
   noFirstRound: boolean;
@@ -347,7 +367,7 @@ export function computeStats(prs: PrRecords[], fixRateLines: string[] = []): Rev
     const answers = new Set<string>();
     const threads = mankiThreads(pr.threadComments);
     // A record that did not decode may hold any round.
-    const found: FirstRoundPr = { number: pr.number, grades: { blocker: { firstRound: 0, later: 0 }, warning: { firstRound: 0, later: 0 } }, noFirstRound: false, unproven: pr.undecodedRounds };
+    const found: FirstRoundPr = { number: pr.number, size: changedLines(pr.rounds.at(-1)!), grades: { blocker: { firstRound: 0, later: 0 }, warning: { firstRound: 0, later: 0 } }, noFirstRound: false, unproven: pr.undecodedRounds };
     stats.firstRound.push(found);
     for (const [index, round] of pr.rounds.entries()) {
       stats.rounds++;
@@ -365,7 +385,7 @@ export function computeStats(prs: PrRecords[], fixRateLines: string[] = []): Rev
         // An earlier blocker listed again to get a thread is no finding of this round.
         return !carried && !entry.relisted;
       });
-      tallyFirstRound(found, round, index > 0 ? pr.rounds[index - 1] : undefined, posted);
+      tallyFirstRound(found, round, index > 0 ? pr.rounds[index - 1] : undefined, posted, pr.sinceRoundOne?.[index]);
       for (const entry of posted) {
         const severity = stats.severities[entry.severity] ??= noFindings();
         severity.posted++;
@@ -502,10 +522,10 @@ export function originsProven(round: RoundContext): boolean {
 
 /**
  * Adds the blockers and warnings `round` posted to `found`. Each counts in the round that first raised it: round 1, or a
- * later round when it sits on code an earlier round reviewed. A pre-existing finding counts in neither. A later round
- * that posted one but cannot prove its origins counts as unproven instead, and so does a record out of sequence.
+ * later round when it sits on code round 1 reviewed, by `onRoundOneCode`. A pre-existing finding counts in neither. A
+ * later round that posted one but cannot prove its origins counts as unproven instead, and so does a record out of sequence.
  */
-function tallyFirstRound(found: FirstRoundPr, round: RoundContext, previous: RoundContext | undefined, posted: FindingFingerprintEntry[]): void {
+function tallyFirstRound(found: FirstRoundPr, round: RoundContext, previous: RoundContext | undefined, posted: FindingFingerprintEntry[], sinceRoundOne: RoundOneDiffs | undefined): void {
   const graded = posted.filter((entry): entry is FindingFingerprintEntry & { severity: FirstRoundGrade } =>
     (FIRST_ROUND_GRADES as readonly string[]).includes(entry.severity) && !entry.tags?.includes(PRE_EXISTING_TAG));
   if (!inSequence(round, previous)) {
@@ -522,7 +542,35 @@ function tallyFirstRound(found: FirstRoundPr, round: RoundContext, previous: Rou
     found.unproven++;
     return;
   }
-  for (const entry of graded) if (entry.origin === 'reviewed') found.grades[entry.severity].later++;
+  const reviewed = graded.filter(entry => entry.origin === 'reviewed');
+  // A round's origins compare with the round before it, which for round 2 is round 1.
+  const late = previous.meta.round === 1 ? reviewed : onRoundOneCode(reviewed, sinceRoundOne);
+  if (!late) {
+    found.unproven++;
+    return;
+  }
+  for (const entry of late) found.grades[entry.severity].later++;
+}
+
+/**
+ * Returns the entries of `reviewed` that also sit on code round 1 reviewed, by `tagFindingOrigins` with `diffs`. Code a
+ * push added after round 1 was never before round 1, so a finding there was not missed by it. Returns nothing when
+ * `reviewed` holds an entry and `diffs` is unknown.
+ */
+function onRoundOneCode<T extends FindingFingerprintEntry>(reviewed: T[], diffs: RoundOneDiffs | undefined): T[] | undefined {
+  if (reviewed.length === 0) return [];
+  if (!diffs) return undefined;
+  const findings = reviewed.map(({ severity, title, fingerprint, reviewers, evidence, refutation, pairRefutation }): Finding => ({
+    severity: severity === 'unknown' ? 'warning' : severity, title: title ?? '', file: fingerprint.file, line: fingerprint.lineStart, description: '', reviewers: reviewers ?? [],
+    ...(evidence && { evidence }), ...(refutation && { refutation }), ...(pairRefutation && { pairRefutation }),
+  }));
+  tagFindingOrigins(findings, diffs.current, diffs.prior, diffs.interRound, citedPlaces);
+  return reviewed.filter((_, i) => findings[i].origin === 'reviewed');
+}
+
+/** Returns the changed lines of the diff `round` reviewed. */
+function changedLines(round: RoundContext): number {
+  return (round.diff?.additions ?? 0) + (round.diff?.deletions ?? 0);
 }
 
 function fromSweep(finding: { reviewers?: string[] }): boolean {
@@ -739,10 +787,14 @@ function firstRoundLines(prs: FirstRoundPr[]): string[] {
     const [firstRound, later] = [sum('firstRound'), sum('later')];
     return { firstRound, later, share: share(firstRound, firstRound + later) };
   };
-  const total = (grades: readonly FirstRoundGrade[]) => {
-    const c = cells(counted, grades);
+  const total = (grades: readonly FirstRoundGrade[], of = counted) => {
+    const c = cells(of, grades);
     return `${c.firstRound} | ${c.later} | ${c.share}`;
   };
+  const bySize = PR_SIZES.map(({ label, below }, i) => {
+    const sized = counted.filter(pr => pr.size < below && (i === 0 || pr.size >= PR_SIZES[i - 1].below));
+    return `| ${label} | ${sized.length} | ${total(FIRST_ROUND_GRADES, sized)} |`;
+  });
   const rows = counted.flatMap((pr) => {
     const [blocker, warning, both] = [cells([pr], ['blocker']), cells([pr], ['warning']), cells([pr], FIRST_ROUND_GRADES)];
     return both.firstRound + both.later > 0
@@ -752,12 +804,16 @@ function firstRoundLines(prs: FirstRoundPr[]): string[] {
   const records = left.reduce((n, pr) => n + pr.unproven, 0);
   const noFirstRound = left.filter(pr => pr.noFirstRound).length;
   return [
-    '| grade | round 1 | later, on code an earlier round reviewed | found in round 1 |',
+    '| grade | round 1 | later, on code round 1 reviewed | found in round 1 |',
     '| --- | ---: | ---: | ---: |',
     ...FIRST_ROUND_GRADES.map(grade => `| ${grade} | ${total([grade])} |`),
     `| both | ${total(FIRST_ROUND_GRADES)} |`,
     '',
-    `A blocker or warning counts once, in the round that first raised it. A finding of a later round counts only when it sits on code an earlier round reviewed, so one on code a push changed since the round before counts in neither column. A finding round 1 posted counts even when its thread was resolved later. A pre-existing finding counts in neither. The record says only that an earlier round reviewed the lines, not which one, so a later finding on code a push after round 1 added counts as late too. A PR counts only when its records prove where each finding was first raised: every record decodes, its first record in posting order is of round 1, each later record is of the round after the one before, and each later round that posted a blocker or warning ${ORIGINS_PROVEN_TEXT}.`,
+    '| PR size, changed lines as last reviewed | PRs | round 1 | later | found in round 1 |',
+    '| --- | ---: | ---: | ---: | ---: |',
+    ...bySize,
+    '',
+    `A blocker or warning counts once, in the round that first raised it. A finding of a later round counts only when it sits on code round 1 reviewed, so one on code a push changed since round 1 counts in neither column. From round 3 on, that takes the diffs between round 1's commit and the round's, and a round whose diffs could not be read cannot say where a finding was first raised. A finding round 1 posted counts even when its thread was resolved later. A pre-existing finding counts in neither. A PR counts only when its records prove where each finding was first raised: every record decodes, its first record in posting order is of round 1, each later record is of the round after the one before, and each later round that posted a blocker or warning ${ORIGINS_PROVEN_TEXT}.`,
     ...(left.length > 0
       ? ['', `${left.length} ${left.length === 1 ? 'PR' : 'PRs'} left out (${left.map(pr => `#${pr.number}`).join(', ')}): ${noFirstRound} without a round 1 record, ${records} round ${records === 1 ? 'record' : 'records'} that cannot say where a finding was first raised.`]
       : []),
@@ -938,6 +994,30 @@ export async function fetchPrRecords(octokit: Octokit, owner: string, repo: stri
   return prRecords(`${owner}/${repo}`, number, { reviews, threadComments, issueComments });
 }
 
+/**
+ * Reads the diffs that `onRoundOneCode` compares each round from round 3 on with, when the records of `pr` are rounds 1,
+ * 2, 3 in posting order. The PR's change at a commit is diffed from `base`, the base branch's commit at the merge, and
+ * GitHub compares from their merge base, so what the base branch gained since is left out. A round with no finding on
+ * reviewed code needs no diffs, and one whose diffs cannot be read gets none.
+ */
+export async function fetchSinceRoundOne(octokit: Octokit, owner: string, repo: string, pr: PrRecords, base: string): Promise<PrRecords['sinceRoundOne']> {
+  if (pr.rounds.length < 3 || roundNumbering(pr) !== undefined) return undefined;
+  const first = pr.rounds[0].meta.commitSha;
+  const read = (from: string, to: string) => fetchInterRoundDiff(octokit, owner, repo, from, to);
+  let prior: Promise<ParsedDiff> | undefined;
+  return Promise.all(pr.rounds.map(async (round, index): Promise<RoundOneDiffs | undefined> => {
+    if (index < 2 || !(round.findings?.entries ?? []).some(entry => entry.origin === 'reviewed')) return undefined;
+    try {
+      prior ??= read(base, first).then(parsePRDiff);
+      const [before, current, since] = await Promise.all([prior, read(base, round.meta.commitSha).then(parsePRDiff), read(first, round.meta.commitSha)]);
+      return { current, prior: before, interRound: parsePRDiff(ownChangeSince(since, before, current)) };
+    } catch (error) {
+      console.error(`#${pr.number} round ${round.meta.round}: the diffs since round 1 could not be read: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    }
+  }));
+}
+
 async function main(args: string[]): Promise<number> {
   const parsed = parseArgs(args);
   if (!parsed) {
@@ -948,7 +1028,10 @@ async function main(args: string[]): Promise<number> {
   const fixRateLines = fixRate ? readFileSync(fixRate, 'utf-8').split('\n') : [];
   const octokit = github.getOctokit(githubToken());
   const prs: PrRecords[] = [];
-  for (const { number } of await listMergedPrs(octokit, owner, repo, last)) prs.push(await fetchPrRecords(octokit, owner, repo, number));
+  for (const { number, base } of await listMergedPrs(octokit, owner, repo, last)) {
+    const pr = await fetchPrRecords(octokit, owner, repo, number);
+    prs.push({ ...pr, sinceRoundOne: await fetchSinceRoundOne(octokit, owner, repo, pr, base.sha) });
+  }
   process.stdout.write(renderStats(computeStats(prs, fixRateLines), `${owner}/${repo}`));
   return 0;
 }
