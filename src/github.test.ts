@@ -4,7 +4,7 @@ import { gunzipSync } from 'zlib';
 
 import { formatFindingBlock, readChangesSince, relatedCommits, ApprovalHeld, earlierPlaces, plainCitedFiles, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, LeftOutFile, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, autoApproveHeadMarker, reviewedCommit, updateProgressDashboard, startLiveEdits, LIVE_EDIT_MS, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchChangesSince, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, fetchApprovalHold, SupersededError, isFailedProgress, markFailedProgressSuperseded, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError, githubRepoFiles, openRepoFiles, UnreadFileError , awaitPushedHead, HeadedPull } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
-import { DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, findingKey, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases, RoundFix, Refutation, SideCheckState, OriginAnswer, OtherFinderVote } from './types';
+import { DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, findingKey, GradeChange, ParsedDiff, ThreadEvaluation, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases, RoundFix, Refutation, SideCheckState, OriginAnswer, OtherFinderVote } from './types';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { contentAnswer, makeFindingFingerprintEntry, namingCommit, paginateSinglePage, TEST_BOT, TEST_LINKS, testSha } from './test-utils';
 import { withMarkers } from './utils';
@@ -2742,6 +2742,25 @@ describe('postReview body lead', () => {
     const priors = { ...blocking, verdictReason: 'prior_unaddressed' as const, verdictTrace: { survivingBlockers: [], unresolvedPriors: [open] } };
     expect([roundSentence(priors), roundSummary(priors)]).toEqual(['', '**Still open from earlier reviews:**\n- `src/a.ts:3`: Stale cache']);
     expect(roundSummary(round({ allJudgedFindings: [droppedBy('refutation')] }))).toBe('');
+
+    // A round that only an earlier thread blocks keeps the summary while the judge itself left that thread open. Code that
+    // kept it open against the judge makes the summary wrong, so the check names the thread instead.
+    const cache = { ...open, threadId: 'PRRT_9' };
+    const onThread = (evaluation: Partial<ThreadEvaluation>, threadId = 'PRRT_9') => {
+      const result = { ...priors, allJudgedFindings: [], verdictTrace: { survivingBlockers: [], unresolvedPriors: [cache] }, threadEvaluations: [{ threadId, status: 'uncertain', reason: 'r', ...evaluation } as ThreadEvaluation] };
+      return [roundSentence(result), roundSummary(result)];
+    };
+    const named = '**Still open from earlier reviews:**\n- `src/a.ts:3`: Stale cache';
+    expect(onThread({ status: 'not_addressed' })).toEqual([summary, summary]);
+    expect(onThread({ status: 'partly_addressed', grade: 'blocker', cell: { row: 'wrong', column: 'normal' } })).toEqual([summary, summary]);
+    // `confirmFixes` found the fix unconfirmed or the blocker named again, or resolving the thread failed.
+    expect(onThread({ judgeStatus: 'addressed' })).toEqual(['', named]);
+    expect(onThread({ status: 'not_addressed', judgeStatus: 'addressed' })).toEqual(['', named]);
+    expect(onThread({ status: 'partly_addressed', judgeStatus: 'addressed' })).toEqual(['', named]);
+    // `partialFixGrade` kept a blocker where the judge's cell gives a warning.
+    expect(onThread({ status: 'partly_addressed', grade: 'blocker', judgeCell: { row: 'degraded', column: 'normal' } })).toEqual(['', named]);
+    // An override on a thread the round does not block on changes nothing.
+    expect(onThread({ judgeStatus: 'addressed' }, 'PRRT_other')).toEqual([summary, summary]);
 
     // The judge wrote that nothing blocks, and a later step made the blocker, so the sentence is the blocker's.
     const blocked = (findings: Finding[], more: Partial<ReviewResult> = {}): ReviewResult =>

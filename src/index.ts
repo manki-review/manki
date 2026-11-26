@@ -1751,7 +1751,7 @@ async function resolveAddressedThreads(run: ReviewRun, result: ReviewResult): Pr
   // A later round reads `addressed` as a confirmed fix, so a thread that stayed open must not keep it.
   const failed = new Set(stillOpen.map(t => t.threadId));
   result.threadEvaluations = result.threadEvaluations?.map(e => failed.has(e.threadId)
-    ? { ...e, status: 'uncertain', reason: `Resolving the thread failed, so it stays open. ${e.reason}` }
+    ? { ...e, status: 'uncertain', judgeStatus: e.judgeStatus ?? e.status, reason: `Resolving the thread failed, so it stays open. ${e.reason}` }
     : e);
   blockOnOpenThreads(result, stillOpen);
   return resolved;

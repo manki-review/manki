@@ -3566,8 +3566,9 @@ describe('runReview', () => {
         });
         return followUp.threadEvaluations;
       };
+      // The round keeps what the judge said, since code overrode it.
       const partly = [{
-        threadId: 'T1', status: 'partly_addressed', reason: WORKAROUND_REASON, grade: 'warning',
+        threadId: 'T1', status: 'partly_addressed', reason: WORKAROUND_REASON, grade: 'warning', judgeStatus: 'addressed',
         remaining: 'The fix hides the symptom and leaves its cause as it was. The problem: A count of zero divides by zero. It comes from: `rate` divides without checking `count`. Still fails: Every other caller of `rate`. See `src/rate.ts:2`.',
       }];
       expect(await evaluated(pushTo(3))).toEqual(partly);
@@ -6057,7 +6058,7 @@ describe('runReview', () => {
     // A blocker thread that is not tied to a file has no file a push can change, so no push clears it.
     const untied = await runWith(touching, { ...openThread, file: '', line: 0 });
     expect([untied.outcome, untied.threadEvaluations?.[0]]).toEqual(['ADDRESS_FIRST', {
-      threadId: 'T1', status: 'uncertain', reason: 'This thread is not tied to a file, which only a person can clear, so the fix is not confirmed.',
+      threadId: 'T1', status: 'uncertain', reason: 'This thread is not tied to a file, which only a person can clear, so the fix is not confirmed.', judgeStatus: 'addressed',
     }]);
 
     // An outdated thread keeps the guard too, whether its code is gone, was rewritten in an earlier push, or sits in a file the push did change.
@@ -6070,7 +6071,7 @@ describe('runReview', () => {
     // needs a push to its file too, while a plain warning thread is the judge's to clear.
     const securityWarning = { ...openThread, severity: 'warning' as const, isSecurity: true };
     expect((await runWith(elsewhere, securityWarning)).threadEvaluations)
-      .toEqual([{ ...addressed, status: 'uncertain', reason: 'The push did not change `src/x.ts`, so the fix is not confirmed.' }]);
+      .toEqual([{ ...addressed, status: 'uncertain', reason: 'The push did not change `src/x.ts`, so the fix is not confirmed.', judgeStatus: 'addressed' }]);
     expect((await runWith(undefined, securityWarning)).threadEvaluations?.[0].status).toBe('uncertain');
     expect((await runWith(touching, securityWarning)).threadEvaluations).toEqual([addressed]);
     expect((await runWith(elsewhere, { ...openThread, severity: 'warning' })).threadEvaluations).toEqual([addressed]);
@@ -6082,7 +6083,7 @@ describe('runReview', () => {
     expect((await runWith(elsewhere, cited)).threadEvaluations).toEqual([addressed]);
     expect((await runWith(elsewhere, { ...cited, severity: 'warning', isSecurity: true })).threadEvaluations).toEqual([addressed]);
     expect((await runWith(unrelated, cited)).threadEvaluations)
-      .toEqual([{ ...addressed, status: 'uncertain', reason: 'The push did not change `src/x.ts` or `src/y.ts`, so the fix is not confirmed.' }]);
+      .toEqual([{ ...addressed, status: 'uncertain', reason: 'The push did not change `src/x.ts` or `src/y.ts`, so the fix is not confirmed.', judgeStatus: 'addressed' }]);
     // A thread whose evidence could not be read names no cited file and falls back to its own.
     expect((await runWith(elsewhere, { ...openThread, evidenceFiles: undefined })).threadEvaluations?.[0].status).toBe('uncertain');
     // A thread tied to no file stays a person's to clear, whatever its finding cited.
@@ -6092,7 +6093,7 @@ describe('runReview', () => {
     mockedRunJudgeAgent.mockResolvedValue({ findings: [repeat], summary: 'Still broken.', threadEvaluations: [addressed] });
     const namedAgain = await runWith(touching);
     expect(namedAgain.outcome).toBe('ADDRESS_FIRST');
-    expect(namedAgain.threadEvaluations).toEqual([expect.objectContaining({ threadId: 'T1', status: 'not_addressed' })]);
+    expect(namedAgain.threadEvaluations).toEqual([expect.objectContaining({ threadId: 'T1', status: 'not_addressed', judgeStatus: 'addressed' })]);
 
     // A partly fixed thread keeps the grade what remains earns, never above its own, and drops only on a push to its file.
     const partly = (grade?: ThreadEvaluation['grade']): ThreadEvaluation => ({ threadId: 'T1', status: 'partly_addressed', reason: 'Size checked.', remaining: 'No timeout.', ...(grade && { grade }) });
@@ -6215,7 +6216,7 @@ describe('runReview', () => {
       // A fix outside the files the finding cited lifts nothing, so the thread keeps blocking and only its note names the file.
       const confirmed = await runWith(clientsWith('disproved'));
       expect([confirmed.outcome, confirmed.threadEvaluations]).toEqual(['ADDRESS_FIRST', [{
-        threadId: 'T1', status: 'uncertain', fixedIn: 'src/y.ts',
+        threadId: 'T1', status: 'uncertain', fixedIn: 'src/y.ts', judgeStatus: 'addressed',
         reason: `Two refuters on different models found the failure gone after the change to \`src/y.ts\`. The push did not change \`src/x.ts\`${UNCONFIRMED_FIX_ENDING}`,
       }]]);
 
@@ -6275,7 +6276,7 @@ describe('runReview', () => {
           openThreads: [thread], previousFindings: [], priorRounds: priors, interRoundDiff: push ?? undefined, headSha: 'sha2',
         });
       };
-      const capped = { threadId: 'T1', status: 'partly_addressed', reason: OWN_FIX_REASON, remaining: restated.description, grade: 'warning', ownFix: true };
+      const capped = { threadId: 'T1', status: 'partly_addressed', reason: OWN_FIX_REASON, remaining: restated.description, grade: 'warning', ownFix: true, judgeStatus: 'not_addressed' };
 
       // The judge's refuter alone confirms the fix from a line the push added, so the restatement is a warning in the thread.
       const alone = clientsWith('disproved');

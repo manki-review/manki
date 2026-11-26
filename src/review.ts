@@ -3885,7 +3885,8 @@ function confirmFixes(
   const all = evaluations || unanswered.length > 0 ? [...(evaluations ?? []), ...unanswered] : undefined;
   return all?.map(e => {
     const thread = openThreadIndex.get(e.threadId);
-    const confirmed = confirm(e, thread);
+    const replaced = confirm(e, thread);
+    const confirmed = replaced.status === e.status ? replaced : { ...replaced, judgeStatus: e.status };
     const grade = partialFixGrade(confirmed, thread, namedThreadIds, pushChangedFiles);
     // Only a grade `partialFixGrade` bounds stays, so a judge grade for a thread that is not open is dropped.
     const { grade: _judged, cell, ...rest } = confirmed;

@@ -2233,10 +2233,23 @@ export interface ThreadEvaluation {
   /** The cell the judge stated for what remains when the thread keeps another grade than that cell gives. Only for the record: no prompt shows it. */
   judgeCell?: GradeCell;
   /**
+   * The status the judge gave when code replaced it, such as `addressed` on a fix the push did not confirm or a thread
+   * Manki could not resolve. Only for the record: no prompt shows it.
+   */
+  judgeStatus?: ThreadEvaluation['status'];
+  /**
    * Set when a check confirmed that the push applies the fix the thread's finding suggested, so a blocker restating it
    * was posted as a warning. A later round keeps that cap while its push changes none of the thread's files.
    */
   ownFix?: true;
+}
+
+/**
+ * Whether code replaced what the judge read in the thread of `evaluation`: it changed the judge's status, or it keeps a
+ * blocker grade where the judge's cell gives a lower one.
+ */
+export function overrodeJudge({ judgeStatus, grade, judgeCell }: ThreadEvaluation): boolean {
+  return judgeStatus !== undefined || (grade === 'blocker' && isGradeCell(judgeCell) && cellGrade(judgeCell.row, judgeCell.column) !== 'blocker');
 }
 
 /**
