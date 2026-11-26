@@ -1057,6 +1057,11 @@ describe('buildJudgeUserMessage', () => {
     } satisfies FindingFingerprintEntry;
     const dropDisproved = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, [makeRoundContext(1, { findings: { count: 1, severityCounts: {}, entries: [unstatedDrop] } })]);
     expect(dropDisproved).toContain('"premise": "The route never sets tenant",\n            "decides": "drop",\n            "check": "disproved"');
+    // A note the other finder's vote lowered is capped by no doubt any more, also one whose cell an unconfirmed raise moved to `judgeCell`.
+    const votedNote = (more: Partial<FindingFingerprintEntry>): FindingFingerprintEntry => ({ ...capped, severity: 'note', gradePath: [{ from: 'warning', to: 'note', by: 'other_finder' }], ...more });
+    const voted = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, [makeRoundContext(1, { findings: { count: 2, severityCounts: {}, entries: [votedNote({}), votedNote({ cell: undefined, judgeCell: capped.cell })] } })]);
+    const votedPayload = JSON.parse(voted.slice(voted.indexOf('```json') + 7, voted.indexOf('```', voted.indexOf('```json') + 7))) as { findings: Record<string, unknown>[] }[];
+    expect(votedPayload[0].findings.map(f => f.gradeIfConfirmed)).toEqual([undefined, undefined]);
     // The list of link targets shows the cell too, so Grade Stability can keep it for a finding outside the recent rounds.
     // It shows the conditional grade with it, so a cell a doubt holds down is not restated as if nothing were open.
     expect(doubted.split('\n').filter(l => /^- \*\*P\d/.test(l))).toEqual([

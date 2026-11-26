@@ -41,7 +41,10 @@ describe('withVote', () => {
     // A warning the judge held in a blocker cell goes to a note like any other warning, whether it holds the cell as `cell` or `judgeCell`.
     // Its cell moves to `judgeCell` and it drops `gradeIfConfirmed`, so a later round does not raise the note from them.
     const heldNote = withVote(finding({ cell, gradeIfConfirmed: 'blocker' }), declined);
-    expect([heldNote.severity, heldNote.cell, heldNote.judgeCell, heldNote.gradeIfConfirmed]).toEqual(['note', undefined, cell, undefined]);
+    expect([heldNote.severity, heldNote.cell, heldNote.judgeCell, heldNote.gradeIfConfirmed]).toEqual(['note', undefined, cell, 'blocker']);
+    // A warning whose blocker cell an unconfirmed raise already moved to `judgeCell` keeps it there.
+    const capped = withVote(finding({ judgeCell: cell, gradeIfConfirmed: 'blocker' }), declined);
+    expect([capped.severity, capped.cell, capped.judgeCell, capped.gradeIfConfirmed]).toEqual(['note', undefined, cell, 'blocker']);
     const degraded = { row: 'degraded' as const, column: 'normal' as const };
     expect(withVote(finding({ cell: degraded }), declined)).toMatchObject({ severity: 'note', cell: degraded });
     expect(withVote(finding({ judgeCell: cell }), declined).severity).toBe('note');

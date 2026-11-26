@@ -191,9 +191,10 @@ export async function otherFinderVotes(findings: readonly Finding[], { workspace
  * Returns `finding` with its `vote`. A vote that declines lowers a blocker to a warning that `DISPROVED_TAG` guards, so
  * text in the code that steers the vote cannot also let the PR author clear it, and a warning to a note, also one the
  * judge held at a warning in a blocker cell. A declined blocker, and a declined warning in a blocker cell, keep the
- * cell as `judgeCell`, as a disproof does, and the warning drops `gradeIfConfirmed`, so a later round does not restore
- * either from the cell. A finding the refuter lowered from a blocker and one that
- * `gradedByRule` under `rules` keep their grade and get no vote.
+ * cell as `judgeCell`, as a disproof does, so a later round does not restore either from the cell. A declined warning
+ * keeps its `gradeIfConfirmed`, which says whether a doubt held its cell, and `cappedGrade` never offers it to a later
+ * judge. A finding the refuter lowered from a blocker and one that `gradedByRule` under `rules` keep their grade and get
+ * no vote.
  */
 export function withVote(finding: Finding, vote: OtherFinderVote | undefined, rules?: RulesMode): Finding {
   if (!vote || isDisprovedBlocker(finding) || finding.tags?.includes(DISPROVED_TAG) || gradedByRule(finding, rules)) return finding;
@@ -204,7 +205,7 @@ export function withVote(finding: Finding, vote: OtherFinderVote | undefined, ru
     return { ...rest, ...gradeStep(finding, 'warning', 'other_finder', DECLINED_REASON.blocker), ...(cell && { judgeCell: cell }), tags: [...(finding.tags ?? []), DISPROVED_TAG] };
   }
   if (finding.severity !== 'warning') return voted;
-  const { cell, gradeIfConfirmed: _confirmed, ...rest } = voted;
+  const { cell, ...rest } = voted;
   const held = isGradeCell(cell) && cellGrade(cell.row, cell.column) === 'blocker';
   return { ...(held ? { ...rest, judgeCell: cell } : voted), ...gradeStep(finding, 'note', 'other_finder', DECLINED_REASON.warning) };
 }

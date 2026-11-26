@@ -253,8 +253,8 @@ export function canLeaveOut(f: Finding): boolean {
 }
 
 /** Whether the other finder's vote lowered `f` to a note, which stays in the review so one vote never removes a warning. */
-export function votedDown(f: Pick<Finding, 'severity' | 'gradePath'>): boolean {
-  return isNote(f.severity) && !!f.gradePath?.some(step => step.by === 'other_finder' && step.to === 'note');
+export function votedDown(f: Pick<Finding, 'gradePath'> & { severity: FindingSeverity | 'unknown' }): boolean {
+  return f.severity === 'note' && !!f.gradePath?.some(step => step.by === 'other_finder' && step.to === 'note');
 }
 
 /**

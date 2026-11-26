@@ -2799,8 +2799,12 @@ describe('postReview body lead', () => {
     expect(roundSentence(blocked([lowered, kept, below({ gradeIfConfirmed: 'blocker', ...path(['blocker', 'warning', 'judge']) })]))).toBe('Nothing blocks merge.');
     // So does such a warning once the other finder's vote lowered it to a note and moved its cell to `judgeCell`.
     const declinedHeld = withVote(below({ gradeIfConfirmed: 'blocker', ...path(['blocker', 'warning', 'judge']) }), { finder: 'b', harm: '', situation: '', declined: true });
-    expect([declinedHeld.severity, declinedHeld.judgeCell, declinedHeld.gradeIfConfirmed]).toEqual(['note', blocker.cell, undefined]);
+    expect([declinedHeld.severity, declinedHeld.judgeCell, declinedHeld.gradeIfConfirmed]).toEqual(['note', blocker.cell, 'blocker']);
     expect(roundSentence(blocked([lowered, kept, declinedHeld]))).toBe('Nothing blocks merge.');
+    // A blocker the judge raised itself and an unconfirmed raise capped stays one the judge graded once the vote lowers it further.
+    const raisedThenCapped = below({ cell: undefined, judgeCell: blocker.cell, ...path(['warning', 'blocker', 'judge'], ['blocker', 'warning', 'unconfirmed_raise']) });
+    expect(roundSentence(blocked([lowered, kept, raisedThenCapped]))).toBe('The first item is read unchecked.');
+    expect(roundSentence(blocked([lowered, kept, withVote(raisedThenCapped, { finder: 'b', harm: '', situation: '', declined: true })]))).toBe('The first item is read unchecked.');
     // A blocker held only because one finder reported it is one the judge graded a blocker, so the summary goes when it
     // stays a warning and stands when a check gives the blocker back.
     const soleHeld = below({ gradeIfConfirmed: 'blocker', soleFinder: true, soleHeld: true, ...path(['blocker', 'warning', 'judge']) });

@@ -29,7 +29,7 @@ import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim, relatedCitations } from './static-signals';
 import type { AnswerStore } from './stored-answers';
 import { resolveModel } from './config';
-import { bySecondReadsOnly, canLeaveOut, countedReporters, CELL_GRADES, CheckProgress, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, RefutationOutcome, restsOnDrop, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, fixThreadFiles, GradedCounts, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isGuardedFinding, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, REVERT_CAUGHT, RelatedRepoTools, restsOnUnstated, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, wouldBlockIfTrue, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, triggerDoubt, isTriggerDoubt, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, ruleGrade, RulesMode, RuleVerdict } from './types';
+import { bySecondReadsOnly, canLeaveOut, votedDown, countedReporters, CELL_GRADES, CheckProgress, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, RefutationOutcome, restsOnDrop, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, fixThreadFiles, GradedCounts, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isGuardedFinding, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, REVERT_CAUGHT, RelatedRepoTools, restsOnUnstated, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, wouldBlockIfTrue, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, triggerDoubt, isTriggerDoubt, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, ruleGrade, RulesMode, RuleVerdict } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -841,9 +841,11 @@ function keptCell(entry: Pick<FindingFingerprintEntry, 'gradeIfConfirmed' | 'cel
 
 /**
  * Returns the `gradeIfConfirmed` of an earlier finding whose grade a doubt capped, which Grade Stability asks the judge
- * to settle. A finding without a `pendingGrade` has the grade of its own cell, so no doubt capped it.
+ * to settle. A finding without a `pendingGrade` has the grade of its own cell, so no doubt capped it. A note the other
+ * finder's vote lowered (`votedDown`) gets none, since the vote, not a doubt, set its grade.
  */
-function cappedGrade(entry: Pick<FindingFingerprintEntry, 'severity' | 'gradeIfConfirmed' | 'cell'>): FindingSeverity | undefined {
+function cappedGrade(entry: Pick<FindingFingerprintEntry, 'severity' | 'gradeIfConfirmed' | 'cell' | 'gradePath'>): FindingSeverity | undefined {
+  if (votedDown(entry)) return undefined;
   const pending = pendingGrade(entry);
   return pending !== entry.severity ? pending : undefined;
 }
