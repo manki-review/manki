@@ -1030,9 +1030,12 @@ async function buildUsesSection(
     if (parsed) {
       const changed = changedDeclarations(parsed.declarations, lines, file.path);
       for (const symbol of changed) declared.push(symbol);
+      const testFile = TEST_PATH.test(file.path);
       for (const { name, kind, line, start, end, test } of changed) {
-        if ((kind === 'function' || kind === 'type') && start !== undefined && end !== undefined) items.push({ file: file.path, name, line, start, end, ...(test && { test }) });
+        if ((kind === 'function' || kind === 'type') && start !== undefined && end !== undefined) items.push({ file: file.path, name, line, start, end, ...((test || testFile) && { test: true as const }) });
       }
+      const sorted = parsed.testBlocks.length > 0 ? [...lines].sort((a, b) => a - b) : [];
+      for (const block of parsed.testBlocks) if ((sorted[firstAtOrAfter(sorted, block.start)] ?? Infinity) <= block.end) items.push({ file: file.path, ...block, test: true });
       for (const symbol of changed) addSymbol(symbols, symbol);
       for (const { name, kind, owner } of changed) if (kind === 'field' && owner) appendTo(changedOwners, name, { owner, file: file.path });
       const replaced = replacedLines(file);
@@ -1333,7 +1336,7 @@ function changedDeclarations(declarations: Declaration[], touched: Set<number>, 
 const TEST_ATTRIBUTE = /^#\[(?:[\w:]+::)?test\b|^#\[cfg\(test\)\]/;
 
 /** Returns the index of the first of the sorted `lines` that is at least `line`, or `lines.length` when none is. */
-function firstAtOrAfter(lines: number[], line: number): number {
+export function firstAtOrAfter(lines: number[], line: number): number {
   let [low, high] = [0, lines.length];
   while (low < high) {
     const mid = (low + high) >> 1;
@@ -1881,6 +1884,8 @@ class ParsedFile {
   readonly reliedOn: string[];
   /** Each lookup of an item in a collection field on a touched line, outside tests. */
   readonly lookups: Lookup[];
+  /** Each outermost module of tests around a test declaration, such as a Rust `#[cfg(test)] mod tests`, from its attributes on. */
+  readonly testBlocks: Array<Omit<ChangedItem, 'file' | 'test'>>;
   private readonly byKey = new Map<string, Declaration>();
   /** The type each of `methods` is declared on, and that of any other declaration in a block of `rules.owners` but in no type, such as a constant in a Rust `impl`. */
   private readonly owners: Map<Declaration, string>;
@@ -1958,6 +1963,7 @@ class ParsedFile {
     this.reads = this.fieldReads(accesses, touched);
     this.lookups = this.collectionLookups(accesses, touched);
     this.reliedOn = reliedOn && touched.size > 0 ? this.namesReliedOn(root.root().findAll({ rule: { kind: rules.call } }), accesses, touched) : [];
+    this.testBlocks = this.findTestBlocks();
     this.tree.release();
     this.groups.clear();
     this.marked.clear();
@@ -2174,12 +2180,15 @@ class ParsedFile {
 
   /** Whether a node around `node` is a module of tests. Each node is checked once, however many of the nodes asked about share it. */
   private inTests(node: SgNode): boolean {
+    return this.tree.ancestors(node).some(around => this.isTestModule(around));
+  }
+
+  private isTestModule(node: SgNode): boolean {
     const test = this.rules.testModule;
-    return !!test && this.tree.ancestors(node).some(around => {
-      const id = this.tree.idOf(around);
-      if (!this.testModules.has(id)) this.testModules.set(id, test(around));
-      return this.testModules.get(id)!;
-    });
+    if (!test) return false;
+    const id = this.tree.idOf(node);
+    if (!this.testModules.has(id)) this.testModules.set(id, test(node));
+    return this.testModules.get(id)!;
   }
 
   /**
@@ -2187,15 +2196,35 @@ class ParsedFile {
    * Each node's own attributes are read once, however many declarations share it as an ancestor.
    */
   private inTestCode(node: SgNode): boolean {
-    return [node, ...this.tree.ancestors(node)].some(n => {
-      const id = this.tree.idOf(n);
-      if (!this.marked.has(id)) {
-        let found = false;
-        for (let prev = this.tree.prev(n); prev && !found && /attribute_item|comment/.test(String(prev.kind())); prev = this.tree.prev(prev)) found = TEST_ATTRIBUTE.test(prev.text());
-        this.marked.set(id, found);
-      }
-      return this.marked.get(id)!;
-    });
+    return [node, ...this.tree.ancestors(node)].some(n => this.hasTestAttribute(n));
+  }
+
+  private hasTestAttribute(node: SgNode): boolean {
+    const id = this.tree.idOf(node);
+    if (!this.marked.has(id)) {
+      let found = false;
+      for (let prev = this.tree.prev(node); prev && !found && /attribute_item|comment/.test(String(prev.kind())); prev = this.tree.prev(prev)) found = TEST_ATTRIBUTE.test(prev.text());
+      this.marked.set(id, found);
+    }
+    return this.marked.get(id)!;
+  }
+
+  /**
+   * Returns `testBlocks`: the outermost test node around each test declaration that is no declaration itself, each read
+   * once however many tests it holds. One without a name, such as a Rust `#[cfg(test)] impl`, or with one longer than
+   * `MAX_NAME_LENGTH`, is named `tests`.
+   */
+  private findTestBlocks(): Array<Omit<ChangedItem, 'file' | 'test'>> {
+    const modules = new Map<number, Omit<ChangedItem, 'file' | 'test'>>();
+    for (const decl of this.declarations) {
+      if (!decl.test && !this.inTests(decl.node)) continue;
+      const top = [decl.node, ...this.tree.ancestors(decl.node)].filter(n => this.hasTestAttribute(n) || this.isTestModule(n)).at(-1);
+      if (!top || this.rules.declarations[String(top.kind())] || modules.has(top.range().start.index)) continue;
+      const name = top.field('name');
+      const short = name && name.range().end.index - name.range().start.index <= MAX_NAME_LENGTH ? name : undefined;
+      modules.set(top.range().start.index, { name: short?.text() ?? 'tests', line: lineOf(name ?? top), start: this.leadingStart(top).line, end: top.range().end.line + 1 });
+    }
+    return [...modules.values()];
   }
 
   /** Returns the `key` of the type declaring field `name` at `line`, or `undefined` when no field of that name is declared there. */

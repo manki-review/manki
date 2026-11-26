@@ -529,7 +529,7 @@ describe('listUsesOutsideDiff', () => {
   });
 
   it('lists the units of the change: each changed function, and each run of changed lines that adds, changes or removes a condition, also in a deleted file, outside tests, docs and excluded files', async () => {
-    const admit = (guard: string, test: string) => `pub fn admit(n: usize) -> bool {\n${guard}    n < 10\n}\n\npub fn untouched() {}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn admits() {\n        assert!(super::admit(1));\n${test}    }\n}\n`;
+    const admit = (guard: string, test: string, use = '') => `pub fn admit(n: usize) -> bool {\n${guard}    n < 10\n}\n\npub fn untouched() {}\n\n#[cfg(test)]\nmod tests {\n${use}    #[test]\n    fn admits() {\n        assert!(super::admit(1));\n${test}    }\n}\n`;
     const workflow = 'jobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm test\n';
     const gate = 'export class Gate {\n  open(user: User): boolean {\n    return user.admin;\n  }\n}\n';
     const base = {
@@ -542,6 +542,7 @@ describe('listUsesOutsideDiff', () => {
       'src/limits.rs': admit('', ''),
       'src/refs.rs': 'pub fn pick(v: &[&str]) -> usize {\n    0\n}\n',
       'src/gate.test.ts': 'it("opens", () => {});\n',
+      'src/gate_test.go': 'package gate\n\nfunc TestOpen(t *testing.T) {\n}\n',
       'docs/guide.md': '# Guide\n',
       'dist/out.js': 'run();\n',
     };
@@ -553,10 +554,11 @@ describe('listUsesOutsideDiff', () => {
       'src/gate.py': 'def allowed(user):\n    return True\n',
       // A `when` branch, like `case` and `match`, adds no condition unit.
       'lib/kind.rb': 'def kind(x)\n  case x\n  when 1 then :one\n  when 2 then :two\n  end\nend\n',
-      'src/limits.rs': admit('    if n == 0 {\n        return false;\n    }\n', '        assert!(!super::admit(0));\n'),
+      'src/limits.rs': admit('    if n == 0 {\n        return false;\n    }\n', '        assert!(!super::admit(0));\n', '    use std::thread;\n'),
       'src/refs.rs': 'pub fn pick(v: &[&str]) -> usize {\n    let first: &&str = &v[0];\n    let worker = std::thread::spawn(move || {\n        1\n    });\n    let later = || v.len();\n    v.iter().filter(|s| s.len() > 1).count()\n        + usize::from(first.is_empty() && later() > 2)\n}\n',
       'src/rules.ts': `export const ok = (a: number) =>\n${Array.from({ length: 8 }, (_, i) => `  a > ${i + 1} &&\n`).join('')}  a > 9;\n`,
       'src/gate.test.ts': 'it("opens", () => {\n  if (gate.open()) done();\n});\n',
+      'src/gate_test.go': 'package gate\n\nfunc TestOpen(t *testing.T) {\n\tt.Skip()\n}\n',
       'docs/guide.md': '# Guide\n\nif you want, open the gate && close it.\n',
       'dist/out.js': 'if (a && b) run();\n',
     };
@@ -566,10 +568,29 @@ describe('listUsesOutsideDiff', () => {
       { file: 'src/auth.ts', name: 'Gate', line: 1, start: 1, end: 5 },
       { file: 'src/auth.ts', name: 'open', line: 2, start: 2, end: 4 },
       { file: 'src/gate.py', name: 'allowed', line: 1, start: 1, end: 2 },
+      // A function in a test file is test code too, and so is the module of tests around a changed line outside its functions.
+      { file: 'src/gate_test.go', name: 'TestOpen', line: 3, start: 3, end: 5, test: true },
       { file: 'src/limits.rs', name: 'admit', line: 1, start: 1, end: 6 },
-      { file: 'src/limits.rs', name: 'admits', line: 13, start: 12, end: 16, test: true },
+      { file: 'src/limits.rs', name: 'admits', line: 14, start: 13, end: 17, test: true },
+      { file: 'src/limits.rs', name: 'tests', line: 11, start: 10, end: 18, test: true },
       { file: 'src/refs.rs', name: 'pick', line: 1, start: 1, end: 9 },
     ]);
+    // A module of tests is read once however many tests it holds. One without a name, such as a `#[cfg(test)] impl`, or with a
+    // name longer than 160 characters shows as `tests`.
+    const longName = `long_${'x'.repeat(150)}`;
+    const suite = (body: string) => `pub fn run() {}\n\n#[cfg(test)]\nmod ${longName} {\n${Array.from({ length: 50 }, (_, i) => `    #[test]\n    fn case_${i}() {${body}}\n`).join('')}}\n\n#[cfg(test)]\nimpl Gate {\n    #[test]\n    fn opens() {${body}}\n}\n\n#[cfg(test)]\nmod ${'y'.repeat(200)} {\n    #[test]\n    fn over() {${body}}\n}\n`;
+    const texts = jest.spyOn(napi.SgNode.prototype, 'text');
+    try {
+      const { items: suiteItems } = await usesFor({ 'src/suite.rs': suite('') }, { 'src/suite.rs': suite(' run(); ') });
+      expect(suiteItems?.filter(item => !/^(case_\d+|opens|over)$/.test(item.name))).toEqual([
+        { file: 'src/suite.rs', name: longName, line: 4, start: 3, end: 105, test: true },
+        { file: 'src/suite.rs', name: 'tests', line: 108, start: 107, end: 111, test: true },
+        { file: 'src/suite.rs', name: 'tests', line: 114, start: 113, end: 117, test: true },
+      ]);
+      expect(texts.mock.results.filter(result => result.value === longName).length).toBeLessThanOrEqual(4);
+    } finally {
+      texts.mockRestore();
+    }
     const condition = (file: string, start: number, end: number, code: string) => ({ kind: 'condition', file, start, end, code });
     expect(units?.map(({ id: _id, ...unit }) => unit)).toEqual([
       condition('.github/workflows/ci.yml', 6, 6, "+      - if: github.event_name == 'push'"),
