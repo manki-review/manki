@@ -1,6 +1,7 @@
 import * as core from '@actions/core';
 
 import { holdsLines } from './code-window';
+import { countChangedLines, hunkHas } from './diff';
 import { extractJSON } from './json';
 import { readFileInRoot } from './mcp-server';
 import { sanitizeForPromptEmbed } from './memory';
@@ -102,15 +103,23 @@ function parseVote(text: string): { trigger: RawCitation; result: RawCitation } 
 const collapse = (text: string): string => text.replace(/\s+/g, ' ').trim();
 
 /**
- * Whether the head in `workspace` holds `quote` on the line `location` names or within `QUOTE_SLACK_LINES` of it, or
- * undefined when the file cannot be read there.
+ * Whether the head in `workspace` holds `quote` near the line `location` names, or undefined when the file cannot be
+ * read there. Near is within `QUOTE_SLACK_LINES` of it or of the hunk of `diff` it falls in, since the voter counts
+ * line numbers from hunk headers. Its count also passes the removed lines, so a line up to that many past the hunk's
+ * last head line still falls in it, unless another hunk's head lines hold it. The quote may run across lines.
  */
-function holdsQuote(workspace: string, location: string, quote: string): boolean | undefined {
+function holdsQuote(workspace: string, location: string, quote: string, diff: ParsedDiff | undefined): boolean | undefined {
   const file = readFileInRoot(workspace, locationFile(location));
   if (!file || file === 'too large') return undefined;
   const [line] = locationLines(location);
-  const near = file.lines.slice(Math.max(0, line - 1 - QUOTE_SLACK_LINES), Math.max(0, line + QUOTE_SLACK_LINES));
-  return collapse(quote).length > 0 && near.some(text => collapse(text).includes(collapse(quote)));
+  const hunks = diff?.files.find(f => f.path === locationFile(location))?.hunks ?? [];
+  // Of the hunks a count past removed lines reaches, the voter counted from the nearest header.
+  const counted = hunks.filter(h => hunkHas(h, line - countChangedLines({ hunks: [h] }).deletions, line)).sort((a, b) => b.newStart - a.newStart);
+  const hunk = hunks.find(h => hunkHas(h, line)) ?? counted[0];
+  const start = Math.min(line, hunk?.newStart ?? line) - QUOTE_SLACK_LINES;
+  const end = Math.max(line, hunk ? hunk.newStart + hunk.newLines - 1 : line) + QUOTE_SLACK_LINES;
+  const near = collapse(file.lines.slice(Math.max(0, start - 1), Math.max(0, end)).join('\n'));
+  return collapse(quote).length > 0 && near.includes(collapse(quote));
 }
 
 /**
@@ -155,10 +164,10 @@ function readModels(finding: Finding, reads: NonNullable<VoteOptions['reads']>, 
  * Returns `citation` as a vote records it, with whether the head in `workspace` holds its quote, or undefined when it
  * names a line in a file the head cannot read.
  */
-function readCitation(workspace: string, { reason, line, quote }: RawCitation): VoteCitation | undefined {
+function readCitation(workspace: string, { reason, line, quote }: RawCitation, diff: ParsedDiff | undefined): VoteCitation | undefined {
   if (line === 'none') return { reason };
   if (line === 'not_shown') return { reason, notShown: true };
-  const held = holdsQuote(workspace, line, quote);
+  const held = holdsQuote(workspace, line, quote, diff);
   return held === undefined ? undefined : { reason, line, quote: safeTruncate(quote, MAX_ANSWER_CHARS), held };
 }
 
@@ -197,7 +206,7 @@ export async function otherFinderVotes(findings: readonly Finding[], { workspace
         reply => ({ ...parseVote(reply.content), ...(reply.model && { model: reply.model }) }),
         error => core.warning(`The vote of ${other.name} on "${finding.title}" could not be used (${error}), asking once more`),
       );
-      const [trigger, result] = [readCitation(workspace, raw.trigger), readCitation(workspace, raw.result)];
+      const [trigger, result] = [readCitation(workspace, raw.trigger, diff), readCitation(workspace, raw.result, diff)];
       if (!trigger || !result) {
         core.info(`${other.name} named a line for "${finding.title}" in a file that could not be read, so its vote is not used`);
         return undefined;

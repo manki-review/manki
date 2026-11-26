@@ -4546,8 +4546,8 @@ describe('runReview', () => {
       // A result line alone, or a trigger line alone, backs nothing.
       'Declined warning': { trigger: none, result: at(3) },
       'Missing result': { trigger: at(3), result: none },
-      // The quoted code sits 5 lines from the line the answer names, further than the 3 lines a model may miss by.
-      'Misquoted warning': { trigger: at(3), result: at(4, 'const line9 = 9;') },
+      // The round's hunk spans the whole file, which does not hold the quoted code anywhere.
+      'Misquoted warning': { trigger: at(3), result: at(4, 'const line99 = 99;') },
       'Backed warning': { trigger: at(5), result: at(5, 'line5 = 5') },
       'Vote fails': 'not json',
       'Held blocker cell': declines,
