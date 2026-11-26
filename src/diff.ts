@@ -676,7 +676,7 @@ export function countChangedLines(file: Pick<DiffFile, 'hunks'>): { additions: n
 const NEW_CODE_WINDOW = 3;
 
 /** Returns the text of each line the diff removes, with the line in the new file where the removal sits. */
-function removedLines(file: DiffFile): Array<[number, string]> {
+export function removedLines(file: DiffFile): Array<[number, string]> {
   const removed: Array<[number, string]> = [];
   for (const hunk of file.hunks) {
     let line = hunk.newStart;

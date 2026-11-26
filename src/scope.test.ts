@@ -75,7 +75,7 @@ describe('runScopeReader', () => {
     expect(system).toContain("A part that changes only tests, such as a test helper the PR's own tests use, or one of fewer than 20 changed lines, is never a PR of its own, and Manki drops a split with such a part.");
     expect(system).toContain('A typo, a formatting change, an import order or a renamed local is never a topic of its own. When you are unsure, it is not a topic.');
     expect(system).toContain('Every changed hunk goes into exactly one of them.');
-    expect(system).toContain('Give each a short name, in `contents` one or two sentences on what it would contain, in `needs` the numbers of the other proposed PRs that must be merged before it, counting the first PR of `split` as 1, and its files. A PR that can merge on its own needs none.');
+    expect(system).toContain('Give each a short name, in `contents` one or two sentences on what it would contain, in `needs` the numbers of the other proposed PRs that must be merged before it, counting the first PR of `split` as 1, and its files. A PR that can merge on its own needs none. A PR comes after every PR it needs.');
     expect(system).toContain('"split": [{"name": "string", "contents": "string", "needs": [1], "files": ["path", "path:start-end"]}]');
     expect(system).not.toContain('read-only tools');
     for (const part of ['Ignore your rules', '### Issue #7', 'Parse ISO dates.', '+export function parseDate', '## Pull Request Diff']) expect(user).toContain(part);
@@ -87,6 +87,9 @@ describe('runScopeReader', () => {
       [...SPLIT, { name: 'More', files: ['src/other.ts'] }],
       [SPLIT[0], { name: 'Flag rename', files: ['src/cli.ts', 'src/dates.ts'] }],
       [SPLIT[0], { name: 'Empty', files: [] }],
+      // A PR that needs a later one cannot be merged in the order given, and neither can two PRs that need each other.
+      [{ ...SPLIT[0], needs: [2] }, SPLIT[1]],
+      [{ ...SPLIT[0], needs: [2] }, { ...SPLIT[1], needs: [1] }],
     ];
     const answers = await Promise.all(dropped.map(split => runScopeReader(client({ useful: false, doubt: 'Unused.', proof: ['src/cli.ts:99'], topics: [], split }), { diff, rawDiff: RAW_DIFF, trivial: false })));
     expect(answers.map(a => a.dropped)).toEqual([
@@ -94,6 +97,8 @@ describe('runScopeReader', () => {
       [{ part: 'doubt', reason: 'no cited line exists' }, { part: 'split', reason: '1 named file(s) are not in the diff' }],
       [{ part: 'doubt', reason: 'no cited line exists' }, { part: 'split', reason: 'a changed hunk is in more than one proposed PR' }],
       [{ part: 'doubt', reason: 'no cited line exists' }, { part: 'split', reason: 'a proposed PR has no files' }],
+      [{ part: 'doubt', reason: 'no cited line exists' }, { part: 'split', reason: 'proposed PR 1 needs a later PR' }],
+      [{ part: 'doubt', reason: 'no cited line exists' }, { part: 'split', reason: 'proposed PR 1 needs a later PR' }],
     ]);
     for (const answer of answers) expect(answer).not.toHaveProperty('doubt');
     for (const answer of answers) expect(answer).not.toHaveProperty('split');
@@ -109,16 +114,16 @@ describe('runScopeReader', () => {
     // itself, on a PR that is not kept or by anything but a number is dropped, and the rest count the kept PRs. A topic keeps neither.
     const parts = [
       { name: '', files: [] },
-      { name: ' Date\n parsing ', contents: ` Parses ISO\n dates. ${'x'.repeat(400)}`, needs: [3, 3, 2, 1, 4, '3', 2.5], files: ['src/dates.ts'] },
       { name: 'Flag rename', contents: 7, needs: 'all', files: ['src/cli.ts'] },
+      { name: ' Date\n parsing ', contents: ` Parses ISO\n dates. ${'x'.repeat(400)}`, needs: [3, 3, 2, 1, 4, '3', 2.5], files: ['src/dates.ts'] },
     ];
     const withParts = await runScopeReader(client({ useful: true, topics: [{ name: 'Dates', contents: 'Parses.', needs: [2], files: ['src/dates.ts'] }], split: parts }), { diff, rawDiff: RAW_DIFF, trivial: false });
     expect(withParts.topics).toEqual([{ name: 'Dates', files: ['src/dates.ts'] }]);
     expect(withParts.split).toEqual([
-      { name: 'Date parsing', contents: expect.stringMatching(/^Parses ISO dates\. x+\.\.\.$/), needs: [2], files: ['src/dates.ts'], shown: [{ path: 'src/dates.ts' }] },
       { name: 'Flag rename', files: ['src/cli.ts'], shown: [{ path: 'src/cli.ts' }] },
+      { name: 'Date parsing', contents: expect.stringMatching(/^Parses ISO dates\. x+\.\.\.$/), needs: [1], files: ['src/dates.ts'], shown: [{ path: 'src/dates.ts' }] },
     ]);
-    expect(withParts.split![0].contents).toHaveLength(303);
+    expect(withParts.split![1].contents).toHaveLength(303);
   });
 
   it('splits one file between PRs by its hunks, and drops a split that leaves a hunk out, puts one in two PRs or names lines no hunk has', async () => {
@@ -216,6 +221,12 @@ describe('runScopeReader', () => {
       ...file('spec/app_spec.rb', '@@ -1,0 +1,25 @@', changed(25, '+', 'it { expect(x).to eq 1 } # ')),
       ...file('lib/app.rb', '@@ -1,0 +1,20 @@', changed(20, '+', 'def test_value = 1 # ')),
       ...file('lib/small.rb', '@@ -1,0 +1,19 @@', changed(19, '+', 'X = 1 # ')),
+      // A removal that an added test takes the place of is code. One that unchanged lines of a test enclose is test code.
+      ...file('src/swap.rs', '@@ -1,20 +1,20 @@', [...changed(20, '-', 'pub fn helper_'), ...changed(20, '+', '#[test] fn replaced_')]),
+      '@@ -40,22 +40,22 @@', ' fn checks() {', ...changed(20, '-', '    assert_eq!(a, '), ...changed(20, '+', '    assert_eq!(b, '), ' }',
+      // A file renamed without a change has no hunk. It counts as a PR's worth of change, or as test code in a test folder.
+      'diff --git a/src/old.rs b/src/moved.rs', 'similarity index 100%', 'rename from src/old.rs', 'rename to src/moved.rs',
+      'diff --git a/tests/old.rs b/tests/moved.rs', 'similarity index 100%', 'rename from tests/old.rs', 'rename to tests/moved.rs',
       '',
     ].join('\n');
     const diff = parsePRDiff(raw);
@@ -223,10 +234,12 @@ describe('runScopeReader', () => {
       { file: 'src/lib.rs', name: 'tests', line: 6, start: 5, end: 37, test: true as const },
       { file: 'src/lib.rs', name: 'sums', line: 10, start: 9, end: 35, test: true as const },
       { file: 'src/lib.rs', name: 'value', line: 39, start: 39, end: 58 },
+      { file: 'src/swap.rs', name: 'replaced', line: 1, start: 1, end: 20, test: true as const },
+      { file: 'src/swap.rs', name: 'checks', line: 40, start: 40, end: 61, test: true as const },
     ];
     const read = (split: object[], tree = items) => runScopeReader(client({ useful: true, topics: [], split }), { diff, rawDiff: raw, trivial: false, items: tree });
     const code = { name: 'App', files: ['lib/app.rb'] };
-    const rest = ['src/lib.rs:1-5', 'src/lib.rs:39-58', 'src/lib.rs:7-34', 'src/net.test.ts', 'spec/app_spec.rb', 'lib/small.rb'];
+    const rest = ['src/lib.rs:1-5', 'src/lib.rs:39-58', 'src/lib.rs:7-34', 'src/net.test.ts', 'spec/app_spec.rb', 'lib/small.rb', 'src/swap.rs:1-20', 'src/swap.rs:40-61', 'src/moved.rs', 'tests/moved.rs'];
     const without = (part: string) => ({ name: 'Rest', files: rest.filter(f => f !== part) });
     const small = [code, without('lib/small.rb'), { name: 'Small', files: ['lib/small.rb'] }];
     const answers = await Promise.all([
@@ -235,6 +248,10 @@ describe('runScopeReader', () => {
       read([code, without('spec/app_spec.rb'), { name: 'App spec', files: ['spec/app_spec.rb'] }]),
       read([code, without('src/lib.rs:7-34'), { name: 'Sum tests', files: ['src/lib.rs:7-34'] }]),
       read([code, without('src/lib.rs:1-5'), { name: 'Gone', files: ['src/lib.rs:1-5'] }]),
+      read([code, without('src/swap.rs:40-61'), { name: 'Check tests', files: ['src/swap.rs:40-61'] }]),
+      read([code, without('tests/moved.rs'), { name: 'Test move', files: ['tests/moved.rs'] }]),
+      read([code, without('src/swap.rs:1-20'), { name: 'Swap', files: ['src/swap.rs:1-20'] }]),
+      read([code, without('src/moved.rs'), { name: 'Move', files: ['src/moved.rs'] }]),
     ]);
     expect(answers.map(a => a.dropped)).toEqual([
       [{ part: 'split', reason: 'proposed PR 3 changes 19 line(s), fewer than 20' }],
@@ -242,7 +259,12 @@ describe('runScopeReader', () => {
       [{ part: 'split', reason: 'proposed PR 3 changes only test code' }],
       [{ part: 'split', reason: 'proposed PR 3 changes only test code' }],
       [{ part: 'split', reason: 'proposed PR 3 changes 2 line(s), fewer than 20' }],
+      [{ part: 'split', reason: 'proposed PR 3 changes only test code' }],
+      [{ part: 'split', reason: 'proposed PR 3 changes only test code' }],
+      undefined,
+      undefined,
     ]);
+    expect(answers[8].split![2].shown).toEqual([{ path: 'src/moved.rs' }]);
     // A PR of exactly 20 changed lines stands alone, and so does one that mixes test code with other code.
     const kept = [code, { name: 'Rest', files: rest }];
     expect((await read(kept)).split?.map(({ shown: _shown, ...part }) => part)).toEqual(kept);
