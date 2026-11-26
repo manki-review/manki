@@ -6779,6 +6779,10 @@ describe('postReview non-blocking findings', () => {
     const longBody = formatFindingComment(longSplit, TEST_LINKS, 'detached');
     expect(longBody).toContain(`**PR 1: Date parsing**\n${files('dates').map(f => `\`${f.replace('implementation.ts', '')}\`: \`implementation.ts\``).join('\n')}\n\n**PR 2: Flag rename**`);
     expect(longBody).not.toContain('<details>');
+    // A part lists at most 10 files over all its folders, then how many more it has.
+    const spread = Array.from({ length: 12 }, (_, n) => `src/m${n}/lib.rs`);
+    const [wideSplit] = scopeWarnings({ split: [{ name: 'Move', files: spread }, { name: 'Flag rename', files: files('flags') }] });
+    expect(formatFindingComment(wideSplit, TEST_LINKS, 'detached')).toContain(`**PR 1: Move**\n${spread.slice(0, 10).map(f => `\`${f.replace('lib.rs', '')}\`: \`lib.rs\``).join('\n')}\nAnd 2 more files.\n\n**PR 2: Flag rename**`);
   });
 
   it('formats the reply to an answered thread whose problem came back worse', () => {

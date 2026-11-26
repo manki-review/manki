@@ -616,6 +616,8 @@ export interface UsesOutsideDiff {
   changes?: MappedChange[];
   /** The functions and types whose lines the diff touches, in the files the syntax tree parsed. */
   items?: ChangedItem[];
+  /** The test items of the base that hold a removed line, by their base lines, in the files the syntax tree parsed. */
+  removedTests?: Array<Pick<ChangedItem, 'file' | 'start' | 'end'>>;
 }
 
 /** A function or type whose lines the diff touches, with its head lines, counting the comments and attributes above it. */
@@ -664,7 +666,7 @@ export async function listUsesOutsideDiff(workspace: string | undefined, diff: P
     return { ...NO_SECTION, siblings: NO_SIBLINGS };
   }
   // The map of the change and the items are built before the search for uses, so a failed search keeps them.
-  const built: Pick<UsesOutsideDiff, 'changes' | 'items'> = {};
+  const built: Pick<UsesOutsideDiff, 'changes' | 'items' | 'removedTests'> = {};
   try {
     const started = Date.now();
     const uses = await buildUsesSection(workspace, diff, excludePaths, loadApi, forDependency, fullDiff, built);
@@ -1004,7 +1006,7 @@ function formatRelatedUses(
 
 async function buildUsesSection(
   workspace: string, diff: ParsedDiff, excludePaths: string[], loadApi: () => Promise<AstGrepApi>, forDependency: boolean, fullDiff: ParsedDiff,
-  built: Pick<UsesOutsideDiff, 'changes' | 'items'>,
+  built: Pick<UsesOutsideDiff, 'changes' | 'items' | 'removedTests'>,
 ): Promise<UsesOutsideDiff> {
   const files = diff.files.filter(f => f.changeType !== 'deleted');
   const touched = new Map(files.map(f => [f.path, touchedLines(f)]));
@@ -1085,6 +1087,15 @@ async function buildUsesSection(
   const changes = mappedChanges(diff.files, parser, addsNothing);
   if (changes.length > 0) built.changes = changes;
   if (items.length > 0) built.items = items;
+  const removedTests = diff.files.flatMap(file => {
+    const removed = [...removedOldLines(file).keys()];
+    const base = removed.length > 0 && !TEST_PATH.test(file.path) ? parser.parseBase(file) : undefined;
+    if (!base) return [];
+    const holdsRemoved = ({ start, end }: { start: number; end: number }) => (removed[firstAtOrAfter(removed, start)] ?? Infinity) <= end;
+    const tests = [...base.declarations.filter(d => d.test && (d.kind === 'function' || d.kind === 'type')), ...base.testBlocks];
+    return tests.filter(holdsRemoved).map(({ start, end }) => ({ file: file.path, start, end }));
+  });
+  if (removedTests.length > 0) built.removedTests = removedTests;
   // A new namesake declared earlier in the diff must not take the place of the declaration whose readers can break.
   for (const [name, symbol] of redefined) symbols.set(name, symbol);
   const implementations = siblingImplementations(workspace, parser, files, touched, added, excludePaths);
@@ -1112,7 +1123,7 @@ async function buildUsesSection(
   const nothing = {
     ...NO_SECTION, ...(referenceNames.length > 0 && { referenceNames }), ...(dependencyNames.length > 0 && { dependencyNames }), ...(pieces.length > 0 && { pieces }),
     ...(units.length > 0 && { units }), ...(allUnits.length > units.length && { unitsOverLimit: allUnits.length - units.length }),
-    ...(changes.length > 0 && { changes }), ...(items.length > 0 && { items }),
+    ...(changes.length > 0 && { changes }), ...(items.length > 0 && { items }), ...(removedTests.length > 0 && { removedTests }),
   };
   if (names.length === 0 && lookupFields.length === 0) return { ...nothing, siblings: { fields: [], implementations } };
 
