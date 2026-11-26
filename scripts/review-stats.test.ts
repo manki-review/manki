@@ -1,4 +1,5 @@
 import type { LLMCall } from '../src/providers';
+import { FIX_SEEN_MARKER, UNSETTLED_ANSWER_MARKER } from '../src/recap';
 import { formatApprovalRecord, formatReplyRecord, formatReviewRecord } from '../src/review-record';
 import { makeFindingFingerprintEntry, makeRoundContext } from '../src/test-utils';
 import { PRE_EXISTING_TAG } from '../src/types';
@@ -110,6 +111,10 @@ describe('review stats', () => {
       { id: 22, in_reply_to_id: 20, body: '**Withdrawn.** The value is checked above.', user: bot },
       { id: 30, body: '**Blocker**: Open\n\n<!-- manki:blocker:Open -->', user: bot },
       { id: 31, in_reply_to_id: 30, body: 'Fixed in def5678.', user: person },
+      // A "Fixed." that opens with the state of the thread it leaves open counts as one, and a later unsettled answer changes nothing.
+      { id: 35, body: '**Blocker**: Guard\n\n<!-- manki:blocker:Guard -->', user: bot },
+      { id: 36, in_reply_to_id: 35, body: `**Fix seen, the thread stays open until a review or a maintainer confirms it.**\n\nThe guard runs first.\n\n<!-- manki -->\n${FIX_SEEN_MARKER}`, user: bot },
+      { id: 37, in_reply_to_id: 35, body: `**Not settled yet.** The guard runs first.\n\n<!-- manki -->\n${UNSETTLED_ANSWER_MARKER}`, user: bot },
       { id: 40, body: '**Warning**: Minor\n\n<!-- manki:warning:Minor -->', user: bot, pull_request_review_id: 1, path: 'src/a.ts', line: null, original_line: 10 },
       { id: 41, in_reply_to_id: 40, body: 'Withdrawn.', user: bot },
       { id: 50, body: 'A person\'s comment\n\n<!-- manki:blocker:Pasted -->', user: person },
@@ -183,7 +188,7 @@ describe('review stats', () => {
         warning: { posted: 5, inApprovedRounds: 1, raisedLater: 1, onReviewedCode: 1 },
         note: { posted: 2, inApprovedRounds: 2, raisedLater: 1, onReviewedCode: 0 },
       },
-      blockerOutcomes: { fixed: 1, withdrawn: 1, other: 1 },
+      blockerOutcomes: { fixed: 2, withdrawn: 1, other: 1 },
       readerRounds: 1, readerBlockers: 2,
       costPerPr: [0.75, 1], costPerRound: [0.5, 0.25, 1, 0, 0, 0, 0],
       // Rounds 2 of the first PR and 4 and 5 of the second had a whole diff. Round 2 of the second was cut, round 3 unknown.
@@ -224,7 +229,7 @@ describe('review stats', () => {
       '| all | 8 | 1.14 | 3 | 1.50 | 50% (1 of 2) |',
     ].join('\n'));
     expect(report).toContain('whether or not that commit fixed it.\n\n| severity | posted | fixed | dismissed | untouched | fixed % | dismissed % |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n| warning | 3 | 1 | 1 | 1 | 33% | 33% |\n\n| checkStatus | posted | fixed | dismissed | untouched | fixed % | dismissed % |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n| proven | 2 | 1 | 0 | 1 | 50% | 0% |\n\n## Finders');
-    expect(report).toContain('- Blocker threads: 3, fixed 1, withdrawn 1, other 1');
+    expect(report).toContain('- Blocker threads: 4, fixed 2, withdrawn 1, other 1');
     // The split and the answer the first refuter left unsettled both changed the outcome. The lead's two answers agreed.
     expect(report).toContain([
       '## Second refuter', '',

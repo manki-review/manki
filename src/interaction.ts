@@ -11,7 +11,7 @@ import { fencePrText, truncateDiff } from './review';
 import { closeRawDiff, diffSections, findClosedPattern, parsePRDiff, reviewableDiff } from './diff';
 import { eventPrClosed } from './dispatch';
 import { codeTokensFromDiff, highlightCode } from './highlight';
-import { clearRecordMarker, fetchPriorRoundContexts, recordedThreadGrades, threadSeverity, RecapState, fixClaimMarker, guardedKind, isDisprovedThread, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, UNSETTLED_ANSWER_MARKER, currentFindingLine, findingPlace, withoutCode, BOT_PREFIX_PATTERN, withoutStatementFold } from './recap';
+import { clearRecordMarker, FIX_SEEN_MARKER, fetchPriorRoundContexts, recordedThreadGrades, threadSeverity, RecapState, fixClaimMarker, guardedKind, isDisprovedThread, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, UNSETTLED_ANSWER_MARKER, currentFindingLine, findingPlace, withoutCode, BOT_PREFIX_PATTERN, withoutStatementFold } from './recap';
 import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, recordDismissal, authorResolvedNote, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, rolePhrase, unclearedThreads, warningHoldNote } from './state';
 import { AuthorClearRole, FindingSeverity, partlyFixedNote, ParsedDiff, PrContext, RelatedRepoTools, ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation, RoundContext } from './types';
 import { relatedRepoOutcomes, relatedRepoTools, repoTools } from './related-repos';
@@ -458,14 +458,16 @@ function requireNewProof(reply: string, finding: string, file: string | undefine
 }
 
 /**
- * Returns the sentence a "Fixed." answer on a guarded thread gets, which says when a review can confirm the fix. A
+ * Returns a "Fixed." answer on a guarded thread it leaves unsettled, which says when a review can confirm the fix. A
  * review confirms one only after a push changes the thread's `file` or a file in `evidenceFiles`, so on a thread tied
- * to no file it never does, and the answer turns into "Unverified.".
+ * to no file it never does, and the answer turns into "Unverified.". Any other such answer opens with the bold state of
+ * the thread instead of "Fixed.", for which it carries `FIX_SEEN_MARKER`. `resolved` says that the thread stays resolved.
  */
-function fixReviewNote(reply: string, file: string, evidenceFiles: string[] = []): string {
+function fixReviewNote(reply: string, file: string, evidenceFiles: string[] = [], resolved = false): string {
   if (!file) return `${reply.replace(FIXED_REPLY_RE, '$1Unverified.$2')} This finding is not tied to a file, so a review cannot confirm the fix.`;
   const cited = evidenceFiles.length > 0 ? ` or a file its finding cited (${evidenceFiles.map(inline).join(', ')})` : '';
-  return `${reply} A review confirms the fix only after a push changes the thread's file ${inline(file)}${cited}.`;
+  const state = resolved ? 'Fix seen, the finding is not cleared until a review or a maintainer confirms it.' : 'Fix seen, the thread stays open until a review or a maintainer confirms it.';
+  return `**${state}**\n\n${withoutOutcomeOpener(reply.replace(FIXED_REPLY_RE, '').trim())} A review confirms the fix only after a push changes the thread's file ${inline(file)}${cited}.`;
 }
 
 /**
@@ -695,7 +697,7 @@ export async function handleReviewCommentReply(
     // From here on the answer is the plain "Outcome. text" again, so nothing below reads a statement's status.
     const checked = checkReply(response.content, comment.body ?? '', {
       workspace, related, relatedNames, diff, description: prText?.body, repo: `${owner}/${repo}`, pr: prNumber,
-      fixScope: { files: fixFiles.filter(Boolean), hasFile: !!filePath, guarded: !!live && isGuarded(live), ...('unknown' in change && { unknown: change.unknown }), ...(live && 'unknown' in change && change.unknown === 'not_descendant' && { rebased: { reviewable: !!filePath && !findClosedPattern(filePath, closedSince ?? closedPaths) } }), ...(since && since !== root.comment.original_commit_id && { openOn: since }) },
+      fixScope: { files: fixFiles.filter(Boolean), reviewable: !!filePath && !findClosedPattern(filePath, closedSince ?? closedPaths), guarded: !!live && isGuarded(live), ...('unknown' in change && { unknown: change.unknown }), ...(live && 'unknown' in change && change.unknown === 'not_descendant' && { rebased: true as const }), ...(since && since !== root.comment.original_commit_id && { openOn: since }) },
       ...(sincePosted !== undefined && { changedSincePosted: parsePRDiff(sincePosted).files }),
     });
     const isSecurity = isSecurityThread(findingBody);
@@ -821,7 +823,7 @@ export async function handleReviewCommentReply(
       const holdNote = (!outcome || !mayResolve) && live && !closed ? await warningHoldNote(octokit, bot, owner, repo, live, config?.author_clear_role) : undefined;
       // Read as the answer leaves the thread. Manki may have opened it above, and a resolved one can still hold the approval.
       const threadState: ThreadState = !live ? undefined : noted || !live.isResolved ? 'open' : held || holdNote ? undefined : 'resolved';
-      const answer = leftOpen ? fixReviewNote(reply, filePath, evidenceFiles) : replyIn(threadState);
+      const answer = leftOpen ? fixReviewNote(reply, filePath, evidenceFiles, !noted && !!thread?.isResolved) : replyIn(threadState);
       const notes = [...(staysOpen ? [staysOpenNote(guard, settled === 'Fixed', config?.author_clear_role, thread?.isResolved)] : []), ...reopened, ...(closed && settled ? [REPLY_PR_CLOSED] : []), ...(holdNote ? [holdNote] : [])];
       const decision = replyDecision(settled, closed ? 'pr_closed' : lookupFailed ? 'lookup_failed' : thread, mayResolve, staysOpen, noted, resolved, clears);
       // Whether the finding still blocks once this answer is posted. Only a maintainer's settling answer clears it.
@@ -841,6 +843,7 @@ export async function handleReviewCommentReply(
         ...(settled === 'Fixed' && head && !closed ? [fixedMarker(head)] : []),
         ...(fixClaim ? [fixClaimMarker(fixClaim)] : []),
         ...(checked.unsettled ? [UNSETTLED_ANSWER_MARKER] : []),
+        ...(leftOpen && filePath ? [FIX_SEEN_MARKER] : []),
         ...(noted ? [REOPENED_MARKER] : []),
         ...(settled && thread && mayClear && senderLogin ? [clearRecordMarker(senderLogin)] : []),
       ];

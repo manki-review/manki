@@ -37,7 +37,7 @@ const UNKNOWN_CHANGES: Record<UnknownChange, string> = {
   unreadable: 'I could not read what this PR changed since the finding was posted.',
 };
 
-/** Why no line can show a fix after a rebase. It follows the bold state that leads the answer. */
+/** Why no line can show a fix after a rebase. */
 const REBASED_ANSWER = 'This branch was rebased or force pushed since the finding was posted, so a reply can\'t settle it.';
 
 /**
@@ -48,12 +48,17 @@ export function withoutOutcomeOpener(answer: string): string {
   return /^(?:fixed|agreed|withdrawn|kept|unverified|confirmed)\b/i.test(answer.replace(/^[^A-Za-z0-9]+/, '')) ? `My reading: ${answer}` : answer;
 }
 
-/** Returns the line that leads an answer after a rebase. Only an open thread whose file a review reads hears of the next one. */
-function rebasedAnswer({ rebased, guarded }: FixScope, thread: ThreadState): string {
-  const state = thread === 'open' && rebased?.reviewable ? 'Not settled yet: the next review checks the fix.'
+/**
+ * Returns the lines that lead an unproven "Fixed": the bold state, then why no line counts the fix. Only an open thread
+ * whose file a review reads hears of the next review. An open guarded thread gets no ask, since the note below the answer
+ * names who closes it.
+ */
+function unsettledAnswer(scope: FixScope, thread: ThreadState): string {
+  const { rebased, guarded, reviewable } = scope;
+  const state = thread === 'open' && reviewable ? `Not settled yet: the next review ${rebased ? '' : 'after a push '}checks the fix.`
     : thread === 'resolved' ? 'Not settled by this reply.'
-      : guarded ? 'Not settled yet.' : `Not settled yet: ${maintainerShould('decide', thread)}.`;
-  return `**${state}** ${REBASED_ANSWER}`;
+      : guarded && thread === 'open' ? 'Not settled yet.' : `Not settled yet: ${maintainerShould('decide', thread)}.`;
+  return `**${state}** ${unprovenFix(scope, thread)}`;
 }
 
 /** How many raw proof entries of the model the reply record keeps, and how much of each. */
@@ -79,15 +84,12 @@ function maintainerShould(act: string, thread: 'open' | undefined): string {
 export interface FixScope {
   /** The finding's file and the files it cited, whose change `changedSincePosted` holds. */
   files: readonly string[];
-  /** Whether the finding is tied to a file. */
-  hasFile: boolean;
+  /** Whether a review reads the thread's file: it is tied to one, and `closed_paths` does not close that file. */
+  reviewable: boolean;
   /** Why the change there is not known. Unset when it is. */
   unknown?: UnknownChange;
-  /**
-   * Set on an open PR whose branch was rebased or force pushed since the finding was posted. `reviewable` says whether a
-   * review reads the thread's file: it is tied to one, and `closed_paths` does not close that file.
-   */
-  rebased?: { reviewable: boolean };
+  /** Set on an open PR whose branch was rebased or force pushed since the finding was posted. */
+  rebased?: true;
   /** The commit of the round that still found the thread open, when the change counts from there. */
   openOn?: string;
   /** Whether the thread is a blocking or security one. What clears it is said apart from this answer. */
@@ -95,16 +97,16 @@ export interface FixScope {
 }
 
 /**
- * Returns the sentences an unproven "Fixed" gets: where a reply counts a fix, or why no line could count, and what
- * settles the thread.
+ * Returns the sentences that follow the state of an unproven "Fixed": where a reply counts a fix, or why no line could
+ * count, and on an open thread a review reads that is not guarded what the next review reads.
  */
-function unprovenFix({ files, hasFile, unknown, openOn, guarded }: FixScope, thread: ThreadState): string {
+function unprovenFix({ files, reviewable, unknown, rebased, openOn, guarded }: FixScope, thread: ThreadState): string {
   const since = openOn ? `since the review of ${inline(openOn.slice(0, 7))} still found this open` : 'since this was posted';
   const where = files.length === 0 ? 'This finding is not tied to a file, so a reply cannot show a fix.'
-    : unknown ? UNKNOWN_CHANGES[unknown]
-      : `I could not point to a line this PR changed in ${files.map(inline).join(', ')} ${since}. A reply counts a fix only there.`;
-  if (thread === 'resolved' || (thread === 'open' && guarded)) return where;
-  return `${where} ${thread === 'open' && hasFile ? 'The next review after a push checks the whole push, also other files.' : `A${maintainerShould('decide', thread).slice(1)}.`}`;
+    : rebased ? REBASED_ANSWER
+      : unknown ? UNKNOWN_CHANGES[unknown]
+        : `I could not point to a line this PR changed in ${files.map(inline).join(', ')} ${since}. A reply counts a fix only there.`;
+  return thread === 'open' && reviewable && !guarded && !rebased ? `${where} The next review after a push checks the whole push, also other files.` : where;
 }
 
 /** What the reply's cited lines and searches are checked against. */
@@ -169,8 +171,8 @@ export interface CheckedReply {
    */
   text: (thread: ThreadState) => string;
   /**
-   * Set for an unproven fix on a rebased branch, whose `text` names no outcome. Returns the line that goes above it. The
-   * readers of the reply take it as "Unverified."
+   * Set for an unproven fix, whose `text` names no outcome. Returns the line that goes above it. The readers of the reply
+   * take it as "Unverified."
    */
   unsettled?: (thread: ThreadState) => string;
   /** The outcome `text` opens with. */
@@ -362,14 +364,13 @@ export function checkReply(content: string, developerReply: string, sources: Rep
     ? parsed.fixed_in : undefined;
   // A fix in another pull request stays unconfirmed until `checkFixedElsewhere` confirms it.
   const settled: AnswerOutcome = unproven || outcome === 'FixedElsewhere' ? 'Unverified' : outcome;
-  const note = (thread: ThreadState): string => unproven && outcome === 'Fixed' && sources.fixScope ? ` ${unprovenFix(sources.fixScope, thread)}`
-    : unproven ? ` ${leftToMaintainer(UNPROVEN_OUTCOME, thread)}`
+  const note = (thread: ThreadState): string => unproven ? ` ${leftToMaintainer(UNPROVEN_OUTCOME, thread)}`
     : outcome === 'FixedElsewhere' ? ` ${leftToMaintainer(NO_FIXING_PR, thread)}`
       : outcome === 'Unverified' && thread !== 'resolved' ? ` A${maintainerShould('confirm this', thread).slice(1)}.` : '';
-  const unsettled = unproven && outcome === 'Fixed' && sources.fixScope?.rebased && sources.fixScope.files.length > 0 ? sources.fixScope : undefined;
+  const unsettled = unproven && outcome === 'Fixed' ? sources.fixScope : undefined;
   return {
     text: thread => unsettled ? answer : `${settled}. ${answer}${note(thread)}`,
-    ...(unsettled && { unsettled: (thread: ThreadState) => rebasedAnswer(unsettled, thread) }),
+    ...(unsettled && { unsettled: (thread: ThreadState) => unsettledAnswer(unsettled, thread) }),
     outcome: settled,
     modelOutcome: outcome,
     needsAnswer: parsed.needs_answer !== false,

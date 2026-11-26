@@ -6,7 +6,7 @@ import * as core from '@actions/core';
 
 import { DEFAULT_CONFIG } from './config';
 import { BOT_MARKER, CANCELLED_MARKER, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER } from './github';
-import { clearRecordMarker, REOPENED_MARKER, securityOverrideMarker } from './recap';
+import { clearRecordMarker, FIX_SEEN_MARKER, REOPENED_MARKER, securityOverrideMarker } from './recap';
 import { relatedReposCacheDir } from './related-repos';
 import { RETRY_HINT } from './review';
 import { parseSettingsBlock } from './settings';
@@ -540,6 +540,7 @@ const DRAFT_HOLD_WITHOUT_AUTO_APPROVE = '**Approval held:** this PR is a draft. 
 const REOPENED = 'Reopened. A blocking finding needs a maintainer or a fix: the PR author cannot resolve it.';
 /** What a "Fixed." on the blocker thread says about the push a review needs to confirm the fix. */
 const FIX_NEEDS_PUSH = 'A review confirms the fix only after a push changes the thread\'s file `src/math.ts`.';
+const FIX_SEEN = 'Fix seen, the thread stays open until a review or a maintainer confirms it.';
 const PUSH_A_FIX = 'A reviewer with write access can resolve it, or push a fix and the next Manki review will check it. If the push starts no review, as while automatic review is off or paused, comment `/manki review`.';
 
 /** Resolves `thread` as `login` and runs Manki on the event GitHub sends for that. */
@@ -2090,9 +2091,9 @@ describe('runFullReview end to end', () => {
       for (const step of first === 'round' ? [round, reply] : [reply, round]) await step();
 
       expect(core.setFailed).not.toHaveBeenCalled();
-      const confirmations = thread.comments.filter(c => c.author.login !== 'alice' && /^Fixed\b/.test(c.body)).map(c => c.body.split('\n')[0]);
+      const confirmations = thread.comments.filter(c => c.author.login !== 'alice' && (/^Fixed\b/.test(c.body) || c.body.includes(FIX_SEEN_MARKER))).map(c => (c.body.includes(FIX_SEEN_MARKER) ? c.body.split('\n\n').slice(0, 2).join('\n\n') : c.body.split('\n')[0]));
       // The reply answers the developer, so it says more than the round's line and is the one kept.
-      expect(confirmations).toEqual([first === 'round' ? 'Fixed in c3c3c3c.' : `Fixed. \`add\` checks the range before it sums. ${FIX_NEEDS_PUSH}`]);
+      expect(confirmations).toEqual([first === 'round' ? 'Fixed in c3c3c3c.' : `**${FIX_SEEN}**\n\n\`add\` checks the range before it sums. ${FIX_NEEDS_PUSH}`]);
       expect(thread.isResolved).toBe(true);
     });
 
@@ -2122,7 +2123,8 @@ describe('runFullReview end to end', () => {
       // A thread that could not be opened is not called open, and stays unmarked.
       const keepsBlocking = 'This is a blocking finding, so resolving the thread does not clear it. It keeps blocking until the next review confirms the fix, or someone other than the PR author with write access clears it.';
       const bodies = () => thread.comments.map(c => c.body.replace(/\n<!-- manki-reply-record: .+ -->/, ''));
-      expect(bodies().at(-1)).toBe(`${fixed} ${FIX_NEEDS_PUSH}\n\n${failed ? keepsBlocking : staysOpen}\n\n<!-- manki -->\n<!-- manki-fixed:${mockGitHub.headSha} -->${failed ? '' : `\n${REOPENED_MARKER}`}`);
+      const lead = failed ? 'Fix seen, the finding is not cleared until a review or a maintainer confirms it.' : FIX_SEEN;
+      expect(bodies().at(-1)).toBe(`**${lead}**\n\n\`add\` checks the range before it sums. ${FIX_NEEDS_PUSH}\n\n${failed ? keepsBlocking : staysOpen}\n\n<!-- manki -->\n<!-- manki-fixed:${mockGitHub.headSha} -->\n${FIX_SEEN_MARKER}${failed ? '' : `\n${REOPENED_MARKER}`}`);
       expect(bodies().join('\n')).not.toContain('Reopened.');
       expect(thread.isResolved).toBe(failed);
       // Confirming the fix clears nothing: the thread blocks until a round marks it addressed or a maintainer clears it.
