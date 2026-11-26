@@ -5336,6 +5336,8 @@ describe('runReview', () => {
       }),
     ]);
     expect(answered.result.llmCalls).toContainEqual(expect.objectContaining({ stage: 'dedup' }));
+    // The round keeps which finding went into which, so its summary still counts the folded finding as listed.
+    expect(answered.result.readerFolds).toEqual([['src/a.ts:42:Connection leaked on the error path', 'src/a.ts:40:Close is skipped after an early return']]);
 
     const apart = ['Connection leaked on the error path', 'Buffer is never flushed', 'Close is skipped after an early return'];
     for (const reply of [async () => { throw new Error('timeout'); }, async () => ({ content: 'Both look the same to me.' })]) {

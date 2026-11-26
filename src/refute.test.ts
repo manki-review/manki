@@ -1094,6 +1094,7 @@ describe('refuteBlockers', () => {
     const contradicts = { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'], premises: [{ outcome: 'disproved', reason: 'Bounded.', proof: ['src/math.ts:1'] }] };
     const first = fakeClient({
       'Both say no defect': noDefect(open), 'Split on the defect': noDefect(open), 'Premise confirmed beside': noDefect(open, open), 'Split with the reach confirmed': noDefect(holds),
+      'Reach confirmed beside a disproof': noDefect(open),
       ...Object.fromEntries(['Contradiction beside a disproof', 'Contradiction beside an open check'].map(title => [title, contradicts])),
     });
     const pair = fakeClient({
@@ -1104,12 +1105,15 @@ describe('refuteBlockers', () => {
       'Split with the reach confirmed': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'], premises: [holds] },
       'Contradiction beside a disproof': noDefect(open),
       'Contradiction beside an open check': { outcome: 'unsettled', reason: 'Could not tell.', premises: [open] },
+      // The second refuter confirms only the reach and cannot tell whether the defect exists.
+      'Reach confirmed beside a disproof': { reason: 'Every client reaches it.', premises: [holds] },
     });
     const paired = await refuteBlockers(first, [
       doubted('Both say no defect'), doubted('Split on the defect'),
       finding('Premise confirmed beside', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'normal' }, doubts: [exists, reached] }),
       finding('Split with the reach confirmed', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: rare, doubts: [REACH_DOUBT] }),
       doubted('Contradiction beside a disproof'), doubted('Contradiction beside an open check'),
+      finding('Reach confirmed beside a disproof', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: rare, doubts: [REACH_DOUBT] }),
     ], { workspace, diff, pair });
 
     expect(paired.map(columns)).toEqual([
@@ -1124,12 +1128,14 @@ describe('refuteBlockers', () => {
       // It confirms nothing either, beside a disproof or beside an open check.
       ['Contradiction beside a disproof', 'warning', 'unsettled', 'confirmed', 'disproved', false, 'unconfirmed'],
       ['Contradiction beside an open check', 'warning', 'unsettled', 'confirmed', 'unsettled', false, 'unconfirmed'],
+      // A confirmed reach says nothing about the defect, so it does not back the finding against the disproof.
+      ['Reach confirmed beside a disproof', 'ignore', 'unsettled', 'disproved', 'unsettled', true, 'unconfirmed'],
     ]);
     expect(paired.map(f => [f.pairRefutation?.outcome, f.cell?.column])).toEqual([
-      ['unsettled', undefined], ['confirmed', undefined], ['unsettled', 'normal'], ['confirmed', 'rare'], ['unsettled', undefined], ['unsettled', undefined],
+      ['unsettled', undefined], ['confirmed', undefined], ['unsettled', 'normal'], ['confirmed', 'rare'], ['unsettled', undefined], ['unsettled', undefined], ['confirmed', 'rare'],
     ]);
     // The check that confirmed the defect keeps a split warning posted. A contradiction leaves its warning in the round record.
-    expect(paired.slice(1).map(unprovenReason)).toEqual([undefined, 'unsettled_check', undefined, 'unsettled_check', 'unsettled_check']);
+    expect(paired.slice(1, 6).map(unprovenReason)).toEqual([undefined, 'unsettled_check', undefined, 'unsettled_check', 'unsettled_check']);
   });
 
   it('checks every finding a doubt holds below its conditional grade, and at most eight warnings nothing proves yet', async () => {

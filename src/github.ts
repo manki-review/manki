@@ -3268,7 +3268,7 @@ function formatBlockerCounts({ fresh, earlier, followUp }: BlockerCounts): strin
  * Returns the sentence a round says about itself: the judge's summary, or else the first two sentences of the top
  * blocker's description, or nothing when no finding blocks. The judge writes its summary before later steps take
  * findings out of the round, so the summary is left out when the judge kept a finding and `result.findings` holds none
- * of the findings it kept. Later steps also make blockers the summary never saw and lower blockers it names. So it is
+ * of the findings it kept, itself or as the verdict reader's finding it was folded into. Later steps also make blockers the summary never saw and lower blockers it names. So it is
  * left out unless the findings the judge graded a blocker in that call are exactly the findings that block. An
  * incomplete round's summary says why the round did not finish, so it is returned as it is.
  */
@@ -3278,6 +3278,8 @@ export function roundSentence(result: ReviewResult): string {
   const droppedLater = (f: Finding) => f.gradePath?.length ? f.gradePath.at(-1)!.by !== 'judge' : false;
   const kept = (result.allJudgedFindings ?? []).filter(f => f.severity !== 'ignore' || droppedLater(f));
   const listed = new Set(result.findings.map(findingKey));
+  const folds = new Map(result.readerFolds);
+  const stillListed = (f: Finding) => listed.has(findingKey(f)) || listed.has(folds.get(findingKey(f)) ?? '');
   // The judge graded a blocker itself when the cell it stated gives `blocker` with no doubt behind it. A doubt leaves `gradeIfConfirmed`,
   // and so does the hold on a blocker one finder alone reported, which the judge never saw (`soleHeld`).
   // A blocker two disproofs lowered keeps that cell as `judgeCell`. A sweep's finding is graded in a later judge call, and the verdict reader's has no cell.
@@ -3289,7 +3291,7 @@ export function roundSentence(result: ReviewResult): string {
   const blockers = new Set(result.findings.filter(f => f.severity === 'blocker').map(findingKey));
   const sameBlockers = [...(result.allJudgedFindings ?? []), ...result.findings].every(f => judgeGraded(f) === blockers.has(findingKey(f)));
   // The judge writes its summary before the verdict reader runs, so it never describes the reader's blockers.
-  const stands = result.verdictReason !== 'verdict_reader' && (kept.length === 0 || kept.some(f => listed.has(findingKey(f)))) && sameBlockers;
+  const stands = result.verdictReason !== 'verdict_reader' && (kept.length === 0 || kept.some(stillListed)) && sameBlockers;
   if (stands && result.summary.trim()) return result.summary;
   // Only a blocker stands in for the summary, so a round nothing blocks then has no sentence.
   const top = result.findings.find(f => f.severity === 'blocker');
