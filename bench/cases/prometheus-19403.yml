@@ -1,0 +1,39 @@
+id: prometheus-19403
+repo: prometheus/prometheus
+# The head is the first push, before a force push dropped the unrelated part, so no branch holds it. Fetch it by its SHA.
+source: prometheus upstream PR 19403, at the head where a maintainer asked to move the pretty-printer change to its own PR
+base: 0923fdef23c3468ce4afdb3f2cb6c14a79037214
+head: ef82f58d8657a99618c1f2d59c9ba9ce468aabed
+title: "promql/parser: preserve parentheses around duration literals"
+body: |
+  #### Which issue(s) does the PR fix:
+  Fixes upstream issue 18770
+
+  #### Release notes for end users (**ALL** commits must be considered).
+  *Reviewers should verify clarity and quality.*
+
+  ```release-notes
+  [BUGFIX] PromQL: Preserve parentheses around duration literals on Expr.String() round-trip.
+  ```
+
+  `paren_duration_expr` only set `Wrapped` on `*DurationExpr`, so a parenthesised `*NumberLiteral` (`foo offset (5)`, `foo[(5s)]`) was flattened by `Expr.String()`.
+
+  This wraps a parenthesised number in a unary-plus `*DurationExpr` with `Wrapped: true`, matching how `+(5*2)` already survives. Unary `+(5)` / `-(5)` go through the same path.
+# The repository has no `.manki.yml` at the base, so this block keeps the defaults. It pins `review.rules` to `warn`,
+# the setting the key was written for, since the default `auto` grades a broken rule by its damage alone.
+config:
+  review:
+    rules: warn
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "The PR fixes how `Expr.String()` prints a parenthesised duration literal. In `DurationExpr.Pretty` in `promql/parser/prettier.go` it also adds cases for `STEP`, `RANGE`, `MIN_OF` and `MAX_OF`, which fix another bug: `Pretty` used to call `e.RHS.Pretty(0)` on a `step()` or `range()` node with no operands, and printed `min_of` and `max_of` as infix operators. The parentheses fix needs only the unary-plus case in the same function, so the other cases share a file and a function with it but are their own change, with no test. The repository's `AGENTS.md` says not to include unrelated changes in a PR and to make a separate PR instead."
+    locations: ["promql/parser/prettier.go", "Pretty", "STEP", "MIN_OF", "MAX_OF"]
+    fix: "1c35e09eafcbc036f40573c7e97d25cab46ff67d"
+nice_to_have:
+  - id: N1
+    severity: note
+    mechanism: "The new block at the top of `applyUnaryOpToDurationExpr` that lifts a wrapped `*NumberLiteral` into a unary-plus `*DurationExpr` repeats the `*NumberLiteral` branch of the new `wrapParenDurationExpr`, instead of calling it."
+    locations: ["promql/parser/parse.go", "applyUnaryOpToDurationExpr", "wrapParenDurationExpr"]
+    fix: "1c35e09eafcbc036f40573c7e97d25cab46ff67d"

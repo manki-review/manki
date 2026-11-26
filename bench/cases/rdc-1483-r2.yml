@@ -1,0 +1,117 @@
+# Manki 7.7.3 posted P1 again in this round under another title, on the next line, and called it missed by the earlier
+# round. The author had answered P1 (the ban of a culprit that already left is intended and older than the PR), Manki
+# agreed and resolved the thread, and the push changed only a test and a doc comment there. The round also posted a
+# warning whose trigger needs the public `start()` called twice without `stop()`, which no caller in the repository does.
+# The key leaves that one out, so a posted copy counts as an unexpected warning.
+id: rdc-1483-r2
+repo: xdustinface/rust-dashcore
+source: rust-dashcore upstream PR 1483, round 2 by Manki 7.7.3, every comment checked against the code
+base: f0ddfd45f78e639e0caed3312515ac72b28ea823
+head: d2c43807199be8b34a24bed9abf2e2084a59ba2f
+title: "fix(dash-spv): keep bans in force across a redial"
+body: |
+  A successful handshake erased any ban recorded while the dial was in flight. `Bans::dialed` deleted the address's whole entry to reset its dial backoff, and `connect` starts the peer's reader before it returns. So a peer that sends an undecodable message right after its handshake was banned for misbehaving and then unbanned straight away, free to be redialed on the next fill round. A kick or `ban_peer` landing in that window was lost the same way.
+
+  `dialed` now resets only the failure count and keeps an entry whose expiry is still in the future. A timeout kick also records its ban before it drops the peer from the set, instead of after re-queueing its work, so the supervisor's read of the live set and the bans always sees a kicked peer in one of them.
+key_version: 1
+prior_round:
+  head: 1f7aca21e9eae5dedde21234a29fce56fb3e0965
+  findings:
+    - id: P1
+      severity: warning
+      title: The timeout monitor can ban an address after its old connection has left
+      file: dash-spv/src/network/manager.rs
+      line: 1211
+      cell:
+        row: degraded
+        column: normal
+      posted: thread
+      state: resolved
+      description: "`StallJudge` puts already-absent connections in `culprits` so their requests can be retried, but the monitor also bans their addresses, including when no live peer witnessed their silence. A connection can also leave through the pump after the timeout snapshot, letting the supervisor see its address as neither live nor banned before the monitor records the ban. The ban then applies to the address for ten minutes, while removal targets only the old connection and cannot stop an already-admitted r..."
+      how_to_fix: Separate request cleanup for departed connections from actual timeout kicks. In one synchronized transition, verify that the exact connection is still live and, for a witnessed kick, record its ban before publishing its removal. Requeue work for all affected connection IDs, including ones that alrea...
+      evidence_files:
+        - dash-spv/src/network/peer_set.rs
+    - id: P2
+      severity: warning
+      title: The ban table can retain an unbounded history of peer addresses
+      file: dash-spv/src/network/bans.rs
+      line: 41
+      cell:
+        row: degraded
+        column: normal
+      posted: thread
+      state: resolved
+      description: Every distinct failed or banned address can leave an entry for the lifetime of the manager, even after its expiry. Peer gossip supplies up to 1,000 addresses per answer, and discovery's 2,000-entry limit bounds only its current pool, not the history of addresses tried. A long-lived client can accumulate unbounded memory and repeatedly scan the whole table under its lock during peer selection.
+      how_to_fix: Bound the ban and retry state independently of discovery. Reclaim expired bans and bound retained failure history while preserving exponential backoff. At capacity, limit new untrusted candidates rather than silently evicting active bans.
+      evidence_files:
+        - dash-spv/src/network/manager.rs
+        - dash-spv/src/network/discovery.rs
+    - id: P3
+      severity: note
+      title: The kick test checks the ban after removal, not at removal
+      file: dash-spv/src/network/manager.rs
+      line: 2057
+      cell:
+        row: improvement
+        column: normal
+      posted: thread
+      state: open
+      description: The assertion fails if the ban moves back after requeueing, but it still passes if the ban is placed between removal and requeueing, which leaves the redial race open. The test also inserts an on-wire request directly rather than exercising the public enqueue and routing path.
+      how_to_fix: Drive a real routed request through the public API and check that peer selection cannot see the kicked address as eligible when its removal becomes visible. Make the test fail if the ban is moved to immediately after removal.
+      evidence_files:
+        - dash-spv/src/network/broker.rs
+    - id: P4
+      severity: note
+      title: Test doc says every timeout kick bans the peer, but a kick with no witness skips the ban
+      file: dash-spv/src/network/manager.rs
+      line: 2027
+      cell:
+        row: improvement
+        column: normal
+      posted: thread
+      state: open
+      description: The comment says a timeout kick re-queues work only once the peer is banned, so the supervisor cannot pick it again. The monitor deliberately skips the ban for the peer kicked with no witness, so the supervisor can redial that address straight after the kick. The code does this on purpose and works. Only the comment's general wording is wrong, since this test always has a witness.
+      how_to_fix: Limit the comment to a peer kicked beside a witness, for example "A timeout kick beside a witness re-queues the stalled peer's work only once that peer is banned, closed and out of the set".
+    - id: P5
+      severity: note
+      title: The disconnect-handling change has no dashd regression test
+      file: dash-spv/src/network/manager.rs
+      line: 1211
+      cell:
+        row: improvement
+        column: normal
+      posted: thread
+      state: open
+      description: The PR changes when a timeout disconnect makes an address ineligible for redial, but exercises the change only in unit tests. The existing dashd disconnect tests expect automatic reconnection, and the stall test expects the sole peer to stay connected through a temporary pause. Neither checks that a kicked peer is excluded while sync continues.
+      how_to_fix: Add a dashd integration case alongside the disconnect or stall tests that exercises a witnessed timeout and checks that the client continues with a healthy peer without redialing the kicked one.
+      evidence_files:
+        - dash-spv/tests/dashd_sync/tests_disconnect.rs
+        - dash-spv/tests/dashd_sync/tests_stall.rs
+        - dash-spv/src/network/bans.rs
+# The push makes the kick test hold the ban table and require the kicked peer in the set at its ban (P3), and limits the
+# test doc to a kick beside a witness (P4). It keeps `mark_on_wire` on purpose, which P3 named only as a side point.
+must_resolve: [P3, P4]
+must_keep_open: []
+# P1 and P2 were agreed and resolved, and the push changes neither. P5 stays open: the push adds no dashd test.
+must_not_repeat: [P1, P2, P5]
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "The PR says a `ban_peer` landing during the dial is no longer lost, and `dialed` now keeps the ban. But `repair_round` admits the new connection with `connected.admit` right after `dialed`, and `admit` checks only the session and the capacity, never the ban. `ban_peer` closes only peers already in the set, so a peer banned while its dial was in flight stays connected and is routed requests. The ban only keeps a later dial away."
+    locations: ["dash-spv/src/network/manager.rs", "repair_round", "dialed", "admit", "ban_peer", "dash-spv/src/network/peer_set.rs"]
+    fix: 6e5dd06c9
+    source: Manki 7.7.3 round 2
+nice_to_have:
+  - id: N1
+    severity: note
+    mechanism: "The new four-yield loop after `drop(bans_held)` in `a_kicked_peer_gets_none_of_its_requeued_work` repeats `settle()` of the same test module."
+    locations: ["dash-spv/src/network/manager.rs", "settle", "a_kicked_peer_gets_none_of_its_requeued_work"]
+    fix: c629e15c4
+  - id: N2
+    severity: note
+    mechanism: "The new test helper `Bans::hold` is `pub` although only the sibling `manager` tests call it, so `pub(super)` is enough."
+    locations: ["dash-spv/src/network/bans.rs", "hold"]
+  - id: N3
+    severity: note
+    mechanism: "The doc comment of `Bans::hold` joins what it does and why a test needs it with `so` in one sentence."
+    locations: ["dash-spv/src/network/bans.rs", "hold"]
