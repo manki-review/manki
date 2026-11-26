@@ -2577,8 +2577,9 @@ describe('handleDismiss (via handlePRComment)', () => {
     const retry = listed('Retry never ends', 2);
     const queue = listed('Queue grows without bound', 7, { raisedIn: 1 });
     const both = listed('Null-check-warning in the retry loop', 4);
-    const round = makeRoundContext(3, { findings: { count: 4, severityCounts: {}, entries: [
-      retry, both,
+    const held = listed('Cache never expires', 13, { holds: true });
+    const round = makeRoundContext(3, { findings: { count: 5, severityCounts: {}, entries: [
+      retry, both, held,
       // A blocker, a security warning and a warning with a thread are never dismissed this way.
       listed('Retry blocks the queue', 5, { severity: 'blocker', posted: 'body' }), listed('Retry token in the log', 9, { tags: ['security'] }), listed('Retry backoff is fixed', 11, { threadId: 'T4', posted: 'thread' }),
     ], carried: [queue] } });
@@ -2597,6 +2598,8 @@ describe('handleDismiss (via handlePRComment)', () => {
       body: `Dismissed on this PR: \`Retry never ends\`. Later reviews of this PR no longer list it as an earlier warning. No suppression is stored, so other PRs can still raise it.\n\n<!-- manki -->\n${marker(retry)}`,
       stored: 0, reacted: 1,
     });
+    // A warning that holds the approval keeps holding it until a new round record, which the answer says.
+    expect((await dismiss('cache never')).body).toMatch(/^Dismissed on this PR: `Cache never expires`\. Later reviews of this PR no longer list it as an earlier warning\. `Cache never expires` still holds the approval until the next review, which a push or the Review again box starts\. No suppression is stored/);
     // A carried warning matches too, and text that names two of them dismisses both.
     expect((await dismiss('queue grows')).body).toContain(`\n\n<!-- manki -->\n${marker(queue)}`);
     const two = await dismiss('retry');

@@ -1184,7 +1184,9 @@ function listedDismissNote(entries: FindingFingerprintEntry[], trusted: boolean)
   const titles = entries.map(e => inline(e.title ?? '')).join(', ');
   const one = entries.length === 1;
   if (!trusted) return `Only someone with write access can dismiss a warning listed in a review body, so ${titles} ${one ? 'stays' : 'stay'} listed.`;
-  return `Dismissed on this PR: ${titles}. Later reviews of this PR no longer list ${one ? 'it as an earlier warning' : 'them as earlier warnings'}. No suppression is stored, so other PRs can still raise ${one ? 'it' : 'them'}.`;
+  const holding = entries.filter(e => e.holds).map(e => inline(e.title ?? ''));
+  const hold = holding.length ? ` ${holding.join(', ')} still ${holding.length === 1 ? 'holds' : 'hold'} the approval until the next review, which a push or the Review again box starts.` : '';
+  return `Dismissed on this PR: ${titles}. Later reviews of this PR no longer list ${one ? 'it as an earlier warning' : 'them as earlier warnings'}.${hold} No suppression is stored, so other PRs can still raise ${one ? 'it' : 'them'}.`;
 }
 
 /**
