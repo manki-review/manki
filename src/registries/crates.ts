@@ -20,6 +20,12 @@ const normalize = (name: string): string => name.toLowerCase().replace(/-/g, '_'
 /** The Cargo config files of a checkout, which can patch a crate or replace the source of every crate. */
 const CARGO_CONFIGS = /(?:^|\/)\.cargo\/config(?:\.toml)?$/;
 
+/**
+ * The settings of a Cargo config that make a fresh install pick another version than the highest: a minimum publish
+ * age, or the lowest versions. One under `[registries.crates-io]` already refuses the crate as another index.
+ */
+const PICK_SETTINGS = ['registry.global-min-publish-age', 'registry.min-publish-age', 'unstable.minimal-versions', 'unstable.direct-minimal-versions'];
+
 /** The tables of a manifest that list dependencies, each under one of these names. */
 const DEPENDENCY_TABLES = ['dependencies', 'dev-dependencies', 'build-dependencies', 'dev_dependencies', 'build_dependencies'];
 
@@ -112,14 +118,16 @@ function fullRustVersion(value: unknown): string | undefined {
 }
 
 /**
- * Returns which of `files` lets Cargo pick an older version than the highest a requirement allows: a `rust-version`
- * together with the resolver that honours it, from edition 2024, `resolver = "3"` or a Cargo config's
- * `incompatible-rust-versions`. The setting and the `rust-version` can sit in different manifests of one workspace.
+ * Returns which of `files` lets Cargo pick another version than the highest a requirement allows: a Cargo config's
+ * minimum publish age or lowest versions, or the resolver that honours `rust-version`, from edition 2024,
+ * `resolver = "3"` or a Cargo config's `incompatible-rust-versions`. The resolver setting and the `rust-version` can
+ * sit in different manifests of one workspace.
  *
  * That resolver prefers the version that fits the most `rust-version`s of the workspace's members, and the highest of
  * those. One without a `rust_version` in the index fits all. With every package stating a `rust-version`, the highest
  * version that fits each of them is the pick of any workspace, so that is left to a test. A workspace whose members
- * state none goes by the compiler's version, which Manki does not know.
+ * state none goes by the compiler's version, which Manki does not know, so the test refuses a version with a
+ * `rust_version`. A Cargo config that sets one of `PICK_SETTINGS` refuses every version.
  */
 function cargoFreshPick(files: readonly RegistryConfig[]): ReturnType<Registry['freshPick']> {
   const stated: Array<{ file: string; version?: string }> = [];
@@ -137,6 +145,12 @@ function cargoFreshPick(files: readonly RegistryConfig[]): ReturnType<Registry['
     }
     if (CARGO_CONFIGS.test(file)) {
       if (Object.hasOwn(tableOf(toml.resolver), 'incompatible-rust-versions')) resolver ??= file;
+      const setting = PICK_SETTINGS.find(key => {
+        const path = key.split('.');
+        const table = path.slice(0, -1).reduce((at, name) => tableOf(at[name]), toml);
+        return Object.hasOwn(table, path.at(-1)!) && table[path.at(-1)!] !== false;
+      });
+      if (setting) return `${shown(file)} sets \`${setting}\`, so a fresh install may not pick the highest version a requirement allows`;
       continue;
     }
     const pkg = tableOf(toml.package ?? toml.project);
@@ -153,7 +167,10 @@ function cargoFreshPick(files: readonly RegistryConfig[]): ReturnType<Registry['
     }
     if ([pkg.edition, shared.edition].includes('2024') || [pkg.resolver, workspace.resolver].includes('3')) resolver ??= file;
   }
-  if (!rustVersion || !resolver) return undefined;
+  if (!resolver) return undefined;
+  // Without a `rust-version`, Cargo picks by the compiler's version, which Manki does not know.
+  if (!rustVersion) return highest => highest.rustVersion === undefined ? undefined
+    : `${shown(resolver)} lets Cargo pick by \`rust-version\` and no package states one, so a fresh install picks by the compiler's version, which Manki does not know, and crates.io states a Rust version for the newest, ${highest.version}`;
   const why = (lacking: string) => `${shown(rustVersion)} sets \`rust-version\` and ${shown(resolver)} lets Cargo pick by it, so a fresh install may pick an older version, since ${lacking}`;
   if (missing) return why(`${shown(missing)} states none`);
   if (inherits && !shares) return why(`${shown(inherits)} inherits one that no workspace states`);
