@@ -38,6 +38,7 @@ At run time, `runReview` in `src/review.ts` calls dedup before the judge:
 - Remove dead code rather than suppressing warnings (no `// eslint-disable` for unused code). Git history is the archive.
 - Prefer the most restrictive visibility that compiles. Default to non-exported; only widen when required.
 - Don't introduce emojis to the codebase. Don't add comments that narrate the change ("now returns...", "fixed X").
+- Keep a source file under about 1,500 lines. When a change would push a file past that, first move one cohesive concern into its own module, in a separate refactor commit or PR that changes no behavior, with its tests moved alongside. For example, the progress comment helpers or the review body formatting in `src/github.ts` would each be a module of their own. A file already over the limit takes no new concern until it is split. Every changed file goes to the finders in full, so a large file makes each review of a PR that touches it slower and more expensive.
 
 ## Testing
 
