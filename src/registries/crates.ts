@@ -126,8 +126,9 @@ function fullRustVersion(value: unknown): string | undefined {
 /**
  * Returns which of `files` lets Cargo pick another version than the highest a requirement allows: a Cargo config's
  * minimum publish age or lowest versions, or the resolver that honours `rust-version`, from edition 2024,
- * `resolver = "3"` or a Cargo config's `incompatible-rust-versions`. The resolver setting and the `rust-version` can
- * sit in different manifests of one workspace.
+ * `resolver = "3"` or a Cargo config's `incompatible-rust-versions = "fallback"`. A Cargo config's `"allow"` overrides
+ * the first two, unless another config sets `"fallback"`. The resolver setting and the `rust-version` can sit in
+ * different manifests of one workspace.
  *
  * That resolver prefers the version that fits the most `rust-version`s of the workspace's members, and the highest of
  * those. One without a `rust_version` in the index fits all. With every package stating a `rust-version`, the highest
@@ -142,6 +143,8 @@ function cargoFreshPick(files: readonly RegistryConfig[]): ReturnType<Registry['
   let inherits: string | undefined;
   let shares = false;
   let resolver: string | undefined;
+  let configFallback = false;
+  let configAllow = false;
   for (const { file, text } of files) {
     let toml: TomlTable;
     try {
@@ -150,8 +153,12 @@ function cargoFreshPick(files: readonly RegistryConfig[]): ReturnType<Registry['
       throw new Error(`Manki cannot read ${file} with certainty: ${error instanceof Error ? error.message : String(error)}`);
     }
     if (CARGO_CONFIGS.test(file)) {
-      // `allow` turns the preference for a fitting `rust-version` off, so only `fallback` picks by it.
-      if (configValue(tableOf(toml.resolver), 'incompatible-rust-versions') === 'fallback') resolver ??= file;
+      const policy = configValue(tableOf(toml.resolver), 'incompatible-rust-versions');
+      if (policy === 'fallback') {
+        resolver ??= file;
+        configFallback = true;
+      }
+      configAllow ||= policy === 'allow';
       const setting = PICK_SETTINGS.find(key => {
         const path = key.split('.');
         const value = configValue(path.slice(0, -1).reduce((at, name) => tableOf(at[name]), toml), path.at(-1)!);
@@ -174,7 +181,8 @@ function cargoFreshPick(files: readonly RegistryConfig[]): ReturnType<Registry['
     }
     if ([pkg.edition, shared.edition].includes('2024') || [pkg.resolver, workspace.resolver].includes('3')) resolver ??= file;
   }
-  if (!resolver) return undefined;
+  // `allow` turns the preference for a fitting `rust-version` off, also where the edition or `resolver` turns it on.
+  if (!resolver || (configAllow && !configFallback)) return undefined;
   // Without a `rust-version`, Cargo picks by the compiler's version, which Manki does not know.
   if (!rustVersion) return highest => highest.rustVersion === undefined ? undefined
     : `${shown(resolver)} lets Cargo pick by \`rust-version\` and no package states one, so a fresh install picks by the compiler's version, which Manki does not know, and crates.io states a Rust version for the newest, ${highest.version}`;

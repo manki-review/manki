@@ -604,8 +604,10 @@ describe('dependencyLoader', () => {
       // The yanked 1.2.0 and the prerelease need an older Rust and are no candidates. An equal or a partial version fits.
       [{ 'Cargo.toml': pkg(`${edition}rust-version = "1.75"\n`) }],
       [{ 'Cargo.toml': pkg('rust-version = "1.80"\n'), ...config }],
-      // `allow` turns the preference off, so no `rust-version` is read.
+      // `allow` turns the preference off, also where edition 2024 or `resolver = "3"` turns it on, so no `rust-version` is read.
       [{ 'Cargo.toml': pkg('rust-version = "x"\n'), '.cargo/config.toml': '[resolver]\nincompatible-rust-versions = "allow"\n' }],
+      [{ 'Cargo.toml': pkg(`${edition}rust-version = "x"\n`), '.cargo/config.toml': '[resolver]\nincompatible-rust-versions = "allow"\n' }],
+      [{ 'Cargo.toml': root(''), 'a/Cargo.toml': pkg('rust-version = "x"\n'), '.cargo/config.toml': '[resolver]\nincompatible_rust_versions = "allow"\n' }],
       [{ 'Cargo.toml': shared, 'a/Cargo.toml': pkg(inherits), 'b/Cargo.toml': `${none}${inherits}` }],
       [{ 'Cargo.toml': root(''), 'a/Cargo.toml': pkg('rust-version = "1.80"\n'), 'b/Cargo.toml': `${none}rust-version = "1.76"\n` }],
       // A version the index states no Rust version for fits every one.
@@ -630,6 +632,8 @@ describe('dependencyLoader', () => {
         [{ 'Cargo.toml': pkg(`${edition}rust-version = ${value}\n`) }, `${older} the one in Cargo.toml is no version Manki reads.`])),
       [{ 'Cargo.toml': pkg('rust-version = "x"\n'), ...config }, 'Cargo.toml sets `rust-version` and .cargo/config.toml lets Cargo pick by it'],
       [{ 'Cargo.toml': pkg('rust-version = "x"\n'), '.cargo/config.toml': '[resolver]\nincompatible_rust_versions = "fallback"\n' }, 'Cargo.toml sets `rust-version` and .cargo/config.toml lets Cargo pick by it'],
+      // Another config that sets `fallback` keeps the preference on whatever one sets `allow`.
+      [{ 'Cargo.toml': pkg(`${edition}rust-version = "x"\n`), '.cargo/config.toml': '[resolver]\nincompatible-rust-versions = "allow"\n', 'a/.cargo/config.toml': config['.cargo/config.toml'] }, `${older} the one in Cargo.toml is no version Manki reads.`],
     ];
     const asked = server.requests.length;
     for (const [files, reason] of refused) await expect(round(files).load('crates.io/fits')).rejects.toThrow(reason);
