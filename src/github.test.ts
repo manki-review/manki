@@ -6701,8 +6701,21 @@ describe('postReview non-blocking findings', () => {
     const scope = {
       doubt: 'Nothing calls the new `parseDate`, and `utils/dates.ts` already exports one.', proof: ['src/a.ts:3', 'src/a.ts:7-9'],
       topics: [{ name: 'Date parsing', files: ['src/a.ts'] }, { name: 'Flag rename', files: ['src/b.ts'] }],
-      split: [{ name: 'Date parsing', contents: 'Adds `parseDate` for ISO dates.', files: ['src/a.ts', 'src/b.ts:1-3'] }, { name: 'Flag [rename]', needs: [1], files: ['src/b.ts:20-24', 'src/c`d.ts'] }],
+      // The second part is one of an older record, without the files Manki worked out, so it shows its files without their line ranges.
+      split: [
+        { name: 'Date parsing', contents: 'Adds `parseDate` for ISO dates.', files: ['src/a.ts', 'src/b.ts:1-3'], shown: [{ path: 'src/a.ts' }, { path: 'src/b.ts', items: [{ name: 'parse', line: 2 }, { name: 'parses_iso', line: 3, test: true as const }] }] },
+        { name: 'Flag [rename]', needs: [1], files: ['src/b.ts:20-24', 'src/c`d.ts'] },
+      ],
     };
+    const splitLines = [
+      '**PR 1: Date parsing**',
+      'Adds `parseDate` for ISO dates.',
+      '`src/`: `a.ts`, `b.ts` ([`parse`](https://github.com/owner/repo/blob/sha/src/b.ts#L2), tests [`parses_iso`](https://github.com/owner/repo/blob/sha/src/b.ts#L3))',
+      '',
+      '**PR 2: Flag [rename]**',
+      "`src/`: `b.ts`, `c'd.ts`",
+      'Needs PR 1 first.',
+    ];
 
     await postReview(octokit, 'owner', 'repo', 1, 'sha', { ...buildResult([]), scope }, diff);
     const advisory = createReview.mock.calls[0][0];
@@ -6714,13 +6727,7 @@ describe('postReview non-blocking findings', () => {
       '',
       '**Split into 2 PRs?** The parts make sense on their own and are easier to review and revert separately.',
       '',
-      '**PR 1: Date parsing**',
-      'Adds `parseDate` for ISO dates.',
-      '`src/`: `a.ts`, `b.ts:1-3`',
-      '',
-      '**PR 2: Flag [rename]**',
-      "`src/`: `b.ts:20-24`, `c'd.ts`",
-      'Needs PR 1 first.',
+      ...splitLines,
     ].join('\n'));
 
     // A PR that is useful and covers one topic shows no section, and neither does a round that posted the answer as warnings.
@@ -6731,6 +6738,8 @@ describe('postReview non-blocking findings', () => {
     // Each warning is a thread tied to no file that holds the approval, posted in the review on the first changed line. The doubt lists the lines it cites.
     const held = createReview.mock.calls[2][0];
     expect(held.event).toBe('COMMENT');
+    // The body does not list them as warnings that missed their file, since they judge the whole PR.
+    expect(held.body).not.toMatch(/not on a changed file|Comments are only possible/);
     expect(createReviewComment).not.toHaveBeenCalled();
     const threads = held.comments as Array<{ path: string; line: number; body: string }>;
     // A judgment of the whole PR needs no line on where its thread is posted.
@@ -6744,13 +6753,7 @@ describe('postReview non-blocking findings', () => {
       '',
       'Suggestion about the PR as a whole, not a defect in its code. The parts make sense on their own and are easier to review and revert separately.',
       '',
-      '**PR 1: Date parsing**',
-      'Adds `parseDate` for ISO dates.',
-      '`src/`: `a.ts`, `b.ts:1-3`',
-      '',
-      '**PR 2: Flag [rename]**',
-      "`src/`: `b.ts:20-24`, `c'd.ts`",
-      'Needs PR 1 first.',
+      ...splitLines,
       '',
       'Split it as proposed, or reply with why the parts belong together.',
       '',

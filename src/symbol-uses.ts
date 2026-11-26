@@ -614,6 +614,19 @@ export interface UsesOutsideDiff {
   unitsOverLimit?: number;
   /** The declarations the change adds, changes or removes outside the files that add nothing, such as tests and docs, from `mappedChanges`. */
   changes?: MappedChange[];
+  /** The functions and types whose lines the diff touches, in the files the syntax tree parsed. */
+  items?: ChangedItem[];
+}
+
+/** A function or type whose lines the diff touches, with its head lines, counting the comments and attributes above it. */
+export interface ChangedItem {
+  file: string;
+  name: string;
+  /** The line of its name. */
+  line: number;
+  start: number;
+  end: number;
+  test?: true;
 }
 
 /** A declaration the change adds, changes or removes, as the map of the change names it to a reader of one slice. */
@@ -650,8 +663,8 @@ export async function listUsesOutsideDiff(workspace: string | undefined, diff: P
     core.info('No git checkout of the PR head, so the review runs without the list of uses outside the diff');
     return { ...NO_SECTION, siblings: NO_SIBLINGS };
   }
-  // The map of the change is built before the search for uses, so a failed search keeps it.
-  const built: Pick<UsesOutsideDiff, 'changes'> = {};
+  // The map of the change and the items are built before the search for uses, so a failed search keeps them.
+  const built: Pick<UsesOutsideDiff, 'changes' | 'items'> = {};
   try {
     const started = Date.now();
     const uses = await buildUsesSection(workspace, diff, excludePaths, loadApi, forDependency, fullDiff, built);
@@ -991,7 +1004,7 @@ function formatRelatedUses(
 
 async function buildUsesSection(
   workspace: string, diff: ParsedDiff, excludePaths: string[], loadApi: () => Promise<AstGrepApi>, forDependency: boolean, fullDiff: ParsedDiff,
-  built: Pick<UsesOutsideDiff, 'changes'>,
+  built: Pick<UsesOutsideDiff, 'changes' | 'items'>,
 ): Promise<UsesOutsideDiff> {
   const files = diff.files.filter(f => f.changeType !== 'deleted');
   const touched = new Map(files.map(f => [f.path, touchedLines(f)]));
@@ -1010,12 +1023,16 @@ async function buildUsesSection(
   const lookups: Array<Lookup & { file: string }> = [];
   // Every declaration the diff touches, the namesakes `symbols` keeps one of included.
   const declared: ChangedSymbol[] = [];
+  const items: ChangedItem[] = [];
   for (const file of files) {
     const lines = touched.get(file.path)!;
     const parsed = parser.parse(file.path, lines);
     if (parsed) {
       const changed = changedDeclarations(parsed.declarations, lines, file.path);
       for (const symbol of changed) declared.push(symbol);
+      for (const { name, kind, line, start, end, test } of changed) {
+        if ((kind === 'function' || kind === 'type') && start !== undefined && end !== undefined) items.push({ file: file.path, name, line, start, end, ...(test && { test }) });
+      }
       for (const symbol of changed) addSymbol(symbols, symbol);
       for (const { name, kind, owner } of changed) if (kind === 'field' && owner) appendTo(changedOwners, name, { owner, file: file.path });
       const replaced = replacedLines(file);
@@ -1064,6 +1081,7 @@ async function buildUsesSection(
   if (allUnits.length > MAX_UNITS) core.info(`The change has ${allUnits.length} units, so the last ${allUnits.length - MAX_UNITS} are not listed`);
   const changes = mappedChanges(diff.files, parser, addsNothing);
   if (changes.length > 0) built.changes = changes;
+  if (items.length > 0) built.items = items;
   // A new namesake declared earlier in the diff must not take the place of the declaration whose readers can break.
   for (const [name, symbol] of redefined) symbols.set(name, symbol);
   const implementations = siblingImplementations(workspace, parser, files, touched, added, excludePaths);
@@ -1091,7 +1109,7 @@ async function buildUsesSection(
   const nothing = {
     ...NO_SECTION, ...(referenceNames.length > 0 && { referenceNames }), ...(dependencyNames.length > 0 && { dependencyNames }), ...(pieces.length > 0 && { pieces }),
     ...(units.length > 0 && { units }), ...(allUnits.length > units.length && { unitsOverLimit: allUnits.length - units.length }),
-    ...(changes.length > 0 && { changes }),
+    ...(changes.length > 0 && { changes }), ...(items.length > 0 && { items }),
   };
   if (names.length === 0 && lookupFields.length === 0) return { ...nothing, siblings: { fields: [], implementations } };
 
@@ -1212,7 +1230,7 @@ function replacedLines(file: DiffFile): Map<number, string[]> {
 }
 
 /** Returns the head lines the diff adds, and the head line after each run of removed lines. */
-function touchedLines(file: DiffFile): Set<number> {
+export function touchedLines(file: DiffFile): Set<number> {
   const touched = new Set<number>();
   for (const hunk of file.hunks) {
     let line = hunk.newStart;

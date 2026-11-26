@@ -363,6 +363,8 @@ export interface Finding {
   /** The change that fixes the finding, in words. `suggestedFix` holds only code that replaces the flagged line. */
   howToFix?: string;
   reviewers: string[];
+  /** For the split the scope reader proposes: its parts, which its thread is written from. */
+  split?: ScopeTopic[];
   codeContext?: string;
   judgeNotes?: string;
   tags?: string[];
@@ -951,6 +953,28 @@ export interface ScopeTopic {
   contents?: string;
   /** For a proposed PR of a split: the numbers of the other proposed PRs it needs merged first, counted from 1. */
   needs?: number[];
+  /**
+   * For a proposed PR of a split: its files as Manki shows them, from the diff and the syntax tree. An older record has
+   * none, and shows the files of `files` without their line ranges.
+   */
+  shown?: SplitFile[];
+}
+
+/** A file of a proposed PR, with the changed items that its hunks there fall in. */
+export interface SplitFile {
+  path: string;
+  /**
+   * The innermost changed function or type around each changed line the PR takes in the file, in file order, each named
+   * once. Unset for a file the PR takes whole, and when no changed line falls in an item or the file was not parsed.
+   */
+  items?: SplitItem[];
+}
+
+/** A changed function or type, by its name and its first head line. */
+export interface SplitItem {
+  name: string;
+  line: number;
+  test?: true;
 }
 
 /** How the scope reader judged the PR as a whole on a round. */

@@ -8,7 +8,7 @@ import { parsePRDiff } from './diff';
 import { LLMClient } from './providers';
 import { confirmDoubt, runScopeReader, scopeWarnings } from './scope';
 import { makeRoundContext } from './test-utils';
-import { Finding, Refutation, SCOPE_DOUBT_TITLE, SCOPE_SPLIT_TITLE } from './types';
+import { Finding, Refutation, SCOPE_DOUBT_TITLE, SCOPE_SPLIT_TITLE, SplitFile } from './types';
 
 const RAW_DIFF = [
   'diff --git a/src/dates.ts b/src/dates.ts',
@@ -59,7 +59,7 @@ describe('runScopeReader', () => {
     expect(scope).toEqual({
       doubt: 'Nothing calls the new `parseDate`.', proof: ['src/dates.ts:2'],
       topics: [{ name: 'Date parsing', files: ['src/dates.ts'] }, { name: 'Flag rename', files: ['src/cli.ts'] }],
-      split: SPLIT, purpose: expect.any(String), issues: expect.any(String),
+      split: SPLIT.map(part => ({ ...part, shown: [{ path: part.files[0] }] })), purpose: expect.any(String), issues: expect.any(String),
     });
     // The record keeps a digest of the PR text it answered for, which changes with the title or the description.
     const purposeFor = async (pr: typeof prContext) => (await runScopeReader(client({ useful: true, topics: [], split: [] }), { diff, rawDiff: RAW_DIFF, prContext: pr, trivial: false })).purpose;
@@ -114,8 +114,8 @@ describe('runScopeReader', () => {
     const withParts = await runScopeReader(client({ useful: true, topics: [{ name: 'Dates', contents: 'Parses.', needs: [2], files: ['src/dates.ts'] }], split: parts }), { diff, rawDiff: RAW_DIFF, trivial: false });
     expect(withParts.topics).toEqual([{ name: 'Dates', files: ['src/dates.ts'] }]);
     expect(withParts.split).toEqual([
-      { name: 'Date parsing', contents: expect.stringMatching(/^Parses ISO dates\. x+\.\.\.$/), needs: [2], files: ['src/dates.ts'] },
-      { name: 'Flag rename', files: ['src/cli.ts'] },
+      { name: 'Date parsing', contents: expect.stringMatching(/^Parses ISO dates\. x+\.\.\.$/), needs: [2], files: ['src/dates.ts'], shown: [{ path: 'src/dates.ts' }] },
+      { name: 'Flag rename', files: ['src/cli.ts'], shown: [{ path: 'src/cli.ts' }] },
     ]);
     expect(withParts.split![0].contents).toHaveLength(303);
   });
@@ -142,15 +142,43 @@ describe('runScopeReader', () => {
       '',
     ].join('\n');
     const hunks = parsePRDiff(hunkDiff);
-    const read = (split: object[], topics: object[] = []) => runScopeReader(client({ useful: true, topics, split }), { diff: hunks, rawDiff: RAW_DIFF, trivial: false });
+    // `total` sits in the type `App`, and the first hunk is outside both.
+    const items = [{ file: 'src/app.ts', name: 'App', line: 18, start: 17, end: 40 }, { file: 'src/app.ts', name: 'total', line: 21, start: 21, end: 23 }];
+    const read = (split: object[], topics: object[] = []) => runScopeReader(client({ useful: true, topics, split }), { diff: hunks, rawDiff: RAW_DIFF, trivial: false, items });
 
     // A range takes each hunk it overlaps, and a whole file takes all its hunks, so old and new entries mix in one split.
     const byHunk = [{ name: 'Feature flag', files: ['src/app.ts:2', 'src/cli.ts'] }, { name: 'Total fix', files: ['src/app.ts:20-25'] }];
     const topics = [{ name: 'Feature flag', files: ['src/app.ts:1-3', 'src/gone.ts:1-3'] }];
     const kept = await read(byHunk, topics);
-    expect(kept).toEqual({ topics: [{ name: 'Feature flag', files: ['src/app.ts:1-3'] }], split: byHunk, purpose: expect.any(String), issues: expect.any(String), hunks: expect.any(String) });
+    // Each part names the innermost changed item around each changed line it takes. A hunk outside any item, and a file
+    // taken whole, show as the file alone.
+    const shown = [[{ path: 'src/app.ts' }, { path: 'src/cli.ts' }], [{ path: 'src/app.ts', items: [{ name: 'total', line: 21 }] }]];
+    expect(kept).toEqual({
+      topics: [{ name: 'Feature flag', files: ['src/app.ts:1-3'] }], split: byHunk.map((part, i) => ({ ...part, shown: shown[i] })), purpose: expect.any(String), issues: expect.any(String), hunks: expect.any(String),
+    });
     const byFile = [{ name: 'App', files: ['src/app.ts'] }, { name: 'Flag rename', files: ['src/cli.ts'] }];
-    expect(await read(byFile)).not.toHaveProperty('hunks');
+    const whole = await read(byFile);
+    expect(whole).not.toHaveProperty('hunks');
+    expect(whole.split!.map(part => part.shown)).toEqual([[{ path: 'src/app.ts' }], [{ path: 'src/cli.ts' }]]);
+    // Without the syntax tree's items, each part shows its files alone.
+    expect((await runScopeReader(client({ useful: true, topics: [], split: byHunk }), { diff: hunks, rawDiff: RAW_DIFF, trivial: false })).split!.map(part => part.shown))
+      .toEqual([[{ path: 'src/app.ts' }, { path: 'src/cli.ts' }], [{ path: 'src/app.ts' }]]);
+    // An item that several hunks of one part fall in is named once, in file order with the others, and a test keeps its mark.
+    const runDiff = parsePRDiff([
+      'diff --git a/src/run.rs b/src/run.rs', '--- a/src/run.rs', '+++ b/src/run.rs',
+      '@@ -2,1 +2,1 @@', '-  a();', '+  b();', '@@ -9,1 +9,1 @@', '-  c();', '+  d();', '@@ -14,1 +14,1 @@', '-  e();', '+  f();', '@@ -30,1 +30,1 @@', '-  g();', '+  h();', '',
+    ].join('\n'));
+    const runItems = [
+      { file: 'src/run.rs', name: 'spawn', line: 14, start: 13, end: 16 },
+      { file: 'src/run.rs', name: 'run', line: 1, start: 1, end: 10 },
+      { file: 'src/run.rs', name: 'starts', line: 29, start: 28, end: 31, test: true as const },
+    ];
+    const runSplit = [{ name: 'Pump', files: ['src/run.rs:2-14'] }, { name: 'Tests', files: ['src/run.rs:30'] }];
+    const ran2 = await runScopeReader(client({ useful: true, topics: [], split: runSplit }), { diff: runDiff, rawDiff: RAW_DIFF, trivial: false, items: runItems });
+    expect(ran2.split!.map(part => part.shown)).toEqual([
+      [{ path: 'src/run.rs', items: [{ name: 'run', line: 1 }, { name: 'spawn', line: 14 }] }],
+      [{ path: 'src/run.rs', items: [{ name: 'starts', line: 29, test: true }] }],
+    ]);
 
     // A rebase that only moves the hunks keeps the `changeDigest`, so a split by line ranges is asked for again then.
     const ran = [makeRoundContext(1, { scope: kept, diff: { changeDigest: 'same', lines: 0, additions: 0, deletions: 0, filesReviewed: 0, fileTypes: {} } })];
@@ -248,7 +276,7 @@ describe('scopeWarnings', () => {
       reviewers: ['Scope reader'], evidence: { checks: [], proof: ['src/dates.ts:2-3', 'src/cli.ts:1'] },
     });
     // A split of an older round record has neither what each PR contains nor what it needs, and shows no line for them.
-    expect(split).toEqual({ severity: 'warning', title: SCOPE_SPLIT_TITLE, file: '', line: 0, reviewers: ['Scope reader'], description: [
+    expect(split).toEqual({ severity: 'warning', title: SCOPE_SPLIT_TITLE, file: '', line: 0, reviewers: ['Scope reader'], split: SPLIT, description: [
       'Suggestion about the PR as a whole, not a defect in its code. The parts make sense on their own and are easier to review and revert separately.',
       '',
       '**PR 1: Date parsing**',
@@ -259,21 +287,22 @@ describe('scopeWarnings', () => {
       '',
       'Split it as proposed, or reply with why the parts belong together.',
     ].join('\n') });
-    // Each PR says what it contains and what it needs first, and lists its files by folder, each whole or with its lines.
+    // Each PR says what it contains and what it needs first, and lists its files by folder. An older record without the
+    // files Manki worked out shows each file once, without the line ranges the model gave.
     const [byHunk] = scopeWarnings({ split: [
-      { name: 'Date parsing', contents: 'Parses ISO dates.', files: ['src/dates.ts:1-3', 'README.md', 'src/cli/flags.ts', 'src/a.ts'] },
+      { name: 'Date parsing', contents: 'Parses ISO dates.', files: ['src/dates.ts:1-3', 'README.md', 'src/cli/flags.ts', 'src/a.ts', 'src/dates.ts:9'] },
       { name: 'Flag rename', needs: [1], files: ['src/dates.ts:20-24'] },
       { name: 'Docs', contents: 'Documents both.', needs: [1, 2], files: ['docs/x.md'] },
     ] });
     expect(byHunk.description).toContain([
       '**PR 1: Date parsing**',
       'Parses ISO dates.',
-      '`src/`: `dates.ts:1-3`, `a.ts`',
+      '`src/`: `dates.ts`, `a.ts`',
       '`README.md`',
       '`src/cli/`: `flags.ts`',
       '',
       '**PR 2: Flag rename**',
-      '`src/`: `dates.ts:20-24`',
+      '`src/`: `dates.ts`',
       'Needs PR 1 first.',
       '',
       '**PR 3: Docs**',
@@ -281,6 +310,30 @@ describe('scopeWarnings', () => {
       '`docs/`: `x.md`',
       'Needs PR 1 and PR 2 first.',
     ].join('\n'));
+    // A file shows the changed items its part takes, code first and tests after, and the files of a part are capped in
+    // total before they are grouped by folder.
+    const many: SplitFile[] = Array.from({ length: 12 }, (_, i) => ({ path: `${i % 2 ? 'lib' : 'src'}/f${i}.ts` }));
+    many[0].items = Array.from({ length: 12 }, (_, i) => ({ name: `i${i}`, line: i + 1 }));
+    const [byItem] = scopeWarnings({ split: [
+      { name: 'Pump', files: ['dash-spv/src/network/discovery.rs', 'dash-spv/src/network/manager.rs:1-90'], shown: [
+        { path: 'dash-spv/src/network/discovery.rs' },
+        { path: 'dash-spv/src/network/manager.rs', items: [
+          { name: 'Supervisor', line: 3 }, { name: 'started_from_seeds', line: 70, test: true }, { name: 'spawn_pump', line: 40 },
+          { name: 'rejected_candidates_do_not_hide_another', line: 80, test: true },
+        ] },
+      ] },
+      { name: 'Wide', files: many.map(f => f.path), shown: many },
+    ] });
+    expect(byItem.description).toContain([
+      '**PR 1: Pump**',
+      '`dash-spv/src/network/`: `discovery.rs`, `manager.rs` (`Supervisor`, `spawn_pump`, tests `started_from_seeds`, `rejected_candidates_do_not_hide_another`)',
+      '',
+      '**PR 2: Wide**',
+      '`src/`: `f0.ts` (`i0`, `i1`, `i2`, `i3`, `i4`, `i5`, `i6`, `i7`, `i8`, `i9` and 2 more), `f2.ts`, `f4.ts`, `f6.ts`, `f8.ts`',
+      '`lib/`: `f1.ts`, `f3.ts`, `f5.ts`, `f7.ts`, `f9.ts`',
+      'And 2 more files.',
+    ].join('\n'));
+    expect(byItem.split).toHaveLength(2);
   });
 });
 

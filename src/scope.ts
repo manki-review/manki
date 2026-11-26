@@ -1,14 +1,15 @@
 import * as core from '@actions/core';
 
 import { hunkHas } from './diff';
-import { formatSplit, LinkedIssue, SPLIT_REASON, titleToSlug } from './github';
+import { LinkedIssue, splitDescription, titleToSlug } from './github';
 import { extractJSON } from './json';
 import { LLMClient, SendMessageOptions } from './providers';
 import { codeDigest, isDiffLocation, restsOnSameCode, shownLines } from './refute';
 import { PreviousFinding } from './recap';
 import { repoTools } from './related-repos';
 import { buildReviewerUserMessage, parseLocation, parseProof } from './review';
-import { agreedOutcome, confirmsAll, DiffFile, DiffHunk, Finding, ParsedDiff, PrContext, Refutation, RoundContext, RoundScope, SCOPE_DOUBT_TITLE, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, ScopeTopic } from './types';
+import { ChangedItem, touchedLines } from './symbol-uses';
+import { agreedOutcome, confirmsAll, DiffFile, DiffHunk, Finding, ParsedDiff, PrContext, Refutation, RoundContext, RoundScope, SCOPE_DOUBT_TITLE, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, ScopeTopic, SplitFile } from './types';
 import { digestOf, jsonOnlyReply, safeTruncate, sendWithParseRetry } from './utils';
 import { UNTRUSTED_CONTENT_RULE, WRITING_RULES } from './writing-rules';
 
@@ -209,6 +210,34 @@ export interface ScopeOptions {
   /** The `changeDigest` of the PR's diff. Unset runs the reader whatever earlier rounds did. */
   changeDigest?: string;
   priorRounds?: readonly RoundContext[];
+  /** The functions and types the diff touches, from `listUsesOutsideDiff`, which name what each proposed PR of a split holds. */
+  items?: readonly ChangedItem[];
+}
+
+/**
+ * Returns the files of the proposed PR `part` as Manki shows them. A file the PR takes whole stays the file alone. In a
+ * file it takes by line ranges, each changed line of the hunks it takes names the innermost of `items` around it.
+ */
+function shownFiles(part: ScopeTopic, diff: ParsedDiff, items: readonly ChangedItem[]): SplitFile[] {
+  const taken = new Map<string, { file: DiffFile; whole: boolean; hunks: Set<DiffHunk> }>();
+  for (const entry of part.files) {
+    const named = namedPart(entry, diff);
+    const file = named && diff.files.find(f => f.path === named.path);
+    if (!named || !file) continue;
+    const got = taken.get(file.path) ?? { file, whole: false, hunks: new Set<DiffHunk>() };
+    if (!named.lines) got.whole = true;
+    for (const hunk of named.lines ? file.hunks : []) if (hunkHas(hunk, ...named.lines!)) got.hunks.add(hunk);
+    taken.set(file.path, got);
+  }
+  return [...taken.values()].map(({ file, whole, hunks }) => {
+    const own = whole ? [] : items.filter(item => item.file === file.path);
+    const around = [...touchedLines({ ...file, hunks: [...hunks] })].flatMap(line => {
+      const inner = own.filter(item => item.start <= line && line <= item.end).sort((a, b) => (a.end - a.start) - (b.end - b.start))[0];
+      return inner ? [inner] : [];
+    });
+    const named = [...new Set(around)].sort((a, b) => a.line - b.line).map(({ name, line, test }) => ({ name, line, ...(test && { test }) }));
+    return { path: file.path, ...(named.length > 0 && { items: named }) };
+  });
 }
 
 /**
@@ -217,7 +246,7 @@ export interface ScopeOptions {
  * hunk positions a split by line ranges names are those of the last round with an answer, whose answer it carries then. The answer is checked by `checkScope`. A call that fails, or a reply that cannot be used, is recorded as `failed`.
  * It never throws.
  */
-export async function runScopeReader(client: LLMClient, { diff, rawDiff, prContext, linkedIssues, workspace, trivial, changeDigest, priorRounds = [] }: ScopeOptions): Promise<RoundScope> {
+export async function runScopeReader(client: LLMClient, { diff, rawDiff, prContext, linkedIssues, workspace, trivial, changeDigest, priorRounds = [], items = [] }: ScopeOptions): Promise<RoundScope> {
   if (trivial) return { skipped: 'trivial' };
   const purpose = purposeOf(prContext);
   const issues = digestOf((linkedIssues ?? []).map(i => [i.number, i.title, i.body]));
@@ -244,7 +273,8 @@ export async function runScopeReader(client: LLMClient, { diff, rawDiff, prConte
     );
     const checked = checkScope(answer, diff, tools ? workspace : undefined);
     const ranged = checked.split?.some(part => part.files.some(f => namedPart(f, diff)?.lines));
-    const scope = { ...checked, purpose, issues, ...(ranged && { hunks: hunkPositions(diff) }) };
+    const split = checked.split?.map(part => ({ ...part, shown: shownFiles(part, diff, items) }));
+    const scope = { ...checked, ...(split && { split }), purpose, issues, ...(ranged && { hunks: hunkPositions(diff) }) };
     core.info(`Scope reader: ${scope.doubt ? 'a usefulness doubt' : 'no usefulness doubt'}, ${scope.topics?.length ?? 0} topic(s)${scope.split ? `, a split into ${scope.split.length} PRs` : ''}${scope.dropped ? `, ${scope.dropped.length} part(s) dropped by the check` : ''}`);
     return scope;
   } catch (error) {
@@ -269,11 +299,7 @@ export function scopeWarnings(scope: RoundScope): Finding[] {
     });
   }
   if (scope.split) {
-    warnings.push({
-      severity: 'warning', title: SCOPE_SPLIT_TITLE, file: '', line: 0,
-      description: `Suggestion about the PR as a whole, not a defect in its code. ${SPLIT_REASON}\n\n${formatSplit(scope.split)}\n\nSplit it as proposed, or reply with why the parts belong together.`,
-      reviewers: [SCOPE_READER_NAME],
-    });
+    warnings.push({ severity: 'warning', title: SCOPE_SPLIT_TITLE, file: '', line: 0, description: splitDescription(scope.split), reviewers: [SCOPE_READER_NAME], split: scope.split });
   }
   return warnings;
 }
