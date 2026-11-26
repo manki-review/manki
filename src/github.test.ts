@@ -2759,6 +2759,8 @@ describe('postReview body lead', () => {
     expect(onThread({ status: 'partly_addressed', judgeStatus: 'addressed' })).toEqual(['', named]);
     // `partialFixGrade` kept a blocker where the judge's cell gives a warning.
     expect(onThread({ status: 'partly_addressed', grade: 'blocker', judgeCell: { row: 'degraded', column: 'normal' } })).toEqual(['', named]);
+    // `partialFixGrade` raised a lowered thread back to its blocker where the judge read a warning ("Open again").
+    expect(onThread({ status: 'not_addressed', grade: 'blocker', judgeStatus: 'not_addressed' })).toEqual(['', named]);
     // An override on a thread the round does not block on changes nothing.
     expect(onThread({ judgeStatus: 'addressed' }, 'PRRT_other')).toEqual([summary, summary]);
 

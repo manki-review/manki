@@ -6181,6 +6181,11 @@ describe('runReview', () => {
     openThread.recordedGrade = 'warning';
     openThread.peakGrade = 'blocker';
     expect(await gradeAfter(open, touching)).toEqual(['blocker', 'ADDRESS_FIRST']);
+    // The judge read a warning there, so the raise is recorded as code overriding its answer.
+    expect((await runWith(touching)).threadEvaluations?.[0]).toMatchObject({ grade: 'blocker', judgeStatus: 'not_addressed' });
+    // A partial fix the judge itself grades a blocker raises nothing past its answer.
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 's', threadEvaluations: [partly('blocker')] });
+    expect((await runWith(touching)).threadEvaluations?.[0]).not.toHaveProperty('judgeStatus');
     delete openThread.peakGrade;
     openThread.severity = 'blocker';
     // A grade the judge gives a thread that is not open is dropped, so it can never lower a blocker.

@@ -2233,8 +2233,9 @@ export interface ThreadEvaluation {
   /** The cell the judge stated for what remains when the thread keeps another grade than that cell gives. Only for the record: no prompt shows it. */
   judgeCell?: GradeCell;
   /**
-   * The status the judge gave when code replaced it, such as `addressed` on a fix the push did not confirm or a thread
-   * Manki could not resolve. Only for the record: no prompt shows it.
+   * The status the judge gave when code replaced it or raised the thread above the grade the judge read and gave, such
+   * as `addressed` on a fix the push did not confirm, a thread Manki could not resolve, or a lowered thread open again
+   * at its blocker. Only for the record: no prompt shows it.
    */
   judgeStatus?: ThreadEvaluation['status'];
   /**
@@ -2245,8 +2246,8 @@ export interface ThreadEvaluation {
 }
 
 /**
- * Whether code replaced what the judge read in the thread of `evaluation`: it changed the judge's status, or it keeps a
- * blocker grade where the judge's cell gives a lower one.
+ * Whether code replaced what the judge read in the thread of `evaluation`: it changed the judge's status, raised the
+ * thread above the grade the judge read, or keeps a blocker grade where the judge's cell gives a lower one.
  */
 export function overrodeJudge({ judgeStatus, grade, judgeCell }: ThreadEvaluation): boolean {
   return judgeStatus !== undefined || (grade === 'blocker' && isGradeCell(judgeCell) && cellGrade(judgeCell.row, judgeCell.column) !== 'blocker');
