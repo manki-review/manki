@@ -1086,7 +1086,10 @@ describe('handleReviewCommentReply', () => {
     jest.mocked(client.sendMessage).mockResolvedValue({ content: structured(reply) });
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([
       { id: 'PRRT_other', rootCommentId: 98, isResolved: false, isBlocking: true, findingTitle: 'Other' },
-      { id: 'PRRT_this', rootCommentId: 99, isResolved: resolved, ...(resolver && { resolvedByLogin: resolver, writerResolverLogin: resolver }), isBlocking: kind !== 'warning', isSecurity: kind === 'security', findingTitle: 'This' },
+      {
+        id: 'PRRT_this', rootCommentId: 99, isResolved: resolved, ...(resolver && { writerResolverLogin: resolver }), ...((resolver ?? (authorResolved && prAuthor)) && { resolvedByLogin: resolver ?? prAuthor }),
+        isBlocking: kind !== 'warning', isSecurity: kind === 'security', findingTitle: 'This',
+      },
     ]);
     jest.mocked(state.authorResolvedNote).mockResolvedValue(authorResolved ? 'Reopened. The PR author cannot resolve it.' : undefined);
     jest.mocked(state.resolveReviewThread).mockClear();
@@ -1124,8 +1127,9 @@ describe('handleReviewCommentReply', () => {
     const failed = resolved && !!reason && !reopens;
     const fate = noted ? 'stays_open' : keepsBlocking ? 'stays_resolved' : failed ? 'resolve_failed' : reason ? 'resolves' : resolved && sender !== 'reader' ? 'already_resolved' : staysOpen ? 'stays_open' : 'no_permission';
     expect(record.decision).toEqual(outcome ? { outcome, thread: fate } : undefined);
-    // Only a resolved thread is looked up, and the answer that reopens one carries the marker that stops a second reopen.
-    expect(jest.mocked(state.authorResolvedNote).mock.calls).toEqual(resolved ? [[octokit, TEST_BOT, 'test-owner', 'test-repo', 1, prAuthor, CONFIG, 'PRRT_this']] : []);
+    // Only a guarded thread the PR author resolved is looked up, and the answer that reopens one carries the marker that stops a second reopen.
+    const byAuthor = resolved && kind !== 'warning' && (resolver ?? (authorResolved ? prAuthor : undefined)) === prAuthor;
+    expect(jest.mocked(state.authorResolvedNote).mock.calls).toEqual(byAuthor ? [[octokit, TEST_BOT, 'test-owner', 'test-repo', 1, prAuthor, CONFIG, 'PRRT_this']] : []);
     expect(body.endsWith(`\n${REOPENED_MARKER}`)).toBe(noted);
     expect(body.includes(FIX_SEEN_MARKER)).toBe(!!review);
     expect(jest.mocked(state.reopenThread).mock.calls).toEqual(authorResolved || (resolved && reason) ? [[octokit, 'PRRT_this']] : []);
@@ -1270,7 +1274,7 @@ describe('handleReviewCommentReply', () => {
     const client = createMockClient();
     jest.mocked(client.sendMessage).mockResolvedValue({ content: structured(reply, more) });
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([
-      { id: 'PRRT_this', rootCommentId: 99, isResolved: authorResolved, isBlocking: kind !== 'warning' && kind !== 'disproved', isSecurity: kind === 'security', disprovedBlocker: kind === 'disproved', findingTitle: 'This' },
+      { id: 'PRRT_this', rootCommentId: 99, isResolved: authorResolved, ...(authorResolved && { resolvedByLogin: 'pr-author' }), isBlocking: kind !== 'warning' && kind !== 'disproved', isSecurity: kind === 'security', disprovedBlocker: kind === 'disproved', findingTitle: 'This' },
     ]);
     jest.mocked(state.authorResolvedNote).mockResolvedValue(authorResolved ? 'Reopened. The PR author cannot resolve it.' : undefined);
     jest.mocked(state.resolveReviewThread).mockClear();
