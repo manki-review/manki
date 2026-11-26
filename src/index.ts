@@ -59,6 +59,7 @@ import {
   fetchHeadSha,
   assertHeadUnchanged,
   SupersededError,
+  PrClosedError,
   TooManyFilesError,
   postProgressComment,
   updateProgressComment,
@@ -2563,6 +2564,11 @@ async function runFullReview(
     const error = stop.signal.aborted ? stop.signal.reason : caught;
     if (error instanceof RunCancelledError) {
       core.info(`${error.message}, writing nothing more to GitHub`);
+      return;
+    }
+    if (error instanceof PrClosedError) {
+      core.info(`${error.message}, posting nothing for it`);
+      checkReport = { conclusion: 'neutral', title: 'PR closed, review stopped', summary: 'The pull request was closed or merged during the review, so Manki stopped it.' };
       return;
     }
     if (error instanceof SupersededError) {

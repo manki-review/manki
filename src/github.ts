@@ -227,10 +227,15 @@ export async function fetchPRDiff(octokit: Octokit, owner: string, repo: string,
 
 /** Returns the PR's current head SHA, or `undefined` when the lookup fails or returns none. */
 export async function fetchHeadSha(octokit: Octokit, owner: string, repo: string, prNumber: number): Promise<string | undefined> {
+  return (await fetchPullHead(octokit, owner, repo, prNumber))?.sha;
+}
+
+/** Returns the PR's head commit and whether the PR is closed or merged, or nothing when the lookup fails. */
+async function fetchPullHead(octokit: Octokit, owner: string, repo: string, prNumber: number): Promise<{ sha?: string; closed: boolean } | undefined> {
   try {
     const { data } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
     if (!data.head?.sha) core.warning('Head SHA lookup returned no sha, proceeding');
-    return data.head?.sha || undefined;
+    return { sha: data.head?.sha || undefined, closed: data.state === 'closed' };
   } catch (error) {
     core.warning(`Head SHA lookup failed, proceeding: ${error instanceof Error ? error.message : error}`);
     return undefined;
@@ -489,10 +494,23 @@ export class SupersededError extends Error {
   }
 }
 
-/** Throws `SupersededError` when the PR head is no longer `commitSha`. A failed lookup lets the review go on. */
+/** Thrown when the PR under review was closed or merged, so the run posts nothing for it. */
+export class PrClosedError extends Error {
+  constructor(prNumber: number) {
+    super(`PR #${prNumber} was closed`);
+    this.name = 'PrClosedError';
+  }
+}
+
+/**
+ * Throws `PrClosedError` when the PR is closed or merged, and `SupersededError` when its head is no longer `commitSha`.
+ * A check belongs to the commit, so a closed PR's verdict would show on another PR with the same head. A failed lookup
+ * lets the review go on.
+ */
 export async function assertHeadUnchanged(octokit: Octokit, owner: string, repo: string, prNumber: number, commitSha: string): Promise<void> {
-  const headSha = await fetchHeadSha(octokit, owner, repo, prNumber);
-  if (headSha && headSha !== commitSha) throw new SupersededError(commitSha, headSha);
+  const head = await fetchPullHead(octokit, owner, repo, prNumber);
+  if (head?.closed) throw new PrClosedError(prNumber);
+  if (head?.sha && head.sha !== commitSha) throw new SupersededError(commitSha, head.sha);
 }
 
 /**

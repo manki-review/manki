@@ -221,6 +221,7 @@ jest.mock('./github', () => ({
   fetchHeadSha: jest.requireActual('./github').fetchHeadSha,
   assertHeadUnchanged: jest.requireActual('./github').assertHeadUnchanged,
   SupersededError: jest.requireActual('./github').SupersededError,
+  PrClosedError: jest.requireActual('./github').PrClosedError,
   TooManyFilesError: jest.requireActual('./github').TooManyFilesError,
   formatUnreviewedNotice: jest.requireActual('./github').formatUnreviewedNotice,
   postProgressComment: jest.fn().mockResolvedValue(1),
@@ -2695,6 +2696,25 @@ describe('runFullReview orchestration', () => {
       await callRunFullReview();
 
       expect(completedCheck()).toMatchObject({ conclusion: 'cancelled', output: { title: 'Superseded' } });
+    });
+
+    it('posts nothing and completes the check as neutral when the PR closed during the review', async () => {
+      // The PR reads open until the review is done, and closed at the read right before posting.
+      jest.mocked(reviewModule.runReview).mockImplementationOnce(async () => {
+        mockPullsGet.mockResolvedValue({ data: { title: 'Test PR', body: 'body', head: { sha: 'abc123' }, base: { ref: 'main' }, state: 'closed' } });
+        return { verdict: 'APPROVE', outcome: 'READY', summary: 'Approved', findings: [], highlights: [], reviewComplete: true, agentNames: [] };
+      });
+      try {
+        await callRunFullReview();
+      } finally {
+        mockPullsGet.mockResolvedValue({ data: { title: 'Test PR', body: 'body', head: { sha: 'abc123' }, base: { ref: 'main' } } });
+      }
+
+      expect(completedCheck()).toMatchObject({ conclusion: 'neutral', output: { title: 'PR closed, review stopped' } });
+      expect(jest.mocked(ghUtils.postReview)).not.toHaveBeenCalled();
+      expect(jest.mocked(ghUtils.dismissPreviousReviews)).not.toHaveBeenCalled();
+      expect(authModule.reportPrState).not.toHaveBeenCalledWith('test-owner', 'test-repo', 42, expect.objectContaining({ reviewed: expect.anything() }));
+      expect(core.setFailed).not.toHaveBeenCalled();
     });
 
     it('completes the check as failure when the review fails', async () => {
