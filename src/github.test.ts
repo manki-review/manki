@@ -4,7 +4,7 @@ import { gunzipSync } from 'zlib';
 
 import { formatFindingBlock, readChangesSince, relatedCommits, ApprovalHeld, earlierPlaces, plainCitedFiles, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, LeftOutFile, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, autoApproveHeadMarker, reviewedCommit, updateProgressDashboard, startLiveEdits, LIVE_EDIT_MS, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchChangesSince, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, fetchApprovalHold, SupersededError, isFailedProgress, markFailedProgressSuperseded, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError, githubRepoFiles, openRepoFiles, UnreadFileError , awaitPushedHead, HeadedPull } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
-import { DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases, RoundFix, Refutation, SideCheckState, OriginAnswer, OtherFinderVote } from './types';
+import { DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, findingKey, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases, RoundFix, Refutation, SideCheckState, OriginAnswer, OtherFinderVote } from './types';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { contentAnswer, makeFindingFingerprintEntry, namingCommit, paginateSinglePage, TEST_BOT, TEST_LINKS, testSha } from './test-utils';
 import { withMarkers } from './utils';
@@ -2710,6 +2710,11 @@ describe('postReview body lead', () => {
     // One of the findings the judge kept is still listed. One an earlier thread carries is in `findings` too.
     expect(roundSentence(round({ allJudgedFindings: [kept, droppedBy('refutation')], findings: [kept] }))).toBe(summary);
     expect(roundSentence(round({ allJudgedFindings: [kept], findings: [{ ...kept, threadId: 'PRRT_1' }] }))).toBe(summary);
+    // So is one folded into a finding of the verdict reader that the round lists, and not one folded into a finding it no longer lists.
+    const reader: Finding = { ...kept, title: 'Retry error is lost', line: 8, reviewers: ['Verdict reader'] };
+    const folded = { readerFolds: [[findingKey(kept), findingKey(reader)]] as Array<[string, string]> };
+    expect(roundSentence(round({ allJudgedFindings: [kept], findings: [reader], ...folded }))).toBe(summary);
+    expect(roundSentence(round({ allJudgedFindings: [kept], findings: [], ...folded }))).toBe('');
     // The judge kept nothing itself, so its summary describes no finding a later step could take out.
     expect(roundSentence(round({ allJudgedFindings: [droppedBy('judge')] }))).toBe(summary);
     expect(roundSentence(round({}))).toBe(summary);

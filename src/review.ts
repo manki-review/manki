@@ -2304,6 +2304,7 @@ export async function runReview(
     })
     : new Set<string>();
   let ownFixed = new Map<string, string>();
+  let readerFolds: Array<[string, string]> = [];
   const gradeThreads = (findings: Finding[]) => confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(findings, priorBlockers), pushChangedFiles, standingWorkarounds, fixedElsewhere, ownFixed);
   let threadEvaluations = gradeThreads(finalFindings);
   // Without the threads, every finding of a thread would look listed in a review body, so nothing is matched this round.
@@ -2421,6 +2422,7 @@ export async function runReview(
       const restated = (await foldIntoEarlierFindings(refuted, earlier, earlierWrap?.client)).map(guard);
       const foldWrap = clients.dedup && lateUsage({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup');
       const folded = await foldIntoReaderBlockers(finalFindings, restated, foldWrap?.client);
+      readerFolds = folded.folds;
       if (stopped) return incompleteAfterJudge(stopped);
       if (foldWrap?.getTotals().calls) logOutputTokens('LLM dedup of nearby findings', foldWrap.getTotals().usage);
       // The reader names only blockers, so each one would block if true: none is left out, and one nothing confirmed is marked.
@@ -2497,6 +2499,7 @@ export async function runReview(
     ...(sweepDedupCount > 0 && { sweepDedupCount }),
     agentNames: team.finders.map(a => a.name),
     allJudgedFindings,
+    ...(readerFolds.length > 0 && { readerFolds }),
     rawFindings: [...allFindings, ...sweepRaw],
     ...(openLeads.length > 0 && { openLeads }),
     ...(leads.length > 0 && { leads }),
@@ -3891,8 +3894,11 @@ function judgeToolSteps(config: ReviewConfig, clients: ReviewClients, canReadHea
  * replaces the line its comment sits on. A title the blocker's does not contain is added to its description, with its
  * file and line when it sits in another file, so a second defect folded in by mistake still shows.
  */
-async function foldIntoReaderBlockers(findings: Finding[], blockers: Finding[], dedup: LLMClient | undefined): Promise<{ findings: Finding[]; blockers: Finding[] }> {
+async function foldIntoReaderBlockers(
+  findings: Finding[], blockers: Finding[], dedup: LLMClient | undefined,
+): Promise<{ findings: Finding[]; blockers: Finding[]; folds: Array<[string, string]> }> {
   const merged = blockers.map(b => ({ ...b }));
+  const folds: Array<[string, string]> = [];
   // Match against the reader's own blocker, so a finding never folds in through what an earlier fold added.
   const matched = await sameDefectIndexes(findings, blockers, dedup);
   const kept = findings.filter((f, i) => {
@@ -3903,10 +3909,11 @@ async function foldIntoReaderBlockers(findings: Finding[], blockers: Finding[], 
     if (overlap !== 'exact' && overlap !== 'substring') blocker.description = `${blocker.description}\n\nAlso reported as: ${f.title}${f.file === blocker.file ? '' : ` (${f.file}${f.line > 0 ? `:${f.line}` : ''})`}`;
     foldInto(blocker, f);
     if (!blocker.suggestedFix && f.suggestedFix && f.file === blocker.file && f.line === blocker.line) blocker.suggestedFix = f.suggestedFix;
+    folds.push([findingKey(f), findingKey(blocker)]);
     core.info(`Folded ${f.severity} "${f.title}" into the verdict reader's blocker "${blocker.title}"`);
     return false;
   });
-  return { findings: kept, blockers: merged };
+  return { findings: kept, blockers: merged, folds };
 }
 
 /**

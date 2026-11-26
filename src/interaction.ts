@@ -166,6 +166,19 @@ interface LedReply { lead?: string; text: string }
 // span of its own, which is how `highlightCode` leaves the path of a changed file.
 const CODE_LOCATION_RE = /(`?)([\w./-]+\.\w+)\1:(\d+)/g;
 
+// A web address, whose host and port can read as a `path:line`, such as `https://api.example.com:8443/v1`.
+// `sanitizeMarkdown` puts a zero-width space after the scheme of one in the model's text.
+const URL_RE = /\b[a-z][a-z\d+.-]*:\u200B?\/\/\S*/gi;
+
+// A host name, which a port after it makes read as a `path:line`, such as `api.example.com:8443`.
+const HOST_RE = /^(?:[\w-]+\.)+(?:com|org|net|io|dev|app|ai|co|edu|gov|local|internal|cloud)$/i;
+
+// The place in a link to a line or lines of a file, as `buildLineLink` writes it, such as `/blob/<sha>/src/a.ts#L4-L6`.
+const LINE_LINK_RE = /\/blob\/[\da-f]{7,40}\/([^\s#)]+)#L(\d+)(?:-L(\d+))?/g;
+
+// The most lines of one linked range that count as cited.
+const MAX_LINKED_LINES = 200;
+
 const UNPROVEN_KEPT = 'I could not point to lines that show the problem still happens';
 
 // Tool steps a reply may take to check the developer's statements.
@@ -436,19 +449,27 @@ function replyChecks(checked: CheckedReply): ReplyChecks {
  * Returns the code locations `text` cites, as `path:line`. A location in `file` gets the path of `file`, also when the
  * text names only its file name. A path in a code span of its own counts only for `file`, unless `anySpan`: any other
  * text `highlightCode` put into a span, such as a field of the changed code, is no location. A word that cites a line
- * of one of the related repos `names` gives that citation, and is never read as a line of the PR.
+ * of one of the related repos `names` gives that citation, and is never read as a line of the PR. A web address, a
+ * host with a port and a time such as `12.30:45` are no location. With `anySpan`, each line a link to the code names
+ * counts too, since a finding shows some of its lines only as links.
  */
 function codeLocations(text: string, file: string | undefined, names: readonly string[], anySpan = false): string[] {
   const name = file?.split('/').pop();
-  return text.split(/\s+/).flatMap(word => {
+  const linked = anySpan ? [...text.matchAll(LINE_LINK_RE)].flatMap(([, encoded, start, end = start]) => {
+    const path = decodeURIComponent(encoded);
+    const last = Math.min(Number(end), Number(start) + MAX_LINKED_LINES - 1);
+    return Array.from({ length: Math.max(0, last - Number(start) + 1) }, (_, i) => `${path}:${Number(start) + i}`);
+  }) : [];
+  return [...linked, ...text.replace(URL_RE, ' ').split(/\s+/).flatMap(word => {
     // `highlightCode` can have put the path inside a citation into a code span.
     const related = relatedCitations(word.replace(/`/g, ''), names);
     if (related.length > 0) return related.map(cited => cited.citation);
     return [...word.matchAll(CODE_LOCATION_RE)].flatMap(([, span, path, line]) => {
       const own = path === file || path === name;
+      if (!own && (!/[a-z]/i.test(path) || HOST_RE.test(path))) return [];
       return span && !own && !anySpan ? [] : [`${own ? file : path}:${line}`];
     });
-  });
+  })];
 }
 
 /**

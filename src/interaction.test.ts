@@ -2032,6 +2032,14 @@ describe('handleReviewCommentReply', () => {
     ['cites no line', '', 'The token is still logged.', false],
     ['names a version', '', 'Release 2.4.1 still logs the token.', false],
     ['names a field of the changed code and a number', '', 'opts.retries:3 still logs the token.', false],
+    // A web address, a host with a port and a time read like `path:line`, and none of them is a line of code.
+    ['cites a web address with a port', '', 'https://api.example.com:8443/v1/users still logs the token.', false],
+    ['names a host with a port', '', 'api.example.com:8443 still logs the token.', false],
+    ['names a time', '', 'The entry at 12.30:45 still logs the token.', false],
+    // A finding shows a line among several of its file, or a range, only as a link, and the answer cannot cite it as new.
+    ['cites a line the finding links among others of its file', 'See `src/file.ts` lines [10](https://github.com/o/r/blob/cccccccccccccccccccccccccccccccccccccccc/src/file.ts#L10), [12](https://github.com/o/r/blob/cccccccccccccccccccccccccccccccccccccccc/src/file.ts#L12).', 'src/file.ts:12 still logs the token.', false],
+    ['cites a line inside a range the finding links', 'See [`src/file.ts:11-13`](https://github.com/o/r/blob/cccccccccccccccccccccccccccccccccccccccc/src/file.ts#L11-L13).', 'file.ts:12 still logs the token.', false],
+    ['cites a line past a range the finding links', 'See [`src/file.ts:11-13`](https://github.com/o/r/blob/cccccccccccccccccccccccccccccccccccccccc/src/file.ts#L11-L13).', 'src/file.ts:14 still logs the token.', true],
     ['cites the line the finding cites by the file name alone', 'See file.ts:10.', 'src/file.ts:10 still logs the token.', false],
     ['cites a new line next to the finding\'s line', 'See src/file.ts:10.', 'src/file.ts:10 calls the logger, and src/file.ts:12 still logs the token.', true],
     // A thread posted on another file reads a file name against the finding's file, not the file it sits on.

@@ -1349,10 +1349,14 @@ export function confirmedByCheck(finding: Pick<Finding, 'refutation' | 'pairRefu
   return [finding.refutation, finding.pairRefutation].some(check => !!check && confirmsDefect(asAnswered(check), finding));
 }
 
+/** Returns what premise `p` of a check of `finding` decides, as stored with it or else as the doubt it answers says. */
+function premiseDecides(p: PremiseCheck, finding: Pick<Finding, 'doubts'>): Doubt['decides'] | undefined {
+  return p.decides ?? finding.doubts?.find(d => d.premise === p.premise)?.decides;
+}
+
 /** Returns the premises of `check` that leave the defect of `finding` open, as `confirmsDefect` reads them. */
 function openPremises(check: Refutation, finding: Pick<Finding, 'doubts'>): PremiseCheck[] {
-  const decides = (p: PremiseCheck): Doubt['decides'] | undefined => p.decides ?? finding.doubts?.find(d => d.premise === p.premise)?.decides;
-  return check.premises?.filter(p => towardFinding(p) !== 'confirmed' && decides(p) !== 'grade') ?? [];
+  return check.premises?.filter(p => towardFinding(p) !== 'confirmed' && premiseDecides(p, finding) !== 'grade') ?? [];
 }
 
 /**
@@ -1428,11 +1432,12 @@ export function confirmsAll(checks: readonly Refutation[]): boolean {
  * Returns the refutation that disproves `finding`, by `outcomeOf`: in a premise the defect rests on, or in its answer
  * whether the defect exists. Returns none when another check backs the finding, since a confirmation against a
  * disproof settles nothing. A check backs it when, `asAnswered`, it does not disprove it and confirmed the defect or, by
- * `towardFinding`, one of the premises.
+ * `towardFinding`, a premise that does not decide only the grade. A confirmed reach says nothing about the defect.
  */
-export function disproof(finding: Pick<Finding, 'refutation' | 'pairRefutation'>): Refutation | undefined {
+export function disproof(finding: Pick<Finding, 'refutation' | 'pairRefutation' | 'doubts'>): Refutation | undefined {
   const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r).map(asAnswered);
-  const backs = (check: Refutation): boolean => outcomeOf(check) !== 'disproved' && (check.defect === 'confirmed' || !!check.premises?.some(p => towardFinding(p) === 'confirmed'));
+  const backs = (check: Refutation): boolean => outcomeOf(check) !== 'disproved'
+    && (check.defect === 'confirmed' || !!check.premises?.some(p => towardFinding(p) === 'confirmed' && premiseDecides(p, finding) !== 'grade'));
   return checks.some(backs) ? undefined : checks.find(check => outcomeOf(check) === 'disproved');
 }
 
@@ -1441,7 +1446,7 @@ export function disproof(finding: Pick<Finding, 'refutation' | 'pairRefutation'>
  * finding stays in the review whatever the check disproved: the refuter checks whether a failure can happen, not whether
  * a rule is followed, and the same rule break with no damage to check is posted unchecked.
  */
-export function overruledDisproof(finding: Pick<Finding, 'severity' | 'rule' | 'refutation' | 'pairRefutation'>, rules?: RulesMode): Refutation | undefined {
+export function overruledDisproof(finding: Pick<Finding, 'severity' | 'rule' | 'refutation' | 'pairRefutation' | 'doubts'>, rules?: RulesMode): Refutation | undefined {
   return finding.severity === 'blocker' || finding.severity === 'ignore' || !gradedByRule(finding, rules) ? undefined : disproof(finding);
 }
 
@@ -1662,6 +1667,8 @@ export interface ReviewResult {
   sweepDedupCount?: number;
   agentNames: string[];
   allJudgedFindings?: Finding[];
+  /** Each finding the judge kept that was folded into a finding of the verdict reader, with that finding, by `findingKey`. */
+  readerFolds?: Array<[string, string]>;
   rawFindings?: Finding[];
   /** Open leads below blocker, which the review body lists as not finished checking and never posts. */
   openLeads?: Finding[];
