@@ -130,13 +130,13 @@ const REOPENED_MARKER = '<!-- manki-reopened -->';
 const UNSETTLED_ANSWER_MARKER = '<!-- manki-unsettled-answer -->';
 
 /**
- * Marks Manki's "Fixed." on a thread it leaves open, which opens with that state instead of the outcome word. Every reader
- * of the thread takes it as a "Fixed." answer.
+ * Marks Manki's settling answer on a thread it leaves as it is, such as a guarded one, which opens with that state instead
+ * of the outcome word, by that outcome. Every reader of the thread takes it as that outcome.
  */
-const FIX_SEEN_MARKER = '<!-- manki-fix-seen -->';
+const SEEN_MARKERS = { Fixed: '<!-- manki-fix-seen -->', Agreed: '<!-- manki-agreed-seen -->', Withdrawn: '<!-- manki-withdrawn-seen -->' } as const;
 
 /** The outcome each marker of an answer that opens with its state stands for. */
-const LED_ANSWERS = [[UNSETTLED_ANSWER_MARKER, 'Unverified'], [FIX_SEEN_MARKER, 'Fixed']] as const;
+const LED_ANSWERS = [[UNSETTLED_ANSWER_MARKER, 'Unverified'], [SEEN_MARKERS.Fixed, 'Fixed'], [SEEN_MARKERS.Agreed, 'Agreed'], [SEEN_MARKERS.Withdrawn, 'Withdrawn']] as const;
 
 /** Returns the outcome that Manki's answer `body` stands for when it opens with its state instead, by its marker in `LED_ANSWERS`. */
 export function ledOutcome(body: string): typeof LED_ANSWERS[number][1] | undefined {
@@ -1746,4 +1746,4 @@ function dropWaivedRestatements(
   return { unique, duplicates };
 }
 
-export { AGAINST_HEADING, authorCannotClear, BOT_PREFIX_PATTERN, STATEMENTS_HEADING, latestAnswer, withoutStatementFold, personReplies, RAISED_MARKER, UNSETTLED_ANSWER_MARKER, FIX_SEEN_MARKER, guardedKind, isDisprovedThread, clearRecordLogin, clearRecordMarker, dismissRecordLogins, dismissRecordMarker, dropWaivedRestatements, withoutCode, blockersToRecheck, currentFindingLine, DuplicateMatch, FixClaim, fixClaimMarker, fixClaimOf, namedPullRequests, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, pushTouchesThread, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };
+export { AGAINST_HEADING, authorCannotClear, BOT_PREFIX_PATTERN, STATEMENTS_HEADING, latestAnswer, withoutStatementFold, personReplies, RAISED_MARKER, UNSETTLED_ANSWER_MARKER, SEEN_MARKERS, guardedKind, isDisprovedThread, clearRecordLogin, clearRecordMarker, dismissRecordLogins, dismissRecordMarker, dropWaivedRestatements, withoutCode, blockersToRecheck, currentFindingLine, DuplicateMatch, FixClaim, fixClaimMarker, fixClaimOf, namedPullRequests, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, pushTouchesThread, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };

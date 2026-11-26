@@ -1,5 +1,5 @@
 import { parseCase } from '../src/bench';
-import { FIX_SEEN_MARKER, FOUND_AGAIN_MARKER } from '../src/recap';
+import { FOUND_AGAIN_MARKER, SEEN_MARKERS } from '../src/recap';
 import { fixedMarker } from '../src/state';
 import { makeFindingFingerprintEntry, makeRoundContext } from '../src/test-utils';
 import { FindingFingerprintEntry, PRE_EXISTING_TAG, RoundContext } from '../src/types';
@@ -110,7 +110,7 @@ describe('collectFollowUps', () => {
 
     expect([...followUps.keys()]).toEqual([2, 3, 4, 5]);
     // A "Fixed." that opens with the state of the thread it leaves open reads as the "Fixed." it stands for.
-    const fixSeen = comments.map(c => (c.id === 1103 ? { ...c, body: `**Fix seen, the thread stays open until a review or a maintainer confirms it.**\n\nThe index is added.\n\n<!-- manki -->\n${fixedMarker('sha3')}\n${FIX_SEEN_MARKER}` } : c));
+    const fixSeen = comments.map(c => (c.id === 1103 ? { ...c, body: `**Fix seen, the thread stays open until a review or a maintainer confirms it.**\n\nThe index is added.\n\n<!-- manki -->\n${fixedMarker('sha3')}\n${SEEN_MARKERS.Fixed}` } : c));
     expect(collectFollowUps(pr(rounds), fixSeen, states)).toEqual(followUps);
     // A record that did not decode, or rounds out of sequence, leave the rounds before each one unknown.
     expect(collectFollowUps(pr(rounds, 1), comments, states)).toEqual(new Map());
