@@ -435,8 +435,8 @@ describe('scoreRun', () => {
       costUsd: 1.25, inputTokens: 1000, outputTokens: 100, durationMs: 90,
     });
     expect(score.findings.slice(1, 3)).toEqual([
-      { severity: 'blocker', title: 'Lock dropped', file: 'src/lock.rs', line: 1, description: 'Calls `unlock` early.', route: { finderGrade: 'blocker', raisedBy: ['finder'] } },
-      { severity: 'blocker', title: 'Invented', file: 'src/other.rs', line: 1, description: 'Something.', route: { finderGrade: 'blocker', raisedBy: ['finder'] } },
+      { severity: 'blocker', title: 'Lock dropped', file: 'src/lock.rs', line: 1, description: 'Calls `unlock` early.', route: { finderGrade: 'blocker', raisedBy: ['finder'], finders: ['reviewer'] } },
+      { severity: 'blocker', title: 'Invented', file: 'src/other.rs', line: 1, description: 'Something.', route: { finderGrade: 'blocker', raisedBy: ['finder'], finders: ['reviewer'] } },
     ]);
 
     const warnings = [makeFinding({ title: 'Helper copied' }), makeFinding({ title: 'Unlisted\n```', description: 'Drops the lock.\r```rust\r\nunlock();\n```\n', howToFix: 'Hold it.', suggestedFix: 'lock();' }), makeFinding({ severity: 'note', title: 'A note' })];
@@ -448,7 +448,7 @@ describe('scoreRun', () => {
     );
     expect(unscored.variants[0].summary.unexpectedWarnings).toBe(1);
     expect(formatBenchSummary(unscored)).toContain('0 false blockers, 1 unexpected warnings, 2 extra');
-    expect(warned.findings[1]).toEqual({ severity: 'warning', title: 'Unlisted\n```', file: 'src/other.rs', line: 1, description: 'Drops the lock.\r```rust\r\nunlock();\n```\n', howToFix: 'Hold it.', suggestedFix: 'lock();', route: { finderGrade: 'warning', raisedBy: ['finder'] } });
+    expect(warned.findings[1]).toEqual({ severity: 'warning', title: 'Unlisted\n```', file: 'src/other.rs', line: 1, description: 'Drops the lock.\r```rust\r\nunlock();\n```\n', howToFix: 'Hold it.', suggestedFix: 'lock();', route: { finderGrade: 'warning', raisedBy: ['finder'], finders: ['reviewer'] } });
     expect(formatUnmatched(unscored.variants)).toBe([
       '### Unexpected warnings on tuning cases', '',
       "Warnings that match no key item. Add each real defect to its case's `must_catch`, or to `nice_to_have` when a good review may leave it out, and bump the case's `key_version`.", '',
@@ -503,14 +503,15 @@ describe('scoreRun', () => {
         gradePath: [step('warning', 'blocker', 'refutation')], gradeIfConfirmed: 'blocker', doubts: [doubt('defect'), { ...doubt('grade'), consequence: true }], refutation,
       }),
       // The finders split on it, so the check that confirmed the consequence made it a blocker, not the finder that filed one.
+      // Both finders reported a copy, and the route names both.
       blocker('Split', {
-        reviewerSeverity: 'blocker', lowestReviewerSeverity: 'warning', gradePath: [step('blocker', 'warning', 'judge'), step('warning', 'blocker', 'refutation')], gradeIfConfirmed: 'blocker',
+        reviewers: ['Finder A', 'Finder B'], reviewerSeverity: 'blocker', lowestReviewerSeverity: 'warning', gradePath: [step('blocker', 'warning', 'judge'), step('warning', 'blocker', 'refutation')], gradeIfConfirmed: 'blocker',
         doubts: [doubt('defect'), { ...doubt('grade'), consequence: true }], refutation,
       }),
       makeFinding({ title: 'Worked around', severity: 'blocker', reviewers: ['Fix check 1'] }),
       // A vote that named no line declined a warning, and one whose quoted line did not hold declined a blocker.
-      makeFinding({ title: 'Voted down', severity: 'note', gradePath: [step('warning', 'note', 'other_finder')], otherFinderVote: vote(true) }),
-      makeFinding({ title: 'Misquoted', severity: 'warning', gradePath: [step('blocker', 'warning', 'other_finder')], otherFinderVote: vote(true, 'src/read.rs:9') }),
+      makeFinding({ title: 'Voted down', severity: 'note', gradePath: [step('warning', 'note', 'other_finder')], otherFinderVote: vote(true), soleFinder: true }),
+      makeFinding({ title: 'Misquoted', severity: 'warning', gradePath: [step('blocker', 'warning', 'other_finder')], otherFinderVote: vote(true, 'src/read.rs:9'), soleFinder: true }),
       makeFinding({ title: 'Major', severity: 'note', importance: { overall: 8, trigger: 8, introduced: 9, matters: 7 } }),
     ];
     const review = makeReview('ADDRESS_FIRST', findings);
@@ -525,36 +526,36 @@ describe('scoreRun', () => {
     expect(score.findings.map(f => f.route)).toEqual([
       {
         finderGrade: 'blocker', cell: { row: 'wrong', column: 'normal' }, gradeIfConfirmed: 'blocker', judgeIfConfirmed: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'judge' }, { from: 'warning', to: 'blocker', by: 'refutation' }],
-        doubts: { defect: 2, grade: 1 }, refutation: { outcome: 'confirmed', defect: 'confirmed' }, checkStatus: 'confirmed', raisedBy: ['finder'], vote: { grade: 'blocker', answer: 'backs', quote: 'held' },
+        doubts: { defect: 2, grade: 1 }, refutation: { outcome: 'confirmed', defect: 'confirmed' }, checkStatus: 'confirmed', raisedBy: ['finder'], finders: ['reviewer'], vote: { grade: 'blocker', answer: 'backs', quote: 'held' },
       },
       {
         finderGrade: 'warning', cell: { row: 'severe', column: 'normal', judgeColumn: 'rare' }, refutation: { outcome: 'confirmed' },
-        gradePath: [{ from: 'warning', to: 'blocker', by: 'judge' }, { from: 'blocker', to: 'warning', by: 'unproven' }, { from: 'warning', to: 'blocker', by: 'refutation' }], raisedBy: ['finder'],
+        gradePath: [{ from: 'warning', to: 'blocker', by: 'judge' }, { from: 'blocker', to: 'warning', by: 'unproven' }, { from: 'warning', to: 'blocker', by: 'refutation' }], raisedBy: ['finder'], finders: ['reviewer'],
       },
       {
         finderGrade: 'note', gradeIfConfirmed: 'blocker', gradePath: [{ from: 'note', to: 'warning', by: 'judge' }, { from: 'warning', to: 'blocker', by: 'refutation' }], doubts: { defect: 0, grade: 1 },
-        refutation: { outcome: 'confirmed', defect: 'confirmed', relatedLines: 2, prLines: 0 }, raisedBy: ['finder'],
+        refutation: { outcome: 'confirmed', defect: 'confirmed', relatedLines: 2, prLines: 0 }, raisedBy: ['finder'], finders: ['reviewer'],
       },
       { finderGrade: 'blocker', byReader: true, raisedBy: ['reader'] },
-      { finderGrade: 'warning', gradePath: [{ from: 'warning', to: 'blocker', by: 'rule' }], security: true, raisedBy: ['finder'] },
+      { finderGrade: 'warning', gradePath: [{ from: 'warning', to: 'blocker', by: 'rule' }], security: true, raisedBy: ['finder'], finders: ['reviewer'] },
       { finderGrade: 'blocker', byClaimCheck: true, raisedBy: ['claim'] },
-      { finderGrade: 'blocker', raisedBy: ['finder', 'claim'] },
+      { finderGrade: 'blocker', raisedBy: ['finder', 'claim'], finders: ['Reviewer'] },
       {
         finderGrade: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'pre_existing' }], refutation: { outcome: 'unsettled', defect: 'unsettled', stepsUsedUp: 'yes', outside: { stated: 1, unstated: 1 } }, checkStatus: 'unconfirmed',
-        raisedBy: ['finder', 'second_read', 'comparison', 'pattern', 'related', 'sweep', 'tool', 'scope'], vote: { grade: 'blocker', answer: 'backs', quote: 'held' },
+        raisedBy: ['finder', 'second_read', 'comparison', 'pattern', 'related', 'sweep', 'tool', 'scope'], finders: ['Reviewer', 'reviewer'], vote: { grade: 'blocker', answer: 'backs', quote: 'held' },
       },
       {
         finderGrade: 'warning', gradeIfConfirmed: 'blocker', gradePath: [{ from: 'warning', to: 'blocker', by: 'refutation' }],
-        doubts: { defect: 1, grade: 1, consequence: 1 }, refutation: { outcome: 'confirmed', defect: 'confirmed' }, raisedBy: ['finder'],
+        doubts: { defect: 1, grade: 1, consequence: 1 }, refutation: { outcome: 'confirmed', defect: 'confirmed' }, raisedBy: ['finder'], finders: ['reviewer'],
       },
       {
         finderGrade: 'blocker', lowestFinderGrade: 'warning', gradeIfConfirmed: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'judge' }, { from: 'warning', to: 'blocker', by: 'refutation' }],
-        doubts: { defect: 1, grade: 1, consequence: 1 }, refutation: { outcome: 'confirmed', defect: 'confirmed' }, raisedBy: ['finder'],
+        doubts: { defect: 1, grade: 1, consequence: 1 }, refutation: { outcome: 'confirmed', defect: 'confirmed' }, raisedBy: ['finder'], finders: ['Finder A', 'Finder B'],
       },
       { finderGrade: 'blocker', byFixCheck: true, raisedBy: ['fix'] },
-      { finderGrade: 'warning', gradePath: [{ from: 'warning', to: 'note', by: 'other_finder' }], raisedBy: ['finder'], vote: { grade: 'warning', answer: 'declines', quote: 'none' } },
-      { finderGrade: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'other_finder' }], raisedBy: ['finder'], vote: { grade: 'blocker', answer: 'declines', quote: 'missed' } },
-      { finderGrade: 'note', raisedBy: ['finder'], importance: { overall: 8, trigger: 8, introduced: 9, matters: 7 } },
+      { finderGrade: 'warning', gradePath: [{ from: 'warning', to: 'note', by: 'other_finder' }], raisedBy: ['finder'], finders: ['reviewer'], soleFinder: true, vote: { grade: 'warning', answer: 'declines', quote: 'none' } },
+      { finderGrade: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'other_finder' }], raisedBy: ['finder'], finders: ['reviewer'], soleFinder: true, vote: { grade: 'blocker', answer: 'declines', quote: 'missed' } },
+      { finderGrade: 'note', raisedBy: ['finder'], finders: ['reviewer'], importance: { overall: 8, trigger: 8, introduced: 9, matters: 7 } },
     ]);
     expect(score.leftOut).toEqual([{ title: 'Minor', file: 'src/minor.rs', line: 9, importance: { overall: 3, trigger: 2, introduced: 9, matters: 4 } }]);
     expect(score.findings.map(f => f.title)).not.toContain('Minor');
@@ -1066,7 +1067,7 @@ describe('runBench and buildReport', () => {
 
     const [{ results: [failed] }] = await runBench([benchCase], { ...options, matcher: broken });
     expect(failed.runs[0]).toMatchObject({ outcome: 'ADDRESS_FIRST', complete: false, error: 'no such model', costUsd: 1.25, mustCatchRecall: null });
-    expect(failed.runs[0].findings).toEqual([{ severity: 'blocker', title: 'A finding', file: 'src/read.rs', line: 1, description: 'Something.', route: { finderGrade: 'blocker', raisedBy: ['finder'] } }]);
+    expect(failed.runs[0].findings).toEqual([{ severity: 'blocker', title: 'A finding', file: 'src/read.rs', line: 1, description: 'Something.', route: { finderGrade: 'blocker', raisedBy: ['finder'], finders: ['reviewer'] } }]);
     expect(review).toHaveBeenCalledTimes(2);
     // The run keeps what a replay and a later scoring read, and the summary says that it is unscored.
     expect(failed.runs[0]).toMatchObject({ unscored: {}, replay: { planner: null, finders: ['reviewer'], answers: { translate: null, dedup: null, judge: null, checks: [{ call: 'refutation', answer: { status: 'confirmed' } }] } } });
@@ -1733,7 +1734,7 @@ describe('mergeReports and gateReports', () => {
     expect({ rescored, left }).toEqual({ rescored: ['demo-2'], left: [] });
     const [kept, changed] = scored.variants[0].cases;
     expect(kept).toBe(stored.variants[0].cases[0]);
-    expect(matcher.mock.calls.find(([item]) => item.id === 'K3')![1]).toEqual([{ severity: 'warning', title: 'A finding', file: 'src/other.rs', line: 1, description: 'Something.', route: { finderGrade: 'warning', raisedBy: ['finder'] } }]);
+    expect(matcher.mock.calls.find(([item]) => item.id === 'K3')![1]).toEqual([{ severity: 'warning', title: 'A finding', file: 'src/other.rs', line: 1, description: 'Something.', route: { finderGrade: 'warning', raisedBy: ['finder'], finders: ['reviewer'] } }]);
     expect(stored.variants[0].cases[1].runs[0]).toMatchObject({ mustCatchRecall: 0.5, unexpectedWarnings: 1, extraFindings: 1 });
     expect(changed).toMatchObject({ id: 'demo-2', set: 'holdout', keyVersion: 3 });
     expect(changed.items.map(item => [item.id, item.caught, item.runs])).toEqual([['K1', 1, 1], ['K2', 0, 1], ['K3', 1, 1], ['N1', 0, 1]]);

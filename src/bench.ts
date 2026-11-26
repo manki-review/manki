@@ -443,7 +443,7 @@ interface FinderSteps {
   unitsNotCovered?: number;
 }
 
-/** How a finding got its grade, in grades, kinds and counts only, so a summary can count it for a hold-out case. */
+/** How a finding got its grade, in grades, kinds, counts and finder names only, so a summary can count it for a hold-out case. */
 interface GradeRoute {
   /** What `finderGrade` returns. */
   finderGrade: FindingSeverity;
@@ -474,6 +474,10 @@ interface GradeRoute {
   byFixCheck?: true;
   /** The kinds of step that reported the finding, in the order of `RAISED_BY`. Left out of a finding no step names. */
   raisedBy?: RaisedBy[];
+  /** The names of the finders that reported the finding or a copy the review merged into it. Left out when no finder did. */
+  finders?: string[];
+  /** Set when one finder alone reported the finding while two or more ran, as `mapJudgedToFindings` grades it. */
+  soleFinder?: true;
   /**
    * The other finder's vote: the grade the finding had when it was voted on, whether the vote backs or declines it, and
    * whether the quote of its line held (`held`), named a line that does not hold it (`missed`) or named no line (`none`).
@@ -1006,6 +1010,7 @@ function gradeRoute(f: Finding): GradeRoute {
   const { cell, gradeIfConfirmed, judgeIfConfirmed, gradePath, doubts = [], refutation, checkStatus } = f;
   const doubtsOf = (decides: Doubt['decides']) => doubts.filter(d => d.decides === decides).length;
   const kinds = new Set(f.reviewers.map(reviewer => raisedBy(reviewer, f)));
+  const finders = f.reviewers.filter(reviewer => raisedBy(reviewer, f) === 'finder');
   return {
     finderGrade: finderGrade(f),
     ...(f.lowestReviewerSeverity && { lowestFinderGrade: f.lowestReviewerSeverity }),
@@ -1025,6 +1030,8 @@ function gradeRoute(f: Finding): GradeRoute {
     ...(f.reviewers.length > 0 && f.reviewers.every(isClaimCheck) && { byClaimCheck: true as const }),
     ...(f.reviewers.length > 0 && f.reviewers.every(isFixCheck) && { byFixCheck: true as const }),
     ...(kinds.size > 0 && { raisedBy: (Object.keys(RAISED_BY) as RaisedBy[]).filter(kind => kinds.has(kind)) }),
+    ...(finders.length > 0 && { finders }),
+    ...(f.soleFinder && { soleFinder: true as const }),
     ...(f.otherFinderVote && { vote: {
       grade: gradePath?.find(step => AFTER_VOTE.includes(step.by))?.from ?? f.severity,
       answer: f.otherFinderVote.declined ? 'declines' as const : 'backs' as const,
