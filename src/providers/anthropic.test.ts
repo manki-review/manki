@@ -771,7 +771,7 @@ describe('sendViaOAuth — error paths', () => {
 
     const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
     const joined = await send([[head, 'max_tokens'], [middle, 'max_tokens'], [tail, 'end_turn']]);
-    expect(joined).toMatchObject({ content: reply, truncated: false });
+    expect(joined).toMatchObject({ content: reply, truncated: false, cut: { messages: 2, joined: true } });
     expect(parseJudgeResponse(joined.content, undefined).findings.map(f => f.id)).toEqual([1, 2, 3]);
     expect(infoSpy).toHaveBeenLastCalledWith(expect.stringContaining('joined with the cut text'));
     // A fence or prose around the cut answer is no part of it.
@@ -785,7 +785,7 @@ describe('sendViaOAuth — error paths', () => {
       `"row":${tail}`, `\`\`\`json\n${middle}${tail}\n\`\`\``, middle, 'Done.',
     ];
     for (const last of alone) {
-      expect((await send([[head, 'max_tokens'], [last, 'end_turn']])).content).toBe(last);
+      expect(await send([[head, 'max_tokens'], [last, 'end_turn']])).toMatchObject({ content: last, cut: { messages: 1, joined: false } });
       expect(infoSpy).toHaveBeenLastCalledWith(expect.stringContaining('only its last message is read'));
     }
     // A restart that was cut in its turn does not fit the first cut text either.
@@ -799,8 +799,11 @@ describe('sendViaOAuth — error paths', () => {
     // A whole answer before the cut is not read when the last message adds only prose, which may take it back.
     expect((await send([[`${reply} That is`, 'max_tokens'], [' a draft.', 'end_turn']])).content).toBe('a draft.');
     expect((await send([['The fix is', 'max_tokens'], [' right.', 'end_turn']])).content).toBe('right.');
-    // Only the messages right before the answer were cut inside it.
-    expect((await send([[head, 'max_tokens'], ['', 'tool_use'], [middle + tail, 'end_turn']])).content).toBe(middle + tail);
+    // Only the messages right before the answer were cut inside it, and a reply that does not go on from a cut stores none.
+    const afterTool = await send([[head, 'max_tokens'], ['', 'tool_use'], [middle + tail, 'end_turn']]);
+    expect(afterTool.content).toBe(middle + tail);
+    expect(afterTool).not.toHaveProperty('cut');
+    expect(await send([[reply, 'end_turn']])).not.toHaveProperty('cut');
     // Without a `result` text, the streamed text already holds every message.
     expect((await send([[head, 'max_tokens'], [middle + tail, 'end_turn']], { result: '' })).content).toBe(reply);
     // An error result is no part of the answer.

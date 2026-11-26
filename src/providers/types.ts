@@ -38,6 +38,16 @@ export interface LLMResponse {
   filesRead?: string[];
   /** The subscription usage limits the CLI reported for its account. Unset when it reported none. */
   limits?: LimitUsage[];
+  /** Set when the last message of the reply went on from messages cut at the output limit. */
+  cut?: CutReply;
+}
+
+/** The messages of a reply that the output limit cut right before its last message. */
+export interface CutReply {
+  /** How many messages in a row were cut before the last one. */
+  messages: number;
+  /** Whether the cut text and the last message made one answer, so the reply joined them. */
+  joined: boolean;
 }
 
 /** How much of one subscription usage window an account has used. */
@@ -214,6 +224,8 @@ export interface LLMCall extends LLMUsage {
   wrapUpNoted?: true;
   /** The subscription usage limits the call's CLI reported. The round record keeps only the newest per window, in `RoundUsage.limits`. */
   limits?: LimitUsage[];
+  /** Mirrors `LLMResponse.cut`. */
+  cut?: CutReply;
 }
 
 /** Totals over a set of `LLMCall`s. */

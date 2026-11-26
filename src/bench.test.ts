@@ -441,6 +441,14 @@ describe('scoreRun', () => {
     expect(formatBenchSummary(graded)).toContain('run 2: ADDRESS_FIRST, recall 50%, 2 false blockers, 0 unexpected warnings, 1 blockers above key grade, 1 key blockers posted lower, 2 extra');
     expect(formatBenchSummary(graded)).toContain('blockers above key grade 2, key blockers posted lower 1,');
     expect(formatComparison(graded.variants)).toContain('| Blockers above key grade | 2 |\n| Key blockers posted lower | 1 |');
+    // A reply cut at the output limit counts per stage, also when its last message stands alone. A run without one stores none.
+    expect(score).not.toHaveProperty('cutReplies');
+    const cutReview = makeReview('ADDRESS_FIRST', findings);
+    const calls = cutReview.context.usage!.llmCalls!;
+    calls[0] = { ...calls[0], cut: { messages: 2, joined: true } };
+    calls[1] = { ...calls[1], cut: { messages: 1, joined: false } };
+    calls[3] = { ...calls[3], cut: { messages: 1, joined: true } };
+    expect((await scoreRun(benchCase, cutReview, matcher)).cutReplies).toEqual({ reviewer: { calls: 2, messages: 3, joined: 1 }, judge: { calls: 1, messages: 1, joined: 1 } });
     expect(score.findings.slice(1, 3)).toEqual([
       { severity: 'blocker', title: 'Lock dropped', file: 'src/lock.rs', line: 1, description: 'Calls `unlock` early.', route: { finderGrade: 'blocker', raisedBy: ['finder'], finders: ['reviewer'] } },
       { severity: 'blocker', title: 'Invented', file: 'src/other.rs', line: 1, description: 'Something.', route: { finderGrade: 'blocker', raisedBy: ['finder'], finders: ['reviewer'] } },

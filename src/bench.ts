@@ -663,10 +663,34 @@ interface RunScore {
   secondReads?: FinderSteps[];
   /** What the review could read of each related repo: the commit it checked out, and the time it read the repo as of. A report from a ref that records neither has none. */
   relatedRepos?: Array<Pick<RoundRelatedRepo, 'repo' | 'ref' | 'status' | 'commit' | 'asOf'>>;
+  /**
+   * The replies cut at the output limit, by stage: the calls whose reply went on from cut messages, the cut messages, and
+   * the calls whose reply joined the cut text. Unset when no reply was cut. A report from a ref that does not store it has none.
+   */
+  cutReplies?: Record<string, CutCounts>;
   costUsd: number;
   inputTokens: number;
   outputTokens: number;
   durationMs: number;
+}
+
+interface CutCounts {
+  calls: number;
+  messages: number;
+  joined: number;
+}
+
+/** Returns `cutReplies` for the calls of `review`, or nothing when no reply was cut. */
+function cutReplies(review: LocalReview): Record<string, CutCounts> | undefined {
+  const byStage: Record<string, CutCounts> = {};
+  for (const { stage, cut } of review.context.usage?.llmCalls ?? []) {
+    if (!cut) continue;
+    const counts = byStage[stage] ??= { calls: 0, messages: 0, joined: 0 };
+    counts.calls++;
+    counts.messages += cut.messages;
+    if (cut.joined) counts.joined++;
+  }
+  return Object.keys(byStage).length > 0 ? byStage : undefined;
 }
 
 /** Credit for a match the review graded `given` against the key's `expected`. */
@@ -1042,9 +1066,10 @@ function gradeRoute(f: Finding): GradeRoute {
 }
 
 /** What a run records about its review whether or not the findings could be matched. `earlier` is the round a follow-up case follows. */
-function reviewFacts(review: LocalReview, earlier?: EarlierRound): Pick<RunScore, 'outcome' | 'verdictReason' | 'finderErrors' | 'findings' | 'leftOut' | 'finders' | 'secondReads' | 'relatedRepos' | 'costUsd' | 'inputTokens' | 'outputTokens' | 'durationMs'> {
+function reviewFacts(review: LocalReview, earlier?: EarlierRound): Pick<RunScore, 'outcome' | 'verdictReason' | 'finderErrors' | 'findings' | 'leftOut' | 'finders' | 'secondReads' | 'relatedRepos' | 'cutReplies' | 'costUsd' | 'inputTokens' | 'outputTokens' | 'durationMs'> {
   const usage = review.context.usage ?? {};
   const secondReads = finderSteps(review, true);
+  const cut = cutReplies(review);
   const { outcome, verdictReason, agentErrors } = review.result;
   const leftOut = (review.result.unposted ?? []).flatMap(({ title, file, line, importance, unpostedReason }) => (unpostedReason === 'rare_trigger' && importance ? [{ title, file, line, importance: scoresOf(importance) }] : []));
   const finderErrors = [...agentErrors ?? []].flatMap(([finder, causes]) => causes.map(cause => ({ finder, ...cause })));
@@ -1061,6 +1086,7 @@ function reviewFacts(review: LocalReview, earlier?: EarlierRound): Pick<RunScore
     finders: finderSteps(review),
     ...(secondReads.length > 0 && { secondReads }),
     ...(review.context.relatedRepos && { relatedRepos: review.context.relatedRepos.map(({ repo, ref, status, commit, asOf }) => ({ repo, ...(ref && { ref }), status, ...(commit && { commit }), ...(asOf && { asOf }) })) }),
+    ...(cut && { cutReplies: cut }),
     costUsd: usage.estimatedCostUsd ?? 0,
     inputTokens: usage.inputTokens ?? 0,
     outputTokens: usage.outputTokens ?? 0,
