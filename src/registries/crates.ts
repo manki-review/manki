@@ -37,6 +37,12 @@ const ENTRY_FIELDS = new Set(['version', 'features', 'optional', 'default-featur
 
 type TomlTable = Record<string, unknown>;
 
+/** Returns the value of `key` in a Cargo config `table`, which may spell it with dashes or with underscores. */
+function configValue(table: TomlTable, key: string): unknown {
+  const spelled = [key, key.replace(/-/g, '_')].find(k => Object.hasOwn(table, k));
+  return spelled === undefined ? undefined : table[spelled];
+}
+
 /** Returns `value` when it is a TOML table, else an empty one. */
 function tableOf(value: unknown): TomlTable {
   return typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date) ? value as TomlTable : {};
@@ -144,11 +150,12 @@ function cargoFreshPick(files: readonly RegistryConfig[]): ReturnType<Registry['
       throw new Error(`Manki cannot read ${file} with certainty: ${error instanceof Error ? error.message : String(error)}`);
     }
     if (CARGO_CONFIGS.test(file)) {
-      if (Object.hasOwn(tableOf(toml.resolver), 'incompatible-rust-versions')) resolver ??= file;
+      // `allow` turns the preference for a fitting `rust-version` off, so only `fallback` picks by it.
+      if (configValue(tableOf(toml.resolver), 'incompatible-rust-versions') === 'fallback') resolver ??= file;
       const setting = PICK_SETTINGS.find(key => {
         const path = key.split('.');
-        const table = path.slice(0, -1).reduce((at, name) => tableOf(at[name]), toml);
-        return Object.hasOwn(table, path.at(-1)!) && table[path.at(-1)!] !== false;
+        const value = configValue(path.slice(0, -1).reduce((at, name) => tableOf(at[name]), toml), path.at(-1)!);
+        return value !== undefined && value !== false;
       });
       if (setting) return `${shown(file)} sets \`${setting}\`, so a fresh install may not pick the highest version a requirement allows`;
       continue;
