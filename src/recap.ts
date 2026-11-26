@@ -918,7 +918,7 @@ interface Settlement {
 }
 
 // The words that name an issue as the place a finding is tracked, as in "Tracked in #12." or "Filed as #12".
-const TRACKING_ISSUE_RE = /\b(?:tracked\s+(?:in|by|as|under)|filed\s+(?:as|in|under)|deferred\s+to|tracking\s+issue|(?:in|to|under|by)\s+(?:the\s+)?(?:tracking\s+)?issue)\s+#(\d{1,9})\b/gi;
+const TRACKING_ISSUE_RE = /\b(?:tracked\s+(?:in|by|as|under)|filed\s+(?:as|in|under)|deferred\s+to|tracking\s+issue)\s+(?:(?:the\s+)?(?:tracking\s+)?issue\s+)?#(\d{1,9})\b/gi;
 
 /**
  * Returns the issues Manki's answer `body` names as tracking the finding. Only Manki's own words count, so an issue

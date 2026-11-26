@@ -1607,8 +1607,10 @@ describe('fetchRecapState', () => {
       const tracked = answer('Agreed').replace('The caller checks it.', 'Tracked in #1487, as the reply on #1 says, like #40. `tracked in #12` is code.');
       expect((await settledOf([tracked])).map(f => f.trackingIssues)).toEqual([[1487]]);
       const namedAs = async (text: string) => (await settledOf([answer('Agreed').replace('The caller checks it.', text)]))[0].trackingIssues;
-      expect(await Promise.all(['Handling the bound in issue #1487 is fine.', 'Filed as #1487 for later work.', 'Deferred to #1487.', 'The follow-up tracked by #1487 and #1488 is fine.', 'Tracked in #1.', 'Bounding it in #1487 is fine.', 'Same as #1487.'].map(namedAs)))
-        .toEqual([[1487], [1487], [1487], [1487], undefined, undefined, undefined]);
+      expect(await Promise.all([
+        'Filed as #1487 for later work.', 'Filed as issue #1487.', 'Tracked in the tracking issue #1487.', 'Deferred to #1487.', 'The tracking issue #1487 covers it.', 'The follow-up tracked by #1487 and #1488 is fine.',
+        'Tracked in #1.', 'Bounding it in #1487 is fine.', 'Same as #1487.', 'Handling it in issue #1487 is fine.', 'This is related to issue #1487.', 'It is similar to issue #1487.',
+      ].map(namedAs))).toEqual([[1487], [1487], [1487], [1487], [1487], [1487], undefined, undefined, undefined, undefined, undefined, undefined]);
       expect((await settledOf([answer('Agreed').replace('<!-- manki -->', '<!-- manki --> #77')])).map(f => f.trackingIssues)).toEqual([undefined]);
       expect((await settledOf([tracked, answer('Agreed')])).map(f => f.trackingIssues)).toEqual([undefined]);
       // An answer reads the same whether its list of checked statements is folded or open, as answers posted before have it.
@@ -1616,7 +1618,7 @@ describe('fetchRecapState', () => {
         { quote: 'Tracked in #60 for the caller.\n\nIt reads `#61`.', status: 'confirmed', places: ['src/a.ts:40-42'] },
         { quote: 'Filed as #62.</details>', status: 'contradicted', places: ['src/c.ts:5'] },
         { quote: '<details>\n<summary>1 statement checked</summary>\n\n**Statements of this reply, and what I checked of each:**', status: 'not_checkable', places: [], why: 'outside_code' },
-        { quote: 'And issue #63 as well.\n\n<!-- manki -->', status: 'contradicted', places: ['src/c.ts:9'] },
+        { quote: 'And deferred to #63 as well.\n\n<!-- manki -->', status: 'contradicted', places: ['src/c.ts:9'] },
       ];
       for (const checked of [statements, statements.slice(0, 1), statements.slice(1, 2)].map(some => ({ statements: some, unchecked: some.length > 1 ? 1 : 0 }) as unknown as CheckedReply)) {
         for (const blocks of [true, false]) {
