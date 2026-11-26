@@ -1,0 +1,74 @@
+# Round 1 posted P1 with two fixes in "How to fix it". The push applies the first one word for word: it keeps the gap and
+# says so in the comment and the warning. Manki 7.7.4 then restated the same defect as a blocker in another form (the
+# record that is not rewritten reads as a fix claim) and asked for a wider fix on the reader side. The defect needs two
+# failures in a row (a resolve that goes through, then a failed comment edit or a cancelled run) and only keeps a hold in
+# place, so a restatement of it is at most a warning.
+id: manki-1970-r2
+repo: manki-review/manki
+source: manki PR 1970, round 2 by Manki 7.7.4, after the push that applied the first fix round 1 suggested
+base: 3b3b1d986afed8ff2b968c1f967a805b219359ea
+head: 4fc3f47947343ba63639c38b7f36e093af94c198
+title: "fix: name the real thread state in the reply record"
+body: |
+  ## What changed
+
+  The hidden reply record under Manki's thread answers now names the state the thread is really in:
+
+  - A resolved blocking or security thread that keeps blocking after the answer is recorded as `stays_resolved`. Before, it said `stays_open`, although the thread stays resolved.
+  - A maintainer's answer that clears such a thread is posted as `stays_resolved`, and its record is rewritten to `resolves` only once Manki's reopen and resolve went through. Before, the answer was posted with `resolves` and the reopen ran afterwards, so a failed reopen left a record that said `resolves`. That record also counted as a settling answer for the approval check and the round recap.
+
+  When threads are resolved or reopened does not change. Only the record does, plus one rewrite of the answer after a clearing resolve went through.
+
+  `resolveAddressedThreads` already reads who resolved each thread live, so a thread the PR author resolved a second time is reopened and then resolved by Manki. A new test covers that case.
+
+  ## Why
+
+  `npm run review-stats` reads these records, so wrong states skewed the reply statistics, and a `resolves` record on a thread that was never cleared read as a settled answer.
+
+  ## How tested
+
+  - `src/interaction.test.ts`: the reply fate table now expects `stays_resolved` for a thread that stays resolved, and checks that a clearing answer is rewritten to `resolves` only when the reopen succeeded.
+  - `src/index.test.ts`: new test for an addressed thread the PR author resolved a second time.
+  - `npx tsc --noEmit`, `npx tsc --noEmit -p tsconfig.test.json`, `npx eslint` on the touched files.
+
+  Fixes #1534
+key_version: 1
+prior_round:
+  head: 4e57d42329b08799c8c56ed9479a0f904c94eeae
+  findings:
+    - id: P1
+      severity: blocker
+      title: A failed or interrupted record rewrite leaves a cleared thread with a non-settling reply record
+      file: src/interaction.ts
+      line: 701
+      cell: { row: wrong, column: normal }
+      posted: thread
+      state: open
+      description: "The answer is posted as `stays_resolved`, and only the later `rewrite(...)` turns it into `resolves`. If `updateReviewComment` fails, or the run is cancelled between the resolve and the rewrite, the thread is cleared by Manki but its record stays `stays_resolved`. `SETTLING_FATES` in `src/review-record.ts:62` holds only `resolves` and `already_resolved`, so `settlingDecision` returns nothing for that answer."
+      how_to_fix: Accept the failed rewrite as a known gap and say so in the warning text. Alternatively, retry the `updateReviewComment` once before giving up.
+      evidence_files: [src/review-record.ts, src/recap.ts, src/state.ts, src/index.ts]
+    - id: P2
+      severity: note
+      title: Record can say `stays_resolved` after the reopen succeeded but the resolve threw
+      file: src/interaction.ts
+      line: 694
+      cell: { row: improvement, column: normal }
+      posted: body
+      description: "`resolveThreadOf` reopens the thread at `src/interaction.ts:294` and then calls `resolveReviewThread` at `:295`. If that second call throws, the thread is left open, but the posted record already says `stays_resolved` and is never rewritten. Before this PR the record said `resolves` in this case, so the change reduces the wrong state but does not remove it."
+      how_to_fix: Read the thread state again after a failed resolve, or rewrite the record to `stays_open` in the `catch` at line 695.
+# The push changes only the comment above the rewrite and its warning text, which is the first fix P1 offered.
+must_resolve: [P1]
+must_keep_open: []
+# The push leaves `resolveThreadOf` as it was.
+must_not_repeat: [P2]
+must_catch: []
+nice_to_have:
+  - id: N1
+    severity: warning
+    mechanism: "P1 restated: when `updateReviewComment` fails after Manki reopened and resolved a held thread, the answer keeps its `stays_resolved` record, which settles nothing, so `settlement` in `src/recap.ts` records no waiver and the thread reads as a fix claim. The push documents this gap as intended, as P1's first fix asked, and it takes two failures in a row and only keeps a hold in place, so it is at most a warning."
+    locations: [src/interaction.ts, src/recap.ts, settlement, rewrite]
+  - id: N2
+    severity: warning
+    mechanism: "Older than this PR and outside the clearing answer the PR is about: for an open thread that is not held, `replyDecision` records `resolves` before `resolveThreadOf` runs, and the rewrite runs only for a clearing answer. When the resolve fails or throws, the thread stays open under a `resolves` record that `settlingDecision` and `settlement` count as settled."
+    locations: [src/interaction.ts, replyDecision, resolveThreadOf]
+    fix: b8c178b0ae834ab0634997562c1a0eebadc609e8

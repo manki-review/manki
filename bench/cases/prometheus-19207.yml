@@ -1,0 +1,28 @@
+id: prometheus-19207
+repo: prometheus/prometheus
+source: prometheus upstream PR 19207, at the head where a maintainer called two of its changes unrelated
+base: c524bc30ecab0b0cce500ca00779589f4cb99ced
+head: 17fe62ed829897f1aa13021d84de6d85d6d436f1
+title: "promql: Fix error position for zero-division in duration expressions"
+body: |
+  ### Context
+  When a duration expression involves a division or modulo by zero (e.g. `foo[5s/0d]`), the parser raises a `division by zero` / `modulo by zero` error. To allow parsing to continue gracefully, it emits a fallback `NumberLiteral` with a value of `0`. However, the positional bounds of this literal were never initialized. Consequently, when this 0-value bubbled up to the `positive_duration_expr` validation rule, it falsely reported a `duration must be greater than 0` error at position `0:0`, which can be highly confusing for users trying to debug their PromQL queries.
+
+  ### Verification
+  - `go test ./promql/parser` now passes, with the fallback validation error correctly attributed to the duration expression's actual position (e.g., `Start: 4, End: 9` for `5s/0d`).
+
+  ```release-notes
+  [BUGFIX] PromQL: Fix incorrect error position when duration expression results in division or modulo by zero.
+  ```
+# The repository has no `.manki.yml` at the base, so this block keeps the defaults. It pins `review.rules` to `warn`,
+# the setting the key was written for, since the default `auto` grades a broken rule by its damage alone.
+config:
+  review:
+    rules: warn
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "The PR fixes the position of the fallback `NumberLiteral` for a duration divided or taken modulo by zero. It also rewrites `getMatchingStr` in `promql/parser/printer.go`, splitting each concatenation passed to `b.WriteString` into separate calls, and changes `TestRecoverParserRuntime` in `promql/parser/parse_test.go` to index through a variable. The fix needs neither: `printer.go` is not part of it, and the test change shares a file with the fix's test cases only. The repository's `AGENTS.md` says not to include unrelated changes in a PR and to make a separate PR instead."
+    locations: ["promql/parser/printer.go", "getMatchingStr", "promql/parser/parse_test.go", "TestRecoverParserRuntime"]
+nice_to_have: []
