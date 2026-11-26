@@ -6,7 +6,7 @@ import * as core from '@actions/core';
 
 import { DEFAULT_CONFIG } from './config';
 import { BOT_MARKER, CANCELLED_MARKER, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER } from './github';
-import { clearRecordMarker, FIX_SEEN_MARKER, REOPENED_MARKER, securityOverrideMarker } from './recap';
+import { clearRecordMarker, REOPENED_MARKER, securityOverrideMarker, SEEN_MARKERS, UNSETTLED_ANSWER_MARKER } from './recap';
 import { relatedReposCacheDir } from './related-repos';
 import { RETRY_HINT } from './review';
 import { parseSettingsBlock } from './settings';
@@ -1459,8 +1459,7 @@ describe('runFullReview end to end', () => {
 
     // The PR author answers with a reason. Manki keeps the finding, so the hold stays, and the answer says what lifts it.
     await replyInThread(mockGitHub.threads[0], 'Sums stay far below the limit here.', 'Kept. Nothing bounds `b` before `src/math.ts:3` returns the sum.');
-    expect(mockGitHub.threads[0].comments.at(-1)?.body).toMatch(/^Kept\./);
-    expect(mockGitHub.threads[0].comments.at(-1)?.body).toContain('\n\nThis warning holds the approval until it is fixed, tracked with `Create an issue for this`, or resolved by someone with the `maintain` role or a higher one.\n\n');
+    expect(mockGitHub.threads[0].comments.at(-1)?.body).toMatch(/^\*\*Kept\.\*\* This warning holds the approval until it is fixed, tracked with `Create an issue for this`, or resolved by someone with the `maintain` role or a higher one\.\n\nNothing bounds `b`/);
     expect(mockGitHub.threads[0].isResolved).toBe(false);
     expect(postedReviews().at(-1)!.state).toBe('COMMENTED');
 
@@ -1910,7 +1909,10 @@ describe('runFullReview end to end', () => {
       expect(afterResolve).toEqual(overrodeAs
         ? [`Finding dismissed by \`@alice\`, the PR author, who has the \`${overrodeAs}\` role on this repository.\n\n<!-- manki -->\n${securityOverrideMarker('resolve', 'alice')}`]
         : []);
-      expect(thread.comments.at(-1)?.body).toMatch(/^Kept\. Nothing bounds `b`/);
+      // A warning the PR author resolved still holds the approval, and what lifts the hold follows "Kept.".
+      expect(thread.comments.at(-1)?.body).toMatch(_label === 'that is not guarded'
+        ? /^\*\*Kept\.\*\* This warning holds the approval until it is fixed, tracked with `Create an issue for this`, or reopened and resolved by someone with the `maintain` role or a higher one\.\n\nNothing bounds `b`/
+        : /^Kept\. Nothing bounds `b`/);
     });
 
     it('tells the person when a reply gets no answer, fails the run, and changes no thread and approves nothing', async () => {
@@ -1996,7 +1998,7 @@ describe('runFullReview end to end', () => {
 
       expect(core.setFailed).not.toHaveBeenCalled();
       expect(mockLLM.calls).toEqual(['reviewer']);
-      expect(thread.comments.at(-1)?.body).toMatch(/^Agreed\. The caller bounds the inputs.*\n\nThis is a blocking finding, so the thread stays open/s);
+      expect(thread.comments.at(-1)?.body).toMatch(/^\*\*Deferral accepted, the thread stays open until a maintainer closes it\.\*\*\n\nThe caller bounds the inputs.*\n\nThis is a blocking finding, so the thread stays open.*\n<!-- manki-agreed-seen -->$/s);
       // Alice wrote the PR, so her word alone does not clear a blocker.
       expect(thread.isResolved).toBe(false);
 
@@ -2035,7 +2037,7 @@ describe('runFullReview end to end', () => {
       await replyInThread(thread, '@manki dismiss', '');
       await replyInThread(thread, '/manki dismiss', '');
       // Only the answer to the command that mentions `@manki` asks for the slash form.
-      expect(answers().slice(3)).toEqual([`Agreed. A follow-up works.\n\n${keepsBlocking}\n\n<!-- manki -->`, `${keepsBlocking}\n\n${SLASH_HINT}\n\n<!-- manki -->`, `${keepsBlocking}\n\n<!-- manki -->`]);
+      expect(answers().slice(3)).toEqual([`**Deferral accepted, the finding is not cleared until a maintainer clears it.**\n\nA follow-up works.\n\n${keepsBlocking}\n\n<!-- manki -->\n${SEEN_MARKERS.Agreed}`, `${keepsBlocking}\n\n${SLASH_HINT}\n\n<!-- manki -->`, `${keepsBlocking}\n\n<!-- manki -->`]);
       expect(thread.isResolved).toBe(true);
       expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED']);
     });
@@ -2062,7 +2064,9 @@ describe('runFullReview end to end', () => {
       const note = clears ? '' : `\n\n${REOPENED} ${PUSH_A_FIX}`;
       // A dismissal that resolves the thread gets no answer, only Manki's record of it. An answer that clears the thread records whom for.
       expect(thread.comments.slice(before + 1).map(c => c.body.replace(/\n<!-- manki-reply-record: .+ -->/, ''))).toEqual(
-        body.startsWith('@manki') ? ['Finding dismissed by `@bob`, who has write access to this repository.\n\n<!-- manki -->\n<!-- manki-dismiss-record:bob -->'] : [`${agreed}${note}\n\n<!-- manki -->\n${clears ? clearRecordMarker(login) : REOPENED_MARKER}`],
+        body.startsWith('@manki') ? ['Finding dismissed by `@bob`, who has write access to this repository.\n\n<!-- manki -->\n<!-- manki-dismiss-record:bob -->']
+          // An answer that leaves the thread open opens with that state in place of "Agreed.".
+          : [clears ? `${agreed}\n\n<!-- manki -->\n${clearRecordMarker(login)}` : `**Deferral accepted, the thread stays open until a maintainer closes it.**\n\n${agreed.replace('Agreed. ', '')}${note}\n\n<!-- manki -->\n${SEEN_MARKERS.Agreed}\n${REOPENED_MARKER}`],
       );
       // Manki resolves the thread itself, since alice's own resolve never counts for the approval.
       expect([thread.isResolved, thread.resolvedBy?.login]).toEqual(clears ? [true, APP_LOGIN] : [false, undefined]);
@@ -2091,7 +2095,7 @@ describe('runFullReview end to end', () => {
       for (const step of first === 'round' ? [round, reply] : [reply, round]) await step();
 
       expect(core.setFailed).not.toHaveBeenCalled();
-      const confirmations = thread.comments.filter(c => c.author.login !== 'alice' && (/^Fixed\b/.test(c.body) || c.body.includes(FIX_SEEN_MARKER))).map(c => (c.body.includes(FIX_SEEN_MARKER) ? c.body.split('\n\n').slice(0, 2).join('\n\n') : c.body.split('\n')[0]));
+      const confirmations = thread.comments.filter(c => c.author.login !== 'alice' && (/^Fixed\b/.test(c.body) || c.body.includes(SEEN_MARKERS.Fixed))).map(c => (c.body.includes(SEEN_MARKERS.Fixed) ? c.body.split('\n\n').slice(0, 2).join('\n\n') : c.body.split('\n')[0]));
       // The reply answers the developer, so it says more than the round's line and is the one kept.
       expect(confirmations).toEqual([first === 'round' ? 'Fixed in c3c3c3c.' : `**${FIX_SEEN}**\n\n\`add\` checks the range before it sums. ${FIX_NEEDS_PUSH}`]);
       expect(thread.isResolved).toBe(true);
@@ -2124,7 +2128,7 @@ describe('runFullReview end to end', () => {
       const keepsBlocking = 'This is a blocking finding, so resolving the thread does not clear it. It keeps blocking until the next review confirms the fix, or someone other than the PR author with write access clears it.';
       const bodies = () => thread.comments.map(c => c.body.replace(/\n<!-- manki-reply-record: .+ -->/, ''));
       const lead = failed ? 'Fix seen, the finding is not cleared until a review or a maintainer confirms it.' : FIX_SEEN;
-      expect(bodies().at(-1)).toBe(`**${lead}**\n\n\`add\` checks the range before it sums. ${FIX_NEEDS_PUSH}\n\n${failed ? keepsBlocking : staysOpen}\n\n<!-- manki -->\n<!-- manki-fixed:${mockGitHub.headSha} -->\n${FIX_SEEN_MARKER}${failed ? '' : `\n${REOPENED_MARKER}`}`);
+      expect(bodies().at(-1)).toBe(`**${lead}**\n\n\`add\` checks the range before it sums. ${FIX_NEEDS_PUSH}\n\n${failed ? keepsBlocking : staysOpen}\n\n<!-- manki -->\n<!-- manki-fixed:${mockGitHub.headSha} -->\n${SEEN_MARKERS.Fixed}${failed ? '' : `\n${REOPENED_MARKER}`}`);
       expect(bodies().join('\n')).not.toContain('Reopened.');
       expect(thread.isResolved).toBe(failed);
       // Confirming the fix clears nothing: the thread blocks until a round marks it addressed or a maintainer clears it.
@@ -2256,13 +2260,14 @@ describe('runFullReview end to end', () => {
       await replyInThread(thread, `${said} So this is fine.`, JSON.stringify({ ...withdrawn, proof: ['acme/reports:lib/rows.py:2'] }), 'bob');
 
       expect(thread.comments.at(-1)?.body.replace(/\n<!-- manki-reply-record: .+ -->/, '')).toBe([
-        'Unverified. Every caller bounds both inputs, so the sum cannot overflow. I could not point to a line of this repository that shows it, so a maintainer should decide and resolve this thread.',
+        '**Not settled yet: a maintainer should decide and resolve this thread.** I could not point to a line of this repository that shows the finding is wrong.',
+        'Every caller bounds both inputs, so the sum cannot overflow.',
         '<details>\n<summary>1 statement checked</summary>',
         `**Statements of this reply, and what I checked of each:**\n- Line cited for it exists at \`src/math.ts:2\`: "${said}"`,
         '</details>',
         'Each line says what I checked, not that the statement is right. What they mean for this finding is for a maintainer to decide.',
         'This is a blocking finding, so the thread stays open until the next review confirms the fix, or someone other than the PR author with write access closes it.',
-        '<!-- manki -->',
+        `<!-- manki -->\n${UNSETTLED_ANSWER_MARKER}`,
       ].join('\n\n'));
       expect(thread.isResolved).toBe(false);
       await dispatch({ event: 'pull_request_review_thread', action: 'unresolved', pr: String(PR_NUMBER) });

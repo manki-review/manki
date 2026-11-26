@@ -28,9 +28,8 @@ const MAX_QUOTE_CHARS = 160;
 export const MIN_TERM_CHARS = 3;
 export const MAX_TERM_CHARS = 200;
 
-const UNREADABLE_ANSWER = 'I could not check this reply';
-const UNPROVEN_OUTCOME = 'I could not point to a line of this repository that shows it';
-const NO_FIXING_PR = 'The reply names no other pull request of this repository that I could check';
+const UNREADABLE_ANSWER = 'I could not check this reply.';
+const NO_FIXING_PR = 'The reply names no other pull request of this repository that I could check.';
 
 const UNKNOWN_CHANGES: Record<UnknownChange, string> = {
   not_descendant: 'This branch was rebased or force pushed since the finding was posted, so I cannot tell which lines changed.',
@@ -49,16 +48,24 @@ export function withoutOutcomeOpener(answer: string): string {
 }
 
 /**
- * Returns the lines that lead an unproven "Fixed": the bold state, then why no line counts the fix. Only an open thread
+ * Returns the line that leads an answer that settles nothing: the bold state, then `why`. The state asks a maintainer to
+ * decide, and to resolve the thread when it is open. A resolved thread that holds nothing gets no ask.
+ */
+export function unsettledLead(thread: ThreadState, why = ''): string {
+  const state = thread === 'resolved' ? 'Not settled by this reply.' : `Not settled yet: a maintainer should decide${thread === 'open' ? ' and resolve this thread' : ''}.`;
+  return `**${state}**${why && ` ${why}`}`;
+}
+
+/**
+ * Returns the line that leads an unproven "Fixed": the bold state, then why no line counts the fix. Only an open thread
  * whose file a review reads hears of the next review. An open guarded thread gets no ask, since the note below the answer
  * names who closes it.
  */
 function unsettledAnswer(scope: FixScope, thread: ThreadState): string {
   const { rebased, guarded, reviewable } = scope;
-  const state = thread === 'open' && reviewable ? `Not settled yet: the next review ${rebased ? '' : 'after a push '}checks the fix.`
-    : thread === 'resolved' ? 'Not settled by this reply.'
-      : guarded && thread === 'open' ? 'Not settled yet.' : `Not settled yet: ${maintainerShould('decide', thread)}.`;
-  return `**${state}** ${unprovenFix(scope, thread)}`;
+  const why = unprovenFix(scope, thread);
+  if (thread === 'open' && reviewable) return `**Not settled yet: the next review ${rebased ? '' : 'after a push '}checks the fix.** ${why}`;
+  return guarded && thread === 'open' ? `**Not settled yet.** ${why}` : unsettledLead(thread, why);
 }
 
 /** How many raw proof entries of the model the reply record keeps, and how much of each. */
@@ -70,15 +77,6 @@ const MAX_CITED_CHARS = 200;
  * holds something, or was not read, as on a merged or closed PR.
  */
 export type ThreadState = 'open' | 'resolved' | undefined;
-
-/** Returns the sentence "`why`, so a maintainer should decide", which asks for a resolve only on an open thread, and for nothing on a resolved one that holds nothing. */
-export function leftToMaintainer(why: string, thread: ThreadState): string {
-  return thread === 'resolved' ? `${why}.` : `${why}, so ${maintainerShould('decide', thread)}.`;
-}
-
-function maintainerShould(act: string, thread: 'open' | undefined): string {
-  return `a maintainer should ${act}${thread === 'open' ? ' and resolve this thread' : ''}`;
-}
 
 /** Where a reply counts a fix of its finding. */
 export interface FixScope {
@@ -165,14 +163,13 @@ export interface CheckedStatement {
 
 export interface CheckedReply {
   /**
-   * Returns the answer as "Outcome. text", which is what the reply handler goes on with. `thread` decides only what an
-   * "Unverified." asks a maintainer for. An `unsettled` answer is the model's own
+   * The answer as "Outcome. text", which is what the reply handler goes on with. An `unsettled` answer is the model's own
    * text, which `withoutOutcomeOpener` has to check once it is sanitized.
    */
-  text: (thread: ThreadState) => string;
+  text: string;
   /**
-   * Set for an unproven fix, whose `text` names no outcome. Returns the line that goes above it. The readers of the reply
-   * take it as "Unverified."
+   * Set for an answer that settles nothing, whose `text` names no outcome. Returns the line that goes above it, which says
+   * who decides on the thread as the answer leaves it. The readers of the reply take it as "Unverified."
    */
   unsettled?: (thread: ThreadState) => string;
   /** The outcome `text` opens with. */
@@ -328,7 +325,8 @@ function checkStatement(entry: Record<string, unknown>, quote: string, sources: 
 
 /**
  * Reads the model's structured answer to `developerReply` and checks it in code. Returns the answer as plain
- * "Outcome. text", with the statements whose quote is in `developerReply`.
+ * "Outcome. text", or for an "Unverified." the model's text with the line that leads it, and the statements whose quote
+ * is in `developerReply`.
  *
  * An outcome can only become "Unverified.", never anything else: when the answer is not the JSON asked for, when a
  * "Withdrawn" has no line of the PR's own repository in `proof`, and when a "Fixed" cites no line there that
@@ -336,7 +334,7 @@ function checkStatement(entry: Record<string, unknown>, quote: string, sources: 
  * pull request, for `checkFixedElsewhere` to confirm. No statement's status changes the outcome.
  */
 export function checkReply(content: string, developerReply: string, sources: ReplySources): CheckedReply {
-  const unreadable: CheckedReply = { text: thread => `Unverified. ${leftToMaintainer(UNREADABLE_ANSWER, thread)}`, outcome: 'Unverified', needsAnswer: true, cited: [], answer: '', proof: [], statements: [], unchecked: 0, dropped: 0 };
+  const unreadable: CheckedReply = { text: '', unsettled: thread => unsettledLead(thread, UNREADABLE_ANSWER), outcome: 'Unverified', needsAnswer: true, cited: [], answer: '', proof: [], statements: [], unchecked: 0, dropped: 0 };
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(extractJSON(content, 'object')) as Record<string, unknown>;
@@ -364,13 +362,12 @@ export function checkReply(content: string, developerReply: string, sources: Rep
     ? parsed.fixed_in : undefined;
   // A fix in another pull request stays unconfirmed until `checkFixedElsewhere` confirms it.
   const settled: AnswerOutcome = unproven || outcome === 'FixedElsewhere' ? 'Unverified' : outcome;
-  const note = (thread: ThreadState): string => unproven ? ` ${leftToMaintainer(UNPROVEN_OUTCOME, thread)}`
-    : outcome === 'FixedElsewhere' ? ` ${leftToMaintainer(NO_FIXING_PR, thread)}`
-      : outcome === 'Unverified' && thread !== 'resolved' ? ` A${maintainerShould('confirm this', thread).slice(1)}.` : '';
-  const unsettled = unproven && outcome === 'Fixed' ? sources.fixScope : undefined;
+  const why = unproven ? `I could not point to a line of this repository that shows ${outcome === 'Fixed' ? 'the fix' : 'the finding is wrong'}.`
+    : outcome === 'FixedElsewhere' ? NO_FIXING_PR : '';
+  const fixScope = unproven && outcome === 'Fixed' ? sources.fixScope : undefined;
   return {
-    text: thread => unsettled ? answer : `${settled}. ${answer}${note(thread)}`,
-    ...(unsettled && { unsettled: (thread: ThreadState) => unsettledAnswer(unsettled, thread) }),
+    text: settled === 'Unverified' ? answer : `${settled}. ${answer}`,
+    ...(settled === 'Unverified' && { unsettled: (thread: ThreadState) => fixScope ? unsettledAnswer(fixScope, thread) : unsettledLead(thread, why) }),
     outcome: settled,
     modelOutcome: outcome,
     needsAnswer: parsed.needs_answer !== false,
@@ -695,18 +692,24 @@ export async function checkFixedElsewhere(pr: number, s: ElsewhereSources): Prom
 }
 
 /**
- * Returns the answer to a reply whose `fixedIn` `checkFixedElsewhere` checked: "Confirmed:" when `result` confirms the
- * fix, and "Unverified." with the reason otherwise. Without `result`, the finding is neither a blocker nor a security
- * finding, so nothing checked `fixedIn`. None of these settles the thread, since this PR's own code still has the defect.
+ * Returns the answer to a reply whose `fixedIn` `checkFixedElsewhere` checked: the line Manki leads it with, and the text
+ * below it. When `result` confirms the fix, the lead opens with "Confirmed:" and the text is the check's own answer.
+ * Otherwise the lead says why the fix is not confirmed, and the readers of the reply take the answer as "Unverified.".
+ * Without `result`, the finding is neither a blocker nor a security finding, so nothing checked `fixedIn`. None of these
+ * settles the thread, since this PR's own code still has the defect.
  */
-export function fixedElsewhereText(checked: CheckedReply, result?: ElsewhereCheck, thread?: ThreadState): string {
+export function fixedElsewhereText(checked: CheckedReply, result?: ElsewhereCheck, thread?: ThreadState): { lead: string; text: string } {
   const pr = checked.fixedIn!;
-  if (!result) return `Unverified. ${checked.answer} I check a fix in another pull request only for a blocker or a security finding, so I did not check #${pr}. This thread stays as it is.`;
+  if (!result) return { lead: `**Not settled: I did not check #${pr}.** I check a fix in another pull request only for a blocker or a security finding, so this thread stays as it is.`, text: checked.answer };
   if ('answer' in result) {
-    return `Confirmed: #${result.pr}, merged into ${inline(result.base)}, replaced the cited line. ${result.answer} This PR's own code still has the defect, so this thread stays as it is. Update this branch with ${inline(result.base)}, and the next review checks the fix here.`;
+    const base = inline(result.base);
+    return {
+      lead: `**Confirmed: #${result.pr} fixes this in ${base}, not in this PR, so this thread stays as it is.** #${result.pr}, merged into ${base}, replaced the cited line. Update this branch with ${base}, and the next review checks the fix here.`,
+      text: result.answer,
+    };
   }
-  const why = result.retry
-    ? `I could not check #${pr} yet: ${result.why}. This thread stays as it is. Reply again ${result.retry}.`
-    : `I could not confirm that #${pr} fixes this finding: ${result.why}.${thread === 'resolved' ? '' : ` A${maintainerShould('decide', thread).slice(1)}.`}`;
-  return `Unverified. ${checked.answer} ${why}`;
+  const lead = result.retry
+    ? `**Not settled yet: reply again ${result.retry}.** I could not check #${pr} yet: ${result.why}. This thread stays as it is.`
+    : unsettledLead(thread, `I could not confirm that #${pr} fixes this finding: ${result.why}.`);
+  return { lead, text: checked.answer };
 }

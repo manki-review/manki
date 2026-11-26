@@ -1,7 +1,7 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-import { FIX_SEEN_MARKER, judgeAddressedThreadIds, UNSETTLED_ANSWER_MARKER } from '../src/recap';
+import { judgeAddressedThreadIds, SEEN_MARKERS, UNSETTLED_ANSWER_MARKER } from '../src/recap';
 import { FindingFingerprintEntry, RoundContext } from '../src/types';
 import { Evidence, findThread, HistoryLine, labelFinding, LabelledFinding, renderReport, roundsByPullRequest, selectSet, Thread } from './calibration';
 
@@ -53,7 +53,9 @@ describe('labelFinding', () => {
     ['Manki agreeing', { ...none, thread: thread('a', [true, 'Agreed. Deferring is fine.']) }, ['unclear', 'reply-agreed']],
     ['Manki unable to verify', { ...none, thread: thread('a', [true, 'Unverified. A maintainer should confirm.']) }, ['unclear', 'reply-unverified']],
     ['Manki unable to verify after a rebase, without an outcome word', { ...none, thread: thread('a', [true, `Still open before, guarded now.\n\n<!-- manki -->\n${UNSETTLED_ANSWER_MARKER}`]) }, ['unclear', 'reply-unverified']],
-    ['Manki seeing a fix on a thread it leaves open, without an outcome word', { ...none, thread: thread('a', [true, `**Fix seen, the thread stays open until a review or a maintainer confirms it.**\n\n<!-- manki -->\n${FIX_SEEN_MARKER}`]) }, ['real', 'reply-fixed']],
+    ['Manki seeing a fix on a thread it leaves open, without an outcome word', { ...none, thread: thread('a', [true, `**Fix seen, the thread stays open until a review or a maintainer confirms it.**\n\n<!-- manki -->\n${SEEN_MARKERS.Fixed}`]) }, ['real', 'reply-fixed']],
+    ['Manki withdrawing on a thread it leaves open, without an outcome word', { ...none, thread: thread('a', [true, `**Finding withdrawn, the thread stays open until a maintainer closes it.**\n\n<!-- manki -->\n${SEEN_MARKERS.Withdrawn}`]) }, ['false', 'reply-withdrawn']],
+    ['Manki agreeing on a merged PR, without an outcome word', { ...none, thread: thread('a', [true, `**Deferral accepted, but this pull request is merged or closed, so the thread stays as it is.**\n\n<!-- manki -->\n${SEEN_MARKERS.Agreed}`]) }, ['unclear', 'reply-agreed']],
     ['nothing at all', { ...none, thread: thread('a') }, ['unclear', 'untouched']],
   ])('labels a finding from %s', (_case, evidence, expected) => {
     expect(labelFinding(evidence)).toEqual(expected);

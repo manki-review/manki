@@ -11,11 +11,11 @@ import { fencePrText, truncateDiff } from './review';
 import { closeRawDiff, diffSections, findClosedPattern, parsePRDiff, reviewableDiff } from './diff';
 import { eventPrClosed } from './dispatch';
 import { codeTokensFromDiff, highlightCode } from './highlight';
-import { clearRecordMarker, FIX_SEEN_MARKER, fetchPriorRoundContexts, recordedThreadGrades, threadSeverity, RecapState, fixClaimMarker, guardedKind, isDisprovedThread, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, UNSETTLED_ANSWER_MARKER, currentFindingLine, findingPlace, withoutCode, BOT_PREFIX_PATTERN, withoutStatementFold } from './recap';
+import { clearRecordMarker, SEEN_MARKERS, fetchPriorRoundContexts, recordedThreadGrades, threadSeverity, RecapState, fixClaimMarker, guardedKind, isDisprovedThread, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, UNSETTLED_ANSWER_MARKER, currentFindingLine, findingPlace, withoutCode, BOT_PREFIX_PATTERN, withoutStatementFold } from './recap';
 import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, recordDismissal, authorResolvedNote, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, rolePhrase, unclearedThreads, warningHoldNote } from './state';
 import { AuthorClearRole, FindingSeverity, partlyFixedNote, ParsedDiff, PrContext, RelatedRepoTools, ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation, RoundContext } from './types';
 import { relatedRepoOutcomes, relatedRepoTools, repoTools } from './related-repos';
-import { CheckedReply, MAX_REPLY_STATEMENTS, MAX_TERM_CHARS, MIN_TERM_CHARS, ThreadState, checkFixedElsewhere, checkReply, fixedElsewhereText, leftToMaintainer, statementFold, statementRecords, withoutOutcomeOpener } from './reply-check';
+import { CheckedReply, MAX_REPLY_STATEMENTS, MAX_TERM_CHARS, MIN_TERM_CHARS, ThreadState, checkFixedElsewhere, checkReply, fixedElsewhereText, statementFold, statementRecords, unsettledLead, withoutOutcomeOpener } from './reply-check';
 import { formatReplyRecord } from './review-record';
 import { buildRoundUsage, withReads } from './round-context';
 import { MessageBox } from './settings';
@@ -149,11 +149,18 @@ function replyOutcome(reply: string): ReplyOutcome | undefined {
   return RESOLVING_REPLY_RE.exec(reply)?.[1] as ReplyOutcome | undefined;
 }
 
-const KEPT_REPLY_RE = /^(\**)Kept\.(\**)/;
+const KEPT_REPLY_RE = /^\**Kept\.\**/;
 
-const FIXED_REPLY_RE = /^(\**)Fixed\.(\**)/;
+// The outcome word a Manki answer opens with, which a lead that says the thread's state replaces.
+const OUTCOME_OPENER_RE = /^\**(?:Fixed|Agreed|Withdrawn|Kept)\.\**/;
 
-const WITHDRAWN_REPLY_RE = /^\**Withdrawn\b/;
+/** The words that open a settling answer on a thread it leaves as it is, in place of its outcome word. */
+const SEEN_OPENERS: Record<ReplyOutcome, string> = { Fixed: 'Fix seen', Agreed: 'Deferral accepted', Withdrawn: 'Finding withdrawn' };
+
+const NO_FILE_FIX_LEAD = '**Not settled yet.** This finding is not tied to a file, so a review cannot confirm the fix.';
+
+/** An answer to a thread reply: Manki's line on the thread's state, when it leads, and the text below it. */
+interface LedReply { lead?: string; text: string }
 
 // A code location as `path:line`, where the path has an extension, such as `src/retry.ts:48`. The path may sit in a code
 // span of its own, which is how `highlightCode` leaves the path of a changed file.
@@ -196,8 +203,6 @@ const DISMISS_TOO_SHORT = `No suppression was stored, since a finding name needs
 const DISMISS_FAILED = 'Could not resolve this thread. The run log has the reason.';
 
 const DISMISS_PR_CLOSED = 'Nothing was dismissed, since this pull request is merged or closed.';
-
-const REPLY_PR_CLOSED = 'This pull request is merged or closed, so the thread stays as it is.';
 
 const DISMISS_LOOKUP_FAILED = 'Could not read the findings Manki posted on this PR, so nothing was dismissed. The run log has the reason.';
 
@@ -447,27 +452,34 @@ function codeLocations(text: string, file: string | undefined, names: readonly s
 }
 
 /**
- * Turns a "Kept." reply that cites no code location the finding did not already cite into "Unverified.", since only
- * new lines can show the finding still stands. `file` is the finding's file, and `relatedNames` the configured related repos.
+ * Turns a "Kept." reply that cites no code location the finding did not already cite into one that settles nothing, led
+ * by who decides on the thread, since only new lines can show the finding still stands. `file` is the finding's file,
+ * and `relatedNames` the configured related repos.
  */
-function requireNewProof(reply: string, finding: string, file: string | undefined, relatedNames: readonly string[], thread: ThreadState): string {
-  if (!KEPT_REPLY_RE.test(reply)) return reply;
+function requireNewProof(reply: string, finding: string, file: string | undefined, relatedNames: readonly string[], thread: ThreadState): LedReply {
+  if (!KEPT_REPLY_RE.test(reply)) return { text: reply };
   const cited = new Set(codeLocations(finding, file, relatedNames, true));
-  if (codeLocations(reply, file, relatedNames).some(location => !cited.has(location))) return reply;
-  return `${reply.replace(KEPT_REPLY_RE, '$1Unverified.$2')} ${leftToMaintainer(UNPROVEN_KEPT, thread)}`;
+  if (codeLocations(reply, file, relatedNames).some(location => !cited.has(location))) return { text: reply };
+  return { lead: unsettledLead(thread, `${UNPROVEN_KEPT}.`), text: withoutOutcomeOpener(reply.replace(KEPT_REPLY_RE, '').trim()) };
 }
 
 /**
- * Returns a "Fixed." answer on a guarded thread it leaves unsettled, which says when a review can confirm the fix. A
- * review confirms one only after a push changes the thread's `file` or a file in `evidenceFiles`, so on a thread tied
- * to no file it never does, and the answer turns into "Unverified.". Any other such answer opens with the bold state of
- * the thread instead of "Fixed.", for which it carries `FIX_SEEN_MARKER`. `resolved` says that the thread stays resolved.
+ * Returns the bold line that leads a settling `outcome` on a guarded thread it leaves unsettled, in place of the outcome
+ * word. Only a review or a maintainer confirms a fix there, and only a maintainer closes it otherwise. `resolved` says
+ * that the thread stays resolved.
  */
-function fixReviewNote(reply: string, file: string, evidenceFiles: string[] = [], resolved = false): string {
-  if (!file) return `${reply.replace(FIXED_REPLY_RE, '$1Unverified.$2')} This finding is not tied to a file, so a review cannot confirm the fix.`;
+function leftOpenLead(outcome: ReplyOutcome, resolved: boolean): string {
+  const who = outcome === 'Fixed' ? 'a review or a maintainer confirms it' : `a maintainer ${resolved ? 'clears' : 'closes'} it`;
+  return `**${SEEN_OPENERS[outcome]}, ${resolved ? 'the finding is not cleared' : 'the thread stays open'} until ${who}.**`;
+}
+
+/**
+ * Returns the sentence a "Fixed." on a guarded thread it leaves unsettled ends with. A review confirms the fix only after
+ * a push changes the thread's `file` or a file in `evidenceFiles`.
+ */
+function fixReviewNote(file: string, evidenceFiles: string[] = []): string {
   const cited = evidenceFiles.length > 0 ? ` or a file its finding cited (${evidenceFiles.map(inline).join(', ')})` : '';
-  const state = resolved ? 'Fix seen, the finding is not cleared until a review or a maintainer confirms it.' : 'Fix seen, the thread stays open until a review or a maintainer confirms it.';
-  return `**${state}**\n\n${withoutOutcomeOpener(reply.replace(FIXED_REPLY_RE, '').trim())} A review confirms the fix only after a push changes the thread's file ${inline(file)}${cited}.`;
+  return `A review confirms the fix only after a push changes the thread's file ${inline(file)}${cited}.`;
 }
 
 /**
@@ -734,14 +746,18 @@ export async function handleReviewCommentReply(
       return;
     }
     const fixClaim = elsewhere && !closed ? { pr: checked.fixedIn!, status: 'answer' in elsewhere ? 'confirmed' as const : 'unconfirmed' as const } : undefined;
-    // The model read PR content, so its text loses mentions, links, markers and fences before Manki adds its own.
-    const replyIn = (state: ThreadState): string => {
-      const shown = highlightCode(sanitizeMarkdown(checked.fixedIn === undefined ? checked.text(state) : fixedElsewhereText(checked, elsewhere, state)).trim(), codeTokens);
-      return checked.unsettled ? `${checked.unsettled(state)}\n\n${withoutOutcomeOpener(shown)}` : requireNewProof(shown, findingBody, filePath, relatedNames, state);
+    // The model read PR content, so its text loses mentions, links, markers and fences before Manki adds its own. An
+    // answer that settles nothing, or confirms a fix elsewhere, opens with Manki's line on the thread's state instead.
+    const replyIn = (state: ThreadState): LedReply => {
+      const fixedElsewhere = checked.fixedIn === undefined ? undefined : fixedElsewhereText(checked, elsewhere, state);
+      const shown = highlightCode(sanitizeMarkdown(fixedElsewhere?.text ?? checked.text).trim(), codeTokens);
+      const lead = fixedElsewhere ? sanitizeMarkdown(fixedElsewhere.lead) : checked.unsettled?.(state);
+      return lead ? { lead, text: withoutOutcomeOpener(shown) } : requireNewProof(shown, findingBody, filePath, relatedNames, state);
     };
     // How the thread ends up changes only what an answer that settles nothing asks for, so any state gives the outcome.
     const reply = replyIn(undefined);
-    const outcome = replyOutcome(reply);
+    const outcome = reply.lead === undefined ? replyOutcome(reply.text) : undefined;
+    const unsettled = reply.lead !== undefined && !(elsewhere && 'answer' in elsewhere);
     const thread = outcome ? live : undefined;
     // A round that finished after the reply, on the same head, has the newer judgment of a blocking or security thread.
     const judged = outcome === 'Fixed' && thread && isGuarded(thread) ? judgedLater : undefined;
@@ -792,10 +808,10 @@ export async function handleReviewCommentReply(
     // Every other answer reopens it with the note. The note's marker stops every later reopen, so the thread opens before the answer is posted.
     const noted = !!reopenNote && !!live && posts && !clears && await reopenThread(octokit, live.id);
     const staysOpen = !!thread && !mayClear && !noted && (thread.isResolved ? held : isGuarded(thread));
-    // A "Fixed." that leaves a guarded thread open says when a review can confirm the fix. No review ever confirms one on
-    // a thread tied to no file, so that answer is "Unverified." and the thread hears who clears it.
-    const leftOpen = outcome === 'Fixed' && (staysOpen || noted);
-    const settled = leftOpen && !filePath ? undefined : outcome;
+    // A settling answer that leaves a guarded thread open says so first, and a "Fixed." says when a review can confirm the
+    // fix. No review ever confirms one on a thread tied to no file, so that answer settles nothing and the thread hears who clears it.
+    const leftOpen = !!outcome && (staysOpen || noted);
+    const settled = leftOpen && outcome === 'Fixed' && !filePath ? undefined : outcome;
 
     // The thread is resolved before the answer is posted, so the record names what happened to it. An answer that fails
     // to post leaves Manki's resolve without a record, which settles no guarded thread and lifts no warning's hold.
@@ -825,8 +841,24 @@ export async function handleReviewCommentReply(
       const holdNote = (!outcome || !mayResolve) && live && !closed ? await warningHoldNote(octokit, bot, owner, repo, live, config?.author_clear_role) : undefined;
       // Read as the answer leaves the thread. Manki may have opened it above, and a resolved one can still hold the approval.
       const threadState: ThreadState = !live ? undefined : noted || !live.isResolved ? 'open' : held || holdNote ? undefined : 'resolved';
-      const answer = leftOpen ? fixReviewNote(reply, filePath, evidenceFiles, !noted && !!thread?.isResolved) : replyIn(threadState);
-      const notes = [...(staysOpen ? [staysOpenNote(guard, settled === 'Fixed', config?.author_clear_role, thread?.isResolved)] : []), ...reopened, ...(closed && settled ? [REPLY_PR_CLOSED] : []), ...(holdNote ? [holdNote] : [])];
+      const shown = replyIn(threadState);
+      // A settling answer that leaves the thread as it is opens with that state instead of its outcome word.
+      const seen = !settled ? undefined
+        : leftOpen ? leftOpenLead(settled, !noted && !!thread?.isResolved)
+          : closed ? `**${SEEN_OPENERS[settled]}, but this pull request is merged or closed, so the thread stays as it is.**`
+            : thread && !mayResolve ? `**${SEEN_OPENERS[settled]}, but only the PR author or someone with write access settles a thread by a reply.**` : undefined;
+      // What a later round found and what lifts a warning's hold follow the lead, before the model's text. A round that
+      // left this to the answer has said nothing in the thread yet.
+      const stateNotes = [...replaces, ...(leftOpenByRound && !cleared ? [leftOpenByRound] : []), ...(holdNote ? [holdNote] : [])];
+      // An answer without a lead keeps its outcome word as the lead of those notes.
+      const opener = !shown.lead && stateNotes.length > 0 ? OUTCOME_OPENER_RE.exec(shown.text)?.[0] : undefined;
+      const added = seen ?? (leftOpen ? NO_FILE_FIX_LEAD : opener && `**${opener.replace(/\*/g, '')}**`);
+      const lead = [added ?? shown.lead, ...stateNotes].filter(Boolean).join(' ');
+      // A lead added here takes the place of the outcome word the text opens with.
+      const below = added ? withoutOutcomeOpener(shown.text.replace(OUTCOME_OPENER_RE, '').trim()) : shown.text;
+      const fixNote = leftOpen && settled === 'Fixed' ? ` ${fixReviewNote(filePath, evidenceFiles)}` : '';
+      const answer = [lead, ...(below ? [`${below}${fixNote}`] : [])].filter(Boolean).join('\n\n');
+      const notes = [...(staysOpen ? [staysOpenNote(guard, settled === 'Fixed', config?.author_clear_role, thread?.isResolved)] : []), ...reopened];
       const decision = replyDecision(settled, closed ? 'pr_closed' : lookupFailed ? 'lookup_failed' : thread, mayResolve, staysOpen, noted, resolved, clears);
       // Whether the finding still blocks once this answer is posted. Only a maintainer's settling answer clears it.
       const blocks = !!live && (noted || ((live.isResolved ? held : isGuarded(live)) && !(settled && mayClear)));
@@ -838,14 +870,13 @@ export async function handleReviewCommentReply(
         ...statementFold(checked, blocks || !live),
         ...(saysClear ? [staysOpenNote(guard, !!filePath, config?.author_clear_role, live.isResolved)] : []),
       ];
-      // A round that left this to the answer has said nothing in the thread yet.
-      const text = [answer, ...replaces, ...(leftOpenByRound && !cleared ? [leftOpenByRound] : []), ...checks, ...notes];
+      const text = [answer, ...checks, ...notes];
       const markers = [
         BOT_MARKER, response.record(decision, replyChecks(checked), comment.id),
         ...(settled === 'Fixed' && head && !closed ? [fixedMarker(head)] : []),
         ...(fixClaim ? [fixClaimMarker(fixClaim)] : []),
-        ...(checked.unsettled ? [UNSETTLED_ANSWER_MARKER] : []),
-        ...(leftOpen && filePath ? [FIX_SEEN_MARKER] : []),
+        ...(unsettled || (leftOpen && !settled) ? [UNSETTLED_ANSWER_MARKER] : []),
+        ...(seen && settled ? [SEEN_MARKERS[settled]] : []),
         ...(noted ? [REOPENED_MARKER] : []),
         ...(settled && thread && mayClear && senderLogin ? [clearRecordMarker(senderLogin)] : []),
       ];
@@ -862,7 +893,7 @@ export async function handleReviewCommentReply(
 
     // A finding whose thread is not cleared is not settled, so it leaves no learning. A security finding never teaches
     // the reviewers to skip a pattern, and only a writer's reply can change memory.
-    if (cleared && addNote && WITHDRAWN_REPLY_RE.test(reply) && !isSecurity && filePath && memory && await commenterCanWrite(octokit, owner, repo)) {
+    if (cleared && addNote && settled === 'Withdrawn' && !isSecurity && filePath && memory && await commenterCanWrite(octokit, owner, repo)) {
       const title = parseFindingData(findingBody)?.title ?? filePath;
       const saved = await saveWithdrawnLearning(memory, owner, repo, prNumber, filePath, title, comment.body ?? '')
         .catch((error: unknown) => {

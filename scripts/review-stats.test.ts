@@ -1,5 +1,5 @@
 import type { LLMCall } from '../src/providers';
-import { FIX_SEEN_MARKER, UNSETTLED_ANSWER_MARKER } from '../src/recap';
+import { SEEN_MARKERS, UNSETTLED_ANSWER_MARKER } from '../src/recap';
 import { formatApprovalRecord, formatReplyRecord, formatReviewRecord } from '../src/review-record';
 import { makeFindingFingerprintEntry, makeRoundContext } from '../src/test-utils';
 import { PRE_EXISTING_TAG } from '../src/types';
@@ -113,7 +113,7 @@ describe('review stats', () => {
       { id: 31, in_reply_to_id: 30, body: 'Fixed in def5678.', user: person },
       // A "Fixed." that opens with the state of the thread it leaves open counts as one, and a later unsettled answer changes nothing.
       { id: 35, body: '**Blocker**: Guard\n\n<!-- manki:blocker:Guard -->', user: bot },
-      { id: 36, in_reply_to_id: 35, body: `**Fix seen, the thread stays open until a review or a maintainer confirms it.**\n\nThe guard runs first.\n\n<!-- manki -->\n${FIX_SEEN_MARKER}`, user: bot },
+      { id: 36, in_reply_to_id: 35, body: `**Fix seen, the thread stays open until a review or a maintainer confirms it.**\n\nThe guard runs first.\n\n<!-- manki -->\n${SEEN_MARKERS.Fixed}`, user: bot },
       { id: 37, in_reply_to_id: 35, body: `**Not settled yet.** The guard runs first.\n\n<!-- manki -->\n${UNSETTLED_ANSWER_MARKER}`, user: bot },
       { id: 40, body: '**Warning**: Minor\n\n<!-- manki:warning:Minor -->', user: bot, pull_request_review_id: 1, path: 'src/a.ts', line: null, original_line: 10 },
       { id: 41, in_reply_to_id: 40, body: 'Withdrawn.', user: bot },
