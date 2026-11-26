@@ -2386,7 +2386,7 @@ export async function runReview(
     try {
       reports = await mapWithConcurrency(slices.map((slice, index) => ({ ...slice, index })), MAX_PARALLEL_SLICES, ({ raw, paths, index }) =>
         runVerdictReader(verdictWrap.client, buildReviewerUserMessage(raw, repoContext, {
-          fileContents: readerFiles && filesIn(readerFiles, paths), leftOutFiles: leftOutFiles?.filter(f => !paths || paths.has(f.path)), changedSinceLastRound: pathsIn(changedSinceLastRound, paths, slices), sliceNote: sliceNote(index, slices, changeMap), lockfileChanges,
+          fileContents: readerFiles && filesIn(readerFiles, paths, slices), leftOutFiles: leftOutFiles?.filter(f => !paths || paths.has(f.path)), changedSinceLastRound: pathsIn(changedSinceLastRound, paths, slices), sliceNote: sliceNote(index, slices, changeMap), lockfileChanges,
         })).catch((error: unknown) => {
           if (error instanceof NotStartedError) return undefined;
           throw error;
@@ -2777,9 +2777,12 @@ function interRoundDiffIn(input: InterRoundDiffInput | undefined, paths: Set<str
   return { ...input, diff: sections.filter(s => kept.has(s.path)).map(s => s.text).join('') };
 }
 
-/** Returns the file contents of `paths`, or all of them when the diff is read in one slice. */
-function filesIn(contents: Map<string, string>, paths?: Set<string>): Map<string, string> {
-  return paths ? new Map([...contents].filter(([path]) => paths.has(path))) : contents;
+/**
+ * Returns the file contents of `paths` and of the files in none of `slices`, such as a thread's file outside the diff,
+ * or all of them when the diff is read in one slice.
+ */
+function filesIn(contents: Map<string, string>, paths: Set<string> | undefined, slices: ReadonlyArray<{ paths?: Set<string> }>): Map<string, string> {
+  return paths ? new Map([...contents].filter(([path]) => paths.has(path) || !slices.some(slice => slice.paths?.has(path)))) : contents;
 }
 
 /**
@@ -2803,7 +2806,7 @@ async function runReviewerAgent(
   const slices = diffSlices(rawDiff);
   if (slices.length <= 1) return runReviewerOnSlice(client, config, finder, slices[0]?.raw ?? rawDiff, repoContext, files.fileContents, prContext, memoryContext, linkedIssues, { ...options, leftOutFiles: files.leftOutFiles });
   const readSlice = ({ raw, paths, index }: { raw: string; paths?: Set<string>; index: number }) =>
-    runReviewerOnSlice(client, config, finder, raw, repoContext, files.fileContents && filesIn(files.fileContents, paths), prContext, memoryContext, linkedIssues,
+    runReviewerOnSlice(client, config, finder, raw, repoContext, files.fileContents && filesIn(files.fileContents, paths, slices), prContext, memoryContext, linkedIssues,
       {
         ...options, changedSinceLastRound: pathsIn(options.changedSinceLastRound, paths, slices), interRoundDiff: interRoundDiffIn(options.interRoundDiff, paths, slices),
         leftOutFiles: files.leftOutFiles?.filter(f => !paths || paths.has(f.path)),

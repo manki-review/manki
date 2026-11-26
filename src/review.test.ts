@@ -8441,7 +8441,7 @@ describe('runReview', () => {
     expect(mapOf(last)).toBe(map(`Slice 1\n${listed}\n... and 50 more files`));
   });
 
-  it('lists a lockfile the push changed in every slice, and gives each finder slice only its own files of the diff since the last review', async () => {
+  it('lists a lockfile the push changed in every slice, and gives each finder slice only its own files of the diff since the last review and of the changed files', async () => {
     const fileDiff = (path: string) => `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1,1 +1,801 @@\n ctx\n${Array.from({ length: 800 }, (_, i) => `+line ${i}`).join('\n')}`;
     const rawDiff = [fileDiff('src/a.ts'), fileDiff('src/b.ts')].join('\n');
     const lockfile = parsePRDiff('diff --git a/Cargo.lock b/Cargo.lock\n--- a/Cargo.lock\n+++ b/Cargo.lock\n@@ -5,1 +5,1 @@\n-version = "0.4.2"\n+version = "0.4.3"').files[0];
@@ -8450,6 +8450,7 @@ describe('runReview', () => {
 
     await runReview(clients, {
       config: makeConfig(), diff: parsePRDiff(rawDiff), rawDiff, repoContext: '',
+      fileContents: new Map([['src/a.ts', 'const inA = 1;'], ['src/b.ts', 'const inB = 1;'], ['src/thread.ts', 'const inThread = 1;']]),
       lockfiles: [{ path: 'Cargo.lock', file: lockfile, changes: [{ kind: 'updated', name: 'hex', oldVersion: '0.4.2', newVersion: '0.4.3', fields: [], flags: [], line: 5 }] }],
       priorRounds: [buildPriorRound(1, [])],
       interRoundDiff: `${pushed('src/a.ts')}${pushed('src/b.ts')}${rebuildRawDiff({ files: [lockfile], totalAdditions: 1, totalDeletions: 1 })}`,
@@ -8467,6 +8468,10 @@ describe('runReview', () => {
       expect(message).toContain(`+fixed in ${own}`);
       expect(message).not.toContain(`+fixed in ${other}`);
       expect(message).toContain('+version = "0.4.3"');
+      // A file in no slice, such as an open thread's file outside the diff, goes to every slice.
+      expect(message).toContain(`### File: ${own}\n`);
+      expect(message).not.toContain(`### File: ${other}\n`);
+      expect(message).toContain('### File: src/thread.ts\n');
     }
     for (const message of readerMessages) expect(message).not.toContain('## Diff Since the Last Review');
   });
